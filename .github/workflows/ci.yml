@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Default legs build with the full dev dep set; the no-optional leg proves
+  # the package compiles/tests/runs with oban and plug entirely absent
+  # (ADR-0004).
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.17"
+            otp: "27"
+          - elixir: "1.18"
+            otp: "27"
+          # ADR-0004 proof: oban/plug dropped from the dep list entirely —
+          # the package must compile, test, and run with neither loaded.
+          - elixir: "1.18"
+            otp: "27"
+            no_optional: "1"
+    env:
+      MIX_ENV: test
+      ASH_HOOKS_NO_OPTIONAL: ${{ matrix.no_optional }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ matrix.elixir }}-${{ matrix.otp }}-noopt-${{ matrix.no_optional }}-${{ hashFiles('mix.lock') }}
+          restore-keys: mix-${{ matrix.elixir }}-${{ matrix.otp }}-
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix format --check-formatted
+      - run: mix credo --strict
+      - run: mix test
+      - name: Assert optional deps never loaded (no-optional leg)
+        if: matrix.no_optional == '1'
+        run: |
+          mix run --no-start -e 'if :code.which(Oban) != :non_existing or :code.which(Plug) != :non_existing, do: (IO.puts("optional dep loaded"); System.halt(1))'
