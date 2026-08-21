@@ -116,17 +116,27 @@ defmodule AshHooks.ProviderTest do
       assert {:error, :invalid_signature} =
                Provider.default_verify_signature(body, signature, "other-secret", :hmac_sha256)
     end
+
+    test "an EMPTY secret fails closed as :no_webhook_secret (empty-key HMAC is forgeable)", %{
+      body: body
+    } do
+      forged = :crypto.mac(:hmac, :sha256, "", body) |> Base.encode16(case: :lower)
+
+      assert {:error, :no_webhook_secret} =
+               Provider.default_verify_signature(body, forged, "", :hmac_sha256)
+    end
   end
 
   describe "constant-time compare tripwire (mutation-red gate)" do
     test "default_verify_signature compares via :crypto.hash_equals/2, never a bare ==" do
-      {:ok, body} = fetch_default_verify_signature_body(provider_source_ast())
+      bodies = default_verify_signature_bodies(provider_source_ast())
+      assert bodies != [], "default_verify_signature/4 not found in source"
 
-      assert calls_constant_time_compare?(body),
+      assert Enum.any?(bodies, &calls_constant_time_compare?/1),
              "default_verify_signature must compare digests with :crypto.hash_equals/2"
 
-      refute compares_header_with_bare_equality?(body),
-             "default_verify_signature must not compare the header value with ==/!=/=:= directly"
+      refute Enum.any?(bodies, &compares_header_with_bare_equality?/1),
+             "default_verify_signature must not compare the header value with ==/!=/===/!== directly"
     end
 
     test "the named mutation (:crypto.hash_equals -> ==) turns the tripwire red" do
@@ -138,10 +148,10 @@ defmodule AshHooks.ProviderTest do
       # constant-time MECHANISM is the only deterministic red under this
       # mutation.
       mutated = mutate_hash_equals_to_equals(provider_source_ast())
-      {:ok, body} = fetch_default_verify_signature_body(mutated)
+      bodies = default_verify_signature_bodies(mutated)
 
-      refute calls_constant_time_compare?(body)
-      assert compares_header_with_bare_equality?(body)
+      refute Enum.any?(bodies, &calls_constant_time_compare?/1)
+      assert Enum.any?(bodies, &compares_header_with_bare_equality?/1)
     end
   end
 
@@ -162,6 +172,22 @@ defmodule AshHooks.ProviderTest do
 
       assert Provider.secret_scope(PerConnectionProvider) == :per_connection
     end
+
+    test "a not-yet-loaded provider module still reports its true scope" do
+      # function_exported?/3 is false until the module is loaded (interactive
+      # mode); an unloaded per-connection provider must not be misread as
+      # app-level. Purge + delete, then resolve — the resolver must load it.
+      module = AshHooks.TestPerConnectionProvider
+
+      # Load first (nothing else touches this fixture, so it may not be
+      # loaded), then purge + delete so the resolver faces an unloaded module.
+      {:module, ^module} = Code.ensure_loaded(module)
+      :code.purge(module)
+      true = :code.delete(module)
+      refute(:code.is_loaded(module) != false, "fixture should be unloaded before resolving")
+
+      assert Provider.secret_scope(module) == :per_connection
+    end
   end
 
   defp flip_first_char(<<first, rest::binary>>) do
@@ -175,21 +201,24 @@ defmodule AshHooks.ProviderTest do
     ast
   end
 
-  defp fetch_default_verify_signature_body(ast) do
+  # All clause bodies of default_verify_signature — the function has multiple
+  # clauses (empty-secret guard + main), and the tripwire must hold across
+  # every one of them.
+  defp default_verify_signature_bodies(ast) do
     {_, acc} =
-      Macro.prewalk(ast, :missing, fn
-        {:def, _, [head, block]} = node, :missing ->
+      Macro.prewalk(ast, [], fn
+        {:def, _, [head, block]} = node, acc ->
           if function_name(head) == :default_verify_signature do
-            {node, {:ok, Keyword.fetch!(block, :do)}}
+            {node, [Keyword.fetch!(block, :do) | acc]}
           else
-            {node, :missing}
+            {node, acc}
           end
 
         node, acc ->
           {node, acc}
       end)
 
-    acc
+    Enum.reverse(acc)
   end
 
   # A def with a `when` guard nests the call inside {:when, _, [call, guard]}.
@@ -206,7 +235,7 @@ defmodule AshHooks.ProviderTest do
 
   defp compares_header_with_bare_equality?(body) do
     Macro.prewalk(body, false, fn
-      {op, _, [lhs, rhs]} = node, acc when op in [:==, :!=] ->
+      {op, _, [lhs, rhs]} = node, acc when op in [:==, :!=, :===, :!==] ->
         if match?({:header_value, _, _}, lhs) or match?({:header_value, _, _}, rhs) do
           {node, true}
         else

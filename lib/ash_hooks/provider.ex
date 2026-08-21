@@ -87,10 +87,14 @@ defmodule AshHooks.Provider do
   @doc """
   Resolves a provider's webhook secret scope, defaulting to `:app_level` when
   the optional `webhook_secret_scope/0` callback is not implemented.
+
+  Loads the provider module first: `function_exported?/3` reports false for a
+  module that is not yet loaded, which would misread an unloaded
+  per-connection provider as app-level.
   """
   @spec secret_scope(module()) :: webhook_secret_scope()
   def secret_scope(provider) when is_atom(provider) do
-    if function_exported?(provider, :webhook_secret_scope, 0) do
+    if Code.ensure_loaded?(provider) and function_exported?(provider, :webhook_secret_scope, 0) do
       provider.webhook_secret_scope()
     else
       :app_level
@@ -103,13 +107,22 @@ defmodule AshHooks.Provider do
 
   The byte-size guard both short-circuits wrong-length signatures and
   satisfies `:crypto.hash_equals/2`'s equal-length requirement.
+
+  An EMPTY secret fails closed as `{:error, :no_webhook_secret}` — an HMAC
+  under the empty key is computable by anyone, so a secret source that quietly
+  resolves to `""` must not verify anything.
   """
   @spec default_verify_signature(
           raw_body(),
           signature_header_value(),
           webhook_secret(),
           signature_algorithm()
-        ) :: :ok | {:error, :invalid_signature}
+        ) :: :ok | {:error, :invalid_signature | :no_webhook_secret}
+
+  def default_verify_signature(_raw_body, _header_value, secret, _algorithm)
+      when byte_size(secret) == 0,
+      do: {:error, :no_webhook_secret}
+
   def default_verify_signature(raw_body, header_value, secret, algorithm)
       when is_binary(raw_body) and is_binary(header_value) and is_binary(secret) and
              algorithm in [:hmac_sha256, :hmac_sha512] do

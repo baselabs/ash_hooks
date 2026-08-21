@@ -7,7 +7,11 @@ defmodule AshHooks.Provider.Mock do
   `parse_event_type/1` resolves the type string with `String.to_existing_atom/1`
   — fail-closed: a type that was not already an atom is reported as an unknown
   event, never converted into a newly created one (no atom-table growth from
-  webhook input).
+  webhook input). The Mock imposes NO taxonomy beyond that: any pre-existing
+  atom is accepted as a type (it is a general test double — real providers
+  match their vendor's known type strings). JSON scalar values (`nil`, `true`,
+  `false`, decoded from JSON null/true/false and from their string forms) are
+  rejected as malformed, not event types.
 
   The optional secret callbacks are deliberately NOT implemented: the Mock
   exercises the app-level default scope, with the secret supplied by the
@@ -33,12 +37,17 @@ defmodule AshHooks.Provider.Mock do
 
   @impl Provider
   def parse_event_type(%{"type" => type}) when is_binary(type) do
-    {:ok, String.to_existing_atom(type)}
+    case String.to_existing_atom(type) do
+      scalar when scalar in [nil, true, false] -> {:error, :malformed_payload}
+      type_atom -> {:ok, type_atom}
+    end
   rescue
     ArgumentError -> {:error, :unknown_event_type}
   end
 
-  def parse_event_type(%{"type" => type}) when is_atom(type), do: {:ok, type}
+  def parse_event_type(%{"type" => type})
+      when is_atom(type) and type not in [nil, true, false],
+      do: {:ok, type}
 
   def parse_event_type(_payload), do: {:error, :malformed_payload}
 

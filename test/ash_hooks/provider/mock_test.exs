@@ -67,6 +67,18 @@ defmodule AshHooks.Provider.MockTest do
       assert {:error, :malformed_payload} = Mock.parse_event_type(%{})
       assert {:error, :malformed_payload} = Mock.parse_event_type(nil)
     end
+
+    test "JSON scalar types (null/true/false) are malformed, not event types" do
+      # JSON null/true/false decode to nil/true/false — atoms — which the
+      # is_atom clause would otherwise accept. The strings resolve to the same
+      # atoms via to_existing_atom and must be rejected identically.
+      assert {:error, :malformed_payload} = Mock.parse_event_type(%{"type" => nil})
+      assert {:error, :malformed_payload} = Mock.parse_event_type(%{"type" => true})
+      assert {:error, :malformed_payload} = Mock.parse_event_type(%{"type" => false})
+      assert {:error, :malformed_payload} = Mock.parse_event_type(%{"type" => "nil"})
+      assert {:error, :malformed_payload} = Mock.parse_event_type(%{"type" => "true"})
+      assert {:error, :malformed_payload} = Mock.parse_event_type(%{"type" => "false"})
+    end
   end
 
   describe "handle_event/2" do
@@ -79,6 +91,14 @@ defmodule AshHooks.Provider.MockTest do
   end
 
   describe "behaviour conformance" do
+    # function_exported?/3 reports false for a module that is not yet loaded,
+    # and nothing else in this file guarantees Mock is loaded first — load it
+    # explicitly so these checks are deterministic, not test-order-dependent.
+    setup do
+      Code.ensure_loaded!(Mock)
+      :ok
+    end
+
     test "exports every required callback" do
       # behaviour_info(:callbacks) includes the optional callbacks; required =
       # callbacks minus the declared-optional set.
