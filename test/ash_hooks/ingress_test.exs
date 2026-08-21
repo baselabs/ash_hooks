@@ -48,6 +48,13 @@ defmodule AshHooks.IngressTest do
         provider(AshHooks.CountingProvider)
         secret {AshHooks.IngressTest, :no_secret, []}
       end
+
+      # provider module is NOT resolvable at compile time — the verifier
+      # skips it; the runtime backstop must still reject the window
+      inbound :neverloaded do
+        secret {AshHooks.IngressTest, :secret, []}
+        replay_window_seconds(300)
+      end
     end
 
     def event_id(%{"id" => id}) when is_binary(id), do: {:ok, id}
@@ -192,8 +199,8 @@ defmodule AshHooks.IngressTest do
       assert delivery.attempts == 1
       assert is_nil(delivery.error_class)
 
-      assert_receive {:handled, :counted}
-      refute_received {:handled, _}
+      assert_receive {:handled, :counted, _}
+      refute_received {:handled, _, _}
 
       assert [%{status: :processed}] = rows()
     end
@@ -205,8 +212,8 @@ defmodule AshHooks.IngressTest do
       assert {:ok, :duplicate, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
 
       assert delivery.status == :processed
-      assert_receive {:handled, :counted}
-      refute_received {:handled, _}
+      assert_receive {:handled, :counted, _}
+      refute_received {:handled, _, _}
 
       assert [%{attempts: 1}] = rows()
     end
@@ -223,7 +230,7 @@ defmodule AshHooks.IngressTest do
                )
 
       assert rows() == []
-      refute_received {:handled, _}
+      refute_received {:handled, _, _}
     end
 
     test "a missing secret fails closed with no ledger write and no verification" do
@@ -233,7 +240,7 @@ defmodule AshHooks.IngressTest do
                Ingress.ingest(Ledger, :secretless, raw, ctx(raw))
 
       assert rows(:secretless) == []
-      refute_received {:handled, _}
+      refute_received {:handled, _, _}
     end
 
     test "a missing signature header fails closed as a tuple, never a crash" do
@@ -243,7 +250,7 @@ defmodule AshHooks.IngressTest do
                Ingress.ingest(Ledger, :counter, raw, ctx(raw, %{signature: nil}))
 
       assert rows() == []
-      refute_received {:handled, _}
+      refute_received {:handled, _, _}
     end
 
     test "a missing raw body never runs" do
@@ -251,7 +258,7 @@ defmodule AshHooks.IngressTest do
                Ingress.ingest(Ledger, :counter, nil, ctx("whatever"))
 
       assert rows() == []
-      refute_received {:handled, _}
+      refute_received {:handled, _, _}
     end
 
     test "a non-JSON body is recorded as permanently malformed, never handled" do
@@ -262,7 +269,7 @@ defmodule AshHooks.IngressTest do
       assert delivery.status == :failed_permanent
       assert delivery.error_class == "malformed_payload"
       assert delivery.payload == %{}
-      refute_received {:handled, _}
+      refute_received {:handled, _, _}
     end
 
     test "an unknown event type is recorded as permanently unknown, never handled" do
@@ -272,7 +279,7 @@ defmodule AshHooks.IngressTest do
 
       assert delivery.status == :failed_permanent
       assert delivery.error_class == "unknown_event_type"
-      refute_received {:handled, _}
+      refute_received {:handled, _, _}
     end
 
     test "a retryable handler failure is recorded and re-driven by redelivery" do
@@ -283,14 +290,14 @@ defmodule AshHooks.IngressTest do
       assert delivery.status == :failed_retryable
       assert delivery.error_class =~ "boom"
 
-      assert_receive {:handled, :counted}
+      assert_receive {:handled, :counted, _}
       CountingProvider.put_outcome(:ok)
 
       assert {:ok, :duplicate, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
       assert delivery.status == :processed
 
-      assert_receive {:handled, :counted}
-      refute_received {:handled, _}
+      assert_receive {:handled, :counted, _}
+      refute_received {:handled, _, _}
       assert [%{attempts: 2, status: :processed}] = rows()
     end
 
@@ -302,12 +309,12 @@ defmodule AshHooks.IngressTest do
       assert delivery.status == :failed_permanent
       assert delivery.error_class =~ "poison"
 
-      assert_receive {:handled, :counted}
+      assert_receive {:handled, :counted, _}
       CountingProvider.put_outcome(:ok)
 
       assert {:ok, :duplicate, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
       assert delivery.status == :failed_permanent
-      refute_received {:handled, _}
+      refute_received {:handled, _, _}
     end
 
     test "a provider without ids uses the deterministic content-hash identity" do
@@ -323,19 +330,94 @@ defmodule AshHooks.IngressTest do
     end
   end
 
+  describe "cross-vendor review fixes" do
+    test "scope data cannot overwrite ledger identity fields (unknown keys rejected)" do
+      raw = body("evt_hijack")
+
+      assert {:error, %Invalid.MalformedPayload{}} =
+               Ingress.ingest(
+                 Ledger,
+                 :counter,
+                 raw,
+                 ctx(raw, %{scope: %{"provider" => :evil, "account_id" => "acct-1"}})
+               )
+
+      assert rows() == []
+    end
+
+    test "a byte-differing redelivery under the same identity drives the PERSISTED payload" do
+      first_raw = Jason.encode!(%{"id" => "evt_diff", "type" => "counted", "n" => 1})
+
+      assert {:ok, :created, _} = Ingress.ingest(Ledger, :counter, first_raw, ctx(first_raw))
+      assert_receive {:handled, :counted, _}
+
+      Repo.query!(
+        "UPDATE " <>
+          @table <>
+          " SET status = 'received', fencing_token = 0, attempts = 0 WHERE external_event_id = 'evt_diff'"
+      )
+
+      second_raw = Jason.encode!(%{"id" => "evt_diff", "type" => "counted", "n" => 999})
+
+      assert {:ok, :duplicate, delivery} =
+               Ingress.ingest(Ledger, :counter, second_raw, ctx(second_raw))
+
+      assert delivery.status == :processed
+      assert delivery.payload["n"] == 1
+
+      # the HANDLER saw the persisted payload, not the new bytes
+      assert_receive {:handled, :counted, %{"n" => 1}}
+      refute_received {:handled, _, _}
+    end
+
+    test "handler error classes are bounded: structures never dump their contents" do
+      AshHooks.CountingProvider.put_outcome({:error, :retry, {:secret_ctx, "do-not-store"}})
+      raw = body("evt_errclass")
+
+      assert {:ok, :created, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+      assert delivery.error_class == "unclassified"
+
+      AshHooks.CountingProvider.put_outcome({:error, :permanent, :poisoned})
+      raw2 = body("evt_errclass_atom")
+
+      assert {:ok, :created, delivery2} = Ingress.ingest(Ledger, :counter, raw2, ctx(raw2))
+      assert delivery2.error_class == "poisoned"
+    end
+
+    test "a replay window on a timestamp-less provider is rejected at RUNTIME (verifier blind spot)" do
+      raw = body("evt_window")
+
+      assert {:error, %AshHooks.Errors.Unknown.UnknownError{}} =
+               Ingress.ingest(Ledger, :neverloaded, raw, ctx(raw))
+
+      assert rows() == []
+      refute_received {:handled, _, _}
+    end
+
+    test "an over-long extractor id falls back to its digest, not a permanent ingest error" do
+      long_id = String.duplicate("x", 300)
+      raw = Jason.encode!(%{"id" => long_id, "type" => "counted"})
+
+      assert {:ok, :created, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+
+      expected = :crypto.hash(:sha256, long_id) |> Base.encode16(case: :lower)
+      assert delivery.external_event_id == expected
+    end
+  end
+
   describe "crash windows (ACCEPT: kill between steps re-drives, never a no-op)" do
     test "a stranded :received row (crash after ingest, before claim) is re-driven" do
       stranded = stranded_received_row()
 
-      refute_received {:handled, _}
+      refute_received {:handled, _, _}
       raw = body("evt_strand")
 
       assert {:ok, :duplicate, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
 
       assert delivery.status == :processed
       assert delivery.id == stranded.id
-      assert_receive {:handled, :counted}
-      refute_received {:handled, _}
+      assert_receive {:handled, :counted, _}
+      refute_received {:handled, _, _}
       assert [%{status: :processed, attempts: 1}] = rows()
     end
 
@@ -348,7 +430,7 @@ defmodule AshHooks.IngressTest do
       assert {:ok, :duplicate, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
 
       assert delivery.status == :claimed
-      refute_received {:handled, _}
+      refute_received {:handled, _, _}
     end
 
     test "a stranded :claimed row whose lease EXPIRED is re-driven exactly once" do
@@ -361,8 +443,8 @@ defmodule AshHooks.IngressTest do
       assert {:ok, :duplicate, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
 
       assert delivery.status == :processed
-      assert_receive {:handled, :counted}
-      refute_received {:handled, _}
+      assert_receive {:handled, :counted, _}
+      refute_received {:handled, _, _}
       assert [%{status: :processed, fencing_token: 2, attempts: 2}] = rows()
     end
   end
@@ -449,7 +531,7 @@ defmodule AshHooks.IngressTest do
                    match?({:error, _}, &1))
              )
 
-      assert_receive {:handled, :counted}
+      assert_receive {:handled, :counted, _}
 
       # transient window, not settled state: wait for stragglers, then the
       # total must still be exactly one handler run
@@ -461,7 +543,7 @@ defmodule AshHooks.IngressTest do
         end
       end)
 
-      refute_received {:handled, _}
+      refute_received {:handled, _, _}
 
       assert [%{status: :processed, fencing_token: 1, attempts: 1}] = rows()
     end
@@ -478,12 +560,52 @@ defmodule AshHooks.IngressTest do
 
       assert {:ok, 1} = Ingress.reap(Ledger)
 
-      assert_receive {:handled, :counted}
-      refute_received {:handled, _}
+      assert_receive {:handled, :counted, _}
+      refute_received {:handled, _, _}
 
       statuses = rows() |> Map.new(&{&1.external_event_id, &1.status})
       assert statuses["evt_reap_1"] == :processed
       assert statuses["evt_reap_2"] == :claimed
+    end
+
+    test "a poison row (unresolvable inbound) does not starve the rows behind it" do
+      valid = stranded_received_row("evt_reap_ok")
+      {:ok, _, _} = Ingress.claim_delivery(Ledger, valid.id)
+      expire_lease("evt_reap_ok")
+
+      # poison FIRST: a claimed-expired row whose provider has no inbound
+      # declaration — the sweep must skip it and still re-drive the valid row
+      Repo.query!(
+        "INSERT INTO " <>
+          @table <>
+          " (id, provider, external_event_id, payload, payload_digest, status, fencing_token, lease_expires_at, attempts, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          "poison-row-1",
+          Atom.to_string(:ghost_provider),
+          "evt_poison",
+          "{}",
+          "deadbeef",
+          "claimed",
+          1,
+          "2000-01-01T00:00:00Z",
+          1,
+          "acct-1"
+        ]
+      )
+
+      assert {:ok, 1} = Ingress.reap(Ledger)
+
+      assert_receive {:handled, :counted, _}
+      statuses = rows() |> Map.new(&{&1.external_event_id, &1.status})
+      assert statuses["evt_reap_ok"] == :processed
+
+      # the poison row survives the sweep untouched (rows()/1 filters
+      # :counter, so read it directly)
+      poison_status =
+        Repo.query!("SELECT status FROM " <> @table <> " WHERE id = 'poison-row-1'")
+        |> then(& &1.rows)
+
+      assert poison_status == [["claimed"]]
     end
   end
 end

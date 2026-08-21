@@ -45,7 +45,7 @@ defmodule AshHooks.CountingProvider do
   @impl Provider
   def handle_event(event_type, payload) do
     if pid = :persistent_term.get({__MODULE__, :sink}, nil) do
-      send(pid, {:handled, event_type})
+      send(pid, {:handled, event_type, payload})
     end
 
     case :persistent_term.get({__MODULE__, :outcome}, :ok) do

@@ -27,8 +27,8 @@ defmodule AshHooks.Ingress do
   ledger write (fail closed: missing secret verifies nothing; a missing raw
   body never runs).
 
-  The individual machine steps (`ingest_delivery/5`, `claim_delivery/2`,
-  `mark_processed/3`, `mark_failed/5`, `renew/3`, `reap/2`) are public for
+  The individual machine steps (`ingest_delivery/2`, `claim_delivery/2`,
+  `mark_processed/3`, `mark_failed/5`, `renew/3`, `reap/1`) are public for
   composition and monitoring — the async runtime (#delivery-runtime slice)
   and the reaper drive the same steps.
 
@@ -183,8 +183,12 @@ defmodule AshHooks.Ingress do
   Re-drives deliveries whose claims died with an expired lease (crash
   between claim and mark). Returns the number re-driven; unexpired leases
   and terminal rows are left alone.
+
+  Rows that cannot be re-driven (inbound declaration removed, provider
+  unresolved, a raising handler) are skipped without stopping the sweep —
+  a poison row must never starve the rows behind it (cross-vendor finding).
   """
-  @spec reap(module()) :: {:ok, non_neg_integer()} | {:error, term()}
+  @spec reap(module()) :: {:ok, non_neg_integer()}
   def reap(resource) do
     now = now()
 
@@ -193,14 +197,18 @@ defmodule AshHooks.Ingress do
       |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now)
       |> Ash.read!(authorize?: false)
 
-    expired
-    |> Enum.reduce_while({:ok, 0}, fn row, {:ok, count} ->
-      case redrive(resource, row) do
-        {:ok, _} -> {:cont, {:ok, count + 1}}
-        {:error, :lease_held} -> {:cont, {:ok, count}}
-        {:error, error} -> {:halt, {:error, error}}
+    Enum.reduce(expired, {:ok, 0}, fn row, {:ok, count} ->
+      case safe_redrive(resource, row) do
+        {:ok, _} -> {:ok, count + 1}
+        _skipped -> {:ok, count}
       end
     end)
+  end
+
+  defp safe_redrive(resource, row) do
+    redrive(resource, row)
+  rescue
+    _reason -> {:error, :redrive_crashed}
   end
 
   # ────────────────────────── internals ──────────────────────────
@@ -214,7 +222,12 @@ defmodule AshHooks.Ingress do
         {:error, error}
 
       {:ok, _token, claimed} ->
-        handle_and_mark(resource, env, delivery.id, claimed)
+        # The persisted row is the record of truth: a byte-differing
+        # redelivery under the same identity drives the FIRST persisted
+        # payload, never the new bytes (cross-vendor finding).
+        handling_env = row_env(env, delivery)
+
+        handle_and_mark(resource, handling_env, delivery.id, claimed)
         |> case do
           {:ok, final} -> {:ok, result(created?), final}
           {:error, error} -> {:error, error}
@@ -253,6 +266,23 @@ defmodule AshHooks.Ingress do
       {:error, :stale_token} -> {:ok, reload(resource, delivery_id)}
       {:error, error} -> {:error, error}
     end
+  end
+
+  # The handling env for a claimed row is rebuilt from the PERSISTED row —
+  # payload, digest, and type come from the ledger of record, so a
+  # byte-differing redelivery under the same identity can never process
+  # bytes the ledger does not show.
+  defp row_env(env, row) do
+    parsed_type = env.provider.parse_event_type(row.payload)
+
+    %{
+      env
+      | payload: row.payload,
+        digest: row.payload_digest,
+        external_event_id: row.external_event_id,
+        parsed_type: parsed_type,
+        type_string: type_string(parsed_type)
+    }
   end
 
   # The reaper drives rows that already passed verification at ingest — no
@@ -317,6 +347,7 @@ defmodule AshHooks.Ingress do
   defp resolve(resource, name, raw_body, ctx) do
     with {:ok, inbound} <- fetch_inbound(resource, name),
          {:ok, provider} <- resolve_provider(inbound, name),
+         :ok <- check_replay_window(inbound, provider, name),
          {:ok, secret} <- resolve_secret(provider, inbound, name, ctx),
          :ok <- check_raw_body(raw_body, name),
          :ok <- verify(provider, raw_body, ctx, inbound, secret, name),
@@ -335,7 +366,7 @@ defmodule AshHooks.Ingress do
          external_event_id: external_event_id(inbound, payload, digest),
          parsed_type: parsed_type,
          type_string: type_string(parsed_type),
-         scope: Map.new(ctx[:scope] || %{})
+         scope: declared_scope(resource, ctx)
        }}
     end
   end
@@ -380,6 +411,26 @@ defmodule AshHooks.Ingress do
          error:
            "provider #{inspect(candidate)} does not exist or does not implement " <>
              "AshHooks.Provider — set the `provider` option on the inbound declaration"
+       )}
+    end
+  end
+
+  # Runtime backstop for the compile-time verifier: a window on a
+  # timestamp-less scheme silently verifies replays forever — reject before
+  # anything runs. The verifier cannot see providers that were not loadable
+  # at compile time; this check always can (cross-vendor finding).
+  defp check_replay_window(%{replay_window_seconds: nil}, _provider, _name), do: :ok
+
+  defp check_replay_window(%{replay_window_seconds: window}, provider, name) do
+    if Provider.timestamp_header(provider) do
+      :ok
+    else
+      {:error,
+       UnknownError.exception(
+         error:
+           "inbound #{inspect(name)} declares replay_window_seconds=#{window} but " <>
+             "#{inspect(provider)} declares no timestamp header " <>
+             "(AshHooks.Provider.timestamp_header/1 is nil) — remove the window or implement the callback"
        )}
     end
   end
@@ -454,20 +505,56 @@ defmodule AshHooks.Ingress do
   defp maybe_put_replay_window(verify_ctx, %{replay_window_seconds: window}),
     do: Map.put(verify_ctx, :replay_window_seconds, window)
 
+  # Scope carries values for the DECLARED slots and nothing else: keys are
+  # taken by allowlist, so caller scope data can never overwrite the
+  # verified ledger identity fields (cross-vendor finding), and unknown keys
+  # are rejected rather than silently shaping the ingest input.
   defp check_scope(resource, ctx) do
     scope = Map.new(ctx[:scope] || %{})
     declared = Extension.get_opt(resource, [:inbound_delivery], :scope_identity, [])
+
+    known = MapSet.new(declared, &Atom.to_string/1)
+
+    unknown =
+      scope
+      |> Map.keys()
+      |> Enum.reject(fn key -> MapSet.member?(known, to_string(key)) end)
 
     missing =
       Enum.filter(declared, fn slot ->
         not Map.has_key?(scope, slot) and not Map.has_key?(scope, Atom.to_string(slot))
       end)
 
-    if missing == [] do
-      :ok
-    else
-      {:error, MalformedPayload.exception(detail: "missing scope values for #{inspect(missing)}")}
+    cond do
+      unknown != [] ->
+        {:error,
+         MalformedPayload.exception(
+           detail:
+             "unknown scope keys #{inspect(unknown)} — scope carries only declared scope_identity slots"
+         )}
+
+      missing != [] ->
+        {:error,
+         MalformedPayload.exception(detail: "missing scope values for #{inspect(missing)}")}
+
+      true ->
+        :ok
     end
+  end
+
+  defp declared_scope(resource, ctx) do
+    scope = Map.new(ctx[:scope] || %{})
+    declared = Extension.get_opt(resource, [:inbound_delivery], :scope_identity, [])
+
+    Map.new(declared, fn slot ->
+      value =
+        cond do
+          Map.has_key?(scope, slot) -> Map.fetch!(scope, slot)
+          Map.has_key?(scope, Atom.to_string(slot)) -> Map.fetch!(scope, Atom.to_string(slot))
+        end
+
+      {slot, value}
+    end)
   end
 
   defp content_digest(raw_body),
@@ -479,7 +566,10 @@ defmodule AshHooks.Ingress do
     id =
       if is_function(extractor, 1) do
         case extractor.(payload) do
-          {:ok, id} when is_binary(id) -> id
+          # attribute cap is 255 — a longer id hashes to a bounded,
+          # deterministic identity instead of erroring on every delivery
+          {:ok, id} when is_binary(id) and byte_size(id) <= 255 -> id
+          {:ok, id} when is_binary(id) -> content_digest(id)
           _else -> nil
         end
       else
@@ -492,7 +582,13 @@ defmodule AshHooks.Ingress do
   defp type_string({:ok, type}) when is_atom(type), do: Atom.to_string(type)
   defp type_string(_), do: nil
 
-  defp error_class_string(term), do: term |> inspect() |> String.slice(0, 255)
+  # error_class is a bounded classification field, never an arbitrary dump:
+  # binaries truncate, atoms name themselves, and structures (which can carry
+  # payloads or secrets) classify without their contents (cross-vendor
+  # finding).
+  defp error_class_string(term) when is_binary(term), do: String.slice(term, 0, 255)
+  defp error_class_string(term) when is_atom(term), do: Atom.to_string(term)
+  defp error_class_string(_term), do: "unclassified"
 
   # Second-truncated UTC: sqlite stores TEXT ISO8601 and compares lexically —
   # uniform (fraction-less) precision keeps lexical == chronological.

@@ -5,9 +5,11 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
   # compares the surviving row's id against the caller-generated one).
   #
   # Also fail-closes on scope slots before anything consumes them: each
-  # declared slot must exist as a non-nullable attribute. A nullable slot
-  # would make nil scope values distinct on SQL unique indexes and silently
-  # break dedup for scope-less redeliveries.
+  # declared slot must exist as a non-nullable attribute, and must not
+  # collide with an injected ledger field. A nullable slot would make nil
+  # scope values distinct on SQL unique indexes and silently break dedup for
+  # scope-less redeliveries; a colliding slot would let caller scope data
+  # replace verified identity fields.
   use Spark.Dsl.Transformer
 
   alias Ash.Resource.Builder
@@ -41,6 +43,16 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
       attribute = attributes[slot]
 
       cond do
+        slot in [:id | reserved_fields()] ->
+          {:halt,
+           {:error,
+            DslError.exception(
+              module: resource,
+              path: [:inbound_delivery, :scope_identity],
+              message:
+                "scope_identity slot #{inspect(slot)} collides with an injected ledger field — scope slots extend the identity, they cannot replace it"
+            )}}
+
         is_nil(attribute) ->
           {:halt,
            {:error,
@@ -86,29 +98,30 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
   end
 
   defp add_attributes(dsl_state) do
-    attributes = [
+    Enum.reduce_while(attributes_spec(), {:ok, dsl_state}, fn {name, type, opts},
+                                                              {:ok, dsl_state} ->
+      case Builder.add_new_attribute(dsl_state, name, type, opts) do
+        {:ok, dsl_state} -> {:cont, {:ok, dsl_state}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp reserved_fields, do: Enum.map(attributes_spec(), &elem(&1, 0))
+
+  defp attributes_spec do
+    [
       {:provider, :atom, [allow_nil?: false]},
       {:external_event_id, :string, [allow_nil?: false, constraints: [max_length: 255]]},
       {:external_event_type, :string, []},
       {:payload, :map, [allow_nil?: false]},
       {:payload_digest, :string, [allow_nil?: false]},
       {:status, :atom,
-       [
-         allow_nil?: false,
-         default: :received,
-         constraints: [one_of: InboundDelivery.statuses()]
-       ]},
+       [allow_nil?: false, default: :received, constraints: [one_of: InboundDelivery.statuses()]]},
       {:fencing_token, :integer, [allow_nil?: false, default: 0]},
       {:lease_expires_at, :utc_datetime_usec, []},
       {:error_class, :string, []},
       {:attempts, :integer, [allow_nil?: false, default: 0]}
     ]
-
-    Enum.reduce_while(attributes, {:ok, dsl_state}, fn {name, type, opts}, {:ok, dsl_state} ->
-      case Builder.add_new_attribute(dsl_state, name, type, opts) do
-        {:ok, dsl_state} -> {:cont, {:ok, dsl_state}}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
   end
 end

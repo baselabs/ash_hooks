@@ -62,10 +62,10 @@ webhooks do
   inbound :complycube do
     secret {:app_env, [:my_app, :complycube_secret]}
   end
-end
 
-outbound :order_paid do
-  signing_mode :standard
+  outbound :order_paid do
+    signing_mode :standard
+  end
 end
 ```
 
@@ -75,7 +75,7 @@ fenced machine:
 ```elixir
 AshHooks.Ingress.ingest(Ledger, :complycube, conn.private[:ash_hooks_raw_body], %{
   signature: get_req_header(conn, "x-signature") |> List.first(),
-  headers: get_req_header(conn) |> Map.new(),
+  headers: Map.new(conn.req_headers),
   scope: %{account_id: connection.account_id}
 })
 ```
