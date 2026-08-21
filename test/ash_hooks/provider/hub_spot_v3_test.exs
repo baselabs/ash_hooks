@@ -3,7 +3,7 @@ defmodule AshHooks.Provider.HubSpotV3Test do
   The HubSpot v3 vendor verifier: provider-published vector (the official
   docs page's own Java example, openssl-reproduced 2026-08-21 — never
   self-signed), scheme floors (the method/URI/timestamp-header bindings a
-  roundtrip-only suite cannot prove), the one-sided replay window, the
+  roundtrip-only suite cannot prove), the two-sided replay window, the
   documented URI decode map, and the vendor-documented 41-entry
   subscriptionType taxonomy (webhooks guide, fetched first-hand 2026-08-21;
   9/9 cross-check against the incumbent's production set).
@@ -186,12 +186,14 @@ defmodule AshHooks.Provider.HubSpotV3Test do
     test "rejects a signature bound to a different TIMESTAMP HEADER value" do
       signature = sign(@secret, "POST", @uri, @body, @ts)
 
+      # a WITHIN-window value: the two-sided window passes it, so the
+      # rejection proves the HMAC binds the header, not the clock
       assert {:error, :invalid_signature} =
                HubSpotV3.verify_signature(
                  @body,
                  ctx(
                    signature: signature,
-                   headers: %{"x-hubspot-request-timestamp" => "1752619222216"},
+                   headers: %{"x-hubspot-request-timestamp" => "1752613862216"},
                    request_uri: @uri,
                    now_ms: @vector_now_ms
                  ),
@@ -303,11 +305,11 @@ defmodule AshHooks.Provider.HubSpotV3Test do
                )
     end
 
-    test "a FUTURE timestamp verifies — the window is one-sided past-only, like the vendor samples" do
+    test "a FUTURE timestamp beyond the window is stale — the window is two-sided, symmetric with the SW canon verifier" do
       future = Integer.to_string(@now_ms + 600_000)
       signature = sign(@secret, "POST", @uri, @body, future)
 
-      assert :ok =
+      assert {:error, :stale_timestamp} =
                HubSpotV3.verify_signature(
                  @body,
                  ctx(

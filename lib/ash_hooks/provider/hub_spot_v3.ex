@@ -20,12 +20,13 @@ defmodule AshHooks.Provider.HubSpotV3 do
   non-default port) must be the public values HubSpot called.
 
   Replay window: the vendor's validation step 1 — reject a timestamp older
-  than five minutes — is enforced BY DEFAULT (300 seconds, one-sided
-  past-only, matching both vendor code samples; a future timestamp is not
-  a replay vector because the signature binds it). An inbound's
-  `replay_window_seconds` overrides the default in either direction.
-  Setting it ABOVE 300 weakens replay protection; the vendor default means
-  a bare declaration is already safe.
+  than five minutes — is enforced BY DEFAULT (300 seconds, TWO-SIDED:
+  `|now - ts| <= window`, so a far-future timestamp fails closed too,
+  symmetric with `AshHooks.Signing.verify`'s tolerance; the vendor's
+  "reject if older" wording is a floor, and stricter is conformant). An
+  inbound's `replay_window_seconds` overrides the default in either
+  direction. Setting it ABOVE 300 weakens replay protection; the vendor
+  default means a bare declaration is already safe.
 
   `parse_event_type/1`: HubSpot delivers a top-level ARRAY of event objects
   (under 100, `eventId` explicitly not guaranteed unique, duplicates
@@ -232,15 +233,17 @@ defmodule AshHooks.Provider.HubSpotV3 do
   end
 
   # The vendor's validation step 1, enforced with the vendor's own default
-  # when the DSL is silent: reject a timestamp OLDER than the window.
-  # One-sided past-only — both vendor samples compare
-  # `currentTime - timestamp > max`; a future timestamp is signature-bound
-  # and enables no replay.
+  # when the DSL is silent: reject a timestamp OLDER than the window. The
+  # check is TWO-SIDED (|now - ts| <= window) — the vendor samples compare
+  # past-only, but "reject if older than 5 minutes" is a floor, not a
+  # ceiling, and a far-future timestamp fails closed here exactly as it does
+  # in AshHooks.Signing.verify (the package's two replay windows stay
+  # symmetric — the same invariant enforced on both construction paths).
   defp check_replay_window(ctx, timestamp_ms) do
     window_seconds = ctx[:replay_window_seconds] || @vendor_default_window_seconds
     now_ms = ctx[:now_ms] || System.system_time(:millisecond)
 
-    if now_ms - timestamp_ms > window_seconds * 1000 do
+    if abs(now_ms - timestamp_ms) > window_seconds * 1000 do
       {:error, :stale_timestamp}
     else
       :ok
