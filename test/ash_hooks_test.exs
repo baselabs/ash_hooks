@@ -64,7 +64,7 @@ defmodule AshHooksTest do
     end
   end
 
-  describe "verifiers" do
+  describe "parse-time validation" do
     test "literal binary secrets are rejected at compile time" do
       assert_raise Spark.Error.DslError, ~r/literal binary/, fn ->
         defmodule BadSecret do

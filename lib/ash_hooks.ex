@@ -43,9 +43,9 @@ defmodule AshHooks do
         doc: """
         The signing-secret source: an `{M, f, a}` callback, `{:app_env, path}`,
         or a function returning `{:ok, secret} | {:error, :no_webhook_secret}`.
-        Literal binaries are rejected at parse time (and again by
-        `AshHooks.Verifiers.NoLiteralSecrets`) — secrets never live in DSL
-        source (ADR-0005).
+        A literal binary is rejected at parse time (ADR-0005). Scope: this net
+        catches the secret passed AS the option value; arguments of an MFA
+        source are the consumer's own code.
         """
       ],
       event_id: [
@@ -112,19 +112,24 @@ defmodule AshHooks do
 
   use Spark.Dsl.Extension,
     sections: [@webhooks],
-    verifiers: [AshHooks.Verifiers.NoLiteralSecrets]
+    verifiers: []
 
   @doc """
-  Schema validator for the `secret` option — accepts only secret SOURCES.
-  Runs at DSL parse time (synchronously), with the verifier as a second net.
+  Schema validator for the `secret` option — accepts only secret SOURCES,
+  rejecting a literal binary at DSL parse time (ADR-0005).
   """
   @spec validate_secret_source(term()) :: {:ok, term()} | {:error, String.t()}
   def validate_secret_source({m, f, a} = source)
       when is_atom(m) and is_atom(f) and is_list(a),
       do: {:ok, source}
 
-  def validate_secret_source({:app_env, path} = source) when is_list(path),
-    do: {:ok, source}
+  def validate_secret_source({:app_env, path} = source) when is_list(path) do
+    if path != [] and Enum.all?(path, &is_atom/1) do
+      {:ok, source}
+    else
+      {:error, "invalid {:app_env, path} — path must be a non-empty list of atoms"}
+    end
+  end
 
   def validate_secret_source(source) when is_function(source, 0),
     do: {:ok, source}
@@ -133,5 +138,5 @@ defmodule AshHooks do
     do: {:error, "must be a secret SOURCE — got a literal binary: secrets live in compiled DSL data (ADR-0005); pass {m, f, a}, {:app_env, path}, or a 0-arity function"}
 
   def validate_secret_source(other),
-    do: {:error, "invalid secret source #{inspect(other)} — pass {m, f, a}, {:app_env, path}, or a 0-arity function"}
+    do: {:error, "invalid secret source #{inspect(other)} — pass {m, f, a}, {:app_env, path} (non-empty atoms), or a 0-arity function"}
 end
