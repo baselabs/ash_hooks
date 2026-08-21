@@ -171,8 +171,6 @@ defmodule AshHooks.Provider.ComplyCubeTest do
   # RESOLVABLE-provider path here (ingress_test's :neverloaded covers the
   # unresolvable path).
 
-  def secret, do: {:ok, "fence-secret"}
-
   # flip to a DIFFERENT byte — replacing with a constant can no-op when the
   # original already equals it (first-byte tamper trap).
   defp flip_first_byte(<<first, rest::binary>>) do
@@ -289,9 +287,10 @@ defmodule AshHooks.Provider.ComplyCubeE2ETest do
     })
   end
 
-  defp rows do
+  defp rows(provider \\ :comply_cube) do
     require Ash.Query
-    Ash.Query.filter(Ledger, provider == :comply_cube) |> Ash.read!(authorize?: false)
+
+    Ash.Query.filter(Ledger, provider == ^provider) |> Ash.read!(authorize?: false)
   end
 
   test "an SDK-scheme delivery verifies and processes through the fenced pipeline" do
@@ -354,6 +353,6 @@ defmodule AshHooks.Provider.ComplyCubeE2ETest do
              })
 
     assert Exception.message(error) =~ "timestamp"
-    assert [] = rows()
+    assert [] = rows(:comply_cube_windowed)
   end
 end
