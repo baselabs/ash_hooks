@@ -73,7 +73,7 @@ if Code.ensure_loaded?(AshSqlite) do
         busy_timeout: 5_000
       )
 
-      {:ok, boot_pid} = BusyRepo.start_link()
+      {:ok, _boot} = BusyRepo.start_link()
 
       BusyRepo.query!("""
       CREATE TABLE #{@table} (
@@ -111,8 +111,11 @@ if Code.ensure_loaded?(AshSqlite) do
 
       {:ok, _} = BusyRepo.start_link()
 
+      # do NOT stop the repo here — stopping an Ecto repo from on_exit races
+      # the suite supervisor's own shutdown (CI: "exited in :sys.terminate").
+      # The process dies with the test VM; removing an open file is fine on
+      # the CI hosts and a best-effort locally.
       on_exit(fn ->
-        :ok = GenServer.stop(BusyRepo)
         File.rm(db_path)
       end)
 
