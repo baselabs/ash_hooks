@@ -18,6 +18,18 @@ if Code.ensure_loaded?(Plug.Conn) do
     `AshHooks.Ingress.ingest/4` — signature schemes sign over the exact wire
     bytes, so any re-encoding (parsed params, JSON roundtrip) would break
     verification.
+
+    The reader is endpoint-wide by default: every parsed request (not only
+    webhook routes) carries a second copy of its body in `conn.private` for
+    the request lifetime, bounded by the parser's `:length`. To scope the
+    memory cost to the webhook routes, pass `:only` path prefixes:
+
+        plug Plug.Parsers,
+          ...,
+          body_reader: {AshHooks.BodyReader, :read_body, [only: ["/webhooks"]]}
+
+    Only requests whose path starts with one of the prefixes are cached;
+    everything else passes through with zero retained bytes.
     """
 
     @raw_body_key :ash_hooks_raw_body
@@ -27,6 +39,14 @@ if Code.ensure_loaded?(Plug.Conn) do
             | {:more, binary(), Plug.Conn.t()}
             | {:error, term()}
     def read_body(conn, opts) do
+      if caching?(conn, opts) do
+        cache_read(conn, opts)
+      else
+        Plug.Conn.read_body(conn, opts)
+      end
+    end
+
+    defp cache_read(conn, opts) do
       case Plug.Conn.read_body(conn, opts) do
         {:ok, chunk, conn} ->
           {:ok, chunk, cache(conn, chunk)}
@@ -38,6 +58,13 @@ if Code.ensure_loaded?(Plug.Conn) do
 
         {:error, _reason} = error ->
           error
+      end
+    end
+
+    defp caching?(conn, opts) do
+      case Keyword.get(opts, :only) do
+        nil -> true
+        prefixes -> Enum.any?(List.wrap(prefixes), &String.starts_with?(conn.request_path, &1))
       end
     end
 

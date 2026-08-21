@@ -41,7 +41,10 @@ mix igniter.install ash_hooks
 
 The installer also patches your endpoint's `Plug.Parsers` with
 `body_reader: {AshHooks.BodyReader, :read_body, []}` — signature schemes sign
-the exact wire bytes, and a router plug cannot recover pre-parser bytes.
+the exact wire bytes, and a router plug cannot recover pre-parser bytes. By
+default every parsed request carries a cached copy of its raw body; pass
+`[only: ["/webhooks"]]` as the reader's third element to scope that memory
+cost to the webhook routes.
 
 ## Usage
 

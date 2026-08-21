@@ -26,6 +26,42 @@ if Code.ensure_loaded?(Plug.Conn) do
       assert conn.private[:ash_hooks_raw_body] == raw
     end
 
+    test "with :only, a matching path prefix caches as usual" do
+      conn = Plug.Test.conn("POST", "/webhooks/complycube", ~s({"id":"evt_1"}))
+
+      assert {:ok, body, conn} =
+               AshHooks.BodyReader.read_body(conn, only: ["/webhooks"])
+
+      assert body == ~s({"id":"evt_1"})
+      assert conn.private[:ash_hooks_raw_body] == ~s({"id":"evt_1"})
+    end
+
+    test "with :only, a non-matching path passes through with NO cache" do
+      conn = Plug.Test.conn("POST", "/api/orders", ~s({"order":1}))
+
+      assert {:ok, body, conn} =
+               AshHooks.BodyReader.read_body(conn, only: ["/webhooks"])
+
+      assert body == ~s({"order":1})
+      refute Map.has_key?(conn.private, :ash_hooks_raw_body)
+    end
+
+    test "with :only, chunked non-matching reads never accumulate anything" do
+      raw = String.duplicate("z", 2_000)
+
+      conn = Plug.Test.conn("POST", "/api/orders", raw)
+
+      conn =
+        Enum.reduce_while(1..100, conn, fn _, conn ->
+          case AshHooks.BodyReader.read_body(conn, only: ["/webhooks"], read_length: 64) do
+            {:more, _chunk, conn} -> {:cont, conn}
+            {:ok, _chunk, conn} -> {:halt, conn}
+          end
+        end)
+
+      refute Map.has_key?(conn.private, :ash_hooks_raw_body)
+    end
+
     test "chunked reads accumulate — the cache holds the FULL body, not the last chunk" do
       raw = String.duplicate("a", 10_000) <> ~s({"id":"evt_chunked"})
 

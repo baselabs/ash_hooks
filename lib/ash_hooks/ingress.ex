@@ -64,6 +64,16 @@ defmodule AshHooks.Ingress do
 
   @lease_default_seconds 30
 
+  # Transient sqlite write-lock contention (pool > 1 consumers on the
+  # best-effort sqlite leg): the fenced ops are idempotent or gate-reevaluated,
+  # so a bounded wall-clock retry converts busy/locked errors into convergence
+  # instead of surfacing them to the caller. Classified NARROWLY by exqlite's
+  # busy/locked error text — no other data layer's errors can match, so e.g.
+  # postgres consumers see zero behavior change.
+  @transient_retry_deadline_ms 2_000
+  @transient_retry_spacing_ms 100
+  @transient_retry_jitter_ms 50
+
   # ────────────────────────── sync pipeline ──────────────────────────
 
   @doc """
@@ -98,10 +108,12 @@ defmodule AshHooks.Ingress do
       }
       |> Map.merge(env.scope)
 
-    case Ash.create(resource, input, action: :ingest, authorize?: false) do
-      {:ok, delivery} -> {:ok, delivery.id == id, delivery}
-      {:error, error} -> {:error, error}
-    end
+    with_transient_retry(fn ->
+      case Ash.create(resource, input, action: :ingest, authorize?: false) do
+        {:ok, delivery} -> {:ok, delivery.id == id, delivery}
+        {:error, error} -> {:error, error}
+      end
+    end)
   end
 
   @doc """
@@ -117,17 +129,20 @@ defmodule AshHooks.Ingress do
     lease_expires_at = DateTime.add(now, lease_seconds(resource), :second)
 
     result =
-      resource
-      |> Ash.Query.filter(
-        id == ^delivery_id and
-          (status == :received or status == :failed_retryable or
-             (status == :claimed and lease_expires_at < ^now))
-      )
-      |> Ash.bulk_update(:claim, %{lease_expires_at: lease_expires_at},
-        authorize?: false,
-        return_records?: true,
-        strategy: [:atomic]
-      )
+      with_transient_retry(fn ->
+        resource
+        |> Ash.Query.filter(
+          id == ^delivery_id and
+            (status == :received or status == :failed_retryable or
+               (status == :claimed and lease_expires_at < ^now))
+        )
+        |> Ash.bulk_update(:claim, %{lease_expires_at: lease_expires_at},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic]
+        )
+      end)
 
     case result do
       %Ash.BulkResult{status: :success, records: [delivery]} ->
@@ -317,16 +332,19 @@ defmodule AshHooks.Ingress do
 
   defp gated_update(resource, delivery_id, token, action, input) do
     result =
-      resource
-      |> Ash.Query.filter(
-        id == ^delivery_id and fencing_token == ^token and status == :claimed and
-          lease_expires_at > ^now()
-      )
-      |> Ash.bulk_update(action, input,
-        authorize?: false,
-        return_records?: true,
-        strategy: [:atomic]
-      )
+      with_transient_retry(fn ->
+        resource
+        |> Ash.Query.filter(
+          id == ^delivery_id and fencing_token == ^token and status == :claimed and
+            lease_expires_at > ^now()
+        )
+        |> Ash.bulk_update(action, input,
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic]
+        )
+      end)
 
     case result do
       %Ash.BulkResult{status: :success, records: [_]} -> :ok
@@ -338,6 +356,52 @@ defmodule AshHooks.Ingress do
 
   defp result(true), do: :created
   defp result(false), do: :duplicate
+
+  # Bounded wall-clock retry for transient sqlite write-lock contention:
+  # while the result's error classifies as exqlite busy/locked and the
+  # deadline holds, sleep a jittered spacing and re-run. Every other result —
+  # ok, :lease_held, :stale_token, any non-busy error — returns immediately;
+  # the classifier is the whole safety story.
+  defp with_transient_retry(fun),
+    do: with_transient_retry(fun, System.monotonic_time(:millisecond))
+
+  defp with_transient_retry(fun, started_at) do
+    result = fun.()
+
+    if transient_retryable?(result) and
+         System.monotonic_time(:millisecond) - started_at < @transient_retry_deadline_ms do
+      Process.sleep(@transient_retry_spacing_ms + :rand.uniform(@transient_retry_jitter_ms))
+      with_transient_retry(fun, started_at)
+    else
+      result
+    end
+  end
+
+  defp transient_retryable?({:error, error}), do: transient_sqlite_contention?(error)
+
+  defp transient_retryable?(%Ash.BulkResult{status: :error, errors: [_ | _] = errors}),
+    do: Enum.all?(errors, &transient_sqlite_contention?/1)
+
+  defp transient_retryable?(_other), do: false
+
+  # exqlite surfaces busy/locked as a string-wrapped
+  # Ash.Error.Unknown.UnknownError (probe 2026-08-21); match its text
+  # narrowly so only sqlite contention ever retries.
+  defp transient_sqlite_contention?(%Ash.Error.Unknown{} = error) do
+    Enum.any?(error.errors, &transient_sqlite_contention?/1)
+  end
+
+  defp transient_sqlite_contention?(%Ash.Error.Unknown.UnknownError{error: inner}) do
+    inner = to_string(inner)
+    String.contains?(inner, "Exqlite.Error") and contentiously_busy?(inner)
+  end
+
+  defp transient_sqlite_contention?(_other), do: false
+
+  defp contentiously_busy?(inner) do
+    down = String.downcase(inner)
+    String.contains?(down, "database busy") or String.contains?(down, "database is locked")
+  end
 
   # resolve/4: provider + inbound entity + secret + verification + decode +
   # digest + external id + parsed type. Nothing here writes to the ledger.
