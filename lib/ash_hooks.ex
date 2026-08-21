@@ -38,12 +38,13 @@ defmodule AshHooks do
         doc: "The provider name (e.g. `:complycube`)."
       ],
       secret: [
-        type: :any,
+        type: {:custom, AshHooks, :validate_secret_source, []},
         required: true,
         doc: """
         The signing-secret source: an `{M, f, a}` callback, `{:app_env, path}`,
         or a function returning `{:ok, secret} | {:error, :no_webhook_secret}`.
-        Literal binaries are rejected by a verifier — secrets never live in DSL
+        Literal binaries are rejected at parse time (and again by
+        `AshHooks.Verifiers.NoLiteralSecrets`) — secrets never live in DSL
         source (ADR-0005).
         """
       ],
@@ -61,8 +62,10 @@ defmodule AshHooks do
         doc: """
         Replay-protection window for providers whose scheme carries a
         trustworthy timestamp (e.g. HubSpot v3). Providers without timestamps
-        (e.g. ComplyCube) MUST leave this unset — a verifier rejects a window
-        configured for a provider with no timestamp source.
+        (e.g. ComplyCube) MUST leave this unset — the provider registry
+        verifier rejects a window whose provider declares no timestamp source
+        (lands with the provider registry; the inbound slice's acceptance
+        cites this rule).
         """
       ]
     ]
@@ -109,5 +112,26 @@ defmodule AshHooks do
 
   use Spark.Dsl.Extension,
     sections: [@webhooks],
-    verifiers: []
+    verifiers: [AshHooks.Verifiers.NoLiteralSecrets]
+
+  @doc """
+  Schema validator for the `secret` option — accepts only secret SOURCES.
+  Runs at DSL parse time (synchronously), with the verifier as a second net.
+  """
+  @spec validate_secret_source(term()) :: {:ok, term()} | {:error, String.t()}
+  def validate_secret_source({m, f, a} = source)
+      when is_atom(m) and is_atom(f) and is_list(a),
+      do: {:ok, source}
+
+  def validate_secret_source({:app_env, path} = source) when is_list(path),
+    do: {:ok, source}
+
+  def validate_secret_source(source) when is_function(source, 0),
+    do: {:ok, source}
+
+  def validate_secret_source(source) when is_binary(source),
+    do: {:error, "must be a secret SOURCE — got a literal binary: secrets live in compiled DSL data (ADR-0005); pass {m, f, a}, {:app_env, path}, or a 0-arity function"}
+
+  def validate_secret_source(other),
+    do: {:error, "invalid secret source #{inspect(other)} — pass {m, f, a}, {:app_env, path}, or a 0-arity function"}
 end

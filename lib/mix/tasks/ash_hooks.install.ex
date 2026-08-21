@@ -39,7 +39,7 @@ else
 
     @impl Mix.Task
     def run(_argv) do
-      Mix.shell().error("""
+      Mix.raise("""
       mix ash_hooks.install requires the :igniter package.
 
       Add to mix.exs:

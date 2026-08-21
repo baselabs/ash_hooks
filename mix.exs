@@ -82,7 +82,6 @@ defmodule AshHooks.MixProject do
 
   defp aliases do
     [
-      sobelow: ["sobelow --skip"],
       credo: ["credo --strict"]
     ]
   end

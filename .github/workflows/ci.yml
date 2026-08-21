@@ -39,7 +39,6 @@ jobs:
             deps
             _build
           key: mix-${{ matrix.elixir }}-${{ matrix.otp }}-noopt-${{ matrix.no_optional }}-${{ hashFiles('mix.lock') }}
-          restore-keys: mix-${{ matrix.elixir }}-${{ matrix.otp }}-
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
       - run: mix format --check-formatted

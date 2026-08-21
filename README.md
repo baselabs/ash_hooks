@@ -6,6 +6,14 @@ Webhooks for [Ash Framework](https://ash-hq.org) — **inbound** (receive, verif
 per-provider signatures, deduplicate, emit domain events) and **outbound**
 (sign, deliver, retry, track).
 
+> **Status: scaffold.** The DSL sections, install task, and CI compile-matrix
+> (including the Oban/plug-free proof, ADR-0004) have landed. Signature
+> verification, the dedup ledger, Standard Webhooks signing, and delivery
+> land in the upcoming slices tracked by
+> [#1](https://github.com/baselabs/ash_hooks/issues/1) — until those close,
+> this package declares webhook configuration only and performs no
+> verification, signing, or delivery.
+
 Inbound and outbound are independently consumable: inbound-only applications
 pull no queue infrastructure.
 
@@ -43,11 +51,11 @@ webhooks do
 end
 ```
 
-Outbound deliveries are signed per the [Standard Webhooks](https://www.standardwebhooks.com)
+Outbound deliveries will be signed per the [Standard Webhooks](https://www.standardwebhooks.com)
 specification (`webhook-id` / `webhook-timestamp` / `webhook-signature`, `v1`
 HMAC-SHA256 and `v1a` ed25519), so receivers verify with any conformant
-library. A `:dual` mode additionally emits a legacy envelope during receiver
-migration.
+library; a `:dual` mode additionally emits a legacy envelope during receiver
+migration. See the status note above — signing lands with the outbound slices.
 
 ## Design records
 

@@ -8,18 +8,18 @@ defmodule AshHooks.Info do
   alias Spark.Dsl.Extension
 
   @doc "All webhook entities (inbound + outbound) declared on `resource`."
-  @spec webhooks(Ash.Resource.t()) :: [struct()]
+  @spec webhooks(Ash.Resource.t()) :: [AshHooks.Inbound.t() | AshHooks.Outbound.t()]
   def webhooks(resource), do: Extension.get_entities(resource, [:webhooks])
 
   @doc "The inbound declaration for `provider`, if any."
-  @spec inbound(Ash.Resource.t(), atom()) :: struct() | nil
+  @spec inbound(Ash.Resource.t(), atom()) :: AshHooks.Inbound.t() | nil
   def inbound(resource, provider) do
-    Enum.find(webhooks(resource), &(&1.name == provider))
+    webhooks(resource) |> Enum.find(&is_struct(&1, AshHooks.Inbound) and &1.name == provider)
   end
 
   @doc "The outbound declaration for `event`, if any."
-  @spec outbound(Ash.Resource.t(), atom()) :: struct() | nil
+  @spec outbound(Ash.Resource.t(), atom()) :: AshHooks.Outbound.t() | nil
   def outbound(resource, event) do
-    Enum.find(webhooks(resource), &(&1.name == event))
+    webhooks(resource) |> Enum.find(&is_struct(&1, AshHooks.Outbound) and &1.name == event)
   end
 end

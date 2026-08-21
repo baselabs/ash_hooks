@@ -63,4 +63,57 @@ defmodule AshHooksTest do
       assert [%{replay_window_seconds: 300}] = AshHooks.Info.webhooks(Windowed)
     end
   end
+
+  describe "verifiers" do
+    test "literal binary secrets are rejected at compile time" do
+      assert_raise Spark.Error.DslError, ~r/literal binary/, fn ->
+        defmodule BadSecret do
+          use Ash.Resource,
+            domain: nil,
+            data_layer: Ash.DataLayer.Simple,
+            extensions: [AshHooks]
+
+          attributes do
+            uuid_primary_key :id
+          end
+
+          webhooks do
+            inbound :mock do
+              secret "super-secret-bytes"
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe "Info accessors" do
+    test "inbound/outbound are type-disambiguated on name collision" do
+      defmodule Collide do
+        use Ash.Resource,
+          domain: nil,
+          data_layer: Ash.DataLayer.Simple,
+          extensions: [AshHooks]
+
+        attributes do
+          uuid_primary_key :id
+        end
+
+        webhooks do
+          inbound :thing do
+            secret {AshHooksTest, :secret, []}
+          end
+
+          outbound :thing do
+            signing_mode :legacy
+          end
+        end
+      end
+
+      assert %AshHooks.Inbound{} = AshHooks.Info.inbound(Collide, :thing)
+      assert %AshHooks.Outbound{signing_mode: :legacy} = AshHooks.Info.outbound(Collide, :thing)
+      assert AshHooks.Info.inbound(Collide, :nonexistent) == nil
+      assert AshHooks.Info.outbound(Collide, :nonexistent) == nil
+    end
+  end
 end
