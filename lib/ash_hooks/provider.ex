@@ -87,7 +87,14 @@ defmodule AshHooks.Provider do
 
   @optional_callbacks webhook_signing_secret: 1, webhook_secret_scope: 0, timestamp_header: 0
 
-  @callback parse_event_type(payload :: map()) :: {:ok, atom()} | {:error, parse_error()}
+  @doc """
+  Parses the event type from the DECODED request body — a map for
+  object-shaped vendors, a list for batch vendors (HubSpot delivers
+  top-level arrays). Providers receiving a shape their vendor never sends
+  fail closed through their catch-all clause (`{:error, :malformed_payload}`).
+  """
+  @callback parse_event_type(payload :: map() | list()) ::
+              {:ok, atom()} | {:error, parse_error()}
 
   @callback handle_event(event_type :: atom(), payload :: map()) ::
               {:ok, typed_event :: struct()}

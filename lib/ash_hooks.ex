@@ -15,6 +15,12 @@ defmodule AshHooks do
           event_id &__MODULE__.extract_event_id/1
         end
 
+        # convention-resolves to AshHooks.Provider.HubSpotV3 — the
+        # vendor-default 300s replay window applies; override it either way
+        inbound :hub_spot_v3 do
+          secret {:app_env, [:my_app, :hubspot_client_secret]}
+        end
+
         outbound :order_paid do
           signing_mode :dual
         end

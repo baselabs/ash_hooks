@@ -59,7 +59,7 @@ defmodule AshHooks.InboundDeliveryTest do
       assert attrs.external_event_type.type == Ash.Type.String
       assert attrs.external_event_type.allow_nil? == true
 
-      assert attrs.payload.type == Ash.Type.Map
+      assert attrs.payload.type == AshHooks.InboundDelivery.Payload
       assert attrs.payload.allow_nil? == false
 
       assert attrs.payload_digest.type == Ash.Type.String

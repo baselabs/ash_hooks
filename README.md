@@ -15,11 +15,13 @@ per-provider signatures, deduplicate, emit domain events) and **outbound**
 > signing/verification with byte-identical legacy `:dual` mode, the inbound
 > sync pipeline — raw-body verify → unique-ingest fenced ledger
 > (`AshHooks.InboundDelivery` extension + `AshHooks.Ingress`) with claim/lease
-> fencing, a reaper, and fail-closed DSL verifiers — and the first vendor
-> verifier, `AshHooks.Provider.ComplyCube` (raw-body HMAC-SHA256 over the
-> `ComplyCube-Signature` header, SDK-vector conformance). Upcoming slices: the
-> HubSpot v3 verifier, the async (202) delivery runtime, outbound delivery
-> tracking, and telemetry — tracked by
+> fencing, a reaper, and fail-closed DSL verifiers — and the vendor
+> verifiers `AshHooks.Provider.ComplyCube` (raw-body HMAC-SHA256 over the
+> `ComplyCube-Signature` header, SDK-vector conformance) and
+> `AshHooks.Provider.HubSpotV3` (composite `method + requestUri + body +
+> timestamp` HMAC over a separate millisecond timestamp header, batch
+> array bodies, docs-vector conformance). Upcoming slices: the async (202)
+> delivery runtime, outbound delivery tracking, and telemetry — tracked by
 > [#1](https://github.com/baselabs/ash_hooks/issues/1).
 
 Inbound and outbound are independently consumable: inbound-only applications
@@ -69,6 +71,13 @@ webhooks do
     secret {:app_env, [:my_app, :complycube_secret]}
   end
 
+  # convention-resolves to AshHooks.Provider.HubSpotV3 — the vendor's
+  # five-minute replay window applies by default; replay_window_seconds
+  # overrides it in either direction
+  inbound :hub_spot_v3 do
+    secret {:app_env, [:my_app, :hubspot_client_secret]}
+  end
+
   outbound :order_paid do
     signing_mode :standard
   end
@@ -85,6 +94,26 @@ AshHooks.Ingress.ingest(Ledger, :comply_cube, conn.private[:ash_hooks_raw_body],
   scope: %{account_id: connection.account_id}
 })
 ```
+
+HubSpot's v3 scheme signs the method and the full request URI alongside the
+body, so its controller passes both (reconstruct the public URI behind any
+TLS-terminating proxy — HubSpot signs the host it called):
+
+```elixir
+AshHooks.Ingress.ingest(Ledger, :hub_spot_v3, conn.private[:ash_hooks_raw_body], %{
+  signature: get_req_header(conn, "x-hubspot-signature-v3") |> List.first(),
+  headers: Map.new(conn.req_headers),
+  method: conn.method,
+  request_uri: "https://" <> conn.host <> conn.request_path <> conn.query_string
+})
+```
+
+HubSpot delivers batches — a top-level JSON array of event objects. The
+ledger stores the array verbatim; a homogeneous batch parses to its
+subscription type (`contact.creation` → `:contact_creation`), a mixed batch
+to `:mixed` (fan out per event in your handler), and an undocumented
+subscription type fails closed into the ledger as `failed_permanent`
+(`unknown_event_type`) — recorded and auditable.
 
 The machine persists the raw payload before handling, deduplicates on
 storage-level uniqueness (exactly one `:created` per delivery, concurrent or

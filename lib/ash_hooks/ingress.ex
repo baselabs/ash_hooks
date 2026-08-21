@@ -445,12 +445,16 @@ defmodule AshHooks.Ingress do
     end
   end
 
+  # Batch vendors (HubSpot) deliver top-level JSON ARRAYS; providers that
+  # only accept maps fail lists closed through their own catch-all clauses
+  # ({:error, :malformed_payload}) — the shape decision belongs to the
+  # provider, not the pipeline.
   defp decode_and_parse(provider, raw_body) do
     case Jason.decode(raw_body) do
-      {:ok, %{} = payload} ->
+      {:ok, payload} when is_map(payload) or is_list(payload) ->
         {payload, provider.parse_event_type(payload)}
 
-      {:ok, _non_map} ->
+      {:ok, _scalar} ->
         {%{}, {:error, :malformed_payload}}
 
       {:error, _} ->

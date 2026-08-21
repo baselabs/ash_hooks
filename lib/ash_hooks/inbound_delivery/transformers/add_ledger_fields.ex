@@ -114,7 +114,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
       {:provider, :atom, [allow_nil?: false]},
       {:external_event_id, :string, [allow_nil?: false, constraints: [max_length: 255]]},
       {:external_event_type, :string, []},
-      {:payload, :map, [allow_nil?: false]},
+      {:payload, AshHooks.InboundDelivery.Payload, [allow_nil?: false]},
       {:payload_digest, :string, [allow_nil?: false]},
       {:status, :atom,
        [allow_nil?: false, default: :received, constraints: [one_of: InboundDelivery.statuses()]]},
