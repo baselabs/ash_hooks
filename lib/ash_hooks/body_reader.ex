@@ -34,11 +34,22 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     @raw_body_key :ash_hooks_raw_body
 
-    @spec read_body(Plug.Conn.t(), keyword()) ::
+    @doc """
+    `body_reader` entry point. `Plug.Parsers` invokes the configured MFA as
+    `apply(mod, fun, [conn, opts | extra_args])` — extras arrive as a THIRD
+    positional argument, so the arity-3 clause is the one the parser calls;
+    `opts` and `extra` merge.
+    """
+    @spec read_body(Plug.Conn.t(), keyword(), keyword()) ::
             {:ok, binary(), Plug.Conn.t()}
             | {:more, binary(), Plug.Conn.t()}
             | {:error, term()}
-    def read_body(conn, opts) do
+    def read_body(conn, opts, extra \\ []) do
+      # the parser spreads the MFA's arg list positionally, so ONE keyword
+      # option arrives as a bare tuple ({:only, [...]}) and a nested list
+      # ([[only: ...]]) as a list — List.wrap normalizes both
+      opts = Keyword.merge(opts, List.wrap(extra))
+
       if caching?(conn, opts) do
         cache_read(conn, opts)
       else
@@ -61,11 +72,26 @@ if Code.ensure_loaded?(Plug.Conn) do
       end
     end
 
+    # Matching keys on the ROUTER-COLLAPSED path (`conn.path_info`), not the
+    # raw request path: a routable non-canonical path like `//webhooks/x`
+    # reaches the webhook action with path_info ["webhooks", "x"], and the
+    # raw-path form would silently skip caching (the delivery then fails
+    # closed as "no raw body"). `only: []` behaves as unset (cache
+    # everything) rather than disabling caching everywhere.
     defp caching?(conn, opts) do
       case Keyword.get(opts, :only) do
-        nil -> true
-        prefixes -> Enum.any?(List.wrap(prefixes), &String.starts_with?(conn.request_path, &1))
+        prefixes when prefixes in [nil, []] -> true
+        prefixes -> prefix_match?(canonical_path(conn), List.wrap(prefixes))
       end
+    end
+
+    defp canonical_path(conn), do: "/" <> Enum.join(conn.path_info, "/")
+
+    defp prefix_match?(canonical, prefixes) do
+      Enum.any?(prefixes, fn prefix ->
+        prefix = if String.starts_with?(prefix, "/"), do: prefix, else: "/" <> prefix
+        String.starts_with?(canonical, prefix)
+      end)
     end
 
     defp cache(conn, chunk) do

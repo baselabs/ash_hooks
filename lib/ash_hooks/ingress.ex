@@ -125,16 +125,19 @@ defmodule AshHooks.Ingress do
   @spec claim_delivery(module(), term()) ::
           {:ok, non_neg_integer(), struct()} | {:error, :lease_held | term()}
   def claim_delivery(resource, delivery_id) do
-    now = now()
-    lease_expires_at = DateTime.add(now, lease_seconds(resource), :second)
-
+    # `now` and the lease are recomputed on EVERY attempt: a retry that
+    # spends contention time sleeping must not grant a lease that is
+    # shorter than configured — or already expired (cross-vendor finding).
     result =
       with_transient_retry(fn ->
+        attempt_now = now()
+        lease_expires_at = DateTime.add(attempt_now, lease_seconds(resource), :second)
+
         resource
         |> Ash.Query.filter(
           id == ^delivery_id and
             (status == :received or status == :failed_retryable or
-               (status == :claimed and lease_expires_at < ^now))
+               (status == :claimed and lease_expires_at < ^attempt_now))
         )
         |> Ash.bulk_update(:claim, %{lease_expires_at: lease_expires_at},
           authorize?: false,
@@ -208,9 +211,11 @@ defmodule AshHooks.Ingress do
     now = now()
 
     expired =
-      resource
-      |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now)
-      |> Ash.read!(authorize?: false)
+      with_transient_retry(fn ->
+        resource
+        |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now)
+        |> Ash.read!(authorize?: false)
+      end)
 
     Enum.reduce(expired, {:ok, 0}, fn row, {:ok, count} ->
       case safe_redrive(resource, row) do
@@ -327,7 +332,12 @@ defmodule AshHooks.Ingress do
   end
 
   defp reload(resource, delivery_id) do
-    Ash.get!(resource, delivery_id, authorize?: false)
+    # the reload after a successful mark must not crash the caller for a
+    # delivered-and-processed event under read contention (consumer journal
+    # modes can block readers on writers)
+    with_transient_retry(fn ->
+      Ash.get!(resource, delivery_id, authorize?: false)
+    end)
   end
 
   defp gated_update(resource, delivery_id, token, action, input) do

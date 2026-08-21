@@ -152,7 +152,7 @@ if Code.ensure_loaded?(AshSqlite) do
               receive do
                 :release -> :ok
               after
-                400 -> :ok
+                900 -> :ok
               end
             end)
           after
@@ -196,7 +196,7 @@ if Code.ensure_loaded?(AshSqlite) do
               receive do
                 :release -> :ok
               after
-                400 -> :ok
+                900 -> :ok
               end
             end)
           after
@@ -215,6 +215,48 @@ if Code.ensure_loaded?(AshSqlite) do
       assert {:ok, token, claimed} = Ingress.claim_delivery(Ledger, row.id)
       assert token == 1
       assert claimed.status == :claimed
+
+      send(holder, :release)
+      assert_receive :released, 5_000
+    end
+
+    test "when contention outlasts the deadline the error still surfaces (bounded, retry engaged)" do
+      assert {:ok, :created, _} = Ingress.ingest(Ledger, :mockish, @raw, ctx())
+
+      parent = self()
+
+      # hold past the 2s retry deadline
+      holder =
+        spawn(fn ->
+          try do
+            BusyRepo.transaction(fn ->
+              BusyRepo.query!("UPDATE #{@table} SET attempts = attempts")
+              send(parent, :locked)
+
+              receive do
+                :release -> :ok
+              after
+                3_500 -> :ok
+              end
+            end)
+          after
+            send(parent, :released)
+          end
+        end)
+
+      receive do
+        :locked -> :ok
+      after
+        5_000 -> flunk("lock holder never acquired the write lock")
+      end
+
+      {micros, result} = :timer.tc(fn -> Ingress.ingest(Ledger, :mockish, @raw, ctx()) end)
+
+      assert {:error, %Ash.Error.Unknown{}} = result
+
+      # non-vacuity: without the retry the error returns in ~busy_timeout
+      # (50ms); with it, only at the 2s deadline. Generous floor.
+      assert micros > 1_000_000
 
       send(holder, :release)
       assert_receive :released, 5_000

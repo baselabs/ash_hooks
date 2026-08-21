@@ -26,6 +26,68 @@ if Code.ensure_loaded?(Plug.Conn) do
       assert conn.private[:ash_hooks_raw_body] == raw
     end
 
+    test ":only wiring works through real Plug.Parsers (extras arrive positionally)" do
+      # exactly the documented wiring — Plug.Parsers applies the MFA as
+      # apply(mod, fun, [conn, opts | args]), so this is the arity the
+      # parser really calls
+      parser =
+        Plug.Parsers.init(
+          parsers: [:json],
+          pass: ["*/*"],
+          json_decoder: Jason,
+          body_reader: {AshHooks.BodyReader, :read_body, [only: ["/webhooks"]]}
+        )
+
+      conn =
+        Plug.Test.conn("POST", "/webhooks/complycube", ~s({"id":"evt_1"}))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+
+      conn = Plug.Parsers.call(conn, parser)
+
+      assert conn.private[:ash_hooks_raw_body] == ~s({"id":"evt_1"})
+      assert conn.body_params == %{"id" => "evt_1"}
+    end
+
+    test ":only wiring through real Plug.Parsers skips non-matching paths" do
+      parser =
+        Plug.Parsers.init(
+          parsers: [:json],
+          pass: ["*/*"],
+          json_decoder: Jason,
+          body_reader: {AshHooks.BodyReader, :read_body, [only: ["/webhooks"]]}
+        )
+
+      conn =
+        Plug.Test.conn("POST", "/api/orders", ~s({"order":1}))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+
+      conn = Plug.Parsers.call(conn, parser)
+
+      assert conn.body_params == %{"order" => 1}
+      refute Map.has_key?(conn.private, :ash_hooks_raw_body)
+    end
+
+    test "a non-canonical routable path (//webhooks/x) still caches" do
+      # Plug.Test normalizes the path on conn build, so construct the
+      # real-adapter shape directly: raw request_path retains the doubled
+      # slash while path_info carries the collapsed router segments
+      conn =
+        Plug.Test.conn("POST", "/webhooks/x", ~s({"id":"evt_1"}))
+        |> struct!(request_path: "//webhooks/x")
+
+      assert {:ok, _body, conn} = AshHooks.BodyReader.read_body(conn, only: ["/webhooks"])
+
+      assert conn.private[:ash_hooks_raw_body] == ~s({"id":"evt_1"})
+    end
+
+    test "only: [] behaves as unset (cache everything), never cache-nowhere" do
+      conn = Plug.Test.conn("POST", "/api/anything", ~s({"x":1}))
+
+      assert {:ok, _body, conn} = AshHooks.BodyReader.read_body(conn, only: [])
+
+      assert conn.private[:ash_hooks_raw_body] == ~s({"x":1})
+    end
+
     test "with :only, a matching path prefix caches as usual" do
       conn = Plug.Test.conn("POST", "/webhooks/complycube", ~s({"id":"evt_1"}))
 
