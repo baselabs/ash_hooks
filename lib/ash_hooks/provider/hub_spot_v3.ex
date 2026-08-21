@@ -8,11 +8,16 @@ defmodule AshHooks.Provider.HubSpotV3 do
   vendor docs first-hand 2026-08-21; the acceptance vector is the docs
   page's own Java example, quoted in
   `test/ash_hooks/provider/hub_spot_v3_test.exs`). Sign the raw body bytes
-  exactly as received and reconstruct the signed URI caller-side as
-  `"https://" <> conn.host <> conn.request_path <> conn.query_string` — the
-  provider then decodes the vendor's documented percent-encodings via
-  `decode_request_uri/1`. Behind a TLS-terminating proxy the host must be
-  the public value HubSpot called.
+  exactly as received and reconstruct the signed URI caller-side — Plug's
+  `conn.query_string` excludes the `?`, and `conn.host` excludes a
+  non-default port, so join explicitly:
+
+      query = if conn.query_string == "", do: "", else: "?" <> conn.query_string
+      "https://" <> conn.host <> conn.request_path <> query
+
+  The provider then decodes the vendor's documented percent-encodings via
+  `decode_request_uri/1`. Behind a TLS-terminating proxy the host (and any
+  non-default port) must be the public values HubSpot called.
 
   Replay window: the vendor's validation step 1 — reject a timestamp older
   than five minutes — is enforced BY DEFAULT (300 seconds, one-sided
@@ -129,13 +134,14 @@ defmodule AshHooks.Provider.HubSpotV3 do
 
   def verify_signature(raw_body, ctx, secret)
       when is_binary(raw_body) and is_map(ctx) and is_binary(secret) do
-    with {:ok, timestamp_ms} <- fetch_timestamp(ctx),
+    with {:ok, signature} <- fetch_signature(ctx),
+         {:ok, timestamp_ms} <- fetch_timestamp(ctx),
          :ok <- check_replay_window(ctx, timestamp_ms),
          {:ok, source} <- canonical_string(raw_body, ctx, timestamp_ms) do
       expected = Base.encode64(:crypto.mac(:hmac, :sha256, secret, source))
 
-      if byte_size(expected) == byte_size(ctx.signature) and
-           :crypto.hash_equals(expected, ctx.signature) do
+      if byte_size(expected) == byte_size(signature) and
+           :crypto.hash_equals(expected, signature) do
         :ok
       else
         {:error, :invalid_signature}
@@ -184,6 +190,15 @@ defmodule AshHooks.Provider.HubSpotV3 do
       |> String.replace(String.downcase(encoded), decoded)
     end)
   end
+
+  # The signature header value arrives in ctx — a missing key or non-binary
+  # value is caller-shaped input that fails closed as a tuple, never a
+  # KeyError/byte_size crash on a direct provider call (the ingress
+  # pre-guards this for pipeline traffic).
+  defp fetch_signature(%{signature: signature}) when is_binary(signature),
+    do: {:ok, signature}
+
+  defp fetch_signature(_ctx), do: {:error, :invalid_signature}
 
   # Header names are case-insensitive: scan rather than fetch a lowercased
   # key, so a caller supplying Plug-raw or mixed-case headers still

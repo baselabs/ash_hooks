@@ -222,6 +222,20 @@ defmodule AshHooks.Provider.HubSpotV3Test do
                  )
       end
     end
+
+    test "a ctx missing :signature or carrying a non-binary value fails closed as a tuple, never a crash" do
+      for broken <- [
+            %{
+              headers: %{"x-hubspot-request-timestamp" => @ts},
+              method: "POST",
+              request_uri: @uri
+            },
+            ctx(signature: nil, request_uri: @uri, now_ms: @vector_now_ms),
+            ctx(signature: ~c"gbj1", request_uri: @uri, now_ms: @vector_now_ms)
+          ] do
+        assert {:error, :invalid_signature} = HubSpotV3.verify_signature(@body, broken, @secret)
+      end
+    end
   end
 
   describe "verify_signature/3 — the timestamp header" do

@@ -25,7 +25,7 @@ defmodule AshHooks.InboundDelivery.Payload do
   def cast_input(value, _constraints) when is_binary(value) do
     case Jason.decode(value) do
       {:ok, decoded} -> cast_input(decoded, [])
-      :error -> :error
+      _decode_error -> :error
     end
   end
 

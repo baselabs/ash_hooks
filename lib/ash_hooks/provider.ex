@@ -96,7 +96,7 @@ defmodule AshHooks.Provider do
   @callback parse_event_type(payload :: map() | list()) ::
               {:ok, atom()} | {:error, parse_error()}
 
-  @callback handle_event(event_type :: atom(), payload :: map()) ::
+  @callback handle_event(event_type :: atom(), payload :: map() | list()) ::
               {:ok, typed_event :: struct()}
               | {:error, :retry | :permanent, term()}
 

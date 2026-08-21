@@ -96,15 +96,19 @@ AshHooks.Ingress.ingest(Ledger, :comply_cube, conn.private[:ash_hooks_raw_body],
 ```
 
 HubSpot's v3 scheme signs the method and the full request URI alongside the
-body, so its controller passes both (reconstruct the public URI behind any
-TLS-terminating proxy — HubSpot signs the host it called):
+body, so its controller passes both. Reconstruct the public URI — Plug's
+`conn.query_string` excludes the `?` and `conn.host` excludes a non-default
+port, so join explicitly (and behind any TLS-terminating proxy use the host
+HubSpot actually called):
 
 ```elixir
+query = if conn.query_string == "", do: "", else: "?" <> conn.query_string
+
 AshHooks.Ingress.ingest(Ledger, :hub_spot_v3, conn.private[:ash_hooks_raw_body], %{
   signature: get_req_header(conn, "x-hubspot-signature-v3") |> List.first(),
   headers: Map.new(conn.req_headers),
   method: conn.method,
-  request_uri: "https://" <> conn.host <> conn.request_path <> conn.query_string
+  request_uri: "https://" <> conn.host <> conn.request_path <> query
 })
 ```
 

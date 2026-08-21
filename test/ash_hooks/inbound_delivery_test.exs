@@ -44,6 +44,8 @@ defmodule AshHooks.InboundDeliveryTest do
   alias Ash.Resource.Info
   alias Spark.Dsl.Extension
 
+  alias AshHooks.InboundDelivery.Payload
+
   alias AshHooks.InboundDeliveryTest.Ledger
 
   describe "injected ledger attributes" do
@@ -94,6 +96,34 @@ defmodule AshHooks.InboundDeliveryTest do
       pk = Ledger |> Info.primary_key() |> List.first()
       assert pk == :id
       assert Info.attribute(Ledger, :id).writable? == true
+    end
+  end
+
+  describe "payload type (map | list — batch vendors deliver arrays)" do
+    test "casts maps and lists through input, native, and stored boundaries" do
+      map = %{"type" => "check.completed"}
+      list = [%{"subscriptionType" => "contact.creation"}]
+
+      for value <- [map, list] do
+        assert {:ok, ^value} = Payload.cast_input(value, [])
+        assert {:ok, ^value} = Payload.dump_to_native(value, [])
+        assert {:ok, ^value} = Payload.cast_stored(value, [])
+      end
+    end
+
+    test "casts a JSON string body (the raw wire) — objects and arrays" do
+      assert {:ok, [%{"a" => 1}]} = Payload.cast_input(~s([{"a":1}]), [])
+      assert {:ok, %{"a" => 1}} = Payload.cast_input(~s({"a":1}), [])
+    end
+
+    test "a NON-JSON string is a cast error, never a crash (Jason returns a tagged error tuple)" do
+      assert :error = Payload.cast_input("not json", [])
+    end
+
+    test "scalars and nil follow :map semantics" do
+      assert {:ok, nil} = Payload.cast_input(nil, [])
+      assert :error = Payload.cast_input(42, [])
+      assert :error = Payload.cast_input("plain string", [])
     end
   end
 
