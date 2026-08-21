@@ -156,9 +156,9 @@ defmodule AshHooks.Signing do
 
   @doc """
   The three Standard Webhooks headers. `:whsec` and/or `:whsk` select the
-  signature schemes (both day one); `:previous_whsec` appends the rotated-out
-  secret's signature (space-delimited, per the spec's zero-downtime
-  rotation).
+  signature schemes (both day one); `:previous_whsec` / `:previous_whsk`
+  append the rotated-out key's signature (space-delimited, per the spec's
+  zero-downtime rotation — symmetric and asymmetric alike).
   """
   @spec headers(String.t(), integer(), binary(), keyword()) :: %{String.t() => String.t()}
   def headers(msg_id, unix_ts, payload, opts \\ []) do
@@ -167,9 +167,11 @@ defmodule AshHooks.Signing do
       |> append_signature(&sign/4, [msg_id, unix_ts, payload], opts[:whsec])
       |> append_signature(&sign/4, [msg_id, unix_ts, payload], opts[:previous_whsec])
       |> append_signature(&sign_ed25519/4, [msg_id, unix_ts, payload], opts[:whsk])
+      |> append_signature(&sign_ed25519/4, [msg_id, unix_ts, payload], opts[:previous_whsk])
 
     if signatures == [] do
-      raise ArgumentError, "headers/4 needs at least one of :whsec, :previous_whsec or :whsk"
+      raise ArgumentError,
+            "headers/4 needs at least one of :whsec, :previous_whsec, :whsk or :previous_whsk"
     end
 
     %{

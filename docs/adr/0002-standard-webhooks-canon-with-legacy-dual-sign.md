@@ -1,6 +1,6 @@
 # ADR-0002 — Standard Webhooks canon, with legacy dual-sign migration
 
-- **Status:** Accepted (2026-08-20)
+- **Status:** Accepted (2026-08-20) — trued up 2026-08-21 when subscriptions landed (#6): the oracle is `AshHooks.Legacy.verify/5` (not `verify_legacy/5`); `signing_mode` is per-SUBSCRIPTION on the injected attribute (nullable, falling back to the resource outbound declaration mode, defaulting `:standard`); the outbound DSL opt is `subscriptions` + `deliveries` (resource modules)
 - **Deciders:** operator (directive: "compatible if not canon"), scout + cross-family adversarial review
 
 ## Context

@@ -1,6 +1,6 @@
 # ADR-0006 — SW v1 and v1a (ed25519) signing, day one
 
-- **Status:** Accepted (2026-08-20)
+- **Status:** Accepted (2026-08-20) — v1a rotation landed 2026-08-21 (`Signing.headers/4` `:previous_whsk`, #6 slice): "old+new rotation signing for both" is now true as written, no phase
 - **Deciders:** operator directive ("compatible if not canon") re-derived under adversarial Category-10 audit
 
 ## Context

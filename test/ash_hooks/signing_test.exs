@@ -345,6 +345,44 @@ defmodule AshHooks.SigningTest do
              }
     end
 
+    test "v1a rotation: :previous_whsk appends the rotated-out key's signature (zero-downtime)" do
+      {new_sk, new_pk} = Signing.generate_signing_keypair()
+      {old_sk, old_pk} = Signing.generate_signing_keypair()
+
+      headers =
+        Signing.headers(@go_msg_id, @go_ts, @go_payload, whsk: new_sk, previous_whsk: old_sk)
+
+      v1a_entries =
+        headers["webhook-signature"]
+        |> String.split(" ")
+        |> Enum.filter(&String.starts_with?(&1, "v1a,"))
+
+      assert length(v1a_entries) == 2
+
+      # receivers holding EITHER generation's public key verify the delivery
+      assert {:ok, _} = Signing.verify(@go_payload, headers, new_pk, now: @go_ts)
+      assert {:ok, _} = Signing.verify(@go_payload, headers, old_pk, now: @go_ts)
+    end
+
+    test "the rotation option flows through the mode seam (:standard)" do
+      {new_sk, _new_pk} = Signing.generate_signing_keypair()
+      {old_sk, old_pk} = Signing.generate_signing_keypair()
+
+      headers =
+        Signing.headers_for_mode(:standard, @go_msg_id, @go_ts, @go_payload,
+          whsk: new_sk,
+          previous_whsk: old_sk
+        )
+
+      assert {:ok, _} = Signing.verify(@go_payload, headers, old_pk, now: @go_ts)
+    end
+
+    test "the empty-opts error names every accepted secret option (contract)" do
+      assert_raise ArgumentError, ~r/previous_whsk/, fn ->
+        Signing.headers(@go_msg_id, @go_ts, @go_payload, [])
+      end
+    end
+
     test ":standard mode emits SW headers only" do
       headers =
         Signing.headers_for_mode(:standard, @go_msg_id, @go_ts, @go_payload, whsec: @go_key)

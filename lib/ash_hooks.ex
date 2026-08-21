@@ -111,9 +111,21 @@ defmodule AshHooks do
         envelope for migrating receivers), `:legacy` (ADR-0002).
         """
       ],
-      endpoints: [
-        type: {:list, :atom},
-        doc: "Subscription/endpoint resource modules this event fans out to."
+      subscriptions: [
+        type: :atom,
+        doc: """
+        The consumer's Subscription resource module (carrying
+        `AshHooks.Subscription`) this event fans out through — the
+        dispatcher matches its rows against the event type.
+        """
+      ],
+      deliveries: [
+        type: :atom,
+        doc: """
+        The consumer's OutboundDelivery resource module (carrying
+        `AshHooks.OutboundDelivery`) the dispatcher writes the durable
+        per-endpoint rows into.
+        """
       ]
     ]
   }
@@ -130,6 +142,13 @@ defmodule AshHooks do
   use Spark.Dsl.Extension,
     sections: [@webhooks],
     verifiers: [AshHooks.Verifiers.ReplayWindowRequiresTimestamp]
+
+  @doc """
+  Fans an outbound event out to its subscribed endpoints — the outbound
+  entry point, delegating to `AshHooks.Dispatcher.dispatch/4` (the
+  `AshHooks.Ingress.ingest/4` twin).
+  """
+  defdelegate dispatch(resource, name, event, opts \\ []), to: AshHooks.Dispatcher
 
   @doc """
   Schema validator for the `secret` option — accepts only secret SOURCES,

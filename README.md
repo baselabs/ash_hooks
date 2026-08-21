@@ -6,22 +6,28 @@ Webhooks for [Ash Framework](https://ash-hq.org) — **inbound** (receive, verif
 per-provider signatures, deduplicate, emit domain events) and **outbound**
 (sign, deliver, retry, track).
 
-> **Status: provider behaviour + SW signing + inbound ingress/fenced ledger.**
+> **Status: provider behaviour + SW signing + inbound ingress/fenced ledger +
+> outbound fanout dispatcher.**
 > Landed: the DSL sections and install task (including the endpoint
 > `body_reader` codemod), the CI compile-matrix with the Oban/plug-free proof
 > (ADR-0004), the inbound provider contract (`AshHooks.Provider` with
 > `default_verify_signature/4`, the `AshHooks.Provider.Mock` reference
 > provider, the splode error hierarchy), Standard Webhooks `v1`+`v1a`
-> signing/verification with byte-identical legacy `:dual` mode, the inbound
-> sync pipeline — raw-body verify → unique-ingest fenced ledger
-> (`AshHooks.InboundDelivery` extension + `AshHooks.Ingress`) with claim/lease
-> fencing, a reaper, and fail-closed DSL verifiers — and the vendor
-> verifiers `AshHooks.Provider.ComplyCube` (raw-body HMAC-SHA256 over the
-> `ComplyCube-Signature` header, SDK-vector conformance) and
-> `AshHooks.Provider.HubSpotV3` (composite `method + requestUri + body +
-> timestamp` HMAC over a separate millisecond timestamp header, batch
-> array bodies, docs-vector conformance). Upcoming slices: the async (202)
-> delivery runtime, outbound delivery tracking, and telemetry — tracked by
+> signing/verification (old+new rotation on both schemes) with byte-identical
+> legacy `:dual` mode, the inbound sync pipeline — raw-body verify →
+> unique-ingest fenced ledger (`AshHooks.InboundDelivery` extension +
+> `AshHooks.Ingress`) with claim/lease fencing, a reaper, and fail-closed DSL
+> verifiers — the vendor verifiers `AshHooks.Provider.ComplyCube` (raw-body
+> HMAC-SHA256 over the `ComplyCube-Signature` header, SDK-vector conformance)
+> and `AshHooks.Provider.HubSpotV3` (composite `method + requestUri + body +
+> timestamp` HMAC over a separate millisecond timestamp header, batch array
+> bodies, docs-vector conformance), and the outbound fanout —
+> `%AshHooks.Event{}` + the `Subscription` / `Endpoint` /
+> `OutboundDelivery` resource extensions (`AshHooks.Dispatcher`) with
+> per-endpoint enqueue isolation, a claim-then-enqueue repair CAS, and
+> secret-ref-only storage (literal secrets rejected at cast). Upcoming
+> slices: the delivery runtime (worker + HTTP policy + SSRF), telemetry —
+> tracked by
 > [#1](https://github.com/baselabs/ash_hooks/issues/1).
 
 Inbound and outbound are independently consumable: inbound-only applications
@@ -130,10 +136,96 @@ Handler outcomes land in the ledger (`:processed`,
 
 Outbound deliveries are signed per the [Standard Webhooks](https://www.standardwebhooks.com)
 specification (`webhook-id` / `webhook-timestamp` / `webhook-signature`, `v1`
-HMAC-SHA256 and `v1a` ed25519), so receivers verify with any conformant
-library; a `:dual` mode additionally emits a byte-identical legacy envelope
-during receiver migration. Durable delivery with retry/backoff lands with the
-delivery-runtime slices.
+HMAC-SHA256 and `v1a` ed25519 — old+new key rotation on both schemes), so
+receivers verify with any conformant library; a `:dual` mode additionally
+emits a byte-identical legacy envelope during receiver migration.
+
+Outbound fanout (landed): declare the Subscription / Endpoint /
+OutboundDelivery resources on your data layer, point the outbound
+declaration at them, and dispatch:
+
+```elixir
+defmodule MyApp.WebhookEndpoint do
+  use Ash.Resource,
+    data_layer: AshSqlite.DataLayer,
+    domain: MyApp,
+    extensions: [AshHooks.Endpoint]
+
+  sqlite do
+    table("webhook_endpoints")
+    repo(MyApp.Repo)
+  end
+
+  actions do
+    defaults([:read, :create, :update])
+  end
+end
+
+defmodule MyApp.WebhookSubscription do
+  use Ash.Resource,
+    data_layer: AshSqlite.DataLayer,
+    domain: MyApp,
+    extensions: [AshHooks.Subscription]
+
+  sqlite do
+    table("webhook_subscriptions")
+    repo(MyApp.Repo)
+  end
+
+  actions do
+    defaults([:read, :create])
+  end
+
+  subscription do
+    endpoint_resource(MyApp.WebhookEndpoint)
+  end
+end
+
+defmodule MyApp.OutboundDelivery do
+  use Ash.Resource,
+    data_layer: AshSqlite.DataLayer,
+    domain: MyApp,
+    extensions: [AshHooks.OutboundDelivery]
+
+  sqlite do
+    table("outbound_deliveries")
+    repo(MyApp.Repo)
+  end
+
+  actions do
+    defaults([:read])
+  end
+end
+```
+
+```elixir
+webhooks do
+  outbound :order_paid do
+    subscriptions(MyApp.WebhookSubscription)
+    deliveries(MyApp.OutboundDelivery)
+  end
+end
+```
+
+```elixir
+{:ok, event} =
+  AshHooks.Event.new(type: :order_paid, payload: Jason.encode!(order))
+
+AshHooks.dispatch(Order, :order_paid, event)
+```
+
+Each matching enabled endpoint gets a durable delivery row unique on
+`{endpoint_id, event_uuid}` — the same pair the (upcoming) Oban job
+uniqueness keys use — carrying the exact payload bytes to sign. Endpoints
+store secret REFERENCES only (`whsec_`-shaped literals are rejected at
+cast, on every write path); endpoints carry a durable `:enabled |
+:disabled` state the dispatcher respects. One endpoint's enqueue failure
+records `:enqueue_failed` on its row and never stops its siblings; a
+re-dispatch claims the failed row via a CAS and retries the enqueue
+exactly once per won claim. With no `:enqueue` configured, rows persist
+`:pending` (`:deferred` results) — the delivery runtime (next slice)
+drives them. Durable send with retry/backoff/dead-letter lands with that
+slice.
 
 ## Design records
 

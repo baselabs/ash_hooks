@@ -1,6 +1,10 @@
 # ADR-0004 — Optional Oban via host-injected worker boundary
 
-- **Status:** Accepted (2026-08-20)
+- **Status:** Accepted (2026-08-20) — uniqueness assertion VERIFIED 2026-08-21
+  against local `deps/oban` 2.23.1 (see ADR-0007's substrate record:
+  confirmed valid; defaults `period: 60`/`states: :successful` must be
+  overridden; keys-absent args silently degrade uniqueness; implemented on
+  PG/MySQL/SQLite engines alike)
 - **Deciders:** operator (ratified), scout best-of-N + adversarial review
 
 ## Context

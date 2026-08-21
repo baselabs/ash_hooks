@@ -1,0 +1,34 @@
+defmodule AshHooks.Endpoint do
+  @moduledoc """
+  Turns the consumer's resource into the outbound webhook Endpoint — the
+  delivery target with its durable circuit-breaker state and its secret
+  REFERENCES.
+
+      use Ash.Resource,
+        data_layer: AshSqlite.DataLayer,
+        extensions: [AshHooks.Endpoint]
+
+  The extension injects: `url`, `status` (`:enabled | :disabled` — the
+  durable disable the 410 rule and operators flip; an in-process fuse would
+  forget, this does not), and the four secret refs (`secret_ref` required,
+  `previous_secret_ref` / `legacy_secret_ref` / `legacy_previous_secret_ref`
+  for rotation and the legacy envelope). All four are
+  `AshHooks.Endpoint.SecretRef` — the TYPE rejects secret-shaped literals
+  (`whsec_` / `whsk_` / `whpk_` prefixed material) at cast, on every write
+  path including consumer-defined actions: secrets live behind consumer
+  callbacks, rows carry only their references (ADR-0005).
+
+  The dispatcher skips `:disabled` endpoints entirely (no delivery row).
+  The SSRF guard (scheme/private-range/link-local/metadata checks, at
+  registration AND send time) lands with the delivery runtime slice — this
+  resource is its substrate.
+  """
+
+  @statuses [:enabled, :disabled]
+
+  def statuses, do: @statuses
+
+  use Spark.Dsl.Extension,
+    transformers: [AshHooks.Endpoint.Transformers.AddEndpointFields],
+    verifiers: []
+end
