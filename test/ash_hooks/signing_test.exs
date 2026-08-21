@@ -70,6 +70,33 @@ defmodule AshHooks.SigningTest do
       end
     end
 
+    test "exception messages never carry secret material (ADR-0005 floor)" do
+      secret = Signing.generate_secret(24)
+
+      error =
+        assert_raise ArgumentError, fn ->
+          Signing.sign(@go_msg_id, @go_ts, @go_payload, secret <> "\n")
+        end
+
+      refute error.message =~ secret
+      refute error.message =~ String.replace_prefix(secret, "whsec_", "")
+    end
+
+    test "unpadded base64 secrets work at the most common length (32 decoded bytes)" do
+      secret = Signing.generate_secret(32)
+      assert {:ok, <<_::256>>} = Base.decode64(String.replace_prefix(secret, "whsec_", ""))
+
+      unpadded =
+        "whsec_" <> String.trim_trailing(String.replace_prefix(secret, "whsec_", ""), "=")
+
+      sig = Signing.sign(@go_msg_id, @go_ts, @go_payload, unpadded)
+
+      assert {:ok, _} =
+               Signing.verify(@go_payload, sw_headers(@go_msg_id, @go_ts, sig), unpadded,
+                 ignore_timestamp: true
+               )
+    end
+
     test "rejects a msg_id containing the canonical-string delimiter" do
       assert_raise ArgumentError, ~r/msg_id/, fn ->
         Signing.sign("msg_evil.attempt", @go_ts, @go_payload, @go_key)
@@ -243,8 +270,10 @@ defmodule AshHooks.SigningTest do
       for ts <- [now - 301, now + 301] do
         sig = Signing.sign(@go_msg_id, ts, @go_payload, @go_key)
 
+        # Pin :now — verify reading its own clock after our sample would flake
+        # the +301 side whenever the wall clock ticks between the two reads.
         assert {:error, :timestamp_out_of_tolerance} =
-                 Signing.verify(@go_payload, sw_headers(@go_msg_id, ts, sig), @go_key)
+                 Signing.verify(@go_payload, sw_headers(@go_msg_id, ts, sig), @go_key, now: now)
 
         assert {:ok, _} =
                  Signing.verify(@go_payload, sw_headers(@go_msg_id, ts, sig), @go_key,
@@ -255,6 +284,15 @@ defmodule AshHooks.SigningTest do
   end
 
   describe "verify/4 — asymmetric" do
+    test "fails closed (not raises) on a malformed public key" do
+      for bad_key <- ["whpk_not-base64!", "whpk_" <> Base.encode64(<<0::128>>), "whpk_"] do
+        assert {:error, :invalid_secret} =
+                 Signing.verify(@go_payload, sw_headers(@go_msg_id, @go_ts, "v1a,AAAA"), bad_key,
+                   ignore_timestamp: true
+                 )
+      end
+    end
+
     test "rejects a tampered payload under v1a" do
       sig = Signing.sign_ed25519(@go_msg_id, @go_ts, @go_payload, @whsk)
       <<_first, rest::binary>> = @go_payload
@@ -323,6 +361,10 @@ defmodule AshHooks.SigningTest do
 
       refute Map.has_key?(headers, "webhook-signature")
       assert Map.has_key?(headers, "x-webhook-signature")
+
+      assert_raise ArgumentError, ~r/legacy_secret/, fn ->
+        Signing.headers_for_mode(:legacy, @go_msg_id, @go_ts, @go_payload, [])
+      end
     end
 
     test ":dual emits BOTH envelopes; requires the legacy secret" do

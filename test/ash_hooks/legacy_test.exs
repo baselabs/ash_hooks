@@ -4,9 +4,11 @@ defmodule AshHooks.LegacyTest do
   alias AshHooks.Legacy
   import AshHooks.TestAstTripwire
 
-  # Expected strings pre-computed with :crypto over the incumbent's exact
-  # construction (HMAC-SHA256 over "<ts>.<body>", lowercase hex — read
-  # first-hand from commerce_platform's webhooks/signing.ex + deliver_worker.ex).
+  # INCUMBENT-CAPTURED vectors: commerce_platform's own Signing module was
+  # executed first-hand (scratch VM, single stdlib-only file compiled — zero
+  # footprint on that read-only tree) over these fixed inputs, and its output
+  # captured verbatim. Byte-identity is against executed incumbent code, not a
+  # transcription of it.
   @legacy_secret "legacy-incumbent-secret"
   @previous_secret "previous-secret"
   @legacy_body ~s({"order":"ord_1"})

@@ -114,9 +114,8 @@ defmodule AshHooks.Signing do
 
   def verify(payload, headers, @pub_prefix <> _ = whpk, opts)
       when is_binary(payload) and is_map(headers) and is_binary(whpk) do
-    public_key = decode_asymmetric_secret!(whpk, @pub_prefix)
-
-    with {:ok, id, ts, signature_header} <- required_headers(headers),
+    with {:ok, public_key} <- normalize_public_key(whpk),
+         {:ok, id, ts, signature_header} <- required_headers(headers),
          :ok <- check_timestamp(ts, opts) do
       signed = to_sign(id, ts, payload)
 
@@ -193,6 +192,10 @@ defmodule AshHooks.Signing do
     do: headers(msg_id, unix_ts, body, opts)
 
   def headers_for_mode(:legacy, _msg_id, unix_ts, body, opts) do
+    unless is_binary(opts[:legacy_secret]) and opts[:legacy_secret] != "" do
+      raise ArgumentError, ":legacy signing_mode requires :legacy_secret (the incumbent secret)"
+    end
+
     Legacy.headers(opts[:legacy_secret], opts[:legacy_previous_secret], body, unix_ts)
   end
 
@@ -331,18 +334,39 @@ defmodule AshHooks.Signing do
   end
 
   defp decode_asymmetric_secret!(prefixed, prefix) do
-    unless String.starts_with?(prefixed, prefix) do
-      raise ArgumentError, "asymmetric key must be #{prefix}-prefixed base64"
+    case decode_asymmetric_secret(prefixed, prefix) do
+      {:ok, decoded} ->
+        decoded
+
+      {:error, reason} ->
+        raise ArgumentError, reason
     end
+  end
 
-    decoded = prefixed |> strip_prefix(prefix) |> decode_b64!()
-
-    unless byte_size(decoded) == 32 do
-      raise ArgumentError,
-            "#{prefix} key must decode to exactly 32 bytes (base64 ed25519) — got #{byte_size(decoded)}"
+  # Non-raising twin for the verify path — a malformed key is a fail-closed
+  # {:error, :invalid_secret}, never an exception.
+  defp normalize_public_key(whpk) do
+    case decode_asymmetric_secret(whpk, @pub_prefix) do
+      {:ok, public_key} -> {:ok, public_key}
+      {:error, _reason} -> {:error, :invalid_secret}
     end
+  end
 
-    decoded
+  defp decode_asymmetric_secret(prefixed, prefix) do
+    if String.starts_with?(prefixed, prefix) do
+      case prefixed |> strip_prefix(prefix) |> decode_b64() do
+        {:ok, decoded} when byte_size(decoded) == 32 ->
+          {:ok, decoded}
+
+        {:ok, _wrong_size} ->
+          {:error, "#{prefix} key must decode to exactly 32 bytes (base64 ed25519)"}
+
+        :error ->
+          {:error, "#{prefix} key is not valid base64"}
+      end
+    else
+      {:error, "asymmetric key must be #{prefix}-prefixed base64"}
+    end
   end
 
   defp strip_prefix(value, prefix), do: String.replace_prefix(value, prefix, "")
@@ -350,15 +374,18 @@ defmodule AshHooks.Signing do
   defp decode_b64!(encoded) do
     case decode_b64(encoded) do
       {:ok, decoded} -> decoded
-      :error -> raise ArgumentError, "secret is not valid base64: #{inspect(encoded)}"
+      # Never echo the value — it may be live secret material (ADR-0005).
+      :error -> raise ArgumentError, "secret is not valid base64 (#{byte_size(encoded)} bytes)"
     end
   end
 
-  # Tolerate unpadded base64 like the python reference (append padding).
+  # Tolerate unpadded base64 like the python reference — `padding: false`
+  # accepts any correct unpadded length (appending "==" only rescues
+  # length ≡ 2 mod 4, wrongly rejecting the unpadded 32-byte secret form).
   defp decode_b64(encoded) when is_binary(encoded) and encoded != "" do
     case Base.decode64(encoded) do
       {:ok, decoded} -> {:ok, decoded}
-      :error -> Base.decode64(encoded <> "==")
+      :error -> Base.decode64(encoded, padding: false)
     end
   end
 
