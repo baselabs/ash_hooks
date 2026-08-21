@@ -135,8 +135,12 @@ defmodule AshHooks do
     do: {:ok, source}
 
   def validate_secret_source(source) when is_binary(source),
-    do: {:error, "must be a secret SOURCE — got a literal binary: secrets live in compiled DSL data (ADR-0005); pass {m, f, a}, {:app_env, path}, or a 0-arity function"}
+    do:
+      {:error,
+       "must be a secret SOURCE — got a literal binary: secrets live in compiled DSL data (ADR-0005); pass {m, f, a}, {:app_env, path}, or a 0-arity function"}
 
   def validate_secret_source(other),
-    do: {:error, "invalid secret source #{inspect(other)} — pass {m, f, a}, {:app_env, path} (non-empty atoms), or a 0-arity function"}
+    do:
+      {:error,
+       "invalid secret source #{inspect(other)} — pass {m, f, a}, {:app_env, path} (non-empty atoms), or a 0-arity function"}
 end

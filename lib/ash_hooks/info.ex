@@ -14,12 +14,12 @@ defmodule AshHooks.Info do
   @doc "The inbound declaration for `provider`, if any."
   @spec inbound(Ash.Resource.t(), atom()) :: AshHooks.Inbound.t() | nil
   def inbound(resource, provider) do
-    webhooks(resource) |> Enum.find(&is_struct(&1, AshHooks.Inbound) and &1.name == provider)
+    webhooks(resource) |> Enum.find(&(is_struct(&1, AshHooks.Inbound) and &1.name == provider))
   end
 
   @doc "The outbound declaration for `event`, if any."
   @spec outbound(Ash.Resource.t(), atom()) :: AshHooks.Outbound.t() | nil
   def outbound(resource, event) do
-    webhooks(resource) |> Enum.find(&is_struct(&1, AshHooks.Outbound) and &1.name == event)
+    webhooks(resource) |> Enum.find(&(is_struct(&1, AshHooks.Outbound) and &1.name == event))
   end
 end

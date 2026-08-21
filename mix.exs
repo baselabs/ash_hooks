@@ -17,7 +17,8 @@ defmodule AshHooks.MixProject do
       docs: docs(),
       aliases: aliases(),
       name: "AshHooks",
-      description: "Webhooks for Ash Framework — inbound verification + dedup, outbound signing + delivery",
+      description:
+        "Webhooks for Ash Framework — inbound verification + dedup, outbound signing + delivery",
       source_url: @source_url,
       homepage_url: @source_url
     ]

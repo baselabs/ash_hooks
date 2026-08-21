@@ -6,13 +6,16 @@ Webhooks for [Ash Framework](https://ash-hq.org) — **inbound** (receive, verif
 per-provider signatures, deduplicate, emit domain events) and **outbound**
 (sign, deliver, retry, track).
 
-> **Status: scaffold.** The DSL sections, install task, and CI compile-matrix
-> (including the Oban/plug-free proof, ADR-0004) have landed. Signature
-> verification, the dedup ledger, Standard Webhooks signing, and delivery
-> land in the upcoming slices tracked by
+> **Status: scaffold + provider behaviour.** The DSL sections, install task,
+> CI compile-matrix (including the Oban/plug-free proof, ADR-0004), and the
+> inbound provider contract (`AshHooks.Provider` behaviour with
+> `default_verify_signature/4`, the `AshHooks.Provider.Mock` reference
+> provider, and the splode error hierarchy) have landed. The ingress pipeline,
+> dedup ledger, vendor verifiers (ComplyCube, HubSpot), Standard Webhooks
+> signing, and delivery land in the upcoming slices tracked by
 > [#1](https://github.com/baselabs/ash_hooks/issues/1) — until those close,
-> this package declares webhook configuration only and performs no
-> verification, signing, or delivery.
+> this package declares webhook configuration and exposes the provider
+> contract, but wires no endpoint and ships no vendor verifier.
 
 Inbound and outbound are independently consumable: inbound-only applications
 pull no queue infrastructure.
