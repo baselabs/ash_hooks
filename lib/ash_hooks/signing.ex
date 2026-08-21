@@ -98,9 +98,16 @@ defmodule AshHooks.Signing do
   entries; anything else verifies `v1` (HMAC) entries and skips all other
   version identifiers, matching the official references.
 
+  `headers` is a map with EXACTLY the lowercased header names as string keys
+  and single binary values (`"webhook-id"`, `"webhook-timestamp"`,
+  `"webhook-signature"`) — the shape Plug and the inbound seam supply after
+  normalization. Mixed-case keys or multi-value header lists are
+  `{:error, :missing_header}` (fail closed); callers normalize before this
+  boundary.
+
   Options:
 
-    * `:now` — integer unix seconds (default `System.time(:second)`).
+    * `:now` — integer unix seconds (default `System.system_time(:second)`).
     * `:tolerance` — allowed `|now - timestamp|` in seconds (default 300).
     * `:ignore_timestamp` — skip the tolerance check (dead-letter re-drives,
       offline verification); the timestamp must still parse.
