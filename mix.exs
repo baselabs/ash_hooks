@@ -59,7 +59,13 @@ defmodule AshHooks.MixProject do
         {:igniter, "~> 0.6", only: [:dev, :test], runtime: false, optional: true},
         {:ex_doc, "~> 0.31", only: :dev, runtime: false},
         {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-        {:simple_sat, "~> 0.1", only: [:dev, :test], runtime: false}
+        {:simple_sat, "~> 0.1", only: [:dev, :test], runtime: false},
+        # Test substrate for the fenced-ledger concurrency tests (ADR-0003
+        # names sqlite as the best-effort matrix leg). Dev/test-only: never
+        # ships in hex metadata, never constrains consumers. ETS was probed
+        # and cannot express storage-level uniqueness or conditional-update
+        # atomicity (read-then-write on both paths).
+        {:ash_sqlite, "~> 0.2.17", only: [:dev, :test], runtime: false}
       ]
   end
 

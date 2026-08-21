@@ -37,6 +37,15 @@ defmodule AshHooks do
         required: true,
         doc: "The provider name (e.g. `:complycube`)."
       ],
+      provider: [
+        type: :atom,
+        doc: """
+        The provider MODULE implementing `AshHooks.Provider`. When unset, the
+        ingress resolves `AshHooks.Provider.<Camelized(name)>` and fails
+        closed when that module does not exist or does not implement the
+        behaviour.
+        """
+      ],
       secret: [
         type: {:custom, AshHooks, :validate_secret_source, []},
         required: true,
@@ -62,10 +71,11 @@ defmodule AshHooks do
         doc: """
         Replay-protection window for providers whose scheme carries a
         trustworthy timestamp (e.g. HubSpot v3). Providers without timestamps
-        (e.g. ComplyCube) MUST leave this unset — the provider registry
-        verifier rejects a window whose provider declares no timestamp source
-        (lands with the provider registry; the inbound slice's acceptance
-        cites this rule).
+        (e.g. ComplyCube) MUST leave this unset — the verifier rejects a
+        window whose provider declares no timestamp header
+        (`AshHooks.Provider.timestamp_header/1` returns nil). The window value
+        is passed to the provider's `verify_signature/3` in the context map
+        for scheme-specific enforcement.
         """
       ]
     ]
@@ -112,7 +122,7 @@ defmodule AshHooks do
 
   use Spark.Dsl.Extension,
     sections: [@webhooks],
-    verifiers: []
+    verifiers: [AshHooks.Verifiers.ReplayWindowRequiresTimestamp]
 
   @doc """
   Schema validator for the `secret` option — accepts only secret SOURCES,

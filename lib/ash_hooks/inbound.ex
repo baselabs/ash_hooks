@@ -3,6 +3,7 @@ defmodule AshHooks.Inbound do
 
   defstruct [
     :name,
+    :provider,
     :secret,
     :event_id,
     :replay_window_seconds,

@@ -76,7 +76,16 @@ defmodule AshHooks.Provider do
   """
   @callback webhook_secret_scope() :: webhook_secret_scope()
 
-  @optional_callbacks webhook_signing_secret: 1, webhook_secret_scope: 0
+  @doc """
+  The request header this provider's signature scheme carries a trustworthy
+  timestamp in (`nil` when the scheme has none). A DSL `replay_window_seconds`
+  requires a non-`nil` value here — the compile-time verifier rejects the
+  combination otherwise, and there is no replay protection without it.
+  Optional, defaulting to `nil`.
+  """
+  @callback timestamp_header() :: String.t() | nil
+
+  @optional_callbacks webhook_signing_secret: 1, webhook_secret_scope: 0, timestamp_header: 0
 
   @callback parse_event_type(payload :: map()) :: {:ok, atom()} | {:error, parse_error()}
 
@@ -98,6 +107,22 @@ defmodule AshHooks.Provider do
       provider.webhook_secret_scope()
     else
       :app_level
+    end
+  end
+
+  @doc """
+  Resolves a provider's trustworthy timestamp header, defaulting to `nil`
+  when the optional `timestamp_header/0` callback is not implemented.
+
+  Loads the provider module first — same unloaded-module guard as
+  `secret_scope/1`.
+  """
+  @spec timestamp_header(module()) :: String.t() | nil
+  def timestamp_header(provider) when is_atom(provider) do
+    if Code.ensure_loaded?(provider) and function_exported?(provider, :timestamp_header, 0) do
+      provider.timestamp_header()
+    else
+      nil
     end
   end
 

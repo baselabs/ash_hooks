@@ -190,6 +190,25 @@ defmodule AshHooks.ProviderTest do
     end
   end
 
+  describe "timestamp_header/1" do
+    test "absent timestamp_header/0 defaults to nil (no trustworthy timestamp)" do
+      assert Provider.timestamp_header(AshHooks.Provider.Mock) == nil
+    end
+
+    test "an implemented timestamp_header/0 is honored" do
+      defmodule TimestampedProvider do
+        @behaviour AshHooks.Provider
+
+        def timestamp_header, do: "x-timestamp"
+        def verify_signature(_raw_body, _ctx, _secret), do: :ok
+        def parse_event_type(_payload), do: {:ok, :mock}
+        def handle_event(_event_type, _payload), do: {:ok, %{}}
+      end
+
+      assert Provider.timestamp_header(TimestampedProvider) == "x-timestamp"
+    end
+  end
+
   defp flip_first_char(<<first, rest::binary>>) do
     replacement = if first == ?a, do: ?b, else: ?a
     <<replacement, rest::binary>>
