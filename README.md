@@ -12,12 +12,14 @@ per-provider signatures, deduplicate, emit domain events) and **outbound**
 > (ADR-0004), the inbound provider contract (`AshHooks.Provider` with
 > `default_verify_signature/4`, the `AshHooks.Provider.Mock` reference
 > provider, the splode error hierarchy), Standard Webhooks `v1`+`v1a`
-> signing/verification with byte-identical legacy `:dual` mode, and the
-> inbound sync pipeline — raw-body verify → unique-ingest fenced ledger
+> signing/verification with byte-identical legacy `:dual` mode, the inbound
+> sync pipeline — raw-body verify → unique-ingest fenced ledger
 > (`AshHooks.InboundDelivery` extension + `AshHooks.Ingress`) with claim/lease
-> fencing, a reaper, and fail-closed DSL verifiers. Upcoming slices: vendor
-> verifiers (ComplyCube, HubSpot), the async (202) delivery runtime, outbound
-> delivery tracking, and telemetry — tracked by
+> fencing, a reaper, and fail-closed DSL verifiers — and the first vendor
+> verifier, `AshHooks.Provider.ComplyCube` (raw-body HMAC-SHA256 over the
+> `ComplyCube-Signature` header, SDK-vector conformance). Upcoming slices: the
+> HubSpot v3 verifier, the async (202) delivery runtime, outbound delivery
+> tracking, and telemetry — tracked by
 > [#1](https://github.com/baselabs/ash_hooks/issues/1).
 
 Inbound and outbound are independently consumable: inbound-only applications
@@ -62,7 +64,8 @@ inbound_delivery do
 end
 
 webhooks do
-  inbound :complycube do
+  # convention-resolves to AshHooks.Provider.ComplyCube
+  inbound :comply_cube do
     secret {:app_env, [:my_app, :complycube_secret]}
   end
 
@@ -76,8 +79,8 @@ Inbound (sync mode) — a controller reads the cached raw body and drives the
 fenced machine:
 
 ```elixir
-AshHooks.Ingress.ingest(Ledger, :complycube, conn.private[:ash_hooks_raw_body], %{
-  signature: get_req_header(conn, "x-signature") |> List.first(),
+AshHooks.Ingress.ingest(Ledger, :comply_cube, conn.private[:ash_hooks_raw_body], %{
+  signature: get_req_header(conn, "complycube-signature") |> List.first(),
   headers: Map.new(conn.req_headers),
   scope: %{account_id: connection.account_id}
 })

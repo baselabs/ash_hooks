@@ -9,7 +9,8 @@ defmodule AshHooks do
         extensions: [AshHooks]
 
       webhooks do
-        inbound :complycube do
+        # convention-resolves to AshHooks.Provider.ComplyCube
+        inbound :comply_cube do
           secret {:app_env, [:my_app, :complycube_secret]}
           event_id &__MODULE__.extract_event_id/1
         end
@@ -35,7 +36,7 @@ defmodule AshHooks do
       name: [
         type: :atom,
         required: true,
-        doc: "The provider name (e.g. `:complycube`)."
+        doc: "The provider name (e.g. `:comply_cube`)."
       ],
       provider: [
         type: :atom,
