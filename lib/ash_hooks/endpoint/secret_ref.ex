@@ -21,11 +21,20 @@ defmodule AshHooks.Endpoint.SecretRef do
   def cast_input(nil, _constraints), do: {:ok, nil}
 
   def cast_input(value, _constraints) when is_binary(value) do
-    if Enum.any?(@secret_prefixes, &String.starts_with?(value, &1)) do
-      {:error,
-       "must be a secret REFERENCE, not secret material — store the consumer-side key that resolves the secret, never the secret itself (ADR-0005)"}
-    else
-      {:ok, value}
+    cond do
+      # allow_nil? blocks only nil — the empty string must be refused by the
+      # type itself or a required endpoint persists an unusable reference
+      # (cross-vendor finding).
+      value == "" ->
+        {:error,
+         "must be a non-empty secret REFERENCE — an empty reference cannot resolve a secret"}
+
+      Enum.any?(@secret_prefixes, &String.starts_with?(value, &1)) ->
+        {:error,
+         "must be a secret REFERENCE, not secret material — store the consumer-side key that resolves the secret, never the secret itself (ADR-0005)"}
+
+      true ->
+        {:ok, value}
     end
   end
 

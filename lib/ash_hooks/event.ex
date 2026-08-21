@@ -38,7 +38,19 @@ defmodule AshHooks.Event do
   `{:error, reason}` — never raises on caller input.
   """
   @spec new(keyword() | map()) :: {:ok, t()} | {:error, String.t()}
-  def new(attrs) when is_map(attrs) or is_list(attrs) do
+  def new(attrs) when is_map(attrs), do: build(Map.to_list(attrs))
+
+  def new(attrs) when is_list(attrs) do
+    if Enum.all?(attrs, &match?({_, _}, &1)) do
+      build(attrs)
+    else
+      {:error, "event attributes must be a map or a keyword list"}
+    end
+  end
+
+  def new(_other), do: {:error, "event attributes must be a map or a keyword list"}
+
+  defp build(attrs) do
     attrs = Map.new(attrs)
 
     with {:ok, id} <- cast_id(attrs),
@@ -53,6 +65,10 @@ defmodule AshHooks.Event do
   defp cast_id(attrs) when is_map_key(attrs, :id), do: validate_id(attrs.id)
   defp cast_id(_attrs), do: {:ok, AshHooks.Signing.generate_msg_id()}
 
+  # Ids and types are bounded to the ledger's 255-char columns and ids to
+  # header-safe characters: the id becomes the `webhook-id` HTTP header at
+  # send time, and CR/LF/space in it is a header-injection surface handed
+  # to the delivery runtime (cross-vendor finding).
   defp validate_id(id) when is_binary(id) do
     cond do
       id == "" ->
@@ -60,6 +76,13 @@ defmodule AshHooks.Event do
 
       String.contains?(id, ".") ->
         {:error, "event id must not contain a dot (\".\") — it is the canonical-string delimiter"}
+
+      String.length(id) > 255 ->
+        {:error, "event id must be at most 255 characters (the ledger column bound)"}
+
+      id =~ ~r/[\r\n\t ]/ ->
+        {:error,
+         "event id must not contain whitespace or control characters (it becomes an HTTP header)"}
 
       true ->
         {:ok, id}
@@ -69,9 +92,16 @@ defmodule AshHooks.Event do
   defp validate_id(_other), do: {:error, "event id must be a binary"}
 
   defp cast_type(%{type: type}) when is_atom(type) and not is_nil(type),
-    do: {:ok, Atom.to_string(type)}
+    do: cast_type(%{type: Atom.to_string(type)})
 
-  defp cast_type(%{type: type}) when is_binary(type) and type != "", do: {:ok, type}
+  defp cast_type(%{type: type}) when is_binary(type) and type != "" do
+    if String.length(type) <= 255 do
+      {:ok, type}
+    else
+      {:error, "event type must be at most 255 characters (the ledger column bound)"}
+    end
+  end
+
   defp cast_type(_other), do: {:error, "event type is required (atom or non-empty binary)"}
 
   defp cast_payload(%{payload: payload}) when is_binary(payload) and payload != "",

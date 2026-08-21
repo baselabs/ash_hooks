@@ -112,6 +112,11 @@ defmodule AshHooks.EndpointTest do
                )
     end
 
+    test "rejects an EMPTY secret ref (allow_nil? blocks only nil — review regression)" do
+      assert {:error, _} =
+               Ash.create(Endpoint, %{url: "https://e.test/h", secret_ref: ""}, authorize?: false)
+    end
+
     test "rejects a whsec_ literal sneaking through a DIFFERENT field and the update path" do
       literal = "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))
       endpoint = create!(url: "https://e.test/h", secret_ref: "ok-ref")

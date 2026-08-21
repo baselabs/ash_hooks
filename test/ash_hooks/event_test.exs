@@ -77,6 +77,35 @@ defmodule AshHooks.EventTest do
     end
   end
 
+  describe "new/1 malformed input (never raises — review regression)" do
+    test "a non-pair list returns an error tuple" do
+      assert {:error, _reason} = Event.new([1, 2, 3])
+    end
+
+    test "a non-map non-list returns an error tuple" do
+      assert {:error, _reason} = Event.new(:wat)
+    end
+  end
+
+  describe "new/1 bounds (review regressions)" do
+    test "rejects an id longer than the 255-char ledger column" do
+      long = "msg_" <> String.duplicate("a", 300)
+      assert {:error, reason} = Event.new(id: long, type: :order_paid, payload: @payload)
+      assert reason =~ "255"
+    end
+
+    test "rejects a type longer than the 255-char ledger column" do
+      long = String.duplicate("t", 300)
+      assert {:error, reason} = Event.new(type: long, payload: @payload)
+      assert reason =~ "255"
+    end
+
+    test "rejects ids with whitespace/control characters (future HTTP header)" do
+      assert {:error, _} = Event.new(id: "msg_a b", type: :order_paid, payload: @payload)
+      assert {:error, _} = Event.new(id: "msg_a\nb", type: :order_paid, payload: @payload)
+    end
+  end
+
   describe "new/1 metadata" do
     test "defaults to an empty map" do
       assert {:ok, %Event{metadata: %{}}} = Event.new(type: :order_paid, payload: @payload)

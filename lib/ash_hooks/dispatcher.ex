@@ -67,14 +67,32 @@ defmodule AshHooks.Dispatcher do
   def dispatch(resource, name, event, opts \\ []) do
     with {:ok, entity} <- fetch_outbound(resource, name),
          {:ok, event} <- cast_event(event),
+         :ok <- check_type_alignment(name, event),
          {:ok, subs_mod} <- resolve_module(entity, :subscriptions),
          {:ok, deliv_mod} <- resolve_module(entity, :deliveries),
-         {:ok, matches} <- match_subscriptions(subs_mod, event),
+         {:ok, matches, error_entries} <- match_subscriptions(subs_mod, event),
          :ok <- check_conflicts(matches, entity) do
       {:ok,
-       matches
-       |> dedupe_by_endpoint()
-       |> Enum.map(&dispatch_one(deliv_mod, event, &1, opts))}
+       error_entries ++
+         (matches
+          |> dedupe_by_endpoint()
+          |> Enum.map(&dispatch_one(deliv_mod, event, &1, opts)))}
+    end
+  end
+
+  # The declaration resolves configuration (resource modules, signing-mode
+  # default); the event's type routes subscriptions. Letting the two
+  # diverge routes one declaration's resources at another type's
+  # subscribers — fail closed on the mismatch (cross-vendor finding).
+  defp check_type_alignment(name, %Event{type: type}) do
+    if type == Atom.to_string(name) do
+      :ok
+    else
+      {:error,
+       UnknownError.exception(
+         error:
+           "event type #{inspect(type)} does not match the outbound #{inspect(name)} declaration — dispatch through the declaration named for the type"
+       )}
     end
   end
 
@@ -93,22 +111,69 @@ defmodule AshHooks.Dispatcher do
     end
   rescue
     reason -> result(endpoint, subscription, :endpoint_error, error_string(reason))
+  catch
+    # An enqueue seam or storage op that EXITS (a GenServer.call timeout in
+    # a queue client) or throws escapes `rescue` — catch it here or the
+    # whole fanout dies with later endpoints unprocessed (cross-vendor
+    # finding, both peers).
+    kind, reason -> result(endpoint, subscription, :endpoint_error, error_string({kind, reason}))
   end
 
   # The enqueue-repair path: a duplicate row that died at enqueue gets ONE
   # more attempt per re-dispatch, guarded by the claim-then-enqueue CAS.
+  # Outcomes: CAS won → reload + enqueue; CAS LOST (another dispatcher
+  # already flipped it) → :duplicate, the normal race outcome; CAS ERRORED
+  # or reload failed → :endpoint_error, never a mislabeled :duplicate that
+  # would hide a state change without an enqueue (cross-vendor finding).
   defp repair(deliv_mod, event, subscription, endpoint, row, opts) do
-    if row.status == :enqueue_failed and claim_for_enqueue(deliv_mod, row.id) do
-      case reload(deliv_mod, row.id) do
-        nil ->
+    if row.status != :enqueue_failed do
+      result(endpoint, subscription, :duplicate)
+    else
+      deliv_mod
+      |> claim_for_enqueue_result(row.id)
+      |> claimed_row(deliv_mod, row.id)
+      |> case do
+        {:won, reloaded} ->
+          merge_result(endpoint, subscription, enqueue(deliv_mod, reloaded, event, opts))
+
+        {:lost, :race} ->
           result(endpoint, subscription, :duplicate)
 
-        reloaded ->
-          merge_result(endpoint, subscription, enqueue(deliv_mod, reloaded, event, opts))
+        {:lost, reason} ->
+          result(endpoint, subscription, :endpoint_error, reason)
       end
-    else
-      result(endpoint, subscription, :duplicate)
     end
+  end
+
+  # {:won, row} | {:lost, :race} (another dispatcher flipped it first) |
+  # {:lost, reason} (claim errored, or the reload after a won claim failed)
+  defp claimed_row(%Ash.BulkResult{status: :success, records: [_]}, deliv_mod, row_id) do
+    case reload(deliv_mod, row_id) do
+      nil -> {:lost, :claim_lost_on_reload}
+      reloaded -> {:won, reloaded}
+    end
+  end
+
+  defp claimed_row(%Ash.BulkResult{status: :success, records: []}, _deliv_mod, _row_id),
+    do: {:lost, :race}
+
+  defp claimed_row(other, _deliv_mod, _row_id), do: {:lost, other}
+
+  # The repair CAS: WHERE-gated on :enqueue_failed, so of N concurrent
+  # re-dispatchers exactly one wins the :pending flip (bulk_update's
+  # matched-records count is the win signal — the stale loser re-reads and
+  # sees the row someone else already claimed).
+  defp claim_for_enqueue_result(deliv_mod, row_id) do
+    with_transient_retry(fn ->
+      deliv_mod
+      |> Ash.Query.filter(id == ^row_id and status == :enqueue_failed)
+      |> Ash.bulk_update(:requeue, %{},
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic]
+      )
+    end)
   end
 
   defp upsert_row(deliv_mod, event, subscription, endpoint) do
@@ -186,29 +251,12 @@ defmodule AshHooks.Dispatcher do
     enqueuer.(row, event)
   rescue
     reason -> {:error, {:raised, reason}}
-  end
-
-  # The repair CAS: WHERE-gated on :enqueue_failed, so of N concurrent
-  # re-dispatchers exactly one wins the :pending flip (bulk_update's
-  # matched-records count is the win signal — the stale loser re-reads and
-  # sees the row someone else already claimed).
-  defp claim_for_enqueue(deliv_mod, row_id) do
-    result =
-      with_transient_retry(fn ->
-        deliv_mod
-        |> Ash.Query.filter(id == ^row_id and status == :enqueue_failed)
-        |> Ash.bulk_update(:requeue, %{},
-          authorize?: false,
-          return_records?: true,
-          return_errors?: true,
-          strategy: [:atomic]
-        )
-      end)
-
-    case result do
-      %Ash.BulkResult{status: :success, records: [_]} -> true
-      _else -> false
-    end
+  catch
+    # exits (queue-client GenServer.call timeouts) and throws escape
+    # `rescue`; they are enqueue failures like any other (cross-vendor
+    # finding, both peers).
+    :exit, reason -> {:error, {:exit, reason}}
+    :throw, value -> {:error, {:throw, value}}
   end
 
   # Gated on :pending — the state an enqueue attempt owns: a late failure
@@ -255,12 +303,12 @@ defmodule AshHooks.Dispatcher do
        )}
     else
       with {:ok, subscriptions} <- read_subscriptions(subs_mod) do
-        matches =
+        {matches, error_entries} =
           subscriptions
           |> Enum.filter(&Subscription.matches?(&1, event.type))
           |> resolve_endpoints(endpoint_mod)
 
-        {:ok, matches}
+        {:ok, matches, error_entries}
       end
     end
   end
@@ -272,17 +320,57 @@ defmodule AshHooks.Dispatcher do
     end
   end
 
-  # Endpoint resolution is per-subscription isolation: a gone/unreadable
-  # endpoint row skips THAT subscription without stopping the fanout.
+  # Endpoint resolution distinguishes three outcomes per subscription
+  # (cross-vendor finding): an ENABLED endpoint matches; a gone or disabled
+  # one is SKIPPED by design (no row, no entry); a READ ERROR after the
+  # transient retry is surfaced as a per-endpoint :endpoint_error result —
+  # never silently conflated with gone, or a transient blip would drop the
+  # event with nothing recorded and nothing re-drivable.
   defp resolve_endpoints(subscriptions, endpoint_mod) do
     subscriptions
-    |> Enum.reduce([], fn subscription, acc ->
-      case Ash.get(endpoint_mod, subscription.endpoint_id, authorize?: false) do
-        {:ok, %{status: :enabled} = endpoint} -> [{subscription, endpoint} | acc]
-        _skipped -> acc
+    |> Enum.reduce({[], []}, fn subscription, {matches, errors} ->
+      subscription
+      |> resolve_endpoint(endpoint_mod)
+      |> case do
+        {:match, endpoint} -> {[{subscription, endpoint} | matches], errors}
+        :skip -> {matches, errors}
+        {:error, reason} -> {matches, [entry(subscription, reason) | errors]}
       end
     end)
-    |> Enum.reverse()
+    |> then(fn {matches, errors} -> {Enum.reverse(matches), Enum.reverse(errors)} end)
+  end
+
+  defp resolve_endpoint(subscription, endpoint_mod) do
+    case with_transient_retry(fn ->
+           Ash.get(endpoint_mod, subscription.endpoint_id, authorize?: false)
+         end) do
+      {:ok, %{status: :enabled} = endpoint} ->
+        {:match, endpoint}
+
+      {:ok, _disabled} ->
+        :skip
+
+      {:error, %Ash.Error.Invalid{errors: reasons} = error} ->
+        if Enum.all?(reasons, &is_struct(&1, Ash.Error.Query.NotFound)) do
+          # a GONE endpoint row is a configuration state, not a failure:
+          # skip by design (no row, no entry) — same as disabled
+          :skip
+        else
+          {:error, error}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp entry(subscription, error) do
+    %{
+      endpoint_id: subscription.endpoint_id,
+      subscription_id: subscription.id,
+      status: :endpoint_error,
+      error: error
+    }
   end
 
   defp check_conflicts(matches, entity) do
@@ -328,7 +416,18 @@ defmodule AshHooks.Dispatcher do
     end
   end
 
-  defp cast_event(%Event{} = event), do: {:ok, event}
+  # A struct is not proof of validation: callers can construct
+  # %AshHooks.Event{} directly, bypassing Event.new/1's contract checks —
+  # re-validate the fields (a dot-bearing id would otherwise persist and
+  # break the signing delimiter invariant downstream; cross-vendor finding).
+  defp cast_event(%Event{} = event) do
+    with :ok <- check_event_field(event.id, "id", &valid_event_id?/1),
+         :ok <- check_event_field(event.type, "type", &valid_event_type?/1),
+         :ok <- check_event_field(event.payload, "payload", &(is_binary(&1) and &1 != "")),
+         :ok <- check_event_field(event.metadata, "metadata", &is_map/1) do
+      {:ok, event}
+    end
+  end
 
   defp cast_event(_other),
     do:
@@ -336,6 +435,23 @@ defmodule AshHooks.Dispatcher do
        UnknownError.exception(
          error: "event must be an %AshHooks.Event{} — build one with AshHooks.Event.new/1"
        )}
+
+  defp check_event_field(value, name, predicate) do
+    if predicate.(value) do
+      :ok
+    else
+      {:error,
+       UnknownError.exception(
+         error:
+           "event #{name} is invalid — build events through AshHooks.Event.new/1 (raw struct construction bypasses its validation)"
+       )}
+    end
+  end
+
+  defp valid_event_id?(id),
+    do: is_binary(id) and id != "" and not String.contains?(id, ".") and String.length(id) <= 255
+
+  defp valid_event_type?(type), do: is_binary(type) and type != "" and String.length(type) <= 255
 
   defp resolve_module(entity, key) do
     case Map.get(entity, key) do
@@ -356,6 +472,18 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp error_string({:raised, reason}), do: error_string(reason)
+
+  # exit/throw reasons classify without their contents — a thrown term can
+  # carry payload or secret material (the bounded-classification rule).
+  defp error_string({:exit, reason}) when is_atom(reason),
+    do: ("exit: " <> Atom.to_string(reason)) |> String.slice(0, 255)
+
+  defp error_string({:exit, _reason}), do: "exit: unclassified"
+
+  defp error_string({:throw, value}) when is_binary(value),
+    do: String.slice("throw: " <> value, 0, 255)
+
+  defp error_string({:throw, _value}), do: "throw: unclassified"
   defp error_string(term) when is_binary(term), do: String.slice(term, 0, 255)
   defp error_string(term) when is_atom(term), do: Atom.to_string(term)
 
@@ -403,7 +531,7 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp transient_sqlite_contention?(%Ash.Error.Unknown.UnknownError{error: inner}) do
-    inner = to_string(inner)
+    inner = if is_binary(inner), do: inner, else: inspect(inner)
     String.contains?(inner, "Exqlite.Error") and contentiously_busy?(inner)
   end
 

@@ -402,7 +402,11 @@ defmodule AshHooks.Ingress do
   end
 
   defp transient_sqlite_contention?(%Ash.Error.Unknown.UnknownError{error: inner}) do
-    inner = to_string(inner)
+    # splode's to_class flatten path can store a raw non-string term here;
+    # `to_string` would raise Protocol.UndefinedError and relabel the real
+    # error — inspect it instead (cross-vendor finding, swept from the
+    # dispatcher sibling).
+    inner = if is_binary(inner), do: inner, else: inspect(inner)
     String.contains?(inner, "Exqlite.Error") and contentiously_busy?(inner)
   end
 

@@ -491,6 +491,107 @@ defmodule AshHooks.DispatcherTest do
     end
   end
 
+  describe "cross-vendor review regressions" do
+    test "an enqueuer EXIT is an enqueue failure, isolated (siblings proceed)" do
+      good = endpoint!("https://good.test/hook")
+      bad = endpoint!("https://bad.test/hook")
+      subscription!(good.id)
+      subscription!(bad.id)
+
+      {:ok, results} =
+        Dispatcher.dispatch(
+          Emitter,
+          :order_paid,
+          event!(),
+          enqueue: fn delivery, _event ->
+            if delivery.endpoint_id == bad.id, do: exit(:queue_timeout), else: :ok
+          end
+        )
+
+      by_endpoint = Map.new(results, &{&1.endpoint_id, &1.status})
+      assert by_endpoint[good.id] == :created
+      assert by_endpoint[bad.id] == :enqueue_failed
+
+      bad_row = Enum.find(delivery_rows(), &(&1.endpoint_id == bad.id))
+      assert bad_row.status == :enqueue_failed
+      assert bad_row.last_error =~ "exit"
+    end
+
+    test "an enqueuer THROW is an enqueue failure, isolated" do
+      good = endpoint!("https://good.test/hook")
+      bad = endpoint!("https://bad.test/hook")
+      subscription!(good.id)
+      subscription!(bad.id)
+
+      {:ok, results} =
+        Dispatcher.dispatch(
+          Emitter,
+          :order_paid,
+          event!(),
+          enqueue: fn delivery, _event ->
+            if delivery.endpoint_id == bad.id, do: throw(:oops), else: :ok
+          end
+        )
+
+      by_endpoint = Map.new(results, &{&1.endpoint_id, &1.status})
+      assert by_endpoint[good.id] == :created
+      assert by_endpoint[bad.id] == :enqueue_failed
+    end
+
+    test "a forged %Event{} struct fails validation before any row" do
+      ep = endpoint!()
+      subscription!(ep.id)
+
+      forged = %AshHooks.Event{id: "evil.id", type: "order_paid", payload: "{}", metadata: %{}}
+
+      assert {:error, _} =
+               Dispatcher.dispatch(Emitter, :order_paid, forged, enqueue: &enqueue_ok/2)
+
+      assert delivery_rows() == []
+    end
+
+    test "an event whose type diverges from the declaration errors before any row" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["*"])
+
+      {:ok, other_event} = AshHooks.Event.new(type: :something_else, payload: "{}")
+
+      assert {:error, _} =
+               Dispatcher.dispatch(Emitter, :order_paid, other_event, enqueue: &enqueue_ok/2)
+
+      assert delivery_rows() == []
+    end
+
+    test "an endpoint READ ERROR surfaces as :endpoint_error, not a silent skip" do
+      live = endpoint!()
+      subscription!(live.id)
+      subscription!(endpoint!().id)
+
+      # stage a non-NotFound read error: the endpoint table itself vanishes
+      # (analogous to a pool timeout / transient storage error on any layer)
+      Repo.query!("DROP TABLE #{@endpoints}")
+
+      assert {:ok, results} =
+               Dispatcher.dispatch(Emitter, :order_paid, event!(), enqueue: &enqueue_ok/2)
+
+      assert length(results) == 2
+      assert Enum.all?(results, &(&1.status == :endpoint_error))
+      assert delivery_rows() == []
+
+      Repo.query!("""
+      CREATE TABLE #{@endpoints} (
+        id TEXT PRIMARY KEY,
+        url TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'enabled',
+        secret_ref TEXT NOT NULL,
+        previous_secret_ref TEXT,
+        legacy_secret_ref TEXT,
+        legacy_previous_secret_ref TEXT
+      )
+      """)
+    end
+  end
+
   describe "global fail-fast" do
     test "an unknown outbound name errors before anything runs" do
       ep = endpoint!()
