@@ -7,8 +7,9 @@ defmodule AshHooks.Telemetry do
   8-hex form; no package event needs it today.
 
   Events (`:telemetry.execute/3`, best-effort; consumers opt in by
-  attaching handlers — telemetry ~> 1.3 required, where a crashing
-  handler is detached rather than raised into the delivery job):
+  attaching handlers — the telemetry ~> 1.3 floor is a currency floor;
+  execute/3's exact-name matching and detach-on-crash behavior were
+  verified first-hand against the vendored source):
 
     * `[:ash_hooks, :ingress, :verify]` — `%{duration_ms}`; `%{source,
       outcome: :ok | :invalid, reason: atom | nil}` (the five
@@ -49,8 +50,8 @@ defmodule AshHooks.Telemetry do
 
   @doc """
   The sanctioned secret identity for telemetry consumers: SHA-256,
-  first 8 hex chars — an unbeknownst-to-the-receiver fingerprint that
-  cannot be reversed into material.
+  first 8 hex chars — a non-reversible correlation identity (ADR-0005's
+  chosen form; not an authz credential).
   """
   @spec fingerprint(binary()) :: String.t()
   def fingerprint(secret) when is_binary(secret) do
@@ -58,4 +59,23 @@ defmodule AshHooks.Telemetry do
     |> Base.encode16(case: :lower)
     |> binary_part(0, 8)
   end
+
+  @doc """
+  The shared contents-free error classifier (the delivery and dispatcher
+  error strings route through this): atoms are the package's own
+  vocabulary; a binary survives only if it is a single fixed-grammar
+  token (`\A[a-z][a-z0-9_]*\z`); anything else — consumer resolver,
+  adapter, or enqueuer terms that can carry secret or body material —
+  collapses to "unclassified".
+  """
+  @spec classify_token(term()) :: binary()
+  def classify_token(term) when is_atom(term), do: Atom.to_string(term)
+
+  def classify_token(term) when is_binary(term) do
+    if Regex.match?(~r/\A[a-z][a-z0-9_]*\z/, term),
+      do: String.slice(term, 0, 255),
+      else: "unclassified"
+  end
+
+  def classify_token(_other), do: "unclassified"
 end

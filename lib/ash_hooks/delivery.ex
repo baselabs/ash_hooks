@@ -823,18 +823,9 @@ defmodule AshHooks.Delivery do
   # atoms are our own vocabulary; binaries pass only in the fixed error
   # grammar; everything else collapses to "unclassified". This is BOTH
   # the telemetry floor and the last_error ledger floor (#11 R1).
-  @fixed_error_grammar ~r/^[a-z][a-z0-9_]*$/
-
-  defp error_string(term) when is_atom(term), do: Atom.to_string(term)
   defp error_string({:secret_resolution, _reason}), do: "secret_resolution"
   defp error_string({:adapter_crash, _inner}), do: "adapter_crash"
   defp error_string({:disable_failed, _inner}), do: "disable_failed"
 
-  defp error_string(term) when is_binary(term) do
-    if Regex.match?(@fixed_error_grammar, term),
-      do: String.slice(term, 0, 255),
-      else: "unclassified"
-  end
-
-  defp error_string(_other), do: "unclassified"
+  defp error_string(term), do: AshHooks.Telemetry.classify_token(term)
 end

@@ -108,7 +108,10 @@ defmodule AshHooks.Ingress do
   defp emit_verify(source, outcome, reason, started) do
     :telemetry.execute(
       [:ash_hooks, :ingress, :verify],
-      %{duration_ms: System.monotonic_time() - started},
+      %{
+        duration_ms:
+          System.convert_time_unit(System.monotonic_time() - started, :native, :millisecond)
+      },
       %{source: source, outcome: outcome, reason: reason}
     )
   end

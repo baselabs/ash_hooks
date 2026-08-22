@@ -516,6 +516,48 @@ defmodule AshHooks.DispatcherTest do
       bad_row = Enum.find(delivery_rows(), &(&1.endpoint_id == bad.id))
       assert bad_row.status == :enqueue_failed
       assert bad_row.last_error =~ "exit"
+
+      # the enqueue_failed telemetry event fires with the classified,
+      # contents-free reason (the #11 floor)
+      parent = self()
+
+      :telemetry.attach_many(
+        "dispatcher-tel-#{System.unique_integer()}",
+        [
+          [:ash_hooks, :dispatch, :enqueue_failed]
+        ],
+        fn _event, _m, md, _ -> send(parent, {:enqueue_failed, md}) end,
+        nil
+      )
+
+      second_event = event!()
+
+      {:ok, _} =
+        Dispatcher.dispatch(
+          Emitter,
+          :order_paid,
+          second_event,
+          enqueue: fn delivery, _event ->
+            if delivery.endpoint_id == bad.id,
+              # a RAISING message carrying secret-shaped material: the
+              # classified-only floor must reduce it (cross-vendor fix)
+              do: raise("queue client died, secret was whsec_LEAKYMATERIAL00"),
+              else: :ok
+          end
+        )
+
+      # the re-dispatch repairs the :enqueue_failed row (claim-then-
+      # enqueue CAS) and the second failure fires the event
+      assert_received {:enqueue_failed, md}
+      assert md.endpoint_id == bad.id
+      assert md.reason == "unclassified"
+      refute md.reason =~ "LEAKY"
+      assert md.event_uuid == second_event.id
+
+      leaky_row = Enum.find(delivery_rows(), &(&1.event_uuid == second_event.id))
+      assert leaky_row.status == :enqueue_failed
+      assert leaky_row.last_error == "unclassified"
+      refute leaky_row.last_error =~ "LEAKY"
     end
 
     test "an enqueuer THROW is an enqueue failure, isolated" do

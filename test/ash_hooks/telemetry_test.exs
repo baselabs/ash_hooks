@@ -173,6 +173,12 @@ defmodule AshHooks.TelemetryTest do
     Repo.query!("DELETE FROM #{@endpoints}")
     Repo.query!("DELETE FROM #{@ledgers}")
 
+    # the counting provider is global — reset per test (the claim test
+    # flips the outcome; without the reset it leaks into the siblings)
+    AshHooks.CountingProvider.put_sink(self())
+    AshHooks.CountingProvider.put_outcome(:ok)
+    on_exit(&AshHooks.CountingProvider.cleanup/0)
+
     {:ok, _} = HttpDouble.start_link([{:ok, %{status: 200, headers: [], body: ~s({"ok": true})}}])
 
     parent = self()
@@ -360,7 +366,9 @@ defmodule AshHooks.TelemetryTest do
       {verify_md, verify_m} = find(received, [:ash_hooks, :ingress, :verify])
       assert verify_md.outcome == :ok
       assert verify_md.source == :counter
-      assert is_integer(Map.get(verify_m, :duration_ms))
+      # milliseconds, not native units (cross-vendor fix): a healthy
+      # verify is well under seconds
+      assert verify_m.duration_ms < 5_000
 
       outcomes =
         received
@@ -368,6 +376,27 @@ defmodule AshHooks.TelemetryTest do
         |> Enum.map(& &1.outcome)
 
       assert outcomes == [:created, :duplicate]
+    end
+
+    test "claim emits :claimed then :lease_held on a live foreign lease" do
+      # a failing handler leaves the row re-driveable (:failed_retryable),
+      # so the lease machine is observable directly
+      raw = Jason.encode!(%{"id" => "evt_tel_3", "type" => "counted", "n" => 1})
+      assert {:ok, :created, delivery} = Ingress.ingest(Ledger, :counter, raw, ingress_ctx(raw))
+
+      # strand the row back in :received — the claimable state
+      Repo.query!("UPDATE #{@ledgers} SET status = 'received' WHERE id = ?", [delivery.id])
+
+      assert {:ok, _token, _} = Ingress.claim_delivery(Ledger, delivery.id)
+      {:error, :lease_held} = Ingress.claim_delivery(Ledger, delivery.id)
+
+      outcomes =
+        events()
+        |> filter([:ash_hooks, :ingress, :claim])
+        |> Enum.map(& &1.outcome)
+
+      # ingest's own drive claimed first; the observable pair is ours
+      assert Enum.take(outcomes, -2) == [:claimed, :lease_held]
     end
 
     test "a tampered signature emits verify(:invalid) with the fixed class atom" do

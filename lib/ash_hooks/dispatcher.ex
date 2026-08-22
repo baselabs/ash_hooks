@@ -274,9 +274,11 @@ defmodule AshHooks.Dispatcher do
   defp mark_enqueue_failed(deliv_mod, row_id, reason) do
     result =
       with_transient_retry(fn ->
+        # the reason arrives ALREADY classified (enqueue_result applied
+        # error_string) — re-classifying would mangle the prefixed forms
         deliv_mod
         |> Ash.Query.filter(id == ^row_id and status == :pending)
-        |> Ash.bulk_update(:mark_enqueue_failed, %{error: error_string(reason)},
+        |> Ash.bulk_update(:mark_enqueue_failed, %{error: reason},
           authorize?: false,
           return_records?: true,
           return_errors?: true,
@@ -489,17 +491,18 @@ defmodule AshHooks.Dispatcher do
 
   defp error_string({:exit, _reason}), do: "exit: unclassified"
 
+  # contents route through the shared contents-free classifier (the
+  # enqueue_failed EVENT and the ledger write share this floor; a thrown
+  # or messaged term can carry secret material — cross-vendor finding)
   defp error_string({:throw, value}) when is_binary(value),
-    do: String.slice("throw: " <> value, 0, 255)
+    do: "throw: " <> AshHooks.Telemetry.classify_token(value)
 
   defp error_string({:throw, _value}), do: "throw: unclassified"
-  defp error_string(term) when is_binary(term), do: String.slice(term, 0, 255)
-  defp error_string(term) when is_atom(term), do: Atom.to_string(term)
 
   defp error_string(%{__exception__: true} = exception),
-    do: exception |> Exception.message() |> String.slice(0, 255)
+    do: AshHooks.Telemetry.classify_token(Exception.message(exception))
 
-  defp error_string(_term), do: "unclassified"
+  defp error_string(term), do: AshHooks.Telemetry.classify_token(term)
 
   # ────────────────────────── transient contention retry ──────────────────────────
   # The inbound machine's bounded busy/locked retry (ADR-0003's sqlite
