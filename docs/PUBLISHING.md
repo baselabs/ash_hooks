@@ -3,6 +3,25 @@
 One canonical run-sheet for a release, human-owned end to end
 (the publish itself is issue #15, labeled `needs-human`).
 
+## The surface checklist (why releases kept shipping half-done)
+
+A release is DONE only when `mix hex.info` shows the new version AND
+every surface below was either provably unchanged or provably updated —
+verified by observation, never intent. `mix hex.publish docs` does NOT
+touch surfaces 1 or 6.
+
+1. hex.pm PACKAGE PAGE — renders the README baked into the newest
+   release tarball; any README/metadata change needs a version bump +
+   full publish (immutable per version).
+2. hexdocs — built from docs() extras at publish time.
+3. Livebooks — bump each notebook's "validated against" version and
+   re-run `./scripts/run-livebook.sh` (step 5 below).
+4. In-repo docs — README/tutorial/usage-rules/CHANGELOG version claims
+   match the release being cut.
+5. Tag + GitHub release.
+6. `mix hex.info ash_hooks` as the FINAL step — a hidden `Proceed?
+   [Yn]` prompt silently no-ops a scripted publish.
+
 ## Pre-publish (verify, in order)
 
 1. `git status` clean; `git rev-parse HEAD` recorded; CI green on that
