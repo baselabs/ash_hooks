@@ -36,7 +36,11 @@ defmodule AshHooks.Delivery do
   @redaction_patterns [
     ~r/wh(sec|sk|pk)_[A-Za-z0-9+\/=]+/,
     ~r/Bearer\s+[A-Za-z0-9._\-]+/,
-    ~r/[A-Za-z0-9+\/=]{20,}/
+    ~r/[A-Za-z0-9+\/=]{20,}/,
+    # percent-encoded disguises (derisk: "whsec%5F..." / "%77hsec_" forms)
+    ~r/wh(sec|sk|pk)(%5[fF])?[A-Za-z0-9+\/=%]+/,
+    ~r/Bearer(%20|\+|%2[00])?[A-Za-z0-9._\-%]+/,
+    ~r/[A-Za-z0-9+\/=%]{24,}/
   ]
 
   @snippet_max 2_048

@@ -50,6 +50,42 @@ defmodule AshHooks.Ssrf do
   def safe_url?(_other), do: false
 
   @doc """
+  The VALIDATED ADDRESSES behind a URL — the adapter's pinning input:
+  `{:ok, %{uri: URI, addresses: [ip]}}` when every resolved address is
+  public, `{:error, :unsafe | :unresolvable}` otherwise. The connection
+  target comes FROM this same resolution, which is what closes the
+  rebinding TOCTOU (validate-then-connect-on-the-same-answer).
+  """
+  @spec resolve_public(term()) ::
+          {:ok, %{uri: URI.t(), addresses: [:inet.ip_address()]}} | {:error, atom()}
+  def resolve_public(url) when is_binary(url) do
+    case URI.new(url) do
+      {:ok, %URI{scheme: scheme, host: host} = uri} when scheme in ["http", "https"] ->
+        check_host(uri, host && String.downcase(host))
+
+      _other ->
+        {:error, :unsafe}
+    end
+  end
+
+  def resolve_public(_other), do: {:error, :unsafe}
+
+  defp check_host(_uri, host) when host in [nil, ""], do: {:error, :unsafe}
+  defp check_host(_uri, host) when host in @metadata_hostnames, do: {:error, :unsafe}
+
+  defp check_host(uri, host) do
+    case resolve(uri, host) do
+      {:ok, addresses} ->
+        if Enum.all?(addresses, &public_address?/1),
+          do: {:ok, %{uri: uri, addresses: addresses}},
+          else: {:error, :unsafe}
+
+      :error ->
+        {:error, :unresolvable}
+    end
+  end
+
+  @doc """
   The REGISTRATION-time check: scheme, metadata hostnames, and literal-IP
   hosts — deterministic and offline-safe (hostname DNS is the delivery
   runtime's send-time check, per ADR-0005's split).
