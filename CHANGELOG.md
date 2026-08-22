@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.2.1 — 2026-08-22
+
+### Added
+
+- A runnable get-started Livebook (guided tour: inbound verify/dedup,
+  a live local delivery, telemetry, retention) — CI-verified headless
+  on every push. No functional changes.
+
 ## 0.2.0 — 2026-08-22
 
 ### Added
