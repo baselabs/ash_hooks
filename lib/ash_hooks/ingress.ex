@@ -288,11 +288,24 @@ defmodule AshHooks.Ingress do
   def redact_payload(resource, delivery_id, token, redactor) do
     case Ash.get(resource, delivery_id, authorize?: false) do
       {:ok, delivery} ->
-        apply_redactor(redactor, delivery.payload, resource, delivery_id, token)
+        # the fence is checked BEFORE the redactor sees the payload — a
+        # stale token must not receive sensitive bytes through the
+        # callback even though the eventual write would be rejected
+        # (cross-vendor finding)
+        if fence_valid?(delivery, token) do
+          apply_redactor(redactor, delivery.payload, resource, delivery_id, token)
+        else
+          {:error, :stale_token}
+        end
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp fence_valid?(delivery, token) do
+    delivery.fencing_token == token and delivery.status == :claimed and
+      DateTime.compare(delivery.lease_expires_at, now()) == :gt
   end
 
   defp apply_redactor(redactor, payload, resource, delivery_id, token) do

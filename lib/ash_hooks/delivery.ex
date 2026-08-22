@@ -98,9 +98,7 @@ defmodule AshHooks.Delivery do
 
     result =
       deliv_mod
-      |> Ash.Query.filter(
-        status in [:succeeded, :dead_letter, :enqueue_failed] and inserted_at < ^older_than
-      )
+      |> Ash.Query.filter(status in [:succeeded, :dead_letter] and inserted_at < ^older_than)
       |> Ash.bulk_destroy(:prune, %{},
         authorize?: false,
         return_records?: true,

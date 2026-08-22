@@ -110,8 +110,8 @@ defmodule AshHooks.RetentionTest do
   @ledgers "retention_test_ledgers"
   @deliveries "retention_test_deliveries"
   @ingress_secret "retention-test-secret"
-  @old DateTime.add(DateTime.utc_now(), -90, :day) |> DateTime.truncate(:second)
-  @recent DateTime.add(DateTime.utc_now(), -1, :day) |> DateTime.truncate(:second)
+  @old DateTime.add(DateTime.utc_now(), -90, :day) |> DateTime.truncate(:microsecond)
+  @recent DateTime.add(DateTime.utc_now(), -1, :day) |> DateTime.truncate(:microsecond)
 
   setup_all do
     Repo.query!("""
@@ -214,7 +214,14 @@ defmodule AshHooks.RetentionTest do
 
   describe "Delivery.prune/2" do
     test "deletes ONLY old terminal rows — pending/sending/retryable survive" do
-      for status <- [:succeeded, :dead_letter, :pending, :failed_retryable, :sending] do
+      for status <- [
+            :succeeded,
+            :dead_letter,
+            :pending,
+            :failed_retryable,
+            :sending,
+            :enqueue_failed
+          ] do
         delivery_row!(status, @old, "dlv-old-" <> Atom.to_string(status))
       end
 
@@ -223,7 +230,9 @@ defmodule AshHooks.RetentionTest do
       assert {:ok, 2} = AshHooks.Delivery.prune(DeliveryLedger, older_than: @old)
 
       remaining = remaining_statuses(@deliveries)
-      assert Enum.sort(remaining) == [:failed_retryable, :pending, :sending, :succeeded]
+
+      assert Enum.sort(remaining) ==
+               [:enqueue_failed, :failed_retryable, :pending, :sending, :succeeded]
     end
   end
 
@@ -262,9 +271,10 @@ defmodule AshHooks.RetentionTest do
       assert payload_of(id) == %{"kept" => 1, "secret_field" => "sensitive"}
     end
 
-    test "a stale token cannot redact (the fence)" do
+    test "a stale token cannot redact and NEVER sees the payload (the fence)" do
       id = row!(@ledgers, :received, @recent, "evt-stale")
       {:ok, token1, _} = Ingress.claim_delivery(Ledger, id)
+      parent = self()
 
       # expire the lease so a newer claim wins
       Repo.query!("UPDATE #{@ledgers} SET lease_expires_at = ? WHERE id = ?", [
@@ -275,7 +285,12 @@ defmodule AshHooks.RetentionTest do
       {:ok, _token2, _} = Ingress.claim_delivery(Ledger, id)
 
       assert {:error, :stale_token} =
-               Ingress.redact_payload(Ledger, id, token1, fn p -> p end)
+               Ingress.redact_payload(Ledger, id, token1, fn p ->
+                 send(parent, :redactor_invoked)
+                 p
+               end)
+
+      refute_received :redactor_invoked
     end
   end
 
@@ -291,7 +306,10 @@ defmodule AshHooks.RetentionTest do
     id
   end
 
-  defp ts(dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S.%6f")
+  # the adapter storage form: T-separated ISO8601 with microseconds —
+  # space-formatted fixtures pass boundary tests for the WRONG reason
+  # (lexical artifact, cross-vendor finding)
+  defp ts(dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S.%6f") <> "Z"
 
   # helpers
 
