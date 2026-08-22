@@ -48,16 +48,18 @@ migration notes in [UPGRADING.md](UPGRADING.md).
 
 - **Semver and support policy** (ADR-0010): the covered public surface
   is named, deprecations run two minors, and the minimum supported
-  versions are CI-tested (Elixir ~> 1.15 / OTP 26+ / Ash ~> 3.0 /
-  Oban ~> 2.20 optional).
+  versions are CI-tested (Elixir ~> 1.17 / OTP 27+ / Ash ~> 3.0 /
+  Oban ~> 2.20 optional). The previously claimed Elixir 1.15 floor was
+  never buildable with current Ash and is corrected here — 1.0.0 is
+  the first release whose floor is actually tested.
 - **SECURITY.md** with a private disclosure channel (GitHub private
   vulnerability reporting, enabled), scope, and known posture notes;
   **CONTRIBUTING.md** and **UPGRADING.md** — all three ship in the
   tarball and render on hexdocs.
 - **Dialyzer gate** on the public API (local + CI) — first run caught
   the dead IP-SAN matcher above.
-- **CI**: an Elixir 1.15/OTP 26 leg resolving dependencies at the
-  declared minimums, a package leg checking the hex tarball ships
+- **CI**: a floor leg resolving dependencies at the declared minimums
+  (it disproved the old 1.15 claim on its first run), a package leg checking the hex tarball ships
   every documentation file and that the DSL cheat sheets match the
   DSL, and an advisory coverage report.
 - `@spec` on the HTTP behaviour's `request/5` (both adapters),

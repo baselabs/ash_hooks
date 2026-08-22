@@ -44,20 +44,24 @@ jobs:
       - run: mix format --check-formatted
       - run: mix credo --strict
       - run: mix test
-      # advisory coverage printout (built-in; no threshold gate)
-      - run: mix test --cover
+      # advisory coverage printout (built-in; no threshold gate). Spark
+      # module cover-compilation is flaky on some legs — advisory means
+      # it must not red the build
+      - name: Advisory coverage report
+        run: mix test --cover
         if: matrix.no_optional != '1' && matrix.elixir == '1.18'
+        continue-on-error: true
       - name: Assert optional deps never loaded (no-optional leg)
         if: matrix.no_optional == '1'
         run: |
           mix run --no-start -e 'if :code.which(Oban) != :non_existing or :code.which(Plug) != :non_existing, do: (IO.puts("optional dep loaded"); System.halt(1))'
 
-  # The declared Elixir ~> 1.15 minimum, resolved AT THE FLOORS: the lock
+  # The declared Elixir ~> 1.17 minimum, resolved AT THE FLOORS: the lock
   # is dropped so the resolver picks the newest versions whose own floors
-  # still admit 1.15 — the combination a fresh 1.15 consumer actually
-  # gets. If this leg reds because no dependency combination supports
-  # 1.15, raise the floor in mix.exs to what is tested (never keep a
-  # floor this leg disproves).
+  # still admit the minimum — the combination a fresh consumer actually
+  # gets. (The original 1.15 claim was DISPROVEN by this leg on its first
+  # run: modern ash uses the Duration struct, added in Elixir 1.17 — no
+  # ash 3.x compiles on 1.15/1.16. Never keep a floor this leg disproves.)
   floor:
     runs-on: ubuntu-latest
     env:
@@ -66,14 +70,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.15"
-          otp-version: "26"
+          elixir-version: "1.17"
+          otp-version: "27"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             deps
             _build
-          key: mix-floor-1.15-26-${{ hashFiles('mix.exs') }}
+          key: mix-floor-1.17-27-${{ hashFiles('mix.exs') }}
       - run: rm mix.lock
       - run: mix deps.get
       - run: mix compile --warnings-as-errors

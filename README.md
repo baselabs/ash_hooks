@@ -36,7 +36,7 @@ need no queue infrastructure at all.
 - Telemetry events for the whole send/receive lifecycle — structured so
   they can never leak secrets or payloads into your metrics backend.
 
-Requires Elixir ~> 1.15 and Ash ~> 3.0. Oban (~> 2.20) is needed only
+Requires Elixir ~> 1.17 (OTP 27+) and Ash ~> 3.0. Oban (~> 2.20) is needed only
 for outbound delivery; Phoenix or Plug only for receiving. From 1.0
 the package follows semantic versioning with a named public surface —
 see [Stability](#stability).
@@ -286,7 +286,7 @@ telemetry events, error classes) — breaking changes only in 2.0,
 deprecations run two minors minimum, safety corrections ship as fixes
 ([ADR-0010](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0010-semver-and-support-policy.md)).
 
-Minimum supported versions, each CI-tested: Elixir ~> 1.15 (OTP 26+),
+Minimum supported versions, each CI-tested: Elixir ~> 1.17 (OTP 27+),
 Ash ~> 3.0, Oban ~> 2.20 (optional, outbound only). One nuance: a fix
 that closes a safety hole can change behavior in a patch release (a
 delivery that wrongly succeeded may now retry, for example) — such

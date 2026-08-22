@@ -118,17 +118,16 @@ defmodule AshHooks.Ingress do
     )
   end
 
-  defp error_class(%{__exception__: true} = error) do
-    case error.__struct__ |> Module.split() do
-      ["AshHooks", "Errors", "Invalid", class] ->
-        Macro.underscore(class) |> String.to_atom()
-
-      _other_namespace ->
-        nil
-    end
+  # dialyzer proved (Elixir 1.18 and 1.20 alike) that every error reaching
+  # here is one of the Invalid exception structs — the class is the
+  # underscored final segment. The rescue keeps any future non-exception
+  # drift from crashing telemetry emission.
+  defp error_class(error) do
+    [_ash_hooks, _errors, _invalid, class] = error.__struct__ |> Module.split()
+    Macro.underscore(class) |> String.to_atom()
+  rescue
+    _ -> nil
   end
-
-  defp error_class(_non_exception), do: nil
 
   @doc """
   Persists the ledger row (raw payload BEFORE handling) via the
