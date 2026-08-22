@@ -147,7 +147,7 @@ defmodule AshHooks.Delivery do
   # ────────────────────────── the send ──────────────────────────
 
   defp send(row, endpoint, config) do
-    adapter = config[:http] || AshHooks.Http.Httpc
+    adapter = config[:http] || AshHooks.Http.Bounded
 
     request = if is_function(adapter, 5), do: adapter, else: &adapter.request/5
 
@@ -472,24 +472,32 @@ defmodule AshHooks.Delivery do
   # ────────────────────────── redaction ──────────────────────────
 
   defp redact(body) when is_binary(body) do
-    # patterns run against the RAW and the percent-DECODED forms — an
-    # encoded disguise must not survive (cross-vendor live probe:
-    # "%77hsec_shortkey" passed the raw-only patterns)
-    raw = apply_redaction_patterns(body)
-
-    decoded =
-      try do
-        apply_redaction_patterns(URI.decode_www_form(body))
-      rescue
-        ArgumentError -> raw
-      end
-
-    decoded
+    # patterns run against the DECODE CHAIN (derisk-2): raw → percent-
+    # decode (×2 — double-encoded disguises) → JSON \uXXXX unescape.
+    # Each layer falls back to the previous on failure; an encoded
+    # disguise must not survive in any layer.
+    body
+    |> decode_step(&URI.decode_www_form/1)
+    |> decode_step(&URI.decode_www_form/1)
+    |> decode_step(&json_unescape/1)
+    |> apply_redaction_patterns()
     |> String.replace(~r/[\r\n]+/, " ")
     |> String.slice(0, @snippet_max)
   end
 
   defp redact(_other), do: nil
+
+  defp decode_step(input, decoder) do
+    decoder.(input)
+  rescue
+    ArgumentError -> input
+  end
+
+  defp json_unescape(string) do
+    Regex.replace(~r/\\u([0-9a-fA-F]{4})/, string, fn _whole, code ->
+      <<String.to_integer(code, 16)::utf8>>
+    end)
+  end
 
   defp apply_redaction_patterns(body) do
     Enum.reduce(@redaction_patterns, body, &String.replace(&2, &1, "[redacted]"))

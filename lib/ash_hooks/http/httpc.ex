@@ -26,6 +26,8 @@ defmodule AshHooks.Http.Httpc do
 
   @behaviour AshHooks.Http
 
+  alias AshHooks.Http.Target
+
   @default_timeout 15_000
   @default_connect_timeout 5_000
   @default_max_body_bytes 65_536
@@ -35,61 +37,25 @@ defmodule AshHooks.Http.Httpc do
     method = if is_binary(method), do: String.to_atom(method), else: method
     headers = Map.new(headers)
 
-    resolve =
-      if opts[:validate_destination] == false,
-        do: &bypass_resolution/1,
-        else: &AshHooks.Ssrf.resolve_public/1
+    # shared pinning substrate (also the test seam — the SSRF obligation
+    # lives in the driver's send-time check; adapter resolution is
+    # defense-in-depth)
+    case Target.resolve(url, opts) do
+      {:ok, target} ->
+        pinned_request(method, target, headers, body, opts)
 
-    case resolve.(url) do
-      {:ok, %{uri: uri, addresses: [address | _]}} ->
-        pinned_request(method, uri, address, headers, body, opts)
-
-      {:error, :unsafe} ->
-        {:error, :unsafe_destination}
-
-      {:error, :unresolvable} ->
-        {:error, :unresolved_host}
+      {:error, error} ->
+        {:error, error}
     end
   end
 
-  # Test seam ONLY (local listeners are loopback — resolve_public would
-  # refuse them): the SSRF obligation lives in the DRIVER's send-time
-  # check; this adapter's own resolution is defense-in-depth.
-  defp bypass_resolution(url) do
-    case URI.new(url) do
-      {:ok, %URI{scheme: scheme, host: host} = uri}
-      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
-        case lookup(host) do
-          {:ok, address} -> {:ok, %{uri: uri, addresses: [address]}}
-          {:error, _} -> {:error, :unresolvable}
-        end
-
-      _other ->
-        {:error, :unsafe}
-    end
-  end
-
-  defp lookup(host) do
-    bare =
-      case host do
-        "[" <> rest -> String.trim_trailing(rest, "]")
-        plain -> plain
-      end
-
-    case :inet.parse_address(String.to_charlist(bare)) do
-      {:ok, literal} -> {:ok, literal}
-      {:error, _} -> :inet.getaddr(String.to_charlist(bare), :inet)
-    end
-  end
-
-  defp pinned_request(method, uri, address, headers, body, opts) do
-    host = String.downcase(uri.host)
-    port = uri.port || default_port(uri.scheme)
-    pinned_uri = %{uri | host: format_address(address)}
+  defp pinned_request(method, target, headers, body, opts) do
+    host = target.host
+    pinned_uri = %{target.uri | host: format_address(target.address)}
 
     header_list =
       headers
-      |> Map.put("host", host_header(host, port, uri.scheme))
+      |> Map.put("host", Target.host_header(host, target.port, target.uri.scheme))
       |> Enum.map(fn {name, value} -> {String.to_charlist(name), String.to_charlist(value)} end)
 
     http_options =
@@ -98,7 +64,7 @@ defmodule AshHooks.Http.Httpc do
         timeout: opts[:timeout] || @default_timeout,
         connect_timeout: opts[:connect_timeout] || @default_connect_timeout
       ]
-      |> maybe_put_ssl(uri.scheme, host)
+      |> maybe_put_ssl(target.uri.scheme, host)
 
     url = String.to_charlist(URI.to_string(pinned_uri))
 
@@ -193,16 +159,6 @@ defmodule AshHooks.Http.Httpc do
 
   defp truncate(body, max) when byte_size(body) > max, do: binary_part(body, 0, max)
   defp truncate(body, _max), do: body
-
-  defp default_port("https"), do: 443
-  defp default_port(_http), do: 80
-
-  defp host_header(host, 443, "https"), do: host
-  defp host_header(host, 80, "http"), do: host
-
-  defp host_header(host, port, _) do
-    if String.contains?(host, ":"), do: "[#{host}]:#{port}", else: "#{host}:#{port}"
-  end
 
   # the pinned URL carries the validated IP; TLS still names the ORIGINAL
   # host (SNI + RFC 6125 hostname check against it)

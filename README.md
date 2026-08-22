@@ -30,7 +30,7 @@ per-provider signatures, deduplicate, emit domain events) and **outbound**
 > `use AshHooks.Worker`): row-owned retry policy with Oban as the durable
 > trigger (ADR-0008), attempt-row-before-send, Retry-After + jittered
 > backoff + dead-letter, 410 durable disable, redirect refusal, the
-> `AshHooks.Http` adapter behaviour (`:httpc` default), bounded redacted
+> `AshHooks.Http` adapter behaviour (bounded native default), redacted
 > response snippets, and SSRF guards at registration + send. Upcoming
 > slices: telemetry, retention hooks — tracked by
 > [#1](https://github.com/baselabs/ash_hooks/issues/1).
@@ -259,8 +259,12 @@ immediately. Responses persist as bounded, redacted snippets
 accept no action input. SSRF is guarded at registration (the endpoint's
 `url` type rejects private/loopback/link-local/metadata literals and
 non-http schemes on every write path) and re-checked at send with DNS
-re-resolution. HTTP goes through the `AshHooks.Http` adapter behaviour
-(`:httpc` default — inject your own for tests or proxies). The package
+re-resolution. HTTP goes through the `AshHooks.Http` adapter behaviour —
+the default is `AshHooks.Http.Bounded`, a minimal HTTP/1.1 client whose
+EVERY read is capped (headers, and bodies under Content-Length, chunked,
+and read-to-close framings alike — no response can balloon a worker's
+memory); `AshHooks.Http.Httpc` (OTP `:httpc`) is available as an
+alternative, and you can inject your own for tests or proxies. The package
 still compiles and runs Oban-free (CI no-optional leg + the inbound-only
 proof); `use AshHooks.Worker` without Oban on the host fails
 deterministically at compile.

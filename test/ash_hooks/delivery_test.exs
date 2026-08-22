@@ -414,6 +414,39 @@ defmodule AshHooks.DeliveryTest do
       assert snippet =~ "[redacted]"
     end
 
+    test "a JSON-\\u-ESCAPED secret disguise is redacted (derisk-2 regression)" do
+      with_escapes =
+        "{\"e\": \"whsec_\\u0064\\u0054\\u0056\\u007a\\u0064\\u0048\\u004e\\u006c\\u0059\\u0033\\u004a\\u006c\\u0064\\u0044\\u0065\\u0079\\u004a\\u007a\\u0051\\u0033\\u004e\\u006a\\u0063\\u0034\\u004f\\u0054\\u0041\\u003d\", \"ok\": 1}"
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: with_escapes}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config())
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ "u0064"
+      refute snippet =~ "whsec_"
+      assert snippet =~ "[redacted]"
+    end
+
+    test "a DOUBLE-PERCENT-ENCODED secret disguise is redacted (derisk-2 regression)" do
+      # "%2577hsec_..." decodes twice to "%77hsec_..." then to "whsec_..."
+      body = ~s({"e": "%2577hsec_) <> "c2VjcmV0LXNoaW0tdGVzdC1rZXkxMg" <> ~s(})
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config())
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ "2577hsec"
+      assert snippet =~ "[redacted]"
+    end
+
     test "an ADAPTER pin-time SSRF refusal dead-letters immediately (never burns the ceiling)" do
       refusing = fn _method, _url, _headers, _body, _opts -> {:error, :unsafe_destination} end
 
