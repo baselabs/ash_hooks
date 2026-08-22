@@ -6,8 +6,8 @@ Webhooks for [Ash Framework](https://ash-hq.org) — **inbound** (receive, verif
 per-provider signatures, deduplicate, emit domain events) and **outbound**
 (sign, deliver, retry, track).
 
-> **Status: provider behaviour + SW signing + inbound ingress/fenced ledger +
-> outbound fanout dispatcher.**
+> **Status: inbound ingress/fenced ledger + outbound fanout + delivery
+> runtime.**
 > Landed: the DSL sections and install task (including the endpoint
 > `body_reader` codemod), the CI compile-matrix with the Oban/plug-free proof
 > (ADR-0004), the inbound provider contract (`AshHooks.Provider` with
@@ -21,13 +21,18 @@ per-provider signatures, deduplicate, emit domain events) and **outbound**
 > HMAC-SHA256 over the `ComplyCube-Signature` header, SDK-vector conformance)
 > and `AshHooks.Provider.HubSpotV3` (composite `method + requestUri + body +
 > timestamp` HMAC over a separate millisecond timestamp header, batch array
-> bodies, docs-vector conformance), and the outbound fanout —
+> bodies, docs-vector conformance), the outbound fanout —
 > `%AshHooks.Event{}` + the `Subscription` / `Endpoint` /
 > `OutboundDelivery` resource extensions (`AshHooks.Dispatcher`) with
 > per-endpoint enqueue isolation, a claim-then-enqueue repair CAS, and
-> secret-ref-only storage (literal secrets rejected at cast). Upcoming
-> slices: the delivery runtime (worker + HTTP policy + SSRF), telemetry —
-> tracked by
+> secret-ref-only storage (literal secrets rejected at cast) — and the
+> delivery runtime (`AshHooks.Delivery` + the host-injected
+> `use AshHooks.Worker`): row-owned retry policy with Oban as the durable
+> trigger (ADR-0008), attempt-row-before-send, Retry-After + jittered
+> backoff + dead-letter, 410 durable disable, redirect refusal, the
+> `AshHooks.Http` adapter behaviour (`:httpc` default), bounded redacted
+> response snippets, and SSRF guards at registration + send. Upcoming
+> slices: telemetry, retention hooks — tracked by
 > [#1](https://github.com/baselabs/ash_hooks/issues/1).
 
 Inbound and outbound are independently consumable: inbound-only applications
@@ -215,17 +220,50 @@ AshHooks.dispatch(Order, :order_paid, event)
 ```
 
 Each matching enabled endpoint gets a durable delivery row unique on
-`{endpoint_id, event_uuid}` — the same pair the (upcoming) Oban job
-uniqueness keys use — carrying the exact payload bytes to sign. Endpoints
-store secret REFERENCES only (`whsec_`-shaped literals are rejected at
-cast, on every write path); endpoints carry a durable `:enabled |
-:disabled` state the dispatcher respects. One endpoint's enqueue failure
-records `:enqueue_failed` on its row and never stops its siblings; a
-re-dispatch claims the failed row via a CAS and retries the enqueue
-exactly once per won claim. With no `:enqueue` configured, rows persist
-`:pending` (`:deferred` results) — the delivery runtime (next slice)
-drives them. Durable send with retry/backoff/dead-letter lands with that
-slice.
+`{endpoint_id, event_uuid}` — the same pair the Oban job uniqueness keys
+use — carrying the exact payload bytes to sign and the frozen effective
+signing mode. Endpoints store secret REFERENCES only (`whsec_`-shaped
+literals are rejected at cast, on every write path); endpoints carry a
+durable `:enabled | :disabled` state the dispatcher respects. One
+endpoint's enqueue failure records `:enqueue_failed` on its row and never
+stops its siblings; a re-dispatch claims the failed row via a CAS and
+retries the enqueue exactly once per won claim. With no `:enqueue`
+configured, rows persist `:pending` (`:deferred` results).
+
+Delivery runtime (landed): define ONE worker module in your app and wire
+it as the dispatch enqueuer —
+
+```elixir
+defmodule MyApp.WebhookDeliveryWorker do
+  use AshHooks.Worker,
+    deliveries: MyApp.OutboundDelivery,
+    endpoints: MyApp.WebhookEndpoint,
+    secret_resolver: {MyApp.Secrets, :webhook_secret},
+    queue: :webhooks
+end
+
+AshHooks.dispatch(Order, :order_paid, event,
+  enqueue: {MyApp.WebhookDeliveryWorker, :enqueue}
+)
+```
+
+The worker drives `AshHooks.Delivery` (ADR-0008: the ROW owns the retry
+policy — attempts, `next_attempt_at`, the dead-letter ceiling — and Oban
+is the durable trigger). Sends are Standard-Webhooks signed per the row's
+mode with the same `webhook-id` on every retry; only 2xx succeeds;
+redirects are never followed; 410 disables the endpoint durably;
+408/429 honor `Retry-After` (bounded); 5xx/transport failures back off
+exponentially with jitter; other 4xx and refused redirects dead-letter
+immediately. Responses persist as bounded, redacted snippets
+(`whsec_`/`Bearer`/long-token runs replaced); machine-written fields
+accept no action input. SSRF is guarded at registration (the endpoint's
+`url` type rejects private/loopback/link-local/metadata literals and
+non-http schemes on every write path) and re-checked at send with DNS
+re-resolution. HTTP goes through the `AshHooks.Http` adapter behaviour
+(`:httpc` default — inject your own for tests or proxies). The package
+still compiles and runs Oban-free (CI no-optional leg + the inbound-only
+proof); `use AshHooks.Worker` without Oban on the host fails
+deterministically at compile.
 
 ## Design records
 

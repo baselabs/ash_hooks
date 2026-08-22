@@ -45,7 +45,8 @@ defmodule AshHooks.OutboundDelivery do
     transformers: [
       AshHooks.OutboundDelivery.Transformers.AddDeliveryFields,
       AshHooks.OutboundDelivery.Transformers.AddDeliveryIdentity,
-      AshHooks.OutboundDelivery.Transformers.AddDeliveryActions
+      AshHooks.OutboundDelivery.Transformers.AddDeliveryActions,
+      AshHooks.OutboundDelivery.Transformers.AddSendActions
     ],
     verifiers: []
 end

@@ -151,6 +151,7 @@ defmodule AshHooks.DispatcherTest do
       payload BLOB NOT NULL,
       endpoint_id TEXT NOT NULL,
       subscription_id TEXT,
+      signing_mode TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       attempts INTEGER NOT NULL DEFAULT 0,
       response_status INTEGER,

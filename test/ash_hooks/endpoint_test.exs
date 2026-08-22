@@ -131,6 +131,60 @@ defmodule AshHooks.EndpointTest do
     end
   end
 
+  describe "url floor (SSRF at registration — #7)" do
+    test "accepts a public https url" do
+      endpoint = create!(url: "https://example.test/hook", secret_ref: "r")
+      assert endpoint.url == "https://example.test/hook"
+    end
+
+    test "rejects a private-range url at cast (tripwire)" do
+      assert {:error, error} =
+               Ash.create(Endpoint, %{url: "http://10.0.0.1/hook", secret_ref: "r"},
+                 authorize?: false
+               )
+
+      assert error_message(error) =~ "not a safe webhook destination"
+    end
+
+    test "rejects the cloud metadata address at cast" do
+      assert {:error, _} =
+               Ash.create(Endpoint, %{url: "http://169.254.169.254/latest", secret_ref: "r"},
+                 authorize?: false
+               )
+    end
+
+    test "rejects non-http schemes at cast" do
+      assert {:error, _} =
+               Ash.create(Endpoint, %{url: "ftp://example.test/f", secret_ref: "r"},
+                 authorize?: false
+               )
+    end
+
+    test "accepts an unresolvable-at-cast hostname (DNS is a SEND-time check — registration stays offline-deterministic)" do
+      endpoint = create!(url: "https://some-internal-name.test/hook", secret_ref: "r")
+      assert endpoint.url == "https://some-internal-name.test/hook"
+    end
+
+    test "rejects an SSRF url on the UPDATE path too" do
+      endpoint = create!(url: "https://example.test/hook", secret_ref: "r")
+
+      assert {:error, _} =
+               Ash.update(endpoint, %{url: "http://127.0.0.1:9/x"}, authorize?: false)
+    end
+  end
+
+  describe "durable disable (the 410 circuit-breaker — #7)" do
+    test "the injected :disable action flips status durably" do
+      endpoint = create!(url: "https://example.test/hook", secret_ref: "r")
+      assert endpoint.status == :enabled
+
+      Ash.update!(endpoint, %{}, action: :disable, authorize?: false)
+
+      reloaded = Ash.reload!(endpoint, authorize?: false)
+      assert reloaded.status == :disabled
+    end
+  end
+
   defp error_message(error) do
     cond do
       is_binary(error) -> error

@@ -54,6 +54,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
       {:payload, :binary, [allow_nil?: false]},
       {:endpoint_id, :uuid, [allow_nil?: false]},
       {:subscription_id, :uuid, []},
+      {:signing_mode, :atom, [constraints: [one_of: [:legacy, :dual, :standard]]]},
       {:status, :atom,
        [
          allow_nil?: false,

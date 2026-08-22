@@ -76,7 +76,7 @@ defmodule AshHooks.Dispatcher do
        error_entries ++
          (matches
           |> dedupe_by_endpoint()
-          |> Enum.map(&dispatch_one(deliv_mod, event, &1, opts)))}
+          |> Enum.map(&dispatch_one(deliv_mod, event, &1, opts, entity)))}
     end
   end
 
@@ -98,8 +98,8 @@ defmodule AshHooks.Dispatcher do
 
   # ────────────────────────── per-endpoint machine ──────────────────────────
 
-  defp dispatch_one(deliv_mod, event, {subscription, endpoint}, opts) do
-    case upsert_row(deliv_mod, event, subscription, endpoint) do
+  defp dispatch_one(deliv_mod, event, {subscription, endpoint}, opts, entity) do
+    case upsert_row(deliv_mod, event, subscription, endpoint, entity) do
       {:ok, row, :created} ->
         merge_result(endpoint, subscription, enqueue(deliv_mod, row, event, opts))
 
@@ -176,7 +176,7 @@ defmodule AshHooks.Dispatcher do
     end)
   end
 
-  defp upsert_row(deliv_mod, event, subscription, endpoint) do
+  defp upsert_row(deliv_mod, event, subscription, endpoint, entity) do
     id = Ash.UUID.generate()
 
     input = %{
@@ -185,7 +185,10 @@ defmodule AshHooks.Dispatcher do
       event_type: event.type,
       payload: event.payload,
       endpoint_id: endpoint.id,
-      subscription_id: subscription.id
+      subscription_id: subscription.id,
+      # the EFFECTIVE mode is frozen onto the row at creation — the
+      # delivery runtime signs from the row, never re-derives it
+      signing_mode: subscription.signing_mode || entity.signing_mode || :standard
     }
 
     case with_transient_retry(fn ->

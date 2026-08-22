@@ -49,7 +49,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
 
   defp attributes_spec do
     [
-      {:url, :string, [allow_nil?: false, public?: true]},
+      {:url, AshHooks.Endpoint.Url, [allow_nil?: false, public?: true]},
       {:status, :atom,
        [
          allow_nil?: false,

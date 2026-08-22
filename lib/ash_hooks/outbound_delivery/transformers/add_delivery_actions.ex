@@ -38,7 +38,15 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
       upsert?: true,
       upsert_identity: :unique_delivery,
       upsert_fields: [],
-      accept: [:id, :event_uuid, :event_type, :payload, :endpoint_id, :subscription_id]
+      accept: [
+        :id,
+        :event_uuid,
+        :event_type,
+        :payload,
+        :endpoint_id,
+        :subscription_id,
+        :signing_mode
+      ]
     )
   end
 

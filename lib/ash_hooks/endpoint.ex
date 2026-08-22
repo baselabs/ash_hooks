@@ -29,6 +29,9 @@ defmodule AshHooks.Endpoint do
   def statuses, do: @statuses
 
   use Spark.Dsl.Extension,
-    transformers: [AshHooks.Endpoint.Transformers.AddEndpointFields],
+    transformers: [
+      AshHooks.Endpoint.Transformers.AddEndpointFields,
+      AshHooks.Endpoint.Transformers.AddEndpointActions
+    ],
     verifiers: []
 end
