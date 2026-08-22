@@ -149,6 +149,13 @@ defmodule AshHooks.DeliveryTest do
     end
   end
 
+  # {m,f} redactor for the raw-body tripwire: tags its INPUT so the test can
+  # prove the callback saw the pre-floor body
+  defmodule RawShapeRedactor do
+    @moduledoc false
+    def call(body), do: "raw:" <> body
+  end
+
   use ExUnit.Case, async: false
 
   alias AshHooks.Delivery, as: DeliveryRuntime
@@ -278,7 +285,8 @@ defmodule AshHooks.DeliveryTest do
       final = row!(row.id)
       assert final.status == :succeeded
       assert final.response_status == 200
-      assert final.response_snippet == ~s({"ok": true})
+      # the default snippet is the NO-BODY summary (#17, ADR-0005 amendment)
+      assert final.response_snippet == "200 other token=other"
     end
 
     test "attempt row BEFORE send: the row is :sending with attempts bumped, durably, when the adapter fires" do
@@ -406,9 +414,10 @@ defmodule AshHooks.DeliveryTest do
       ep = endpoint!()
       row = pending_row!(ep)
 
-      assert :ok = DeliveryRuntime.run(args(row), config())
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
 
       snippet = row!(row.id).response_snippet
+      assert String.starts_with?(snippet, "[captured] ")
       refute snippet =~ "77hsec"
       refute snippet =~ "dGVzdHNlY3JldDEyMzQ1Njc4OTA"
       assert snippet =~ "[redacted]"
@@ -423,9 +432,10 @@ defmodule AshHooks.DeliveryTest do
       ep = endpoint!()
       row = pending_row!(ep)
 
-      assert :ok = DeliveryRuntime.run(args(row), config())
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
 
       snippet = row!(row.id).response_snippet
+      assert String.starts_with?(snippet, "[captured] ")
       refute snippet =~ "u0064"
       refute snippet =~ "whsec_"
       assert snippet =~ "[redacted]"
@@ -440,9 +450,10 @@ defmodule AshHooks.DeliveryTest do
       ep = endpoint!()
       row = pending_row!(ep)
 
-      assert :ok = DeliveryRuntime.run(args(row), config())
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
 
       snippet = row!(row.id).response_snippet
+      assert String.starts_with?(snippet, "[captured] ")
       refute snippet =~ "2577hsec"
       assert snippet =~ "[redacted]"
     end
@@ -659,8 +670,8 @@ defmodule AshHooks.DeliveryTest do
     end
   end
 
-  describe "response snippet redaction" do
-    test "secret-shaped material never lands in the snippet" do
+  describe "response snippet redaction (the floor lives on the CAPTURED path post-#17)" do
+    test "secret-shaped material never lands in a CAPTURED snippet" do
       leaky =
         ~s({"leak": "whsec_) <>
           Base.encode64(:crypto.strong_rand_bytes(32)) <>
@@ -671,11 +682,418 @@ defmodule AshHooks.DeliveryTest do
       ep = endpoint!()
       row = pending_row!(ep)
 
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      assert String.starts_with?(snippet, "[captured] ")
+      refute snippet =~ "whsec_"
+      refute snippet =~ "Bearer abcdef"
+      assert snippet =~ "[redacted]"
+    end
+  end
+
+  describe "summarize/2 — the no-body default (#17)" do
+    test "kind + token classification: allowlisted types pass, everything else is other" do
+      assert DeliveryRuntime.summarize(200, [{"content-type", "text/html; charset=utf-8"}]) ==
+               "200 html token=text/html"
+
+      assert DeliveryRuntime.summarize(201, [{"Content-Type", "application/vnd.api+json"}]) ==
+               "201 json token=other"
+
+      assert DeliveryRuntime.summarize(502, [{"content-type", "image/png"}]) ==
+               "502 binary token=other"
+
+      assert DeliveryRuntime.summarize(200, []) == "200 other token=other"
+      assert DeliveryRuntime.summarize(nil, nil) == "0 other token=other"
+    end
+
+    test "capture-off: a leaky body persists ONLY the fixed-grammar summary — no body bytes" do
+      secret = Base.encode64(:crypto.strong_rand_bytes(32))
+
+      leaky = ~s({"leak": "whsec_) <> secret <> ~s(", "b64": ") <> secret <> ~s(", "ok": 1})
+
+      HttpDouble.set_responses([
+        {:ok,
+         %{
+           status: 200,
+           headers: [{"content-type", "application/json; charset=utf-8"}],
+           body: leaky
+         }}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config())
+
+      assert row!(row.id).response_snippet == "200 json token=application/json"
+    end
+
+    test "capture-off: a hostile content-type cannot smuggle material into the token" do
+      HttpDouble.set_responses([
+        {:ok,
+         %{
+           status: 200,
+           headers: [{"Content-Type", "text/whsec_SUPERSECRETTOKEN42"}],
+           body: "whatever"
+         }}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
       assert :ok = DeliveryRuntime.run(args(row), config())
 
       snippet = row!(row.id).response_snippet
+      assert snippet == "200 text token=other"
+      refute snippet =~ "SUPERSECRETTOKEN"
+    end
+  end
+
+  describe "opt-in capture under the floor (#17)" do
+    test "a captured snippet carries the marker with the floor-redacted body" do
+      HttpDouble.set_responses([
+        {:ok,
+         %{
+           status: 200,
+           headers: [{"content-type", "application/json"}],
+           body: ~s({"ok": true, "note": "diagnostic"})
+         }}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      assert String.starts_with?(snippet, "[captured] ")
+      assert snippet =~ "diagnostic"
+    end
+
+    test "a base32 secret below the OLD 20-char floor dies (the ≥16 union rule)" do
+      base32 = "mfzwizltozsa2atofzw"
+      body = ~s({"e": ") <> base32 <> ~s(", "ok": 1})
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ base32
+      assert snippet =~ "[redacted]"
+    end
+
+    test "a fullwidth homoglyph marker dies (NFKC head)" do
+      body = ~s({"e": "ｗｈｓｅｃ_) <> "dGVzdHNlY3Jl" <> ~s(", "ok": 1})
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ "ｗｈｓｅｃ"
+      refute snippet =~ "dGVzdHNlY3Jl"
+      assert snippet =~ "[redacted]"
+    end
+
+    test "a PERCENT-ENCODED fullwidth marker dies (NFKC after the decode chain)" do
+      # %EF%BD%97… decodes to ｗｈｓｅｃ only AFTER percent decoding — the head
+      # normalization alone would leave the marker fullwidth
+      body = "token=%EF%BD%97%EF%BD%88%EF%BD%93%EF%BD%85%EF%BD%83_dGVzdHNlY3Jl"
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ "dGVzdHNlY3Jl"
+      assert snippet =~ "[redacted]"
+    end
+
+    test "a json-materialized percent evasion dies (decode-chain fixpoint)" do
+      # \u0025 → % materializes AFTER the percent layers have run — only a
+      # fixpoint re-run decodes the resulting %77 to 'w'
+      body = "{\"e\": \"\\u002577hsec_ab12cd\", \"ok\": 1}"
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ "77hsec"
+      refute snippet =~ "ab12cd"
+      assert snippet =~ "[redacted]"
+    end
+
+    test "a +-bearing base64 token redacts WHOLE (no www-form +→space split)" do
+      body = "{\"e\": \"whsec_abc+def+ghi+jkl\", \"ok\": 1}"
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ "whsec"
+      refute snippet =~ "ghi"
+      assert snippet =~ "[redacted]"
+    end
+
+    test "split markers with ≤3 separators die" do
+      body = "a=whs-ec_dGVzdHNlY3Jl b=whs.ec 1234567890ab"
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ "dGVzdHNlY3Jl"
+      refute snippet =~ "1234567890ab"
+      assert snippet =~ "[redacted]"
+    end
+
+    test "a ≥16 union run dies with no marker at all; a 15-char run survives" do
+      body = ~s({"long": "abcdefghijklmnop", "short": "abcdefghijklmno", "ok": 1})
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ "abcdefghijklmnop"
+      assert snippet =~ "abcdefghijklmno"
+    end
+
+    test "Cyrillic prose passes the floor untouched (no cross-script folding)" do
+      prose = "Привет, мир! Это обычный текст без секретов."
+      body = ~s({"note": ") <> prose <> ~s(", "ok": 1})
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      assert row!(row.id).response_snippet =~ prose
+    end
+
+    test "invalid UTF-8 persists a binary placeholder, never the raw bytes" do
+      body = <<0xFF, ?a, ?b, ?c, 0xFE, ?x>>
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      assert row!(row.id).response_snippet == "[captured] [binary]"
+    end
+
+    test "a CRASHING snippet_redactor degrades to the sanitized summary (fail-closed)" do
+      HttpDouble.set_responses([
+        {:ok,
+         %{
+           status: 200,
+           headers: [{"content-type", "application/json"}],
+           body: ~s({"e": "whsec_abcdef123456"})
+         }}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(
+                   snippet_capture: true,
+                   snippet_redactor: fn _body -> raise "consumer boom" end
+                 )
+               )
+
+      # crash → the sanitized summary: no marker, no body bytes, no crash
+      assert row!(row.id).response_snippet == "200 json token=application/json"
+    end
+
+    test "an INVALID snippet_redactor return degrades to the sanitized summary" do
+      HttpDouble.set_responses([
+        {:ok, %{status: 200, headers: [{"content-type", "text/plain"}], body: "plain"}}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(snippet_capture: true, snippet_redactor: fn _body -> {:ok, "shaped"} end)
+               )
+
+      assert row!(row.id).response_snippet == "200 text token=text/plain"
+    end
+
+    test "a NIL snippet_redactor return degrades to the sanitized summary" do
+      HttpDouble.set_responses([
+        {:ok, %{status: 200, headers: [], body: "plain"}}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(snippet_capture: true, snippet_redactor: fn _body -> nil end)
+               )
+
+      assert row!(row.id).response_snippet == "200 other token=other"
+    end
+
+    test "an {m,f} snippet_redactor sees the RAW body; its output lands under the floor" do
+      HttpDouble.set_responses([
+        {:ok, %{status: 200, headers: [], body: ~s({"e": "whsec_abcdef12345"})}}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(snippet_capture: true, snippet_redactor: {RawShapeRedactor, :call})
+               )
+
+      snippet = row!(row.id).response_snippet
+      # the callback received the RAW (pre-floor) body and its output still
+      # passed the package floor — defense in depth
+      assert String.starts_with?(snippet, "[captured] raw:")
       refute snippet =~ "whsec_"
-      refute snippet =~ "Bearer abcdef"
+      assert snippet =~ "[redacted]"
+    end
+
+    test "an oversized snippet_redactor output is floor-truncated within the 2048 cap" do
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: "x"}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      # dot-separated filler: oversized, but union runs of 1 — it must
+      # SURVIVE the floor (a plain 10k union run would be [redacted])
+      filler = String.duplicate("D.", 5_000)
+
+      assert :ok =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(
+                   snippet_capture: true,
+                   snippet_redactor: fn _body -> filler end
+                 )
+               )
+
+      snippet = row!(row.id).response_snippet
+      assert String.starts_with?(snippet, "[captured] ")
+      assert String.contains?(snippet, "D.D")
+      assert String.length(snippet) <= 2048
+    end
+  end
+
+  describe "failure rows carry the summary (#17)" do
+    test "a 4xx failure row records the status and the no-body summary" do
+      HttpDouble.set_responses([
+        {:ok,
+         %{
+           status: 404,
+           headers: [{"content-type", "text/plain"}],
+           body: "nope whsec_leakymaterial1"
+         }}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config())
+
+      final = row!(row.id)
+      assert final.status == :dead_letter
+      assert final.response_status == 404
+      assert final.response_snippet == "404 text token=text/plain"
+    end
+  end
+
+  describe "raw-miniserver e2e through the default adapter (#17)" do
+    test "a captured delivery through Bounded persists the marker + redacted body" do
+      secret = "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(16))
+      body = ~s({"echo": ") <> secret <> ~s(", "ok": true})
+
+      response =
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: " <>
+          Integer.to_string(byte_size(body)) <> "\r\nconnection: close\r\n\r\n" <> body
+
+      parent = self()
+
+      {:ok, listen} = :gen_tcp.listen(0, [:binary, {:active, false}, {:ip, {127, 0, 0, 1}}])
+      {:ok, port} = :inet.port(listen)
+
+      spawn(fn ->
+        {:ok, socket} = :gen_tcp.accept(listen, 10_000)
+        {:ok, _request} = :gen_tcp.recv(socket, 0, 5_000)
+        :gen_tcp.send(socket, response)
+        :timer.sleep(200)
+        :gen_tcp.close(socket)
+        :gen_tcp.close(listen)
+        send(parent, :served)
+      end)
+
+      ep = endpoint!()
+
+      Repo.query!("UPDATE #{@endpoints} SET url = ? WHERE id = ?", [
+        "http://127.0.0.1:#{port}/hook",
+        ep.id
+      ])
+
+      row = pending_row!(ep)
+
+      assert :ok =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(
+                   snippet_capture: true,
+                   http: AshHooks.Http.Bounded,
+                   http_opts: [validate_destination: false],
+                   ssrf_check: fn _url -> true end
+                 )
+               )
+
+      assert_receive :served, 2_000
+
+      final = row!(row.id)
+      assert final.status == :succeeded
+      snippet = final.response_snippet
+      assert String.starts_with?(snippet, "[captured] ")
+      refute snippet =~ secret
       assert snippet =~ "[redacted]"
     end
   end

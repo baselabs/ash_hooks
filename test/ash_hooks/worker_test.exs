@@ -72,9 +72,15 @@ if Code.ensure_loaded?(Oban) do
         deliveries: AshHooks.WorkerTest.Delivery,
         endpoints: AshHooks.WorkerTest.Endpoint,
         secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+        snippet_redactor: {AshHooks.WorkerTest.Redactor, :call},
         queue: :ash_hooks_test,
         oban: AshHooks.WorkerTest.Oban,
         timeout: 5_000
+    end
+
+    defmodule Redactor do
+      @moduledoc false
+      def call(_body), do: "consumer-diagnostic"
     end
 
     use ExUnit.Case, async: false
@@ -210,6 +216,21 @@ if Code.ensure_loaded?(Oban) do
     test "the generated worker is an Oban worker with perform/1 and the enqueue seam" do
       assert function_exported?(Worker, :perform, 1)
       assert function_exported?(Worker, :enqueue, 2)
+    end
+
+    test "an INVALID snippet_redactor shape is rejected at compile time (fail-closed config)" do
+      assert_raise ArgumentError, ~r/snippet_redactor/, fn ->
+        defmodule BadRedactorWorker do
+          @moduledoc false
+          use AshHooks.Worker,
+            deliveries: AshHooks.WorkerTest.Delivery,
+            endpoints: AshHooks.WorkerTest.Endpoint,
+            secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+            snippet_redactor: "not-a-redactor",
+            queue: :ash_hooks_test,
+            oban: AshHooks.WorkerTest.Oban
+        end
+      end
     end
 
     test "enqueue inserts ONE trigger with both top-level string keys (the A4 tripwire)" do

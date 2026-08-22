@@ -22,12 +22,14 @@ defmodule AshHooks.OutboundDelivery do
   primitive: the consumer's migration must carry the matching unique
   index (ADR-0003's argument, applied outbound).
 
-  `response_status`, `response_snippet` (bounded, redacted by the send
-  path), and `next_attempt_at` are `writable?: false` — no action INPUT
-  accepts them; only the delivery runtime's machine writes reconcile
-  them. NO request or response headers are stored on this resource at
-  all: the stored-header allowlist floor holds by not persisting headers
-  beyond the bounded snippet (ADR-0005).
+  `response_status`, `response_snippet` (the no-body summary by default —
+  status + allowlisted content-type token; the `[captured]`-marked,
+  floor-redacted body only on the runtime's per-call opt-in, ADR-0005's
+  snippet amendment), and `next_attempt_at` are `writable?: false` — no
+  action INPUT accepts them; only the delivery runtime's machine writes
+  reconcile them. NO request or response headers are stored on this
+  resource at all: the stored-header allowlist floor holds by not
+  persisting headers beyond the bounded snippet (ADR-0005).
   """
 
   @statuses [

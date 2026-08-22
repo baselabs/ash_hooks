@@ -88,14 +88,26 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
     {:ok, next} =
       Builder.build_action_change(Builtins.set_attribute(:next_attempt_at, arg(:next_attempt_at)))
 
+    # failed rows carry the no-body summary when the attempt saw a
+    # response (#17 story 1); pre-send failures persist nils
+    {:ok, code} =
+      Builder.build_action_change(Builtins.set_attribute(:response_status, arg(:response_status)))
+
+    {:ok, snippet} =
+      Builder.build_action_change(
+        Builtins.set_attribute(:response_snippet, arg(:response_snippet))
+      )
+
     Builder.build_action(:update, :mark_send_failed,
       accept: [],
       arguments: [
         argument(:error, :string, allow_nil?: false),
         argument(:next_attempt_at, :utc_datetime_usec, allow_nil?: true, default: nil),
-        argument(:dead_letter?, :boolean, allow_nil?: false, default: false)
+        argument(:dead_letter?, :boolean, allow_nil?: false, default: false),
+        argument(:response_status, :integer, allow_nil?: true, default: nil),
+        argument(:response_snippet, :string, allow_nil?: true, default: nil)
       ],
-      changes: [status, error, next]
+      changes: [status, error, next, code, snippet]
     )
   end
 

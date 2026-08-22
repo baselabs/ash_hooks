@@ -15,7 +15,10 @@ defmodule AshHooks.Delivery do
 
   Classification (the design note's table, one source):
 
-    * 2xx → `:succeeded` (response recorded, snippet redacted)
+    * 2xx → `:succeeded` (status + allowlisted content-type summary — NO
+      body bytes by default; a per-call `snippet_capture: true` config
+      persists the floor-redacted body marked `[captured]`, ADR-0005's
+      snippet amendment)
     * 408/429 → retryable, `Retry-After` when present (integer seconds or
       HTTP-date; clamped `[1, retry_after_cap]`), else backoff
     * 410 → endpoint durably `:disable`d + row `:dead_letter`
@@ -33,17 +36,42 @@ defmodule AshHooks.Delivery do
 
   alias AshHooks.Signing
 
+  # The ADR-0005 snippet floor (amended 2026-08-22): markers are
+  # case-blind (NFKC folds homoglyphs, never case) and tolerate ≤3
+  # separator chars at each juncture — the split-token evasion class
+  # ("whs-ec_…", "whs.ec …"). The entropy rule dies on any ≥16-char
+  # union-alphabet run — markerless base32/hex/base64url material. Bearer
+  # keeps its own dot-bearing material class (JWT separators).
   @redaction_patterns [
-    ~r/wh(sec|sk|pk)_[A-Za-z0-9+\/=]+/,
-    ~r/Bearer\s+[A-Za-z0-9._\-]+/,
-    ~r/[A-Za-z0-9+\/=]{20,}/,
-    # percent-encoded disguises (derisk: "whsec%5F..." / "%77hsec_" forms)
-    ~r/wh(sec|sk|pk)(%5[fF])?[A-Za-z0-9+\/=%]+/,
-    ~r/Bearer(%20|\+|%2[00])?[A-Za-z0-9._\-%]+/,
-    ~r/[A-Za-z0-9+\/=%]{24,}/
+    ~r/whs[\s._\-]{0,3}(?:ec|sk|pk)[\s._\-]{0,3}[A-Za-z0-9+\/=%_\-]+/i,
+    ~r/Bearer[\s._\-]{0,3}[A-Za-z0-9._\-%]+/i,
+    ~r/[A-Za-z0-9+\/=%_\-]{16,}/
   ]
 
   @snippet_max 2_048
+  @captured_prefix "[captured] "
+  @binary_placeholder "[binary]"
+  @summary_max 120
+  # the decode chain runs as a bounded fixpoint: a JSON \u0025 escape can
+  # materialize "%" only AFTER the percent layers have run, so one linear
+  # pass is not closed under composition — re-decode until stable
+  @decode_passes 8
+
+  # the ONLY content-type tokens summarize/1 may ever emit besides "other"
+  @content_type_allowlist MapSet.new([
+                            "application/json",
+                            "application/xml",
+                            "text/xml",
+                            "text/html",
+                            "text/plain",
+                            "text/csv",
+                            "text/event-stream",
+                            "text/javascript",
+                            "application/javascript",
+                            "application/x-ndjson",
+                            "application/x-www-form-urlencoded",
+                            "application/octet-stream"
+                          ])
 
   @doc """
   Drives one delivery (args: `%{"endpoint_id" => ..., "event_uuid" => ...}`,
@@ -151,9 +179,14 @@ defmodule AshHooks.Delivery do
 
     request = if is_function(adapter, 5), do: adapter, else: &adapter.request/5
 
+    # adapter opts seam (test listeners' validate_destination: false; real
+    # consumers' timeout overrides) — the SSRF obligation stays in the
+    # driver's send-time check above
+    adapter_opts = config[:http_opts] || []
+
     with {:ok, headers} <- signing_headers(row, endpoint, config),
          {:ok, response} <-
-           send_request(request, endpoint, headers, row) do
+           send_request(request, endpoint, headers, row, adapter_opts) do
       record(row, endpoint, response, config)
     else
       # a pin-time SSRF refusal is a caught rebinding flip — terminal, per
@@ -168,8 +201,8 @@ defmodule AshHooks.Delivery do
 
   # an adapter RAISE must not crash the job out of the row-owned policy —
   # classify it as a retryable transport failure (cross-vendor finding)
-  defp send_request(request, endpoint, headers, row) do
-    request.(:post, endpoint.url, headers, row.payload, [])
+  defp send_request(request, endpoint, headers, row, adapter_opts) do
+    request.(:post, endpoint.url, headers, row.payload, adapter_opts)
   rescue
     reason -> {:error, {:adapter_crash, error_string(reason)}}
   end
@@ -179,7 +212,7 @@ defmodule AshHooks.Delivery do
     mark_succeeded(row, response, config)
   end
 
-  defp record(row, endpoint, %{status: 410} = _response, config) do
+  defp record(row, endpoint, %{status: 410} = response, config) do
     # the durable disable is the circuit breaker — a failed write must NOT
     # be swallowed behind the row's dead-letter (cross-vendor finding):
     # surface the error so the job retries and the 410 is re-processed
@@ -189,29 +222,37 @@ defmodule AshHooks.Delivery do
       |> Ash.bulk_update(:disable, %{}, authorize?: false, return_errors?: true)
 
     case result do
-      %Ash.BulkResult{status: :success} -> dead_letter(row, "gone_410", config)
-      other -> {:error, {:disable_failed, other}}
+      %Ash.BulkResult{status: :success} ->
+        dead_letter(row, "gone_410", config, failure_summary(response))
+
+      other ->
+        {:error, {:disable_failed, other}}
     end
   end
 
   defp record(row, _endpoint, %{status: status} = response, config)
        when status in [408, 429] do
-    retry(row, "http_#{status}", config, retry_after(response, config))
+    retry(row, "http_#{status}", config, retry_after(response, config), failure_summary(response))
   end
 
-  defp record(row, _endpoint, %{status: status} = _response, config)
+  defp record(row, _endpoint, %{status: status} = response, config)
        when status in 300..399 do
-    dead_letter(row, "redirect_refused_#{status}", config)
+    dead_letter(row, "redirect_refused_#{status}", config, failure_summary(response))
   end
 
-  defp record(row, _endpoint, %{status: status} = _response, config)
+  defp record(row, _endpoint, %{status: status} = response, config)
        when status in 400..499 do
-    dead_letter(row, "http_#{status}", config)
+    dead_letter(row, "http_#{status}", config, failure_summary(response))
   end
 
-  defp record(row, _endpoint, %{status: status} = _response, config) do
-    retry(row, "http_#{status}", config, nil)
+  defp record(row, _endpoint, %{status: status} = response, config) do
+    retry(row, "http_#{status}", config, nil, failure_summary(response))
   end
+
+  # failed rows keep the story-1 half of the snippet policy: status + kind,
+  # never body bytes (the #17 design note's D6b)
+  defp failure_summary(response),
+    do: {response.status, summarize(response.status, response.headers)}
 
   # ────────────────────────── signing ──────────────────────────
 
@@ -311,37 +352,42 @@ defmodule AshHooks.Delivery do
   defp mark_succeeded(row, response, config) do
     case gated_update(row, config, :mark_succeeded, %{
            response_status: response.status,
-           response_snippet: redact(response[:body] || response.body)
+           response_snippet: snippet_for(response, config)
          }) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, {:reconcile_failed, reason}}
     end
   end
 
-  defp retry(row, error, config, retry_after) do
+  defp retry(row, error, config, retry_after, summary \\ nil) do
     if row.attempts >= config[:max_attempts] do
-      dead_letter(row, error, config)
+      dead_letter(row, error, config, summary)
     else
       delay = delay_seconds(row, config, retry_after)
       next_at = DateTime.add(now(config), delay, :second)
 
-      case gated_update(row, config, :mark_send_failed, %{
-             error: error,
-             next_attempt_at: next_at,
-             dead_letter?: false
-           }) do
+      case gated_update(
+             row,
+             config,
+             :mark_send_failed,
+             summary_input(summary, %{
+               error: error,
+               next_attempt_at: next_at,
+               dead_letter?: false
+             })
+           ) do
         {:ok, _} -> {:snooze, delay}
         {:error, reason} -> {:error, {:reconcile_failed, reason}}
       end
     end
   end
 
-  defp dead_letter(row, error, config) do
+  defp dead_letter(row, error, config, summary \\ nil) do
     case gated_update(
            row,
            config,
            :mark_send_failed,
-           %{error: error, next_attempt_at: nil, dead_letter?: true},
+           summary_input(summary, %{error: error, next_attempt_at: nil, dead_letter?: true}),
            # dead-letter can land from any pre-send or mid-send state —
            # including :enqueue_failed rows the runtime re-drove — never
            # from a terminal row
@@ -351,6 +397,15 @@ defmodule AshHooks.Delivery do
       {:error, reason} -> {:error, {:reconcile_failed, reason}}
     end
   end
+
+  # a response-derived summary rides the failure write when the attempt
+  # actually saw a response; pre-send failures (disabled endpoint, SSRF
+  # refusal, transport errors) write nils
+  defp summary_input(nil, base),
+    do: Map.merge(base, %{response_status: nil, response_snippet: nil})
+
+  defp summary_input({status, snippet}, base),
+    do: Map.merge(base, %{response_status: status, response_snippet: snippet})
 
   # The WHERE gate IS the fence (portable pattern): id + a status set the
   # transition legitimately starts from. :mark_sending re-drives :sending
@@ -477,32 +532,143 @@ defmodule AshHooks.Delivery do
     (config[:now] || fn -> DateTime.utc_now() end).() |> DateTime.truncate(:second)
   end
 
-  # ────────────────────────── redaction ──────────────────────────
+  # ────────────────────────── snippets + redaction ──────────────────────────
 
-  defp redact(body) when is_binary(body) do
-    # patterns run against the DECODE CHAIN (derisk-2): raw → percent-
-    # decode (×2 — double-encoded disguises) → JSON \uXXXX unescape.
-    # Each layer falls back to the previous on failure; an encoded
-    # disguise must not survive in any layer.
-    body
-    |> decode_step(&URI.decode_www_form/1)
-    |> decode_step(&URI.decode_www_form/1)
-    |> decode_step(&json_unescape/1)
-    |> apply_redaction_patterns()
-    # strip control bytes — a hostile NUL would make the post-send
-    # ledger write fail on TEXT columns AFTER a successful send
-    # (cross-vendor finding: re-send poison loop)
+  @doc """
+  The DEFAULT response-snippet summary (ADR-0005's 2026-08-22 amendment):
+  a fixed grammar over the status and one ALLOWLISTED content-type token —
+  never body bytes, never a body-derived digest (a hash is correlation
+  material that explains nothing).
+
+      "200 json token=application/json"   # the type was allowlisted
+      "200 text token=other"              # anything else collapses to other
+
+  The status is an integer, the kind comes from a fixed vocabulary
+  (`json | html | text | xml | binary | other`), and the token is either an
+  exact allowlist member or the literal `other` — a hostile Content-Type
+  header cannot smuggle material into the ledger through this string.
+  """
+  @spec summarize(integer() | nil, keyword() | list() | nil) :: String.t()
+  def summarize(status, headers) do
+    type = content_type(headers)
+    kind = content_kind(type)
+    token = if allowlisted_content_type?(type), do: type, else: "other"
+
+    "#{status_string(status)} #{kind} token=#{token}"
     |> String.replace(~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/, "")
-    |> String.replace(~r/[\r\n]+/, " ")
-    |> String.slice(0, @snippet_max)
+    |> String.slice(0, @summary_max)
   end
 
-  defp redact(_other), do: nil
+  @doc """
+  The package snippet floor (ADR-0005, amended 2026-08-22) — what
+  opt-in-captured bodies pass through before persistence: NFKC
+  normalization (fullwidth homoglyph markers fold), a bounded-fixpoint
+  decode chain (percent ×2 + JSON \\u per-escape, re-run until stable — a
+  `\\u0025` escape can materialize `%` only after the percent layers), the
+  separator-tolerant marker patterns, the ≥16-char union-alphabet entropy
+  rule, a control-byte strip, and the 2048 cap. Un-redaction is impossible
+  by construction; invalid UTF-8 collapses to `[binary]`.
+  """
+  @spec redact(term()) :: String.t() | nil
+  def redact(body) when is_binary(body) do
+    if String.valid?(body) do
+      body
+      |> decode_fixpoint(@decode_passes)
+      |> apply_redaction_patterns()
+      # strip control bytes — a hostile NUL would make the post-send
+      # ledger write fail on TEXT columns AFTER a successful send
+      # (cross-vendor finding: re-send poison loop)
+      |> String.replace(~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/, "")
+      |> String.replace(~r/[\r\n]+/, " ")
+      |> String.slice(0, @snippet_max)
+    else
+      @binary_placeholder
+    end
+  end
+
+  def redact(_other), do: nil
+
+  # which snippet a reconciled row persists: the no-body summary by
+  # default, the marked floor-redacted body on the per-call opt-in
+  defp snippet_for(response, config) do
+    body = response[:body] || response.body
+
+    if config[:snippet_capture] && is_binary(body) do
+      captured_snippet(body, response, config)
+    else
+      summarize(response.status, response.headers)
+    end
+  end
+
+  defp captured_snippet(body, response, config) do
+    case apply_snippet_redactor(body, config[:snippet_redactor]) do
+      {:ok, material} ->
+        # the combined string re-sliced so the 2048 attribute constraint
+        # holds WITH the marker inside it
+        String.slice(@captured_prefix <> redact(material), 0, @snippet_max)
+
+      :sanitize ->
+        # crash / invalid / nil callback return: the sanitized summary —
+        # no marker (it promises captured material exists; here none does)
+        summarize(response.status, response.headers)
+    end
+  end
+
+  # The consumer callback ({m, f} | fun, like :secret_resolver) sees the
+  # RAW body — consumer tokens need raw input — and its output is
+  # type-checked, size-bounded, and caught (raise/exit/throw): a broken
+  # callback can never poison the send or leak past the floor.
+  defp apply_snippet_redactor(body, nil), do: {:ok, body}
+
+  defp apply_snippet_redactor(body, redactor) do
+    case redactor_fun(redactor).(body) do
+      out when is_binary(out) -> {:ok, String.slice(out, 0, @snippet_max)}
+      nil -> :sanitize
+      _other -> :sanitize
+    end
+  catch
+    :error, _reason -> :sanitize
+    :exit, _reason -> :sanitize
+    :throw, _value -> :sanitize
+  end
+
+  defp redactor_fun({m, f}) when is_atom(m) and is_atom(f), do: &apply(m, f, [&1])
+  defp redactor_fun(fun) when is_function(fun, 1), do: fun
+
+  # ── the floor's decode chain ──
+  # One pass: percent (×2 — double-encoded disguises) → JSON \u unescape →
+  # NFKC. The pass re-runs until stable: json_unescape can produce % that
+  # the percent step must then decode (probed composed evasion), and NFKC
+  # must see every decoded layer (a percent-encoded fullwidth marker
+  # materializes only after decoding). Each pass strictly shrinks encoded
+  # material; the bound is the brake.
+  defp decode_fixpoint(body, 0), do: body
+
+  defp decode_fixpoint(body, passes) do
+    decoded =
+      body
+      |> decode_step(&URI.decode/1)
+      |> decode_step(&URI.decode/1)
+      |> decode_step(&json_unescape/1)
+      |> normalize_step()
+
+    if decoded == body, do: body, else: decode_fixpoint(decoded, passes - 1)
+  end
 
   defp decode_step(input, decoder) do
     decoder.(input)
   rescue
     ArgumentError -> input
+  end
+
+  # NFKC folds fullwidth homoglyphs (ｗｈｓｅｃ → whsec) and leaves ordinary
+  # Cyrillic prose untouched (probed); invalid UTF-8 falls back to the
+  # input — the patterns and entropy rule still run over it
+  defp normalize_step(body) do
+    case :unicode.characters_to_nfkc_binary(body) do
+      normalized when is_binary(normalized) -> normalized
+      _error_or_incomplete -> body
+    end
   end
 
   # per-escape fallback: a surrogate/high escape must not abort the whole
@@ -520,6 +686,49 @@ defmodule AshHooks.Delivery do
 
   defp apply_redaction_patterns(body) do
     Enum.reduce(@redaction_patterns, body, &String.replace(&2, &1, "[redacted]"))
+  end
+
+  # ── summarize's fixed vocabulary ──
+
+  defp status_string(status) when is_integer(status), do: Integer.to_string(status)
+  defp status_string(_nil_or_other), do: "0"
+
+  # Bounded downcases header names; other adapters may not — retry_after's
+  # dual-keyfind precedent
+  defp content_type(headers) when is_list(headers) do
+    case List.keyfind(headers, "content-type", 0) || List.keyfind(headers, "Content-Type", 0) do
+      {_name, value} when is_binary(value) ->
+        value |> String.split(";") |> hd() |> String.trim() |> String.downcase()
+
+      _missing ->
+        nil
+    end
+  end
+
+  defp content_type(_other), do: nil
+
+  defp allowlisted_content_type?(nil), do: false
+  defp allowlisted_content_type?(type), do: MapSet.member?(@content_type_allowlist, type)
+
+  defp content_kind(nil), do: :other
+
+  defp content_kind(type) do
+    cond do
+      String.contains?(type, "json") -> :json
+      String.contains?(type, "html") -> :html
+      String.contains?(type, "xml") -> :xml
+      String.starts_with?(type, "text/") -> :text
+      binary_type?(type) -> :binary
+      true -> :other
+    end
+  end
+
+  defp binary_type?(type) do
+    String.contains?(type, "octet-stream") or
+      String.starts_with?(type, "image/") or
+      String.starts_with?(type, "audio/") or
+      String.starts_with?(type, "video/") or
+      String.starts_with?(type, "application/")
   end
 
   defp error_string(term) when is_binary(term), do: String.slice(term, 0, 255)

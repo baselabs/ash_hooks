@@ -27,7 +27,15 @@ defmodule AshHooks.Worker do
       secret REFERENCE: `f(ref) :: {:ok, secret_binary} | {:error, term}`.
       The returned binary's prefix (`whsec_`/`whsk_`, or raw legacy
       material) selects its signature slot.
-    * `:http` — the `AshHooks.Http` adapter (default `AshHooks.Http.Httpc`).
+    * `:snippet_redactor` (`{m, f}`, optional) — a consumer callback run
+      on the RAW captured body ahead of the package's snippet floor
+      (domain-specific tokens need raw input). Only consulted on per-call
+      `snippet_capture: true` diagnostic runs; a crash or invalid return
+      degrades to the sanitized summary, never raw bytes. The capture
+      flag itself is deliberately NOT a macro option (ADR-0005's snippet
+      amendment: compile-time knobs are broad and quiet) — pass it in the
+      `AshHooks.Delivery.run/2` config for a one-row diagnostic re-drive.
+    * `:http` — the `AshHooks.Http` adapter (default `AshHooks.Http.Bounded`).
     * `:oban` — the Oban instance name (default the unnamed instance).
     * `:queue`, `:timeout`, `:max_attempts` — Oban Worker options (the
       job's timeout defaults to 30s; its max_attempts is advisory only —
@@ -46,6 +54,16 @@ defmodule AshHooks.Worker do
 
   defp maybe_expand(nil, _expand), do: nil
   defp maybe_expand(value, expand), do: expand.(value)
+
+  defp validate_redactor(m, f) when is_atom(m) and is_atom(f), do: {m, f}
+
+  defp validate_redactor(m, f),
+    do:
+      raise(ArgumentError,
+        message:
+          "AshHooks.Worker :snippet_redactor must be {module, function} " <>
+            "(a 1-arity fn is accepted in the delivery config) — got {#{inspect(m)}, #{inspect(f)}}"
+      )
 
   defmacro __using__(opts) do
     # resolved at macro time — `use Oban.Worker` needs literal options,
@@ -68,11 +86,28 @@ defmodule AshHooks.Worker do
 
     {resolver_m, resolver_f} = Keyword.fetch!(opts, :secret_resolver)
 
+    snippet_redactor =
+      case Keyword.get(opts, :snippet_redactor) do
+        nil ->
+          nil
+
+        # the module half arrives as alias AST — expand against the caller
+        # (the secret_resolver precedent)
+        {m, f} when is_atom(f) ->
+          validate_redactor(expand.(m), f)
+
+        other ->
+          raise ArgumentError,
+                "AshHooks.Worker :snippet_redactor must be {module, function} " <>
+                  "(a 1-arity fn is accepted in the delivery config) — got #{inspect(other)}"
+      end
+
     delivery_config =
       [
         deliveries: expand.(Keyword.fetch!(opts, :deliveries)),
         endpoints: expand.(Keyword.fetch!(opts, :endpoints)),
         secret_resolver: {expand.(resolver_m), resolver_f},
+        snippet_redactor: snippet_redactor,
         http: maybe_expand(Keyword.get(opts, :http), expand),
         max_attempts: Keyword.get(opts, :delivery_max_attempts, 10),
         base_backoff_seconds: Keyword.get(opts, :base_backoff_seconds, 2),

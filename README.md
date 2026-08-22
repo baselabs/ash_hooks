@@ -30,8 +30,9 @@ per-provider signatures, deduplicate, emit domain events) and **outbound**
 > `use AshHooks.Worker`): row-owned retry policy with Oban as the durable
 > trigger (ADR-0008), attempt-row-before-send, Retry-After + jittered
 > backoff + dead-letter, 410 durable disable, redirect refusal, the
-> `AshHooks.Http` adapter behaviour (bounded native default), redacted
-> response snippets, and SSRF guards at registration + send. Upcoming
+> `AshHooks.Http` adapter behaviour (bounded native default), no-body
+> response snippets by default with opt-in capture under the package
+> floor, and SSRF guards at registration + send. Upcoming
 > slices: telemetry, retention hooks — tracked by
 > [#1](https://github.com/baselabs/ash_hooks/issues/1).
 
@@ -254,8 +255,15 @@ mode with the same `webhook-id` on every retry; only 2xx succeeds;
 redirects are never followed; 410 disables the endpoint durably;
 408/429 honor `Retry-After` (bounded); 5xx/transport failures back off
 exponentially with jitter; other 4xx and refused redirects dead-letter
-immediately. Responses persist as bounded, redacted snippets
-(`whsec_`/`Bearer`/long-token runs replaced); machine-written fields
+immediately. Response snippets store NO body bytes by default — a fixed
+summary of the status and an allowlisted content-type token (ADR-0005's
+snippet amendment); a per-call `snippet_capture: true` in the
+`AshHooks.Delivery.run/2` config opts one diagnostic run into body
+capture, which persists the `[captured]`-marked body under the package
+floor (NFKC homoglyph folding, a bounded-fixpoint decode chain,
+separator-tolerant marker patterns, and a ≥16-char union-alphabet
+entropy rule) with an optional fail-closed `snippet_redactor` callback
+ahead of it. Machine-written fields
 accept no action input. SSRF is guarded at registration (the endpoint's
 `url` type rejects private/loopback/link-local/metadata literals and
 non-http schemes on every write path) and re-checked at send with DNS
