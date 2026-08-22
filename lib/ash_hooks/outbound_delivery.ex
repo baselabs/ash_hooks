@@ -26,10 +26,12 @@ defmodule AshHooks.OutboundDelivery do
   status + allowlisted content-type token; the `[captured]`-marked,
   floor-redacted body only on the runtime's per-call opt-in, ADR-0005's
   snippet amendment), and `next_attempt_at` are `writable?: false` — no
-  action INPUT accepts them; only the delivery runtime's machine writes
-  reconcile them. NO request or response headers are stored on this
-  resource at all: the stored-header allowlist floor holds by not
-  persisting headers beyond the bounded snippet (ADR-0005).
+  consumer create/update INPUT accepts them; they reach the ledger only
+  as arguments of the runtime's machine primitives (`:mark_succeeded`,
+  `:mark_send_failed`), gated by WHERE-status fences. NO request or
+  response headers are stored on this resource at all: the
+  stored-header allowlist floor holds by not persisting headers beyond
+  the bounded snippet (ADR-0005).
   """
 
   @statuses [

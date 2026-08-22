@@ -38,13 +38,14 @@ defmodule AshHooks.Delivery do
 
   # The ADR-0005 snippet floor (amended 2026-08-22): markers are
   # case-blind (NFKC folds homoglyphs, never case) and tolerate ≤3
-  # separator chars at each juncture — the split-token evasion class
-  # ("whs-ec_…", "whs.ec …"). The entropy rule dies on any ≥16-char
-  # union-alphabet run — markerless base32/hex/base64url material. Bearer
-  # keeps its own dot-bearing material class (JWT separators).
+  # separator chars at EVERY internal juncture — the split-token evasion
+  # class ("whs-ec_…", "wh-sk_…", "whs.ec …", form-encoded "Bearer+…").
+  # The entropy rule dies on any ≥16-char union-alphabet run — markerless
+  # base32/hex/base64url material. Bearer keeps its own dot-bearing
+  # material class (JWT separators).
   @redaction_patterns [
-    ~r/whs[\s._\-]{0,3}(?:ec|sk|pk)[\s._\-]{0,3}[A-Za-z0-9+\/=%_\-]+/i,
-    ~r/Bearer[\s._\-]{0,3}[A-Za-z0-9._\-%]+/i,
+    ~r/w[\s._+\-]{0,3}h[\s._+\-]{0,3}(?:s[\s._+\-]{0,3}(?:e[\s._+\-]{0,3}c|k)|p[\s._+\-]{0,3}k)[\s._+\-]{0,3}[A-Za-z0-9+\/%=_\-]+/i,
+    ~r/Bearer[\s._+\-]{0,3}[A-Za-z0-9._\-%]+/i,
     ~r/[A-Za-z0-9+\/=%_\-]{16,}/
   ]
 
@@ -180,8 +181,9 @@ defmodule AshHooks.Delivery do
     request = if is_function(adapter, 5), do: adapter, else: &adapter.request/5
 
     # adapter opts seam (test listeners' validate_destination: false; real
-    # consumers' timeout overrides) — the SSRF obligation stays in the
-    # driver's send-time check above
+    # consumers' timeout overrides). Consumer-trusted config like :ssrf_check:
+    # it CAN disable the adapter's destination pin — the driver's send-time
+    # check above is the residual guarantee, not a full replacement
     adapter_opts = config[:http_opts] || []
 
     with {:ok, headers} <- signing_headers(row, endpoint, config),
@@ -252,7 +254,7 @@ defmodule AshHooks.Delivery do
   # failed rows keep the story-1 half of the snippet policy: status + kind,
   # never body bytes (the #17 design note's D6b)
   defp failure_summary(response),
-    do: {response.status, summarize(response.status, response.headers)}
+    do: {response[:status], summarize(response[:status], response[:headers])}
 
   # ────────────────────────── signing ──────────────────────────
 
@@ -591,12 +593,12 @@ defmodule AshHooks.Delivery do
   # which snippet a reconciled row persists: the no-body summary by
   # default, the marked floor-redacted body on the per-call opt-in
   defp snippet_for(response, config) do
-    body = response[:body] || response.body
+    body = response[:body]
 
     if config[:snippet_capture] && is_binary(body) do
       captured_snippet(body, response, config)
     else
-      summarize(response.status, response.headers)
+      summarize(response[:status], response[:headers])
     end
   end
 
@@ -610,7 +612,7 @@ defmodule AshHooks.Delivery do
       :sanitize ->
         # crash / invalid / nil callback return: the sanitized summary —
         # no marker (it promises captured material exists; here none does)
-        summarize(response.status, response.headers)
+        summarize(response[:status], response[:headers])
     end
   end
 
@@ -655,8 +657,17 @@ defmodule AshHooks.Delivery do
     if decoded == body, do: body, else: decode_fixpoint(decoded, passes - 1)
   end
 
+  # a decode that would MATERIALIZE invalid UTF-8 ("%FF"-class escapes)
+  # is refused — the floor's output must never fail the ledger's TEXT
+  # write post-send (the re-send poison class; cross-vendor finding)
   defp decode_step(input, decoder) do
-    decoder.(input)
+    case decoder.(input) do
+      decoded when is_binary(decoded) ->
+        if String.valid?(decoded), do: decoded, else: input
+
+      _invalid_shape ->
+        input
+    end
   rescue
     ArgumentError -> input
   end

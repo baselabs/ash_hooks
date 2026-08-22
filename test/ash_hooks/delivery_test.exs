@@ -855,7 +855,9 @@ defmodule AshHooks.DeliveryTest do
     end
 
     test "split markers with ≤3 separators die" do
-      body = "a=whs-ec_dGVzdHNlY3Jl b=whs.ec 1234567890ab"
+      # short materials + non-union delimiters isolate the MARKER-separator
+      # property — a ≥16 union run would die to entropy regardless
+      body = "x: whs-ec ab12cd, y: wh-sk 12ab34, z: whs.ec 98ba76"
 
       HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
 
@@ -865,9 +867,63 @@ defmodule AshHooks.DeliveryTest do
       assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
 
       snippet = row!(row.id).response_snippet
-      refute snippet =~ "dGVzdHNlY3Jl"
-      refute snippet =~ "1234567890ab"
+      refute snippet =~ "ab12cd"
+      refute snippet =~ "12ab34"
+      refute snippet =~ "98ba76"
       assert snippet =~ "[redacted]"
+    end
+
+    test "whsk_ and whpk_ secrets die like whsec_ (cross-vendor fix-pass regression)" do
+      body =
+        ~s({"sk": "whsk_) <>
+          "skmat12345" <> ~s(", "pk": "whpk_) <> "pkmat67890" <> ~s(", "ok": 1})
+
+      HttpDouble.set_responses([{:ok, %{status: 200, headers: [], body: body}}])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ "whsk"
+      refute snippet =~ "whpk"
+      refute snippet =~ "skmat"
+      refute snippet =~ "pkmat"
+      assert snippet =~ "[redacted]"
+    end
+
+    test "a form-encoded Bearer+token dies (cross-vendor fix-pass regression)" do
+      # 15 contiguous union chars — under the entropy floor; only the
+      # marker's + separator tolerance catches it
+      HttpDouble.set_responses([
+        {:ok, %{status: 200, headers: [], body: "auth: Bearer+tok12345, ok"}}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ "tok12345"
+      assert snippet =~ "[redacted]"
+    end
+
+    test "a %-escape that would materialize invalid UTF-8 never leaves the floor (cross-vendor fix-pass)" do
+      HttpDouble.set_responses([
+        {:ok, %{status: 200, headers: [], body: ~s({"x": "%FF%FE junk"})}}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      assert String.valid?(snippet)
+      # the raw bytes must not have materialized; the literal ASCII text may
+      refute snippet =~ "\xFF"
     end
 
     test "a ≥16 union run dies with no marker at all; a 15-char run survives" do

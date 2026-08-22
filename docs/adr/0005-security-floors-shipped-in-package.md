@@ -21,8 +21,10 @@ adopters with no migration layer, and a banned restriction-shaped narrowing.
 
 The package ships RESTRICTIVE DEFAULTS as floors, which consumers relax explicitly:
 default-deny reads on ledger/delivery resources; stored inbound headers allowlisted
-(signature headers by default); outbound response bodies stored as bounded redacted
-snippets; secrets resolvable only via callbacks (stored as digest + redacted display;
+(signature headers by default); outbound response snippets store no body bytes by
+default (amended 2026-08-22: a status + allowlisted content-type summary, with body
+capture an explicit per-call opt-in under the in-package floor); secrets resolvable
+only via callbacks (stored as digest + redacted display;
 literal secrets in DSL/config rejected at compile time); telemetry carries 8-hex secret
 fingerprints only; retention (TTL) and field-redaction hooks provided; SSRF guard enforced
 at endpoint registration AND send time (scheme, private/link-local/metadata ranges,
