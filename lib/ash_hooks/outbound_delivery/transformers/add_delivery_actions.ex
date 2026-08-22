@@ -17,13 +17,20 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
   def before?(_), do: false
 
   def transform(dsl_state) do
-    with {:ok, dispatch} <- build_dispatch(),
+    with {:ok, prune} <- build_prune(),
+         {:ok, dispatch} <- build_dispatch(),
          {:ok, mark_enqueue_failed} <- build_mark_enqueue_failed(),
          {:ok, requeue} <- build_requeue(),
          {:ok, dsl_state} <- add(dsl_state, dispatch),
          {:ok, dsl_state} <- add(dsl_state, mark_enqueue_failed) do
-      add(dsl_state, requeue)
+      with {:ok, dsl_state} <- add(dsl_state, prune) do
+        add(dsl_state, requeue)
+      end
     end
+  end
+
+  defp build_prune do
+    Builder.build_action(:destroy, :prune, accept: [])
   end
 
   defp add(dsl_state, entity) do

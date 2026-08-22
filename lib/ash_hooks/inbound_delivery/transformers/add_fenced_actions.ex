@@ -23,12 +23,20 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
          {:ok, mark_processed} <- build_mark_processed(),
          {:ok, mark_failed} <- build_mark_failed(),
          {:ok, renew} <- build_renew(),
-         {:ok, dsl_state} <- add(dsl_state, :create, ingest),
-         {:ok, dsl_state} <- add(dsl_state, :update, claim),
-         {:ok, dsl_state} <- add(dsl_state, :update, mark_processed),
-         {:ok, dsl_state} <- add(dsl_state, :update, mark_failed) do
+         {:ok, redact_payload} <- build_redact_payload(),
+         {:ok, prune} <- build_prune() do
+      {:ok, dsl_state} = add(dsl_state, :create, ingest)
+      {:ok, dsl_state} = add(dsl_state, :update, claim)
+      {:ok, dsl_state} = add(dsl_state, :update, mark_processed)
+      {:ok, dsl_state} = add(dsl_state, :update, redact_payload)
+      {:ok, dsl_state} = add(dsl_state, :destroy, prune)
+      {:ok, dsl_state} = add(dsl_state, :update, mark_failed)
       add(dsl_state, :update, renew)
     end
+  end
+
+  defp build_prune do
+    Builder.build_action(:destroy, :prune, accept: [])
   end
 
   defp add(dsl_state, _type, entity) do
@@ -67,6 +75,25 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
         change(Builtins.set_attribute(:status, :claimed)),
         change(Builtins.set_attribute(:lease_expires_at, Ash.Expr.arg(:lease_expires_at)))
       ]
+    )
+  end
+
+  # the retention field-redaction hook: replaces the stored payload
+  # under the caller's claim fence (Ingress.redact_payload/4 gates the
+  # WHERE; the action itself is a plain primitive, the fence pattern)
+  defp build_redact_payload do
+    import Ash.Expr, only: [arg: 1]
+
+    {:ok, payload_set} =
+      Builder.build_action_change(Builtins.set_attribute(:payload, arg(:payload)))
+
+    {:ok, payload_arg} =
+      Builder.build_action_argument(:payload, AshHooks.InboundDelivery.Payload, allow_nil?: false)
+
+    Builder.build_action(:update, :redact_payload,
+      accept: [],
+      arguments: [payload_arg],
+      changes: [payload_set]
     )
   end
 

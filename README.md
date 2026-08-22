@@ -199,10 +199,24 @@ or payloads. The exact event list and a copy-paste `attach_many` block
 are in the `AshHooks.Telemetry` docs and the
 [get-started tutorial](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md).
 
-## Limitations
+## Retention
 
-- No retention/TTL cleanup yet: ledger and delivery rows accumulate
-  until you clean them.
+Ledger and delivery rows accumulate by default (they ARE the dedup and
+audit record). When you want them bounded, drive the retention hooks on
+a schedule of your choosing (an Oban cron job, a mix task, a nightly
+job):
+
+- `AshHooks.Ingress.prune/2` and `AshHooks.Delivery.prune/2` delete
+  TERMINAL rows older than a cutoff — retryable and in-flight rows are
+  never touched. They key off the resource's `inserted_at`, so add
+  Ash's `timestamps()` to the resource and its migration.
+- `AshHooks.Ingress.redact_payload/4` rewrites a claimed row's payload
+  under the claim fence (scrub sensitive fields while keeping the dedup
+  identity; the original-bytes digest is preserved for audit).
+
+Deleting a terminal row re-opens its dedup identity — a replayed
+webhook re-processes, a re-emitted outbound event re-sends — so set the
+TTL beyond any replay or re-emission horizon.
 
 ## Further reading
 

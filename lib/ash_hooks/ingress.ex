@@ -226,6 +226,117 @@ defmodule AshHooks.Ingress do
   end
 
   @doc """
+  Retention hook: deletes TERMINAL ledger rows (`:processed`,
+  `:failed_permanent`) older than `older_than`, by the resource's
+  `inserted_at` (add Ash `timestamps()` to the resource and its
+  migration). Non-terminal rows are never deleted — retryable and
+  lease-held deliveries keep their dedup identity and re-drive path.
+
+  Deleting a terminal row re-opens its dedup identity: a replayed
+  delivery of the same webhook processes again (inbound), and — on the
+  outbound side — a re-emission of the same event re-dispatches and
+  double-sends. Set the TTL beyond any replay/re-emission horizon.
+  Returns `{:ok, deleted_count}`.
+  """
+  @spec prune(module(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def prune(resource, opts) do
+    older_than = normalize_cutoff(Keyword.fetch!(opts, :older_than))
+
+    with :ok <- require_timestamps!(resource) do
+      require Ash.Query
+
+      result =
+        with_transient_retry(fn ->
+          resource
+          |> Ash.Query.filter(
+            status in [:processed, :failed_permanent] and inserted_at < ^older_than
+          )
+          |> Ash.bulk_destroy(:prune, %{},
+            authorize?: false,
+            return_records?: true,
+            return_errors?: true,
+            strategy: [:atomic]
+          )
+        end)
+
+      case result do
+        %Ash.BulkResult{status: :success, records: rows} -> {:ok, length(rows)}
+        %Ash.BulkResult{errors: [error | _]} -> {:error, error}
+        %Ash.BulkResult{} -> {:error, :prune_failed}
+      end
+    end
+  end
+
+  @doc """
+  Retention field-redaction hook: replaces the stored payload of a
+  CLAIMED delivery with `redactor.(payload)` — under the caller's token
+  and an unexpired lease (the `mark_processed/3` fence). The row keeps
+  its dedup identity; only the payload changes. `payload_digest` is
+  deliberately NOT updated (it binds the ORIGINAL signed bytes — the
+  audit trail).
+
+  The redactor (`{m, f}` | 1-arity fun) receives the stored payload
+  (map or list — HubSpot batches are lists) and returns the
+  replacement (same type) or nil to leave it unchanged. A crashing or
+  invalid redactor returns an error and leaves the payload UNCHANGED
+  (fail-safe for the audit record — the caller may retry). Redact,
+  then mark promptly: a lease expiry between redact and mark re-drives
+  the row with the redacted payload.
+  """
+  @spec redact_payload(module(), term(), non_neg_integer(), term()) ::
+          :ok | {:error, :stale_token | :redactor_crash | :invalid_redactor_result | term()}
+  def redact_payload(resource, delivery_id, token, redactor) do
+    case Ash.get(resource, delivery_id, authorize?: false) do
+      {:ok, delivery} ->
+        apply_redactor(redactor, delivery.payload, resource, delivery_id, token)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp apply_redactor(redactor, payload, resource, delivery_id, token) do
+    case redactor_fun(redactor).(payload) do
+      nil ->
+        :ok
+
+      new_payload when is_map(new_payload) or is_list(new_payload) ->
+        gated_update(resource, delivery_id, token, :redact_payload, %{payload: new_payload})
+
+      _other ->
+        {:error, :invalid_redactor_result}
+    end
+  rescue
+    _ -> {:error, :redactor_crash}
+  catch
+    :exit, _ -> {:error, :redactor_crash}
+    :throw, _ -> {:error, :redactor_crash}
+  end
+
+  defp redactor_fun({m, f}) when is_atom(m) and is_atom(f), do: &apply(m, f, [&1])
+  defp redactor_fun(fun) when is_function(fun, 1), do: fun
+
+  # sqlite stores timestamps as ISO8601 TEXT compared LEXICALLY — a
+  # second-truncated cutoff would sort AFTER same-second usec rows and
+  # delete them early. Normalizing to microsecond precision keeps the
+  # lexical and chronological orders identical (adversarial finding).
+  defp normalize_cutoff(%DateTime{} = dt), do: DateTime.truncate(dt, :microsecond)
+
+  defp require_timestamps!(resource) do
+    if Ash.Resource.Info.attribute(resource, :inserted_at) do
+      :ok
+    else
+      {:error,
+       AshHooks.Errors.Unknown.UnknownError.exception(
+         error:
+           inspect(resource) <>
+             " has no :inserted_at — add `timestamps()` to its attributes " <>
+             "(and the inserted_at/updated_at columns to its migration) to use the retention hooks"
+       )}
+    end
+  end
+
+  @doc """
   Marks a claimed delivery processed — gated on the caller's token under an
   unexpired lease.
   """

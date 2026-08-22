@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.2.0 — 2026-08-22
+
+### Added
+
+- Retention hooks (ADR-0005 floor completed): `AshHooks.Ingress.prune/2`
+  and `AshHooks.Delivery.prune/2` (terminal rows older than a cutoff,
+  keyed on the resource's `timestamps()`; non-terminal rows never
+  deleted), and `AshHooks.Ingress.redact_payload/4` (payload
+  field-redaction under the claim fence; the original-bytes digest is
+  preserved). Deleting a terminal row re-opens its dedup identity —
+  set TTLs beyond replay/re-emission horizons.
+
 ## 0.1.1 — 2026-08-22
 
 ### Changed

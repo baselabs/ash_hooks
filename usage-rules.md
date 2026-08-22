@@ -17,6 +17,10 @@ For AI assistants working in codebases that use ash_hooks.
   `outbound :event` declaration; the subscription/endpoint/delivery
   extensions carry the fanout; `use AshHooks.Worker` in the consuming
   app is the Oban seam; `AshHooks.dispatch/4` is the only entry point.
+- Retention: `Ingress.prune/2` / `Delivery.prune/2` delete TERMINAL
+  rows only (needs `timestamps()` on the resource); redacting a claimed
+  row's payload uses `Ingress.redact_payload/4` — never write the
+  payload column directly.
 - Never call `AshHooks.Delivery.run/2` in normal flow — it is the
   runtime the worker drives. The exception: a one-row diagnostic
   re-drive with `snippet_capture: true`.
