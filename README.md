@@ -6,35 +6,20 @@ Webhooks for [Ash Framework](https://ash-hq.org) — **inbound** (receive, verif
 per-provider signatures, deduplicate, emit domain events) and **outbound**
 (sign, deliver, retry, track).
 
-> **Status: inbound ingress/fenced ledger + outbound fanout + delivery
-> runtime.**
-> Landed: the DSL sections and install task (including the endpoint
-> `body_reader` codemod), the CI compile-matrix with the Oban/plug-free proof
-> (ADR-0004), the inbound provider contract (`AshHooks.Provider` with
-> `default_verify_signature/4`, the `AshHooks.Provider.Mock` reference
-> provider, the splode error hierarchy), Standard Webhooks `v1`+`v1a`
-> signing/verification (old+new rotation on both schemes) with byte-identical
-> legacy `:dual` mode, the inbound sync pipeline — raw-body verify →
-> unique-ingest fenced ledger (`AshHooks.InboundDelivery` extension +
-> `AshHooks.Ingress`) with claim/lease fencing, a reaper, and fail-closed DSL
-> verifiers — the vendor verifiers `AshHooks.Provider.ComplyCube` (raw-body
-> HMAC-SHA256 over the `ComplyCube-Signature` header, SDK-vector conformance)
-> and `AshHooks.Provider.HubSpotV3` (composite `method + requestUri + body +
-> timestamp` HMAC over a separate millisecond timestamp header, batch array
-> bodies, docs-vector conformance), the outbound fanout —
-> `%AshHooks.Event{}` + the `Subscription` / `Endpoint` /
-> `OutboundDelivery` resource extensions (`AshHooks.Dispatcher`) with
-> per-endpoint enqueue isolation, a claim-then-enqueue repair CAS, and
-> secret-ref-only storage (literal secrets rejected at cast) — and the
-> delivery runtime (`AshHooks.Delivery` + the host-injected
-> `use AshHooks.Worker`): row-owned retry policy with Oban as the durable
-> trigger (ADR-0008), attempt-row-before-send, Retry-After + jittered
-> backoff + dead-letter, 410 durable disable, redirect refusal, the
-> `AshHooks.Http` adapter behaviour (bounded native default), no-body
-> response snippets by default with opt-in capture under the package
-> floor, and SSRF guards at registration + send. Upcoming
-> slices: telemetry, retention hooks — tracked by
-> [#1](https://github.com/baselabs/ash_hooks/issues/1).
+> **Status: v0.1.0 — inbound + outbound complete.**
+> Inbound: per-provider signature verification (`AshHooks.Provider`
+> behaviour; ComplyCube + HubSpot v3 reference providers), a fenced
+> unique-ingest ledger with claim/lease fencing and a reaper, and
+> fail-closed DSL verifiers. Outbound: `AshHooks.dispatch/4` fanout with
+> per-endpoint isolation, the delivery runtime on Oban
+> (`use AshHooks.Worker`) with row-owned retry policy, Standard Webhooks
+> signing (v1/v1a, legacy `:dual` migration mode), and a memory-bounded
+> native HTTP adapter. Security floors ship in the package (ADR-0005):
+> secrets as sources only, SSRF guards at registration + send, response
+> snippets store no body bytes by default. Telemetry events for the
+> whole lifecycle (see `AshHooks.Telemetry`). Design records:
+> [#1](https://github.com/baselabs/ash_hooks/issues/1),
+> ADR-0001–0008.
 
 Inbound and outbound are independently consumable: inbound-only applications
 pull no queue infrastructure.
@@ -316,6 +301,18 @@ AshHooks.dispatch(Order, :order_paid, event,
 For a one-row diagnostic re-drive of an already-dispatched event, call
 `AshHooks.Delivery.run/2` directly with `snippet_capture: true` — the
 row's `{endpoint_id, event_uuid}` args and your config are all it takes.
+
+## Observability
+
+Every lifecycle transition emits a telemetry event — ingress
+verify/dedup/claim, dispatch enqueue-failure, delivery
+attempt/result/backoff/dead-letter/endpoint-disable. Events carry ids,
+integers, fixed-vocabulary atoms, and classified reason strings only —
+never secrets, bodies, or payloads (ADR-0005), so they are safe to ship
+to any metrics/APM backend. `:telemetry.execute/3` matches exact event
+names, so consume the surface with one `attach_many` — the full list
+and a copy-paste handler live in `AshHooks.Telemetry`'s docs and the
+[get-started tutorial](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md).
 
 ## Design records
 
