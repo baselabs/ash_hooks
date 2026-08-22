@@ -319,7 +319,8 @@ row's `{endpoint_id, event_uuid}` args and your config are all it takes.
 
 ## Design records
 
-Architectural decisions live in [`docs/adr/`](docs/adr/).
+Architectural decisions live in
+[`docs/adr/`](https://github.com/baselabs/ash_hooks/tree/main/docs/adr).
 
 ## License
 
