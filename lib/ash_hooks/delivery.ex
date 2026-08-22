@@ -176,6 +176,12 @@ defmodule AshHooks.Delivery do
   # ────────────────────────── the send ──────────────────────────
 
   defp send(row, endpoint, config) do
+    :telemetry.execute(
+      [:ash_hooks, :delivery, :attempt],
+      %{},
+      %{endpoint_id: endpoint.id, event_uuid: row.event_uuid, attempts: row.attempts}
+    )
+
     adapter = config[:http] || AshHooks.Http.Bounded
 
     request = if is_function(adapter, 5), do: adapter, else: &adapter.request/5
@@ -225,6 +231,12 @@ defmodule AshHooks.Delivery do
 
     case result do
       %Ash.BulkResult{status: :success} ->
+        :telemetry.execute(
+          [:ash_hooks, :delivery, :disable],
+          %{},
+          %{endpoint_id: endpoint.id, reason: :gone_410}
+        )
+
         dead_letter(row, "gone_410", config, failure_summary(response))
 
       other ->
@@ -356,8 +368,23 @@ defmodule AshHooks.Delivery do
            response_status: response.status,
            response_snippet: snippet_for(response, config)
          }) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, {:reconcile_failed, reason}}
+      {:ok, _} ->
+        :telemetry.execute(
+          [:ash_hooks, :delivery, :result],
+          %{},
+          %{
+            endpoint_id: row.endpoint_id,
+            event_uuid: row.event_uuid,
+            status: :succeeded,
+            response_status: response.status,
+            reason: nil
+          }
+        )
+
+        :ok
+
+      {:error, reason} ->
+        {:error, {:reconcile_failed, reason}}
     end
   end
 
@@ -378,8 +405,24 @@ defmodule AshHooks.Delivery do
                dead_letter?: false
              })
            ) do
-        {:ok, _} -> {:snooze, delay}
-        {:error, reason} -> {:error, {:reconcile_failed, reason}}
+        {:ok, _} ->
+          emit_result(row, summary, :failed_retryable, error)
+
+          :telemetry.execute(
+            [:ash_hooks, :delivery, :backoff],
+            %{},
+            %{
+              endpoint_id: row.endpoint_id,
+              event_uuid: row.event_uuid,
+              attempts: row.attempts,
+              delay_seconds: delay
+            }
+          )
+
+          {:snooze, delay}
+
+        {:error, reason} ->
+          {:error, {:reconcile_failed, reason}}
       end
     end
   end
@@ -395,10 +438,43 @@ defmodule AshHooks.Delivery do
            # from a terminal row
            [:pending, :sending, :failed_retryable, :enqueue_failed]
          ) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, {:reconcile_failed, reason}}
+      {:ok, _} ->
+        emit_result(row, summary, :dead_letter, error)
+
+        :telemetry.execute(
+          [:ash_hooks, :delivery, :dead_letter],
+          %{},
+          %{
+            endpoint_id: row.endpoint_id,
+            event_uuid: row.event_uuid,
+            reason: error,
+            response_status: summary_status(summary)
+          }
+        )
+
+        :ok
+
+      {:error, reason} ->
+        {:error, {:reconcile_failed, reason}}
     end
   end
+
+  defp emit_result(row, summary, status, reason) do
+    :telemetry.execute(
+      [:ash_hooks, :delivery, :result],
+      %{},
+      %{
+        endpoint_id: row.endpoint_id,
+        event_uuid: row.event_uuid,
+        status: status,
+        response_status: summary_status(summary),
+        reason: reason
+      }
+    )
+  end
+
+  defp summary_status({status, _snippet}), do: status
+  defp summary_status(nil), do: nil
 
   # a response-derived summary rides the failure write when the attempt
   # actually saw a response; pre-send failures (disabled endpoint, SSRF
@@ -742,8 +818,23 @@ defmodule AshHooks.Delivery do
       String.starts_with?(type, "application/")
   end
 
-  defp error_string(term) when is_binary(term), do: String.slice(term, 0, 255)
-  defp error_string(term) when is_atom(term), do: Atom.to_string(term)
+  # Classify without contents (the dispatcher's rule — an arbitrary
+  # consumer adapter/resolver term can carry secret or body material):
+  # atoms are our own vocabulary; binaries pass only in the fixed error
+  # grammar; everything else collapses to "unclassified". This is BOTH
+  # the telemetry floor and the last_error ledger floor (#11 R1).
+  @fixed_error_grammar ~r/^[a-z][a-z0-9_]*$/
 
-  defp error_string(term), do: inspect(term) |> String.slice(0, 255)
+  defp error_string(term) when is_atom(term), do: Atom.to_string(term)
+  defp error_string({:secret_resolution, _reason}), do: "secret_resolution"
+  defp error_string({:adapter_crash, _inner}), do: "adapter_crash"
+  defp error_string({:disable_failed, _inner}), do: "disable_failed"
+
+  defp error_string(term) when is_binary(term) do
+    if Regex.match?(@fixed_error_grammar, term),
+      do: String.slice(term, 0, 255),
+      else: "unclassified"
+  end
+
+  defp error_string(_other), do: "unclassified"
 end

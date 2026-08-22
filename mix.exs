@@ -51,7 +51,7 @@ defmodule AshHooks.MixProject do
       {:splode, "~> 0.3"},
       {:spark, ">= 2.3.3 and < 3.0.0-0"},
       {:jason, "~> 1.2"},
-      {:telemetry, "~> 1.0"}
+      {:telemetry, "~> 1.3"}
       | optional_deps
     ] ++
       [
@@ -83,7 +83,14 @@ defmodule AshHooks.MixProject do
       main: "readme",
       source_ref: "v#{@version}",
       source_url: @source_url,
-      extras: ["README.md"]
+      extras:
+        ["README.md", "CHANGELOG.md"] ++
+          Path.wildcard("documentation/tutorials/*.md") ++
+          Path.wildcard("documentation/dsls/*.md"),
+      groups_for_extras: [
+        Tutorials: ~r"documentation/tutorials/?",
+        DSLs: ~r"documentation/dsls/?"
+      ]
     ]
   end
 

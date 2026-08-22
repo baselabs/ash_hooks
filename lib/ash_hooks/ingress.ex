@@ -82,11 +82,48 @@ defmodule AshHooks.Ingress do
   @spec ingest(module(), atom(), binary() | nil, ctx()) ::
           {:ok, :created | :duplicate, struct()} | {:error, term()}
   def ingest(resource, name, raw_body, ctx) do
-    with {:ok, env} <- resolve(resource, name, raw_body, ctx),
+    started = System.monotonic_time()
+
+    with {:ok, env} <- verify(resource, name, raw_body, ctx, started),
          {:ok, created?, delivery} <- ingest_delivery(resource, env) do
       drive(resource, env, delivery, created?)
     end
   end
+
+  # the verify event wraps resolution + signature verification; the
+  # reason is the FIXED error class atom, never the raw error payload
+  # (ADR-0005's telemetry floor)
+  defp verify(resource, name, raw_body, ctx, started) do
+    case resolve(resource, name, raw_body, ctx) do
+      {:ok, _env} = ok ->
+        emit_verify(name, :ok, nil, started)
+        ok
+
+      {:error, reason} ->
+        emit_verify(name, :invalid, error_class(reason), started)
+        {:error, reason}
+    end
+  end
+
+  defp emit_verify(source, outcome, reason, started) do
+    :telemetry.execute(
+      [:ash_hooks, :ingress, :verify],
+      %{duration_ms: System.monotonic_time() - started},
+      %{source: source, outcome: outcome, reason: reason}
+    )
+  end
+
+  defp error_class(%{__exception__: true} = error) do
+    case error.__struct__ |> Module.split() do
+      ["AshHooks", "Errors", "Invalid", class] ->
+        Macro.underscore(class) |> String.to_atom()
+
+      _other_namespace ->
+        nil
+    end
+  end
+
+  defp error_class(_non_exception), do: nil
 
   @doc """
   Persists the ledger row (raw payload BEFORE handling) via the
@@ -110,8 +147,19 @@ defmodule AshHooks.Ingress do
 
     with_transient_retry(fn ->
       case Ash.create(resource, input, action: :ingest, authorize?: false) do
-        {:ok, delivery} -> {:ok, delivery.id == id, delivery}
-        {:error, error} -> {:error, error}
+        {:ok, delivery} ->
+          created? = delivery.id == id
+
+          :telemetry.execute(
+            [:ash_hooks, :ingress, :dedup],
+            %{},
+            %{source: env.name, outcome: if(created?, do: :created, else: :duplicate)}
+          )
+
+          {:ok, created?, delivery}
+
+        {:error, error} ->
+          {:error, error}
       end
     end)
   end
@@ -149,9 +197,21 @@ defmodule AshHooks.Ingress do
 
     case result do
       %Ash.BulkResult{status: :success, records: [delivery]} ->
+        :telemetry.execute(
+          [:ash_hooks, :ingress, :claim],
+          %{},
+          %{source: delivery.provider, outcome: :claimed}
+        )
+
         {:ok, delivery.fencing_token, delivery}
 
       %Ash.BulkResult{status: :success, records: []} ->
+        :telemetry.execute(
+          [:ash_hooks, :ingress, :claim],
+          %{},
+          %{source: nil, outcome: :lease_held}
+        )
+
         {:error, :lease_held}
 
       %Ash.BulkResult{errors: [error | _]} ->

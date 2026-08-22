@@ -1,0 +1,65 @@
+# ash_hooks usage rules
+
+For AI assistants working in codebases that use ash_hooks.
+
+## When to use what
+
+- Receiving webhooks: put `AshHooks` + `AshHooks.InboundDelivery` on a
+  ledger resource, declare `inbound :provider` sources, and drive
+  `AshHooks.Ingress.ingest/4` → `claim_delivery/2` → `mark_processed/2`
+  (or your own claim/handle flow). The ledger's unique index IS the
+  dedup — never build your own seen-table.
+- Sending webhooks: put `AshHooks` on the emitting resource with an
+  `outbound :event` declaration; the subscription/endpoint/delivery
+  extensions carry the fanout; `use AshHooks.Worker` in the consuming
+  app is the Oban seam; `AshHooks.dispatch/4` is the only entry point.
+- Never call `AshHooks.Delivery.run/2` in normal flow — it is the
+  runtime the worker drives. The exception: a one-row diagnostic
+  re-drive with `snippet_capture: true`.
+
+## Hard rules (package floors — do not work around)
+
+- Secrets are SOURCES, never literals: `{m, f, a}`, `{:app_env, path}`,
+  or a 0-arity function. A literal binary secret is rejected at DSL
+  parse time (ADR-0005).
+- The endpoint `url` accepts only public http(s) destinations —
+  private/loopback/link-local/metadata literals are rejected at
+  registration and re-checked at send time (with DNS re-resolution).
+- Response snippets store NO body bytes by default. Body capture is a
+  per-call `snippet_capture: true` in the `AshHooks.Delivery.run/2`
+  config (deliberately not a worker-macro option); captured bodies pass
+  the in-package redaction floor. Do not copy response bodies into your
+  own columns — reuse `AshHooks.Delivery.redact/1` if you must persist
+  response-derived text.
+- A `snippet_redactor` callback ({m,f} in the worker macro, or a 1-arity
+  fn in the run/2 config) sees the RAW captured body and must return
+  `binary | nil`; a crash or invalid return degrades to the sanitized
+  summary, never raw bytes.
+- Telemetry events carry ids/integers/fixed atoms/classified reasons
+  only. If you need secret identity in an event, use
+  `AshHooks.Telemetry.fingerprint/1` (8-hex) — never the material.
+
+## Patterns
+
+- Inbound controller: read the RAW body before any JSON decode (the
+  signature is over the exact bytes), pass `signature` + `headers` +
+  `scope` in the ctx map.
+- Oban worker: always `use AshHooks.Worker` (the Oban beam compiles only
+  where Oban exists); pass the generated `enqueue/2` as the dispatch
+  `enqueue:` seam — it carries the effect-once job uniqueness.
+- Retries are ROW-owned: don't add Oban-level retry logic around
+  deliveries; the row's attempts/backoff/ceiling + `Retry-After`
+  handling are the machine.
+- Observability: attach telemetry handlers with `attach_many` over the
+  exact event names (see `AshHooks.Telemetry` for the full list —
+  prefix attaches never fire).
+
+## Common mistakes
+
+- Declaring `replay_window_seconds` for a provider without a timestamp
+  header — the DSL verifier rejects it.
+- Reading the delivery row's fields through consumer actions — the
+  machine-written fields (`response_*`, `attempts`, `next_attempt_at`,
+  `last_error`) accept no action input; build read views instead.
+- Expecting `:telemetry` prefix handlers to fire: `execute/3` matches
+  exact names (verified against telemetry 1.4 source).

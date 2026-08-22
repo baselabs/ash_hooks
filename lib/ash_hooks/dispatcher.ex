@@ -210,6 +210,12 @@ defmodule AshHooks.Dispatcher do
       {:error, reason} ->
         case mark_enqueue_failed(deliv_mod, row.id, reason) do
           :ok ->
+            :telemetry.execute(
+              [:ash_hooks, :dispatch, :enqueue_failed],
+              %{},
+              %{endpoint_id: row.endpoint_id, event_uuid: row.event_uuid, reason: reason}
+            )
+
             %{status: :enqueue_failed, error: reason}
 
           {:error, mark_error} ->
