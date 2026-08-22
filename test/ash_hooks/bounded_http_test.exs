@@ -151,6 +151,30 @@ defmodule AshHooks.BoundedHttpTest do
       assert {:error, :malformed_chunked} =
                Bounded.request(:get, base <> "/negative-chunk", %{}, nil, opts)
     end
+
+    test "a non-CRLF chunk terminator is malformed, never silently consumed" do
+      # chunk data "abc" then XX instead of CRLF, then a well-formed terminator
+      {base, opts} =
+        raw_server(
+          "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n3\r\nabcXX0\r\n\r\n"
+        )
+
+      assert {:error, :malformed_chunked} =
+               Bounded.request(:get, base <> "/bad-terminator", %{}, nil, opts)
+    end
+
+    test "a size line that never terminates is malformed once absurd, not buffered" do
+      # 200 bytes with no CRLF anywhere — a size line is a hex length; past
+      # any sane bound without a terminator the framing is malformed
+      {base, opts} =
+        raw_server(
+          "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n" <>
+            String.duplicate("A", 200)
+        )
+
+      assert {:error, :malformed_chunked} =
+               Bounded.request(:get, base <> "/runon-size-line", %{}, nil, opts)
+    end
   end
 
   describe "the header-block bound" do

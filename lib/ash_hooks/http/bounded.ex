@@ -366,8 +366,16 @@ defmodule AshHooks.Http.Bounded do
     end
   end
 
+  # a size line is a hex length — a handful of characters (the absurd
+  # bound admits any legal encoding). A buffer past it with no terminator
+  # is a hostile run-on: malformed, never buffered
+  @max_size_line 64
+
   defp next_chunk_size(buffer) do
     case :binary.match(buffer, "\r\n") do
+      :nomatch when byte_size(buffer) > @max_size_line ->
+        :malformed
+
       :nomatch ->
         :need_more
 
@@ -388,29 +396,63 @@ defmodule AshHooks.Http.Bounded do
     end
   end
 
-  # The declared chunk size is ATTACKER-CONTROLLED — never buffer toward
-  # it (a 1TB declaration must not allocate). Retain at most the
-  # remaining ALLOWANCE of the chunk's bytes, consume the rest slice-wise
-  # (cross-vendor live probe: both peers). Recv pulls are already capped
-  # by the socket's buffer option, so the buffered excess is one slice.
+  # The declared chunk size is ATTACKER-CONTROLLED — NEVER buffer toward
+  # it. The chunk's bytes are consumed as bounded phases: KEEP at most
+  # the remaining allowance (bounded by :max_body_bytes), DISCARD the
+  # excess slice-wise (holding at most one recv slice at a time), then
+  # VERIFY the two terminator bytes are CRLF — anything else is
+  # malformed. (The security lens caught the original loop accumulating
+  # the whole declared chunk before trimming: an 8MB declaration held
+  # 16.8MB in the worker against a 16-byte bound.)
   defp take_chunk(socket, buffer, acc, size, max, timeout) do
     allowance = max(max - byte_size(acc), 0)
     keep = min(size, allowance)
-    needed = size + 2
 
-    if byte_size(buffer) < needed do
-      case recv(socket, timeout) do
-        {:ok, chunk} -> take_chunk(socket, buffer <> chunk, acc, size, max, timeout)
-        # a close mid-chunk is truncation — never silently swallow the
-        # error and return the partial accumulator as a complete body
-        {:error, :closed} -> {:error, :truncated_body}
-        {:error, reason} -> {:error, reason}
+    with {:ok, kept, buffer} <- take_bytes(socket, buffer, keep, timeout),
+         {:ok, buffer} <- discard_bytes(socket, buffer, size - keep, timeout),
+         {:ok, term, buffer} <- take_bytes(socket, buffer, 2, timeout) do
+      if term == "\r\n" do
+        {:ok, {buffer, acc <> kept}}
+      else
+        {:error, :malformed_chunked}
       end
-    else
-      # carry the POST-chunk remainder forward — the next size line (and
-      # possibly more chunks) may already be buffered
-      rest = binary_part(buffer, needed, byte_size(buffer) - needed)
-      {:ok, {rest, acc <> binary_part(buffer, 0, keep)}}
+    end
+  end
+
+  # discards exactly n bytes WITHOUT accumulating — n here can be the
+  # attacker's declared excess (gigabytes), so bytes are dropped slice by
+  # slice and the process never holds more than one recv slice of the
+  # discarded run
+  defp discard_bytes(_socket, buffer, 0, _timeout), do: {:ok, buffer}
+
+  defp discard_bytes(_socket, buffer, n, _timeout) when byte_size(buffer) >= n,
+    do: {:ok, binary_part(buffer, n, byte_size(buffer) - n)}
+
+  defp discard_bytes(socket, buffer, n, timeout) when byte_size(buffer) > 0,
+    do: discard_bytes(socket, "", n - byte_size(buffer), timeout)
+
+  defp discard_bytes(socket, <<>>, n, timeout) do
+    case recv(socket, timeout) do
+      {:ok, chunk} -> discard_bytes(socket, chunk, n, timeout)
+      {:error, :closed} -> {:error, :truncated_body}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # takes exactly n bytes out of (buffer ++ socket) — bounded by n plus
+  # one recv slice; used only where n is attacker-INdependent (the
+  # allowance, the 2-byte terminator) or already bounded by it
+  defp take_bytes(_socket, buffer, 0, _timeout), do: {:ok, "", buffer}
+
+  defp take_bytes(_socket, buffer, n, _timeout) when byte_size(buffer) >= n,
+    do: {:ok, binary_part(buffer, 0, n), binary_part(buffer, n, byte_size(buffer) - n)}
+
+  defp take_bytes(socket, buffer, n, timeout) do
+    case recv(socket, timeout) do
+      {:ok, chunk} -> take_bytes(socket, buffer <> chunk, n, timeout)
+      # a close mid-chunk is truncation — never a partial ok
+      {:error, :closed} -> {:error, :truncated_body}
+      {:error, reason} -> {:error, reason}
     end
   end
 
