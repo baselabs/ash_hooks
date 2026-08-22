@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.2.2 — 2026-08-22
+
+### Fixed
+
+- usage-rules.md now ships in the hex tarball (the Ash AI-assistant
+  convention reads it from the package) and renders on hexdocs. It was
+  previously GitHub-only.
+
 ## 0.2.1 — 2026-08-22
 
 ### Added

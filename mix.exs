@@ -1,7 +1,7 @@
 defmodule AshHooks.MixProject do
   use Mix.Project
 
-  @version "0.2.1"
+  @version "0.2.2"
   @source_url "https://github.com/baselabs/ash_hooks"
 
   def project do
@@ -72,7 +72,7 @@ defmodule AshHooks.MixProject do
   defp package do
     [
       maintainers: ["rjpalermo"],
-      files: ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG*),
+      files: ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules*),
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url}
     ]
@@ -84,7 +84,7 @@ defmodule AshHooks.MixProject do
       source_ref: "v#{@version}",
       source_url: @source_url,
       extras:
-        ["README.md", "CHANGELOG.md"] ++
+        ["README.md", "CHANGELOG.md", "usage-rules.md"] ++
           Path.wildcard("documentation/tutorials/*.md") ++
           Path.wildcard("documentation/dsls/*.md") ++
           Path.wildcard("documentation/livebooks/*.livemd"),
