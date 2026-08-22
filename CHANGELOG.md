@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.0.1 — 2026-08-22
+
+Docs-and-tests release (no functional changes). The 1.0.0 ship report's
+three residual postures are probed and pinned instead of documented:
+
+### Added
+
+- The fenced ledger's exactly-once claim is now pinned by a TRUE
+  concurrent race test (8 simultaneous same-key ingests on a
+  3-connection sqlite pool: exactly one `:created`, one row) — and the
+  same race without the storage unique index proves the failure mode:
+  sqlite fails CLOSED with a loud storage error, zero rows. The
+  `InboundDelivery` moduledoc cites both.
+- The `:httpc` adapter's giant-non-2xx window is now MEASURED (dribble
+  probe: ~4.65MB transient for a 4MB error body against a 16-byte
+  bound) with a committed containment test pinning the final cut;
+  ADR-0009 carries the numbers.
+
+### Fixed
+
+- The missing-index hazard is documented accurately: on storage layers
+  with native conflict support (sqlite, postgres) a missing unique
+  index errors the ingest loudly — the previously documented
+  "two rows, both `:created`" shape applies to degraded-upsert layers.
+  The as-built floor is stronger than the docs claimed.
+
 ## 1.0.0 — 2026-08-22
 
 1.0.0 is the semantic-versioning baseline (ADR-0010): no public API
