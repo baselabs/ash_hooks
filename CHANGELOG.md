@@ -24,7 +24,21 @@ migration notes in [UPGRADING.md](UPGRADING.md).
   iPAddress-SAN matcher was unreachable since birth (found by the new
   dialyzer gate): every literal-IP https endpoint was rejected
   fail-closed with `:cert_ip_mismatch`. Extracted to the
-  fixture-tested `AshHooks.Http.CertSan` (ADR-0009).
+  fixture-tested `AshHooks.Http.CertSan` (ADR-0009). The IPv6 direction
+  initially matched nothing (a cross-vendor review finding, fixed
+  before release) — both address families now verify against fixture
+  certificates.
+- **A hostile chunked response can no longer balloon worker memory.**
+  The chunk consumer accumulated the ENTIRE attacker-declared chunk
+  before trimming to the body bound — an 8MB declaration held ~16.8MB
+  in the worker against a 16-byte bound (cross-vendor security review,
+  executable probe). Consumption is now phase-bounded: keep at most the
+  allowance, discard the excess slice-wise (one receive slice held at a
+  time), and a chunk terminator that is not CRLF is now
+  `{:error, :malformed_chunked}` instead of being silently consumed
+  (a malformed 2xx can no longer classify as succeeded). Run-on
+  chunk-size lines without a terminator are refused past a sane bound
+  instead of being buffered.
 - `AshHooks.Delivery.prune/2` returns `{:error, error}` when the
   resource lacks `inserted_at` — the same contract as
   `AshHooks.Ingress.prune/2` its `@spec` always promised (previously
