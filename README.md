@@ -222,6 +222,8 @@ TTL beyond any replay or re-emission horizon.
 
 - [Get started](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md) —
   complete walkthrough, migrations included
+- [Guided tour (Livebook)](https://github.com/baselabs/ash_hooks/blob/main/documentation/livebooks/get-started.livemd) —
+  run the whole library inside one notebook
 - [DSL reference](https://github.com/baselabs/ash_hooks/tree/main/documentation/dsls)
 - [Architecture decisions](https://github.com/baselabs/ash_hooks/tree/main/docs/adr)
 

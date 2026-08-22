@@ -48,3 +48,22 @@ jobs:
         if: matrix.no_optional == '1'
         run: |
           mix run --no-start -e 'if :code.which(Oban) != :non_existing or :code.which(Plug) != :non_existing, do: (IO.puts("optional dep loaded"); System.halt(1))'
+
+  # The get-started Livebook, verified headless on one leg: the elixir
+  # cells are extracted in order and run outside any mix project
+  # (Mix.install requires it) — the same evaluation Livebook performs.
+  livebook:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.mix
+            ~/.cache
+          key: livebook-mix-${{ hashFiles('mix.lock') }}
+      - run: ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd

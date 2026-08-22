@@ -21,12 +21,15 @@ One canonical run-sheet for a release, human-owned end to end
    section to the dated version heading and bump `@version` in
    `mix.exs` — `CHANGELOG*` ships inside the tarball, so the rename
    must not wait for post-publish.
-5. `mix docs` builds clean; skim `doc/index.html` for the README,
+5. Run the get-started Livebook headless
+   (`./scripts/run-livebook.sh documentation/livebooks/get-started.livemd`)
+   and bump the "validated against" version in its intro if needed.
+6. `mix docs` builds clean; skim `doc/index.html` for the README,
    tutorial, and DSL cheat sheets rendering.
-6. Name availability: `mix hex.info ash_hooks` → "No package with
+7. Name availability: `mix hex.info ash_hooks` → "No package with
    name ash_hooks" (re-verified 2026-08-22; first-publish-first-owned —
    if this now EXISTS and is not ours, STOP and escalate).
-7. Dry run: run INTERACTIVELY in a terminal:
+8. Dry run: run INTERACTIVELY in a terminal:
    `env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish --dry-run` — the
    numbered first-publish owner prompt asks "yourself as owner or an
    organization"; read it on screen (selection "1" is YOURSELF;
@@ -34,11 +37,11 @@ One canonical run-sheet for a release, human-owned end to end
    `mix hex.publish --organization <org>` instead). Decide ownership
    BEFORE this step. Expect exit 0; cosmetic "hidden module"
    doc-reference warnings are known and acceptable.
-8. `mix hex.audit` clean (no retired deps in the resolved set).
+9. `mix hex.audit` clean (no retired deps in the resolved set).
 
 ## Publish (#15 — human hands on keyboard)
 
-9. Run INTERACTIVELY in a terminal: `env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish`
+10. Run INTERACTIVELY in a terminal: `env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish`
    (add `--organization <org>` for org ownership). Requires
    `HEX_API_KEY` for the chosen owner. Read the prompts on screen — the
    first publish asks the OWNER selection, every publish asks
@@ -48,14 +51,14 @@ One canonical run-sheet for a release, human-owned end to end
    renders the README baked into the newest release TARBALL — a README
    change requires a version bump + full publish (learned on 0.1.0 →
    0.1.1).
-10. Verify: `mix hex.info ash_hooks` shows the version; the docs link
+11. Verify: `mix hex.info ash_hooks` shows the version; the docs link
    renders on hex.pm.
-11. Tag: `git tag v<version> && git push origin v<version>`.
+12. Tag: `git tag v<version> && git push origin v<version>`.
 
 ## Post-publish
 
-12. GitHub release from the tag, summary from the CHANGELOG section.
-13. Adoption coordination tickets (#12 commerce_platform, #13
+13. GitHub release from the tag, summary from the CHANGELOG section.
+14. Adoption coordination tickets (#12 commerce_platform, #13
     navyler_cdc) can proceed against the published version.
 
 ## Known notes

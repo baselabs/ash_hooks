@@ -86,9 +86,11 @@ defmodule AshHooks.MixProject do
       extras:
         ["README.md", "CHANGELOG.md"] ++
           Path.wildcard("documentation/tutorials/*.md") ++
-          Path.wildcard("documentation/dsls/*.md"),
+          Path.wildcard("documentation/dsls/*.md") ++
+          Path.wildcard("documentation/livebooks/*.livemd"),
       groups_for_extras: [
         Tutorials: ~r"documentation/tutorials/?",
+        Livebooks: ~r"documentation/livebooks/?",
         DSLs: ~r"documentation/dsls/?"
       ]
     ]
