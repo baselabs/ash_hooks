@@ -554,7 +554,14 @@ defmodule AshHooks.DispatcherTest do
       refute md.reason =~ "LEAKY"
       assert md.event_uuid == second_event.id
 
-      leaky_row = Enum.find(delivery_rows(), &(&1.event_uuid == second_event.id))
+      # match BOTH endpoint and event — one event fans out to a row per
+      # endpoint and the good endpoint's :pending row shares the uuid
+      leaky_row =
+        Enum.find(
+          delivery_rows(),
+          &(&1.event_uuid == second_event.id and &1.endpoint_id == bad.id)
+        )
+
       assert leaky_row.status == :enqueue_failed
       assert leaky_row.last_error == "unclassified"
       refute leaky_row.last_error =~ "LEAKY"
