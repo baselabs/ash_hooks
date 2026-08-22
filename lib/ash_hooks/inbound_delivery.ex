@@ -21,7 +21,11 @@ defmodule AshHooks.InboundDelivery do
 
   The uniqueness identity must be backed by a REAL unique index on the
   consumer's data layer — storage-level uniqueness is the idempotency
-  primitive, and the fenced machine's crash-safety rests on it. Scope slots
+  primitive, and the fenced machine's crash-safety rests on it (PINNED by
+  test: 8 simultaneous ingests of one event id converge to exactly one
+  row and one `:created`; the same race on a table without the index
+  fails closed with a loud storage error —
+  `test/ash_hooks/ingress_race_test.exs`). Scope slots
   must be non-nullable attributes: a nullable slot would make `nil` scope
   values distinct on SQL unique indexes and silently break dedup for
   scope-less redeliveries.

@@ -26,9 +26,15 @@ handling would re-issue POST as GET.
    64 KiB under Content-Length, chunked, and read-to-close alike; connect 5s / receive
    15s; one request per connection, `Connection: close`, **no redirects ever** (a 3xx
    surfaces as a response the runtime dead-letters as a refused redirect). Chunk-size
-   declarations are attacker-controlled and never buffered toward. `AshHooks.Http.Httpc`
-   remains available via the worker's `:http` opt; its giant-non-2xx assembly residual
-   is documented in its moduledoc.
+   declarations are attacker-controlled and never buffered toward (phase-bounded
+   keep/discard/verify; probe 2026-08-22: 235KB peak against an 8MB declaration that
+   previously held 16.8MB). `AshHooks.Http.Httpc` remains available via the worker's
+   `:http` opt. Its residual window — `:httpc` streams only 200/206, so a giant
+   NON-2xx body assembles whole inside OTP before the package cut — is MEASURED, not
+   just documented (dribble probe 2026-08-22, 4MB error body against a 16-byte
+   bound): ~4.65MB transient (≈1.16× the body), final body cut to the bound; the
+   committed containment test pins the cut (`test/ash_hooks/http_test.exs`, "a giant
+   NON-2xx body is still CUT at the bound").
 2. **Truncated responses never classify as success**: a Content-Length or chunked body
    cut by early close is `{:error, :truncated_body}` (aligned across framings
    2026-08-22 — the chunked path previously returned a partial `{:ok, ...}`). The

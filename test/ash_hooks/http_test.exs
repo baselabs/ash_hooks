@@ -94,6 +94,48 @@ defmodule AshHooks.HttpTest do
       assert byte_size(body) == @cap
     end
 
+    test "a giant NON-2xx body is still CUT at the bound (the assembled window's containment)",
+         %{} do
+      # :httpc streams only 200/206 — an error status arrives assembled
+      # whole inside OTP (the adapter's documented residual WINDOW). This
+      # pins the containment claim: whatever assembles transiently, the
+      # RESULT the runtime sees is bounded. The window itself is
+      # quantified in ADR-0009 (dribble probe).
+      giant = String.duplicate("x", @big_bytes)
+
+      {:ok, listen} =
+        :gen_tcp.listen(0, [:binary, {:active, false}, {:ip, {127, 0, 0, 1}}])
+
+      {:ok, port} = :inet.port(listen)
+
+      spawn(fn ->
+        {:ok, socket} = :gen_tcp.accept(listen, 10_000)
+        {:ok, _request} = :gen_tcp.recv(socket, 0, 5_000)
+
+        :gen_tcp.send(
+          socket,
+          "HTTP/1.1 404 Not Found\r\ncontent-length: #{byte_size(giant)}\r\n\r\n"
+        )
+
+        :gen_tcp.send(socket, giant)
+        :timer.sleep(200)
+        :gen_tcp.close(socket)
+        :gen_tcp.close(listen)
+      end)
+
+      assert {:ok, %{status: 404, body: body}} =
+               Httpc.request(
+                 :get,
+                 "http://127.0.0.1:#{port}/gone",
+                 %{},
+                 nil,
+                 validate_destination: false,
+                 max_body_bytes: @cap
+               )
+
+      assert byte_size(body) == @cap
+    end
+
     test "the default bound applies without an explicit opt", %{base: base, opts: opts} do
       assert {:ok, %{body: body}} =
                Httpc.request(:get, base <> "/big.json", %{}, nil, opts)
