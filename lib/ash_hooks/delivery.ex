@@ -411,14 +411,23 @@ defmodule AshHooks.Delivery do
              {:ok, month_n} <- month_number(month),
              {d, ""} <- Integer.parse(date),
              {y, ""} <- Integer.parse(year),
-             [h, m, s] <- Enum.map(String.split(time, ":"), &parse_int_or_nil/1),
-             nil not in [h, m, s],
+             [h, m, s] <- parse_hms(time),
              {:ok, date_d} <- Date.new(y, month_n, d),
              {:ok, time_t} <- Time.new(h, m, s) do
           DateTime.new!(date_d, time_t, "Etc/UTC")
         else
           _malformed -> nil
         end
+    end
+  end
+
+  defp parse_hms(time) do
+    case Enum.map(String.split(time, ":"), &parse_int_or_nil/1) do
+      [_, _, _] = parts ->
+        if nil in parts, do: nil, else: parts
+
+      _wrong_shape ->
+        nil
     end
   end
 
