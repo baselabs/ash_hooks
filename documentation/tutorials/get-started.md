@@ -12,7 +12,7 @@ Requirements: Elixir ~> 1.15, Ash ~> 3.0. Optional components: Oban
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 0.1.0"},
+    {:ash_hooks, "~> 1.0"},
     # for outbound delivery only:
     {:oban, "~> 2.20"}
   ]
@@ -344,8 +344,10 @@ envelope alongside the Standard Webhooks one during receiver
 migration.
 
 Response snippets store NO body bytes by default (a status +
-content-type summary). For a one-row diagnostic capture see
-"Dispatch-time capture" in the README.
+content-type summary). For a one-row diagnostic capture, re-drive the
+row with `AshHooks.Delivery.run(row, snippet_capture: true)` — the
+captured body persists only after passing the package's redaction
+floor, marked `[captured]`.
 
 ## Observing: telemetry
 

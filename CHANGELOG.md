@@ -4,6 +4,69 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+## 1.0.0 — 2026-08-22
+
+1.0.0 is the semantic-versioning baseline (ADR-0010): no public API
+removals or renames from 0.2.x. Three behavior corrections below;
+migration notes in [UPGRADING.md](UPGRADING.md).
+
+### Fixed
+
+- **Truncated chunked responses no longer classify as success.** The
+  default HTTP adapter returned a partial body as `{:ok, ...}` when a
+  chunked response was cut by early close — a 2xx on partial bytes
+  could mark a delivery `:succeeded`. Chunked now returns
+  `{:error, :truncated_body}` exactly like the Content-Length framing,
+  and the driver retries.
+- **The literal-IP https certificate check actually works now.** The
+  iPAddress-SAN matcher was unreachable since birth (found by the new
+  dialyzer gate): every literal-IP https endpoint was rejected
+  fail-closed with `:cert_ip_mismatch`. Extracted to the
+  fixture-tested `AshHooks.Http.CertSan` (ADR-0009).
+- `AshHooks.Delivery.prune/2` returns `{:error, error}` when the
+  resource lacks `inserted_at` — the same contract as
+  `AshHooks.Ingress.prune/2` its `@spec` always promised (previously
+  raised `ArgumentError`).
+
+### Added
+
+- **Semver and support policy** (ADR-0010): the covered public surface
+  is named, deprecations run two minors, and the minimum supported
+  versions are CI-tested (Elixir ~> 1.15 / OTP 26+ / Ash ~> 3.0 /
+  Oban ~> 2.20 optional).
+- **SECURITY.md** with a private disclosure channel (GitHub private
+  vulnerability reporting, enabled), scope, and known posture notes;
+  **CONTRIBUTING.md** and **UPGRADING.md** — all three ship in the
+  tarball and render on hexdocs.
+- **Dialyzer gate** on the public API (local + CI) — first run caught
+  the dead IP-SAN matcher above.
+- **CI**: an Elixir 1.15/OTP 26 leg resolving dependencies at the
+  declared minimums, a package leg checking the hex tarball ships
+  every documentation file and that the DSL cheat sheets match the
+  DSL, and an advisory coverage report.
+- `@spec` on the HTTP behaviour's `request/5` (both adapters),
+  `AshHooks.dispatch/4`, the resource extensions'
+  `statuses/0`/`signing_modes/0` (now documented), and the
+  `AshHooks.Http.Target` helpers.
+- A dedicated extension-shape test suite for `AshHooks.OutboundDelivery`,
+  pinning the injected attributes, the `unique_delivery` identity, and
+  the `:dispatch` no-touch-upsert contract.
+
+### Changed
+
+- **Read posture documented honestly** (ADR-0005 amendment): read
+  access to the ledger/delivery resources is consumer-governed — the
+  package injects no read policies. README → Security carries the
+  deny-by-default policy recipe; the resource moduledocs now carry
+  READ-EXPOSURE warnings. (No code change: reads were always
+  consumer-governed; the docs previously implied otherwise.)
+- Install guidance is `{:ash_hooks, "~> 1.0"}`; the README (previously
+  pinned `~> 0.1.0`, one feature-release behind) and tutorial both
+  corrected, with the install-constraint check added to the release
+  checklist.
+
 ## 0.2.2 — 2026-08-22
 
 ### Fixed
@@ -58,12 +121,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `AshHooks.Http` adapter behaviour with a memory-bounded native
   HTTP/1.1 default (`AshHooks.Http.Bounded` — every read capped under
   all framings) and an OTP `:httpc` alternative.
-- Response-snippet DLP (ADR-0005 amendment): no body bytes by default
-  (fixed-grammar status + allowlisted content-type summary); per-call
-  `snippet_capture` opt-in under the in-package redaction floor (NFKC
-  homoglyph folding, bounded-fixpoint decode chain, separator-tolerant
-  markers, ≥16-char union-alphabet entropy rule); fail-closed consumer
-  `snippet_redactor` callback; `[captured]` marking.
+- Response-snippet redaction floor (ADR-0005 amendment): no body bytes
+  by default (fixed-grammar status + allowlisted content-type summary);
+  per-call `snippet_capture` opt-in under the in-package redaction
+  floor (NFKC homoglyph folding, bounded-fixpoint decode chain,
+  separator-tolerant markers, ≥16-char union-alphabet entropy rule);
+  fail-closed consumer `snippet_redactor` callback; `[captured]`
+  marking.
 - Telemetry (ADR-0005 floor: ids/integers/fixed atoms/classified
   reasons only — never secrets or bodies): ingress verify/dedup/claim,
   dispatch enqueue_failed, delivery attempt/result/backoff/dead_letter/
@@ -75,5 +139,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Package floors shipped in-code (ADR-0005): secrets as sources only
   (literals rejected at parse), default-deny machine-written ledger
-  fields, SSRF guard at registration and send, header allowlist, no
-  response-body persistence by default, classified-only error strings.
+  fields, SSRF guard at registration and send, NO headers stored on
+  either ledger at all, no response-body persistence by default,
+  classified-only error strings.

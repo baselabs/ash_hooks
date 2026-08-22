@@ -1,12 +1,13 @@
 # AshHooks
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ash_hooks.svg)](https://hex.pm/packages/ash_hooks)
+[![CI](https://github.com/baselabs/ash_hooks/actions/workflows/ci.yml/badge.svg)](https://github.com/baselabs/ash_hooks/actions/workflows/ci.yml)
 
 Webhooks for [Ash Framework](https://ash-hq.org), in both directions:
 
 - **Inbound** — receive provider webhooks, verify their signatures,
-  deduplicate them on a database-unique ledger, and run your handler
-  once per delivery.
+  deduplicate them on a ledger (a table recording every delivery — the
+  dedup record itself), and run your handler once per delivery.
 - **Outbound** — sign and deliver your own webhooks with retries,
   backoff, and dead-lettering, on any queue backed by Oban.
 
@@ -25,21 +26,27 @@ need no queue infrastructure at all.
   ceiling, and durably disable endpoints that return 410.
 - Safe defaults: secrets are only ever resolved through your callbacks
   (literal secrets are rejected at compile time), endpoint URLs are
-  SSRF-checked at registration and again at send time, and response
+  checked against server-side request forgery (SSRF — a registered
+  webhook URL can't be made to hit your internal network) at
+  registration and again at send time, and response
   bodies are never stored unless you explicitly opt in for a diagnostic
-  run.
+  run. The ledgers store raw payloads, and read access to them is yours
+  to govern — the package injects no read policies (see
+  [Security](#security)).
 - Telemetry events for the whole send/receive lifecycle — structured so
   they can never leak secrets or payloads into your metrics backend.
 
 Requires Elixir ~> 1.15 and Ash ~> 3.0. Oban (~> 2.20) is needed only
-for outbound delivery; Phoenix or Plug only for receiving.
+for outbound delivery; Phoenix or Plug only for receiving. From 1.0
+the package follows semantic versioning with a named public surface —
+see [Stability](#stability).
 
 ## Installation
 
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 0.1.0"},
+    {:ash_hooks, "~> 1.0"},
     # only for outbound delivery:
     {:oban, "~> 2.20"}
   ]
@@ -99,9 +106,15 @@ end
 Secrets are always sources — an `{m, f, a}` callback, an
 `{:app_env, path}`, or a zero-arity function — never literal values.
 
+Your provider module also defines the handler — the `handle_event/2`
+callback that receives the verified payload (the tutorial shows one
+from scratch).
+
 From your controller, one call runs the whole pipeline: verify the
 signature over the raw bytes, persist the payload, deduplicate, claim
-under a lease, run the provider handler, and record the outcome.
+under a lease (a time-limited ownership claim — rows whose worker died
+are reclaimed when it expires), run your handler, and record the
+outcome.
 
 ```elixir
 case AshHooks.Ingress.ingest(Ledger, :comply_cube, conn.private[:ash_hooks_raw_body], %{
@@ -170,6 +183,12 @@ redirects, honors `Retry-After` (bounded), backs off with jitter on
 durably disables the endpoint on 410. An endpoint's failure never
 blocks delivery to its siblings.
 
+**Without Oban**, dispatch still works — every matching endpoint gets a
+durable `:pending` row — but nothing drives those rows until you define
+the worker (or call `AshHooks.Delivery.run/2` yourself): the delivery
+row owns the retry policy, and the queue is only its trigger
+([ADR-0008](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0008-delivery-row-owns-retry-policy-oban-is-the-trigger.md)).
+
 The default HTTP adapter is a small native client with every read
 capped, so a hostile response can't balloon worker memory; OTP's
 `:httpc` is available as an alternative, and you can inject your own
@@ -177,12 +196,21 @@ adapter for tests or proxies.
 
 **Response bodies are never stored** — each delivery row keeps the
 status and a content-type summary. When debugging a misbehaving
-endpoint you can re-drive one row with body capture enabled, and the
-captured body is stored only after passing the package's redaction
-floor (homoglyph folding, decode-chain analysis, entropy checks —
-encoded secrets don't survive it). You can also plug in your own
-redaction callback for domain-specific tokens; see
-`AshHooks.Delivery` docs.
+endpoint, re-drive its row with body capture enabled and the captured
+body is stored only after passing the package's built-in redaction
+(homoglyph folding, decode-chain analysis, entropy checks — encoded
+secrets don't survive it), marked `[captured]` in the snippet:
+
+```elixir
+# diagnostic: one row, one capture, floor-redacted
+AshHooks.Delivery.run(row, snippet_capture: true)
+```
+
+For a domain-specific denylist, also pass a `snippet_redactor`
+(`{module, function}` or `fn body -> {:ok, body} | {:error, term}`)
+— it runs before the built-in redaction, and a failing redactor
+leaves the body uncaptured; see `AshHooks.Worker` for the
+worker-macro form.
 
 **Signing modes.** `:standard` (default) needs only the endpoint's
 `secret_ref`. `:dual` and `:legacy` additionally require a
@@ -218,14 +246,68 @@ Deleting a terminal row re-opens its dedup identity — a replayed
 webhook re-processes, a re-emitted outbound event re-sends — so set the
 TTL beyond any replay or re-emission horizon.
 
+## Security
+
+The package enforces the guarantees it owns: constant-time signature
+compares, compile-time rejection of literal secrets, SSRF (server-side
+request forgery) checks at registration and send time (DNS-rebinding closed by connecting to the
+validated address), memory-capped HTTP reads, and redaction-gated
+response capture.
+
+Read access is the one floor the package deliberately does **not**
+enforce, because it cannot know your actors: the ledger and delivery
+resources are YOUR resources in YOUR domain, and the package injects no
+policies — reads are governed entirely by the policies you write.
+These rows carry raw provider payloads (third-party PII), event ids,
+and scope keys. Mount them behind policies that deny reads by default:
+
+```elixir
+policies do
+  # deny by default; open exactly what your app needs
+  policy action_type(:read) do
+    authorize_if actor_attribute_equals(:admin, true)
+  end
+end
+```
+
+(This assumes `Ash.Policy.Authorizer` in the resource's `authorizers`;
+match the snippet to your actual actors. The `policies` block lives
+inside the ledger/delivery resource module (with
+`authorizers: [Ash.Policy.Authorizer]` in the `use Ash.Resource`
+options — Ash's [policies guide](https://hexdocs.pm/ash/policies.html)
+covers the full model). Vulnerability reports:
+[SECURITY.md](SECURITY.md) — never a public issue.
+
+## Stability
+
+From 1.0.0, ash_hooks follows semantic versioning over a named public
+surface (the DSL, the public modules, injected attributes/actions,
+telemetry events, error classes) — breaking changes only in 2.0,
+deprecations run two minors minimum, safety corrections ship as fixes
+([ADR-0010](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0010-semver-and-support-policy.md)).
+
+Minimum supported versions, each CI-tested: Elixir ~> 1.15 (OTP 26+),
+Ash ~> 3.0, Oban ~> 2.20 (optional, outbound only). One nuance: a fix
+that closes a safety hole can change behavior in a patch release (a
+delivery that wrongly succeeded may now retry, for example) — such
+corrections are always called out under "Fixed" in the
+[CHANGELOG](CHANGELOG.md). Moving off a supported version is a minor
+release with an [UPGRADING.md](UPGRADING.md) note.
+
 ## Further reading
 
 - [Get started](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md) —
   complete walkthrough, migrations included
 - [Guided tour (Livebook)](https://github.com/baselabs/ash_hooks/blob/main/documentation/livebooks/get-started.livemd) —
   run the whole library inside one notebook
+- [UPGRADING.md](UPGRADING.md) — migration notes per release
+- [SECURITY.md](SECURITY.md) — reporting and scope
 - [DSL reference](https://github.com/baselabs/ash_hooks/tree/main/documentation/dsls)
 - [Architecture decisions](https://github.com/baselabs/ash_hooks/tree/main/docs/adr)
+  (ADRs — the reasoning behind every major design choice)
+- [CONTRIBUTING.md](CONTRIBUTING.md) — setup, the gate suite, how to
+  propose changes; GitHub issues are the support channel
+- Full API docs at [hexdocs.pm/ash_hooks](https://hexdocs.pm/ash_hooks)
 
 ## License
 
