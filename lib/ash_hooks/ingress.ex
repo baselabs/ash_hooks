@@ -29,12 +29,14 @@ defmodule AshHooks.Ingress do
 
   The individual machine steps (`ingest_delivery/2`, `claim_delivery/2`,
   `mark_processed/3`, `mark_failed/5`, `renew/3`, `reap/1`) are public for
-  composition and monitoring — the async runtime (#delivery-runtime slice)
-  and the reaper drive the same steps.
+  composition and monitoring — a consumer-driven async pipeline (your own
+  202-then-claim flow) and the reaper drive the same steps.
 
   All ledger operations run unauthorized: the signature verification IS the
-  trust boundary for writes, and external read surfaces remain governed by
-  the consumer's own policies (ADR-0005).
+  trust boundary for writes. The package injects NO read policies — read
+  access to the ledger resource is governed ENTIRELY by the consumer's own
+  domain policies. The ledger stores raw provider payloads: mount it behind
+  policies that deny reads by default (see README → Security).
   """
 
   require Ash.Query

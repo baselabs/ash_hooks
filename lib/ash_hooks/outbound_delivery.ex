@@ -32,6 +32,10 @@ defmodule AshHooks.OutboundDelivery do
   response headers are stored on this resource at all: the
   stored-header allowlist floor holds by not persisting headers beyond
   the bounded snippet (ADR-0005).
+
+  READ EXPOSURE: rows carry the exact payload bytes you dispatched.
+  The package injects NO read policies — read access is governed ENTIRELY
+  by the consumer's own domain policies (README → Security).
   """
 
   @statuses [
@@ -43,6 +47,10 @@ defmodule AshHooks.OutboundDelivery do
     :dead_letter
   ]
 
+  @doc """
+  The delivery state machine's statuses, in lifecycle order.
+  """
+  @spec statuses() :: list(atom())
   def statuses, do: @statuses
 
   use Spark.Dsl.Extension,

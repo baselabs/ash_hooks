@@ -35,6 +35,7 @@ defmodule AshHooks.Delivery do
   require Ash.Query
 
   alias Ash.Resource.Info, as: ResourceInfo
+  alias AshHooks.Errors.Unknown.UnknownError
   alias AshHooks.Signing
 
   # The ADR-0005 snippet floor (amended 2026-08-22): markers are
@@ -80,20 +81,27 @@ defmodule AshHooks.Delivery do
   `:dead_letter`) older than `older_than`, by the resource's
   `inserted_at` (add Ash `timestamps()` to the resource and its
   migration). Non-terminal rows are never deleted. Returns
-  `{:ok, deleted_count}`.
+  `{:ok, deleted_count}`, or `{:error, error}` when the resource lacks
+  `inserted_at` — the same error contract as `AshHooks.Ingress.prune/2`.
   """
   @spec prune(module(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def prune(deliv_mod, opts) do
     older_than = DateTime.truncate(Keyword.fetch!(opts, :older_than), :microsecond)
 
-    if !ResourceInfo.attribute(deliv_mod, :inserted_at) do
-      raise ArgumentError,
-        message:
-          inspect(deliv_mod) <>
-            " has no :inserted_at — add `timestamps()` to its attributes " <>
-            "(and the columns to its migration) to use the retention hooks"
+    if ResourceInfo.attribute(deliv_mod, :inserted_at) do
+      prune!(deliv_mod, older_than)
+    else
+      {:error,
+       UnknownError.exception(
+         error:
+           inspect(deliv_mod) <>
+             " has no :inserted_at — add `timestamps()` to its attributes " <>
+             "(and the columns to its migration) to use the retention hooks"
+       )}
     end
+  end
 
+  defp prune!(deliv_mod, older_than) do
     require Ash.Query
 
     result =

@@ -58,9 +58,9 @@ defmodule AshHooks.Dispatcher do
     * `:enqueue` — the enqueue seam: a 2-arity function
       (`fn delivery, event -> :ok | {:error, term}`) or a `{module, function}`
       pair applied as `apply(module, function, [delivery, event])`. The
-      delivery runtime slice's `AshHooks.Delivery` behaviour is its canonical
-      implementation; `nil` (the default) persists `:pending` rows and
-      returns `:deferred` results.
+      delivery runtime `AshHooks.Delivery.run/2` via the worker macro is its
+      canonical implementation; `nil` (the default) persists `:pending` rows
+      and returns `:deferred` results.
   """
   @spec dispatch(module(), atom(), Event.t() | term(), keyword()) ::
           {:ok, [map()]} | {:error, term()}

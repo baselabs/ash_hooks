@@ -12,7 +12,10 @@ defmodule AshHooks.Http.Bounded do
   Bounds (all opt-overridable): header block ≤ `:max_header_bytes`
   (32 KiB), body ≤ `:max_body_bytes` (64 KiB) — Content-Length, chunked,
   and read-to-close framings alike; a chunked body is CUT at the bound
-  (the remainder is simply not read; the connection closes). Timeouts:
+  (the remainder is simply not read; the connection closes). A body that
+  ends EARLY — the server closes before the framing completes — is
+  `{:error, :truncated_body}` under Content-Length and chunked framings
+  alike (read-to-close has no early end by definition). Timeouts:
   connect 5s, receive 15s (the Oban job timeout is the outer bound).
 
   `AshHooks.Http.Httpc` remains available as an alternative adapter
@@ -31,6 +34,9 @@ defmodule AshHooks.Http.Bounded do
   @default_timeout 15_000
 
   @impl true
+  @spec request(atom(), String.t(), map(), binary() | nil, keyword()) ::
+          {:ok, %{status: integer(), headers: list(), body: binary() | nil}}
+          | {:error, term()}
   def request(method, url, headers, body, opts \\ []) do
     method = if is_binary(method), do: String.to_atom(method), else: method
 
@@ -359,18 +365,31 @@ defmodule AshHooks.Http.Bounded do
         {:ok, acc}
 
       {:ok, size, rest} ->
-        {buffer, acc} = take_chunk(socket, rest, acc, size, max, timeout)
-        chunked_loop(socket, buffer, acc, max, timeout)
-
-      :need_more ->
-        case recv(socket, timeout) do
-          {:ok, chunk} -> chunked_loop(socket, buffer <> chunk, acc, max, timeout)
-          {:error, :closed} -> {:ok, acc}
+        case take_chunk(socket, rest, acc, size, max, timeout) do
+          {:ok, {buffer, acc}} -> chunked_loop(socket, buffer, acc, max, timeout)
           {:error, reason} -> {:error, reason}
         end
 
+      :need_more ->
+        chunked_need_more(socket, buffer, acc, max, timeout)
+
       :malformed ->
         {:error, :malformed_chunked}
+    end
+  end
+
+  defp chunked_need_more(socket, buffer, acc, max, timeout) do
+    case recv(socket, timeout) do
+      {:ok, chunk} ->
+        chunked_loop(socket, buffer <> chunk, acc, max, timeout)
+
+      # a close before the terminal 0-chunk is the chunked twin of a
+      # short Content-Length body — truncated, never a partial ok
+      {:error, :closed} ->
+        {:error, :truncated_body}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -403,13 +422,16 @@ defmodule AshHooks.Http.Bounded do
     if byte_size(buffer) < needed do
       case recv(socket, timeout) do
         {:ok, chunk} -> take_chunk(socket, buffer <> chunk, acc, size, max, timeout)
-        {:error, _} -> {"", acc}
+        # a close mid-chunk is truncation — never silently swallow the
+        # error and return the partial accumulator as a complete body
+        {:error, :closed} -> {:error, :truncated_body}
+        {:error, reason} -> {:error, reason}
       end
     else
       # carry the POST-chunk remainder forward — the next size line (and
       # possibly more chunks) may already be buffered
       rest = binary_part(buffer, needed, byte_size(buffer) - needed)
-      {rest, acc <> binary_part(buffer, 0, keep)}
+      {:ok, {rest, acc <> binary_part(buffer, 0, keep)}}
     end
   end
 

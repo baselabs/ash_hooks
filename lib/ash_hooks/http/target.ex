@@ -66,9 +66,11 @@ defmodule AshHooks.Http.Target do
     end
   end
 
+  @spec default_port(String.t()) :: :inet.port_number()
   def default_port("https"), do: 443
   def default_port(_http), do: 80
 
+  @spec host_header(String.t(), :inet.port_number(), String.t()) :: String.t()
   def host_header(host, 443, "https"), do: host
   def host_header(host, 80, "http"), do: host
 
@@ -78,6 +80,7 @@ defmodule AshHooks.Http.Target do
 
   # TLS names the ORIGINAL host; a literal-IP destination has no name to
   # verify (SNI disabled, chain validation kept)
+  @spec ssl_options(String.t()) :: keyword()
   def ssl_options(host) do
     base = [verify: :verify_peer, cacerts: :public_key.cacerts_get(), depth: 3]
 
@@ -93,6 +96,7 @@ defmodule AshHooks.Http.Target do
     end
   end
 
+  @spec ip_literal?(String.t()) :: boolean()
   def ip_literal?(host) do
     bare = host |> String.replace("[", "") |> String.replace("]", "")
     match?({:ok, _}, :inet.parse_address(String.to_charlist(bare)))

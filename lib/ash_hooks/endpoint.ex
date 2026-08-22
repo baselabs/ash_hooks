@@ -22,10 +22,19 @@ defmodule AshHooks.Endpoint do
   The SSRF guard (scheme/private-range/link-local/metadata checks) runs
   at registration on every write path AND again at send time with DNS
   re-resolution — this resource is its registration substrate.
+
+  Read access is the consumer's to govern: rows carry target URLs and
+  secret REFERENCES (never secret material), and the package injects no
+  read policies (ADR-0005's consumer-governed posture).
   """
 
   @statuses [:enabled, :disabled]
 
+  @doc """
+  The endpoint lifecycle statuses — `:disabled` is the durable circuit
+  breaker the 410 rule and operators flip.
+  """
+  @spec statuses() :: list(atom())
   def statuses, do: @statuses
 
   use Spark.Dsl.Extension,

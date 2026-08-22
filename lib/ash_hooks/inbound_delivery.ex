@@ -33,10 +33,20 @@ defmodule AshHooks.InboundDelivery do
   (probe 2026-08-21: `error()`-in-expression atomics are inexpressible on
   sqlite, and action-level `change filter(...)` is silently dropped on the
   atomic path).
+
+  READ EXPOSURE: this ledger stores RAW provider payloads (third-party
+  PII), event ids, and scope keys. The package injects NO read policies —
+  read access is governed ENTIRELY by the consumer's own domain policies.
+  Mount the ledger behind policies that deny reads by default and open
+  them explicitly (README → Security has the recipe).
   """
 
   @statuses [:received, :claimed, :processed, :failed_retryable, :failed_permanent]
 
+  @doc """
+  The fenced state machine's statuses, in lifecycle order.
+  """
+  @spec statuses() :: list(atom())
   def statuses, do: @statuses
 
   @scope %Spark.Dsl.Section{

@@ -149,6 +149,8 @@ defmodule AshHooks do
   entry point, delegating to `AshHooks.Dispatcher.dispatch/4` (the
   `AshHooks.Ingress.ingest/4` twin).
   """
+  @spec dispatch(module(), atom(), AshHooks.Event.t() | term(), keyword()) ::
+          {:ok, [map()]} | {:error, term()}
   defdelegate dispatch(resource, name, event, opts \\ []), to: AshHooks.Dispatcher
 
   @doc """

@@ -21,13 +21,19 @@ defmodule AshHooks.Subscription do
   read action — no array-containment SQL, so the semantics are identical
   on every data layer.
 
-  The package injects NO read action: read surfaces are the consumer's to
-  open (the default-deny floor, ADR-0005) — the dispatcher's internal
-  reads run unauthorized, the inbound reaper's precedent.
+  The package injects NO read action and NO read policies: read surfaces
+  are the consumer's to open through their own domain policies — the
+  dispatcher's internal reads run unauthorized, the inbound reaper's
+  precedent (ADR-0005's consumer-governed posture).
   """
 
   @signing_modes [:legacy, :dual, :standard]
 
+  @doc """
+  The subscription-level signing modes: `:legacy` (legacy envelope only),
+  `:dual` (legacy + Standard Webhooks), `:standard` (SW only).
+  """
+  @spec signing_modes() :: list(atom())
   def signing_modes, do: @signing_modes
 
   @doc """

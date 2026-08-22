@@ -234,6 +234,11 @@ defmodule AshHooks.RetentionTest do
       assert Enum.sort(remaining) ==
                [:enqueue_failed, :failed_retryable, :pending, :sending, :succeeded]
     end
+
+    test "a resource without timestamps returns an error tuple naming the fix (Ingress.prune/2 contract)" do
+      assert {:error, error} = AshHooks.Delivery.prune(NoTimestamps, older_than: @old)
+      assert Exception.message(error) =~ "timestamps"
+    end
   end
 
   describe "Ingress.redact_payload/4" do

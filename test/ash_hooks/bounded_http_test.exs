@@ -112,6 +112,37 @@ defmodule AshHooks.BoundedHttpTest do
     end
   end
 
+  describe "a truncated body never classifies as success" do
+    test "a chunked body cut mid-chunk by close is :truncated_body, not a partial ok" do
+      # declares a 5-byte chunk, delivers only 3, then the server closes
+      {base, opts} =
+        raw_server(
+          "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n5\r\nabc"
+        )
+
+      assert {:error, :truncated_body} =
+               Bounded.request(:get, base <> "/cut-mid-chunk", %{}, nil, opts)
+    end
+
+    test "a chunked body cut between chunks (no terminal 0-chunk) is :truncated_body" do
+      {base, opts} =
+        raw_server(
+          "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n3\r\nabc\r\n"
+        )
+
+      assert {:error, :truncated_body} =
+               Bounded.request(:get, base <> "/cut-between-chunks", %{}, nil, opts)
+    end
+
+    test "a Content-Length body cut by close is :truncated_body (parity with chunked)" do
+      {base, opts} =
+        raw_server("HTTP/1.1 200 OK\r\ncontent-length: 10\r\nconnection: close\r\n\r\nabc")
+
+      assert {:error, :truncated_body} =
+               Bounded.request(:get, base <> "/cut-sized", %{}, nil, opts)
+    end
+  end
+
   describe "the header-block bound" do
     test "an oversized header block is refused, not buffered" do
       huge_header = String.duplicate("h", 40_000)

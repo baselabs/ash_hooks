@@ -6,7 +6,8 @@ defmodule AshHooks.Http do
   body :: binary}` or `{:error, term}` — one request, NO redirect
   following (a 3xx must surface as a response the runtime classifies as a
   refused redirect, never be chased). The default implementation is
-  `AshHooks.Http.Httpc` (`:httpc`); tests inject a double.
+  `AshHooks.Http.Bounded` (memory-bounded raw sockets); `AshHooks.Http.Httpc`
+  (`:httpc`) is the alternative adapter, and tests inject a double.
 
   Adapters SHOULD bound their own connect/receive timeouts (the runtime
   also runs under the Oban job timeout as the outer bound).

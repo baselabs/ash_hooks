@@ -273,7 +273,7 @@ if Code.ensure_loaded?(Oban) do
       ep = endpoint!()
       row = delivery_row!(ep, "msg_worker_send")
 
-      # the worker's adapter is the default Httpc — drive through the
+      # the worker's adapter defaults to Bounded — drive through the
       # driver directly with a double to prove perform's delegation is
       # the same machine (macro-level send coverage lives in delivery_test)
       job = %Oban.Job{args: %{"endpoint_id" => row.endpoint_id, "event_uuid" => row.event_uuid}}

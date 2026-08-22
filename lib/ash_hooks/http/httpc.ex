@@ -1,6 +1,7 @@
 defmodule AshHooks.Http.Httpc do
   @moduledoc """
-  The default `AshHooks.Http` adapter: OTP's `:httpc`, hardened.
+  The `:httpc` adapter for `AshHooks.Http` — an alternative to the default
+  `AshHooks.Http.Bounded`, built on OTP's `:httpc`, hardened.
 
   **IP pinning (closes the DNS-rebinding TOCTOU):** the hostname is
   resolved ONCE through `AshHooks.Ssrf.resolve_public/1` (every answer
@@ -33,6 +34,9 @@ defmodule AshHooks.Http.Httpc do
   @default_max_body_bytes 65_536
 
   @impl true
+  @spec request(atom(), String.t(), map(), binary() | nil, keyword()) ::
+          {:ok, %{status: integer(), headers: list(), body: binary() | nil}}
+          | {:error, term()}
   def request(method, url, headers, body, opts \\ []) do
     method = if is_binary(method), do: String.to_atom(method), else: method
     headers = Map.new(headers)
