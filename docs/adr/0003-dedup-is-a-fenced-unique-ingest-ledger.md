@@ -1,7 +1,7 @@
 # ADR-0003 — Dedup is a fenced unique-ingest ledger (not ash_onetime)
 
 - **Status:** Accepted (2026-08-20)
-- **Deciders:** scout (Stage A answer corrected by Stage B evidence), cross-family adversarial review
+- **Deciders:** maintainer, corrected against implementation evidence; independent design review
 
 ## Context
 

@@ -5,7 +5,7 @@
   confirmed valid; defaults `period: 60`/`states: :successful` must be
   overridden; keys-absent args silently degrade uniqueness; implemented on
   PG/MySQL/SQLite engines alike)
-- **Deciders:** operator (ratified), scout best-of-N + adversarial review
+- **Deciders:** maintainer, validated against independent design reviews
 
 ## Context
 

@@ -1,7 +1,7 @@
 # ADR-0001 — Naming and package identity
 
 - **Status:** Accepted (2026-08-20)
-- **Deciders:** operator (ratified), kimosabe-scout design pass
+- **Deciders:** maintainer, structured design pass
 
 ## Context
 
