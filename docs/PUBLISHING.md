@@ -40,8 +40,14 @@ One canonical run-sheet for a release, human-owned end to end
 
 9. Run INTERACTIVELY in a terminal: `env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish`
    (add `--organization <org>` for org ownership). Requires
-   `HEX_API_KEY` for the chosen owner. Read the owner prompt on screen —
-   never blind-pipe the real publish.
+   `HEX_API_KEY` for the chosen owner. Read the prompts on screen — the
+   first publish asks the OWNER selection, every publish asks
+   `Proceed? [Yn]` after the code-of-conduct line. For a scripted
+   publish: `printf 'y\n' | mix hex.publish ...`. To refresh ONLY the
+   hexdocs site use `mix hex.publish docs`; note the hex.pm PACKAGE PAGE
+   renders the README baked into the newest release TARBALL — a README
+   change requires a version bump + full publish (learned on 0.1.0 →
+   0.1.1).
 10. Verify: `mix hex.info ash_hooks` shows the version; the docs link
    renders on hex.pm.
 11. Tag: `git tag v<version> && git push origin v<version>`.
