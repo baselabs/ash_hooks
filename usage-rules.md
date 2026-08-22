@@ -75,4 +75,4 @@ For AI assistants working in codebases that use ash_hooks.
   write them, so keep consumer actions narrow; build read views
   instead.
 - Expecting `:telemetry` prefix handlers to fire: `execute/3` matches
-  exact names (verified against telemetry 1.4 source).
+  exact names — subscribe to the full event name, not a prefix.

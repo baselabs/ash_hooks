@@ -44,10 +44,13 @@ jobs:
       - run: mix format --check-formatted
       - run: mix credo --strict
       - run: mix test
-      # advisory coverage printout (built-in; no threshold gate). Spark
-      # module cover-compilation is flaky on some legs — advisory means
-      # it must not red the build
-      - name: Advisory coverage report
+      # advisory coverage printout (threshold 0 in mix.exs). Known
+      # non-zero exits, both root-caused and inherent: the code-server
+      # fixture purges its own beam and :cover.stop cannot collect a
+      # purged module; the E2E fixture deliberately compiles an invalid
+      # DSL (runtime-backstop test) whose downgraded verifier warning is
+      # expected noise. The percentage still prints in the log
+      - name: Coverage report
         run: mix test --cover
         if: matrix.no_optional != '1' && matrix.elixir == '1.18'
         continue-on-error: true
