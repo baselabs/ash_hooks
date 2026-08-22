@@ -15,7 +15,8 @@ Attach to a resource:
       # convention-resolves to AshHooks.Provider.ComplyCube
       inbound :comply_cube do
         secret {:app_env, [:my_app, :complycube_secret]}
-        event_id &__MODULE__.extract_event_id/1
+        # optional: extract a stable event id (payload -> {:ok, id} | :error);
+        # without it a deterministic content-hash identity is used
       end
 
       # convention-resolves to AshHooks.Provider.HubSpotV3 — the

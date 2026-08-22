@@ -22,9 +22,9 @@ path including consumer-defined actions: secrets live behind consumer
 callbacks, rows carry only their references (ADR-0005).
 
 The dispatcher skips `:disabled` endpoints entirely (no delivery row).
-The SSRF guard (scheme/private-range/link-local/metadata checks, at
-registration AND send time) lands with the delivery runtime slice — this
-resource is its substrate.
+The SSRF guard (scheme/private-range/link-local/metadata checks) runs
+at registration on every write path AND again at send time with DNS
+re-resolution — this resource is its registration substrate.
 
 
 

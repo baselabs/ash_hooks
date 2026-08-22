@@ -6,9 +6,13 @@ For AI assistants working in codebases that use ash_hooks.
 
 - Receiving webhooks: put `AshHooks` + `AshHooks.InboundDelivery` on a
   ledger resource, declare `inbound :provider` sources, and drive
-  `AshHooks.Ingress.ingest/4` → `claim_delivery/2` → `mark_processed/2`
-  (or your own claim/handle flow). The ledger's unique index IS the
-  dedup — never build your own seen-table.
+  `AshHooks.Ingress.ingest/4` — it verifies, persists, dedups, claims,
+  invokes the provider handler, and marks the outcome in one call. The
+  low-level lease primitives (`claim_delivery/2`, `mark_processed/3`,
+  `mark_failed/5`, `renew/3`, `reap/1`) are public for custom async
+  pipelines; do NOT call them after ingest/4 (the row is already
+  terminal). The ledger's unique index IS the dedup — never build your
+  own seen-table.
 - Sending webhooks: put `AshHooks` on the emitting resource with an
   `outbound :event` declaration; the subscription/endpoint/delivery
   extensions carry the fanout; `use AshHooks.Worker` in the consuming

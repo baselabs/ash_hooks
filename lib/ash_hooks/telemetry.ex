@@ -37,13 +37,17 @@ defmodule AshHooks.Telemetry do
   telemetry 1.4's source — prefix attaches never fire), so consume the
   whole surface with one `attach_many`:
 
-      events =
-        for group <- [:ingress, :dispatch, :delivery],
-            action <- [:verify, :dedup, :claim, :enqueue_failed, :attempt, :result, :backoff, :dead_letter, :disable] do
-          [:ash_hooks, group, action]
-        end
-
-      :telemetry.attach_many("my-ash-hooks", events, fn event, measurements, metadata, _ ->
+      :telemetry.attach_many("my-ash-hooks", [
+        [:ash_hooks, :ingress, :verify],
+        [:ash_hooks, :ingress, :dedup],
+        [:ash_hooks, :ingress, :claim],
+        [:ash_hooks, :dispatch, :enqueue_failed],
+        [:ash_hooks, :delivery, :attempt],
+        [:ash_hooks, :delivery, :result],
+        [:ash_hooks, :delivery, :backoff],
+        [:ash_hooks, :delivery, :dead_letter],
+        [:ash_hooks, :delivery, :disable]
+      ], fn event, measurements, metadata, _ ->
         # metrics/APM ship — the floor guarantees no secret/body material
       end, nil)
   """

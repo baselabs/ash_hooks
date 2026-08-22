@@ -25,8 +25,11 @@ defmodule AshHooks.Worker do
       extensions.
     * `:secret_resolver` (required, `{m, f}`) — resolves an endpoint's
       secret REFERENCE: `f(ref) :: {:ok, secret_binary} | {:error, term}`.
-      The returned binary's prefix (`whsec_`/`whsk_`, or raw legacy
-      material) selects its signature slot.
+      The returned value ALWAYS signs the Standard Webhooks envelope
+      (its `whsk_`/`whsec_` prefix only selects the key slot for
+      rotation); legacy envelopes, when the signing mode uses them, are
+      signed from the endpoint's `legacy_secret_ref` /
+      `legacy_previous_secret_ref` references through this same resolver.
     * `:snippet_redactor` (`{m, f}`, optional) — a consumer callback run
       on the RAW captured body ahead of the package's snippet floor
       (domain-specific tokens need raw input). Only consulted on per-call

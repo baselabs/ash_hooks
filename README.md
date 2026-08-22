@@ -2,11 +2,14 @@
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ash_hooks.svg)](https://hex.pm/packages/ash_hooks)
 
-Webhooks for [Ash Framework](https://ash-hq.org) — **inbound** (receive, verify
-per-provider signatures, deduplicate, emit domain events) and **outbound**
-(sign, deliver, retry, track).
+Webhooks for [Ash Framework](https://ash-hq.org) — **inbound** (receive,
+verify per-provider signatures, deduplicate, invoke the provider handler
+and record its outcome) and **outbound** (sign, deliver, retry, track).
 
-> **Status: v0.1.0 — inbound + outbound complete.**
+> **Status: v0.1.0 — inbound + outbound complete.** Not yet shipped:
+> retention/TTL cleanup hooks (ledger and delivery rows accumulate until
+> you clean them — ADR-0005 names the hooks as a floor; tracked for a
+> following release).
 > Inbound: per-provider signature verification (`AshHooks.Provider`
 > behaviour; ComplyCube + HubSpot v3 reference providers), a fenced
 > unique-ingest ledger with claim/lease fencing and a reaper, and
@@ -29,10 +32,16 @@ pull no queue infrastructure.
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 0.1.0"}
+    {:ash_hooks, "~> 0.1.0"},
+    # outbound delivery only (inbound-only apps need none of these):
+    {:oban, "~> 2.20"}
   ]
 end
 ```
+
+Elixir ~> 1.15, Ash ~> 3.0. Optional components: **Oban** (~> 2.20) for
+outbound delivery — added, migrated, configured, and supervised by your
+app; **Plug/Phoenix** for inbound receipt (the raw-body reader below).
 
 Or with [igniter](https://hex.pm/packages/igniter):
 
@@ -40,12 +49,28 @@ Or with [igniter](https://hex.pm/packages/igniter):
 mix igniter.install ash_hooks
 ```
 
-The installer also patches your endpoint's `Plug.Parsers` with
-`body_reader: {AshHooks.BodyReader, :read_body, []}` — signature schemes sign
-the exact wire bytes, and a router plug cannot recover pre-parser bytes. By
-default every parsed request carries a cached copy of its raw body; pass
-`[only: ["/webhooks"]]` as the reader's third element to scope that memory
-cost to the webhook routes.
+The installer ATTEMPTS to patch your endpoint's `Plug.Parsers` with a
+`body_reader` — signature schemes sign the exact wire bytes, and a router
+plug cannot recover pre-parser bytes. Review the generated diff; if it
+could not locate the call, add it by hand:
+
+```elixir
+plug Plug.Parsers,
+  parsers: [:json],
+  pass: ["*/*"],
+  body_reader: {AshHooks.BodyReader, :read_body, []},
+  json_decoder: Phoenix.json_library()
+```
+
+By default every parsed request carries a cached copy of its raw body;
+pass `[only: ["/webhooks"]]` as the reader's third element to scope that
+memory cost to the webhook routes.
+
+Your migrations create the tables AND the two UNIQUE INDEXES the dedup
+guarantees rest on (`[provider, external_event_id | scope]` for inbound,
+`[endpoint_id, event_uuid]` for outbound) — the
+[get-started tutorial](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md)
+carries complete runnable shapes.
 
 ## Usage
 
@@ -58,8 +83,13 @@ use Ash.Resource,
 
 inbound_delivery do
   # provider event ids are not globally unique across accounts — the
-  # unique-ingest identity extends by your scope slots
+  # unique-ingest identity extends by your scope slots; each slot must
+  # be a non-nullable attribute (the DSL verifier enforces both)
   scope_identity([:account_id])
+end
+
+attributes do
+  attribute(:account_id, :string, allow_nil?: false)
 end
 
 webhooks do
@@ -92,11 +122,13 @@ AshHooks.Ingress.ingest(Ledger, :comply_cube, conn.private[:ash_hooks_raw_body],
 })
 ```
 
-HubSpot's v3 scheme signs the method and the full request URI alongside the
-body, so its controller passes both. Reconstruct the public URI — Plug's
-`conn.query_string` excludes the `?` and `conn.host` excludes a non-default
-port, so join explicitly (and behind any TLS-terminating proxy use the host
-HubSpot actually called):
+HubSpot's v3 scheme signs the method and the full request URI alongside
+the body, so its controller passes both. Build the PUBLIC URI from values
+you configure (a base URL you control), not blindly from `conn` — behind
+a TLS-terminating proxy, `conn.host`/port/scheme are the INTERNAL ones
+and the signature will not match the URI HubSpot signed. Where you do
+reconstruct from `conn`, remember `conn.query_string` excludes the `?`
+and `conn.host` excludes a non-default port:
 
 ```elixir
 query = if conn.query_string == "", do: "", else: "?" <> conn.query_string
@@ -117,10 +149,14 @@ subscription type fails closed into the ledger as `failed_permanent`
 (`unknown_event_type`) — recorded and auditable.
 
 The machine persists the raw payload before handling, deduplicates on
-storage-level uniqueness (exactly one `:created` per delivery, concurrent or
-sequential), and fences claims with a monotonic token and an expiring lease —
-a crash between any two steps re-drives on redelivery instead of silently
-dropping, and a stale owner (superseded or expired lease) can never mark.
+storage-level uniqueness (exactly one `:created` per delivery, concurrent
+or sequential), and fences claims with a monotonic token and an expiring
+lease. Once the durable row exists, a crash between any two steps
+re-drives on redelivery instead of silently dropping, and a stale owner
+(superseded or expired lease) can never mark. Terminal rows
+(`:processed` / `:failed_permanent`) are never re-processed; a
+retryable or stranded duplicate may be re-driven under lease fencing —
+exactly-once handling, at-least-once delivery.
 Handler outcomes land in the ledger (`:processed`,
 `:failed_retryable`, `:failed_permanent`); expired leases are re-driven by
 `AshHooks.Ingress.reap/1`.
@@ -129,7 +165,10 @@ Outbound deliveries are signed per the [Standard Webhooks](https://www.standardw
 specification (`webhook-id` / `webhook-timestamp` / `webhook-signature`, `v1`
 HMAC-SHA256 and `v1a` ed25519 — old+new key rotation on both schemes), so
 receivers verify with any conformant library; a `:dual` mode additionally
-emits a byte-identical legacy envelope during receiver migration.
+emits a legacy envelope during receiver migration — it REQUIRES the
+endpoint to carry a `legacy_secret_ref` (the resolver's base value always
+signs the Standard Webhooks envelope; legacy slots come only from the
+endpoint's legacy references).
 
 Outbound fanout (landed): declare the Subscription / Endpoint /
 OutboundDelivery resources on your data layer, point the outbound
@@ -197,6 +236,9 @@ webhooks do
   end
 end
 ```
+
+With no `enqueue:` configured this persists `:pending` rows — the
+durable ledger only; nothing sends until a runtime drives them:
 
 ```elixir
 {:ok, event} =
@@ -304,9 +346,11 @@ row's `{endpoint_id, event_uuid}` args and your config are all it takes.
 
 ## Observability
 
-Every lifecycle transition emits a telemetry event — ingress
+Nine lifecycle events cover the send/receive hot paths — ingress
 verify/dedup/claim, dispatch enqueue-failure, delivery
-attempt/result/backoff/dead-letter/endpoint-disable. Events carry ids,
+attempt/result/backoff/dead-letter/endpoint-disable. (Successful
+dispatches and post-claim inbound outcomes are observed on the ledger
+rows themselves, not as events.) Events carry ids,
 integers, fixed-vocabulary atoms, and classified reason strings only —
 never secrets, bodies, or payloads (ADR-0005), so they are safe to ship
 to any metrics/APM backend. `:telemetry.execute/3` matches exact event

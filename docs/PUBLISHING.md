@@ -26,30 +26,30 @@ One canonical run-sheet for a release, human-owned end to end
 6. Name availability: `mix hex.info ash_hooks` → "No package with
    name ash_hooks" (re-verified 2026-08-22; first-publish-first-owned —
    if this now EXISTS and is not ours, STOP and escalate).
-7. Dry run: `env -u ASH_HOOKS_NO_OPTIONAL sh -c 'echo 1 | mix hex.publish --dry-run'`
-   — the piped "1" answers the numbered first-publish owner prompt
-   ("yourself as owner or an organization"). Selection "1" is YOURSELF;
+7. Dry run: run INTERACTIVELY in a terminal:
+   `env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish --dry-run` — the
+   numbered first-publish owner prompt asks "yourself as owner or an
+   organization"; read it on screen (selection "1" is YOURSELF;
    publishing under an organization requires
-   `mix hex.publish --organization <org>` instead — decide ownership
-   BEFORE this step and verify the prompt's list still matches. Expect
-   exit 0; cosmetic "hidden module" doc-reference warnings are known
-   and acceptable.
-7. `mix hex.audit` clean (no retired deps in the resolved set).
+   `mix hex.publish --organization <org>` instead). Decide ownership
+   BEFORE this step. Expect exit 0; cosmetic "hidden module"
+   doc-reference warnings are known and acceptable.
+8. `mix hex.audit` clean (no retired deps in the resolved set).
 
 ## Publish (#15 — human hands on keyboard)
 
-8. Run INTERACTIVELY in a terminal: `env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish`
+9. Run INTERACTIVELY in a terminal: `env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish`
    (add `--organization <org>` for org ownership). Requires
    `HEX_API_KEY` for the chosen owner. Read the owner prompt on screen —
    never blind-pipe the real publish.
-9. Verify: `mix hex.info ash_hooks` shows the version; the docs link
+10. Verify: `mix hex.info ash_hooks` shows the version; the docs link
    renders on hex.pm.
-10. Tag: `git tag v<version> && git push origin v<version>`.
+11. Tag: `git tag v<version> && git push origin v<version>`.
 
 ## Post-publish
 
-11. GitHub release from the tag, summary from the CHANGELOG section.
-12. Adoption coordination tickets (#12 commerce_platform, #13
+12. GitHub release from the tag, summary from the CHANGELOG section.
+13. Adoption coordination tickets (#12 commerce_platform, #13
     navyler_cdc) can proceed against the published version.
 
 ## Known notes
