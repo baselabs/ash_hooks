@@ -94,6 +94,37 @@ defmodule AshHooks.MixProject do
         Tutorials: ~r"documentation/tutorials/?",
         Livebooks: ~r"documentation/livebooks/?",
         DSLs: ~r"documentation/dsls/?"
+      ],
+      groups_for_modules: [
+        Core: [AshHooks, AshHooks.Info, AshHooks.Ssrf, AshHooks.Telemetry],
+        Inbound: [
+          AshHooks.BodyReader,
+          AshHooks.Ingress,
+          AshHooks.InboundDelivery,
+          AshHooks.InboundDelivery.Payload
+        ],
+        Outbound: [
+          AshHooks.Event,
+          AshHooks.Subscription,
+          AshHooks.Endpoint,
+          AshHooks.OutboundDelivery,
+          AshHooks.Dispatcher,
+          AshHooks.Delivery,
+          AshHooks.Worker
+        ],
+        Signing: [AshHooks.Signing, AshHooks.Legacy],
+        Providers: [
+          AshHooks.Provider,
+          AshHooks.Provider.Mock,
+          AshHooks.Provider.ComplyCube,
+          AshHooks.Provider.HubSpotV3
+        ],
+        "HTTP adapters": [
+          AshHooks.Http,
+          AshHooks.Http.Bounded,
+          AshHooks.Http.Httpc,
+          AshHooks.Http.CertSan
+        ]
       ]
     ]
   end

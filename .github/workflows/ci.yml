@@ -44,10 +44,92 @@ jobs:
       - run: mix format --check-formatted
       - run: mix credo --strict
       - run: mix test
+      # advisory coverage printout (built-in; no threshold gate)
+      - run: mix test --cover
+        if: matrix.no_optional != '1' && matrix.elixir == '1.18'
       - name: Assert optional deps never loaded (no-optional leg)
         if: matrix.no_optional == '1'
         run: |
           mix run --no-start -e 'if :code.which(Oban) != :non_existing or :code.which(Plug) != :non_existing, do: (IO.puts("optional dep loaded"); System.halt(1))'
+
+  # The declared Elixir ~> 1.15 minimum, resolved AT THE FLOORS: the lock
+  # is dropped so the resolver picks the newest versions whose own floors
+  # still admit 1.15 — the combination a fresh 1.15 consumer actually
+  # gets. If this leg reds because no dependency combination supports
+  # 1.15, raise the floor in mix.exs to what is tested (never keep a
+  # floor this leg disproves).
+  floor:
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.15"
+          otp-version: "26"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-floor-1.15-26-${{ hashFiles('mix.exs') }}
+      - run: rm mix.lock
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+
+  # Type-check gate on the public API (found the dead IP-SAN matcher on
+  # its first run — 2026-08-22).
+  dialyzer:
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            ~/.mix
+          key: dialyzer-1.18-27-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      - run: mix dialyzer
+
+  # What SHIPS is what was checked: the hex tarball must carry every
+  # publish surface (the 0.2.2 usage-rules.md miss was caught
+  # post-release; this leg is the mechanical form of that lesson), and
+  # hexdocs must build.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: package-1.18-27-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      - name: Tarball carries every publish surface
+        run: |
+          env -u ASH_HOOKS_NO_OPTIONAL mix hex.build
+          mkdir -p /tmp/tarcheck && tar -xf ash_hooks-*.tar -C /tmp/tarcheck contents.tar.gz
+          tar -tzf /tmp/tarcheck/contents.tar.gz | tee /tmp/tar-list.txt
+          grep -qx "README.md" /tmp/tar-list.txt
+          grep -qx "CHANGELOG.md" /tmp/tar-list.txt
+          grep -qx "usage-rules.md" /tmp/tar-list.txt
+          grep -qx "LICENSE" /tmp/tar-list.txt
+      - run: mix docs
 
   # The get-started Livebook, verified headless on one leg: the elixir
   # cells are extracted in order and run outside any mix project
