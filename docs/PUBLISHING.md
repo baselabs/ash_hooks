@@ -16,7 +16,7 @@ touch surfaces 1 or 6.
 2. hexdocs — built from docs() extras at publish time.
 3. Livebooks — bump each notebook's "validated against" version and
    re-run `./scripts/run-livebook.sh` (step 5 below).
-4. In-repo docs — README/tutorial/usage-rules/CHANGELOG version claims
+4. In-repo docs — usage-rules.md SHIPS in the tarball (package files glob); also  — README/tutorial/usage-rules/CHANGELOG version claims
    match the release being cut.
 5. Tag + GitHub release.
 6. `mix hex.info ash_hooks` as the FINAL step — a hidden `Proceed?
