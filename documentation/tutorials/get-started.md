@@ -30,13 +30,14 @@ migrations create the tables and — critically — the two UNIQUE INDEXES
 that make the dedup guarantees real. Minimal shapes:
 
 ```elixir
-# inbound ledger (scope_identity extends the identity below)
+# inbound ledger — payload is the DECODED body (a :map / JSONB column);
+# payload_digest binds it to the signed raw bytes
 create table(:webhook_ledgers, primary_key: false) do
   add :id, :uuid, primary_key: true
   add :provider, :text, null: false
   add :external_event_id, :text, null: false
   add :external_event_type, :text
-  add :payload, :text, null: false
+  add :payload, :map, null: false
   add :payload_digest, :text, null: false
   add :status, :text, null: false, default: "received"
   add :fencing_token, :integer, null: false, default: 0
@@ -49,7 +50,7 @@ end
 
 create unique_index(:webhook_ledgers, [:provider, :external_event_id, :account_id])
 
-# outbound ledger
+# outbound ledger — payload here is the exact bytes to sign
 create table(:outbound_deliveries, primary_key: false) do
   add :id, :uuid, primary_key: true
   add :event_uuid, :text, null: false
@@ -68,8 +69,26 @@ end
 
 create unique_index(:outbound_deliveries, [:endpoint_id, :event_uuid])
 
-# endpoints + subscriptions (columns per their DSL cheat sheets)
+create table(:webhook_endpoints, primary_key: false) do
+  add :id, :uuid, primary_key: true
+  add :url, :text, null: false
+  add :status, :text, null: false, default: "enabled"
+  add :secret_ref, :text, null: false
+  add :previous_secret_ref, :text
+  add :legacy_secret_ref, :text
+  add :legacy_previous_secret_ref, :text
+end
+
+create table(:webhook_subscriptions, primary_key: false) do
+  add :id, :uuid, primary_key: true
+  add :event_types, {:array, :text}, null: false
+  add :endpoint_id, :uuid, null: false
+  add :signing_mode, :text
+end
 ```
+
+(On sqlite, use `:jsonb`-capable equivalents — the test suite's DDL in
+this repo's test files shows the sqlite shapes verbatim.)
 
 ## Inbound: receive, verify, dedup
 
@@ -127,9 +146,10 @@ end
 ```
 
 `AshHooks.Ingress.ingest/4` runs the whole sync pipeline — verify the
-signature, persist the raw payload, dedup on the unique index, claim
-under a fenced lease, invoke the provider handler, and mark the
-outcome. From your controller:
+signature over the RAW bytes, persist the decoded payload plus a digest
+binding it to those bytes, dedup on the unique index, claim under a
+fenced lease, invoke the provider handler, and mark the outcome. From
+your controller:
 
 ```elixir
 raw = conn.private[:ash_hooks_raw_body]
@@ -139,10 +159,11 @@ case AshHooks.Ingress.ingest(MyApp.WebhookLedger, :comply_cube, raw, %{
        headers: Map.new(conn.req_headers),
        scope: %{"account_id" => conn.params["account_id"]}
      }) do
-  {:ok, :created, delivery} ->
-    # the handler ran; delivery.status is :processed, :failed_retryable,
-    # or :failed_permanent — check it to pick your HTTP response
-    send_resp(conn, status_for(delivery.status), "")
+  {:ok, :created, %{status: status}} ->
+    # the handler ran; status is :processed, :failed_retryable, or
+    # :failed_permanent — map to the response the provider expects
+    code = if status == :processed, do: 200, else: 500
+    send_resp(conn, code, "")
 
   {:ok, :duplicate, _delivery} ->
     # already seen — respond however the provider expects a replay
@@ -153,10 +174,12 @@ case AshHooks.Ingress.ingest(MyApp.WebhookLedger, :comply_cube, raw, %{
 end
 ```
 
-Dedup semantics: a delivery whose row is terminal (`:processed` /
-`:failed_permanent`) is never processed again; a retryable or stranded
-duplicate MAY be re-driven under lease fencing — exactly-once handling,
-at-least-once delivery. `claim_delivery/2`, `mark_processed/3`,
+Dedup semantics: durable deduplication with at-least-once HANDLER
+INVOCATION — a delivery whose row is terminal (`:processed` /
+`:failed_permanent`) is never processed again, but a crash after your
+handler's side effects and before the ledger mark will re-invoke it on
+redelivery. Write handlers idempotent, keyed on the external event
+identity. `claim_delivery/2`, `mark_processed/3`,
 `mark_failed/5`, `renew/3` and `reap/1` are public if you need to drive
 the lease machine yourself (e.g. from your own async pipeline) — the
 sync `ingest/4` above is the default.
@@ -262,9 +285,16 @@ endpoints store references only, never secrets:
 
 ```elixir
 defmodule MyApp.Secrets do
-  # ref is whatever string you stored on the endpoint's secret_ref
+  # ref is whatever string you stored on the endpoint's secret_ref.
+  # The value is a COMPLETE generated secret — create it once with
+  # AshHooks.Signing.generate_secret/0 (returns a "whsec_"-prefixed,
+  # correctly-encoded binary), store it whole in your secret store,
+  # and return it unchanged:
   def webhook_secret("acme-main") do
-    {:ok, "whsec_" <> System.get_env("ACME_WEBHOOK_SECRET")}
+    case System.fetch_env("ACME_WEBHOOK_SECRET") do
+      {:ok, secret} -> {:ok, secret}
+      :error -> {:error, :missing_secret}
+    end
   end
 
   def webhook_secret(_unknown), do: {:error, :unknown_ref}
@@ -278,9 +308,11 @@ guide; the worker above plugs into it.
 Register an endpoint and a subscription, then dispatch:
 
 ```elixir
+# a PUBLIC, DNS-resolvable https URL — the send-time SSRF check
+# re-resolves DNS and refuses private/loopback/literal-IP targets
 {:ok, endpoint} =
   Ash.create(MyApp.WebhookEndpoint, %{
-    url: "https://partner.example.test/hooks",
+    url: System.fetch_env!("PUBLIC_WEBHOOK_TEST_URL"),
     secret_ref: "acme-main"
   }, authorize?: false)
 
@@ -304,10 +336,12 @@ nothing sends). With the worker seam wired, each row is delivered by
 Retry-After and jittered backoff, dead-lettered at the ceiling, the
 endpoint durably disabled on 410.
 
-Signing modes: `:standard` (default) signs with the resolved
-`secret_ref` value. `:dual` additionally emits a legacy envelope for
-receivers mid-migration — it REQUIRES the endpoint to also carry a
-`legacy_secret_ref`. `:legacy` signs only that envelope.
+Signing modes: `:standard` (default) needs only `secret_ref`. Both
+`:legacy` and `:dual` REQUIRE the endpoint to carry a
+`legacy_secret_ref` — signing fails (and the row retries as
+`signing_failed`) without one; `:dual` additionally emits the legacy
+envelope alongside the Standard Webhooks one during receiver
+migration.
 
 Response snippets store NO body bytes by default (a status +
 content-type summary). For a one-row diagnostic capture see

@@ -148,15 +148,18 @@ to `:mixed` (fan out per event in your handler), and an undocumented
 subscription type fails closed into the ledger as `failed_permanent`
 (`unknown_event_type`) — recorded and auditable.
 
-The machine persists the raw payload before handling, deduplicates on
+The machine persists the decoded payload (with a digest binding it to
+the signed raw bytes) before handling, deduplicates on
 storage-level uniqueness (exactly one `:created` per delivery, concurrent
 or sequential), and fences claims with a monotonic token and an expiring
 lease. Once the durable row exists, a crash between any two steps
 re-drives on redelivery instead of silently dropping, and a stale owner
 (superseded or expired lease) can never mark. Terminal rows
-(`:processed` / `:failed_permanent`) are never re-processed; a
-retryable or stranded duplicate may be re-driven under lease fencing —
-exactly-once handling, at-least-once delivery.
+(`:processed` / `:failed_permanent`) are never processed again, but a
+crash after handler side effects and before the ledger mark re-invokes
+the handler on redelivery — durable deduplication with AT-LEAST-ONCE
+handler invocation; write handlers idempotent, keyed on the external
+event identity.
 Handler outcomes land in the ledger (`:processed`,
 `:failed_retryable`, `:failed_permanent`); expired leases are re-driven by
 `AshHooks.Ingress.reap/1`.
