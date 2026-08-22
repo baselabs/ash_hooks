@@ -154,9 +154,9 @@ defmodule AshHooks.Provider.HubSpotV3 do
 
   @impl Provider
   def parse_event_type(payload) when is_list(payload) and payload != [] do
-    case batch_types(payload, MapSet.new()) do
+    case batch_types(payload, []) do
       {:ok, types} ->
-        case MapSet.to_list(types) do
+        case Enum.uniq(types) do
           [single] -> {:ok, single}
           _mixed -> {:ok, :mixed}
         end
@@ -260,12 +260,16 @@ defmodule AshHooks.Provider.HubSpotV3 do
     end
   end
 
+  # plain-list accumulation (MapSet is opaque-typed; threading it through
+  # recursion de-opaques it and trips dialyzer) — dedup happens at the
+  # boundary in parse_event_type/1
+  @spec batch_types(list(map()), [atom()]) :: {:ok, [atom()]} | {:error, atom()}
   defp batch_types([], types), do: {:ok, types}
 
   defp batch_types([%{"subscriptionType" => raw} | rest], types)
        when is_binary(raw) do
     case Map.fetch(@subscription_types, raw) do
-      {:ok, type} -> batch_types(rest, MapSet.put(types, type))
+      {:ok, type} -> batch_types(rest, [type | types])
       :error -> {:error, :unknown_event_type}
     end
   end

@@ -25,6 +25,7 @@ defmodule AshHooks.Http.Bounded do
 
   @behaviour AshHooks.Http
 
+  alias AshHooks.Http.CertSan
   alias AshHooks.Http.Target
 
   @recv_slice 8 * 1024
@@ -61,15 +62,14 @@ defmodule AshHooks.Http.Bounded do
 
     request = [request_line, header_lines, "\r\n", body]
 
-    with {:ok, socket} <- connect(target, opts),
-         :ok <- verify_ip_san(socket, target) do
+    with {:ok, transport} <- connect(target, opts) do
       try do
-        case send_all(socket, IO.iodata_to_binary(request)) do
-          :ok -> read_response(socket, opts)
+        case send_all(transport, IO.iodata_to_binary(request)) do
+          :ok -> read_response(transport, opts)
           {:error, reason} -> {:error, reason}
         end
       after
-        close(socket)
+        close(transport)
       end
     end
   end
@@ -77,13 +77,17 @@ defmodule AshHooks.Http.Bounded do
   # For literal-IP https destinations TLS has no NAME to check — require
   # the peer cert to carry the IP in its iPAddress SAN (chain validation
   # alone lets ANY publicly-trusted cert authenticate the peer;
-  # cross-vendor finding). No-op for http and named hosts (the RFC 6125
-  # hostname check covers those).
-  defp verify_ip_san(socket, %{uri: %URI{scheme: "https"}, host: host, address: address}) do
+  # cross-vendor finding). No-op for named hosts (the RFC 6125 hostname
+  # check covers those). SAN matching lives in `AshHooks.Http.CertSan`
+  # (fixture-tested): found broken by dialyzer 2026-08-22 —
+  # `pkix_decode_cert/2` returns the cert record directly, so the old
+  # `{:ok, cert} <-` chain never reached the matcher and EVERY literal-IP
+  # https endpoint was rejected fail-closed.
+  @spec verify_ip_san(:ssl.sslsocket(), map()) :: :ok | {:error, :cert_ip_mismatch}
+  defp verify_ip_san(socket, %{host: host, address: address}) do
     if Target.ip_literal?(host) do
       with {:ok, der} <- :ssl.peercert(socket),
-           {:ok, cert} <- :public_key.pkix_decode_cert(der, :plain),
-           true <- ip_in_san?(cert, address) do
+           true <- CertSan.ip_san_match?(der, address) do
         :ok
       else
         _no_ip_san -> {:error, :cert_ip_mismatch}
@@ -93,107 +97,76 @@ defmodule AshHooks.Http.Bounded do
     end
   end
 
-  defp verify_ip_san(_socket, _target), do: :ok
-
-  # OTP record shapes (public_key.hrl): 'OTPCertificate'{tbsCertificate},
-  # 'OTPTBSCertificate'{..., extensions :: ['Extension'{}]}, 'Extension'{
-  # extnID, critical, extnValue}. The SAN extnID is 2.5.29.17; the
-  # decoded extnValue general-names carry iPAddress tuples.
-  defp ip_in_san?(otp_cert, address) do
-    otp_cert
-    |> elem(1)
-    |> record_field(9)
-    |> List.wrap()
-    |> Enum.find_value(false, fn ext ->
-      with {:Extension, {2, 5, 29, 17}, _crit, san} <- ext,
-           {:ok, names} <- decode_san(san),
-           ips <- san_ips(names) do
-        Enum.any?(ips, &(&1 == address))
-      else
-        _ -> false
-      end
-    end)
-  rescue
-    _ -> false
-  end
-
-  defp record_field(record, index), do: elem(record, index)
-
-  # extnValue arrives as raw DER — re-decode with the SAN template
-  defp decode_san(san_der) do
-    case :public_key.der_decode(:SubjectAltName, san_der) do
-      names when is_list(names) -> {:ok, names}
-      _other -> :error
-    end
-  rescue
-    _ -> :error
-  end
-
-  defp san_ips(names) when is_list(names) do
-    names
-    |> Enum.flat_map(fn
-      {:iPAddress, ip} -> [to_ip(ip)]
-      _other -> []
-    end)
-  end
-
-  defp to_ip({a, b, c, d}) when is_integer(a), do: {a, b, c, d}
-  defp to_ip(other) when is_tuple(other) and tuple_size(other) == 8, do: other
-  defp to_ip(_), do: nil
-
   defp request_path(%{path: nil, query: nil}), do: "/"
   defp request_path(%{path: nil, query: q}), do: "/?" <> q
   defp request_path(%{path: p, query: nil}), do: p
   defp request_path(%{path: p, query: q}), do: p <> "?" <> q
 
   defp connect(%{uri: %URI{scheme: "https"}} = target, opts) do
-    :ssl.connect(
-      target.address,
-      target.port,
-      [
-        mode: :binary,
-        active: false,
-        packet: :raw,
-        # ONE passive recv must not pull a hostile body whole — this caps
-        # the pull; the read loops stop at their bounds
-        buffer: @recv_slice
-      ] ++ Target.ssl_options(target.host),
-      opts[:connect_timeout] || @default_connect_timeout
-    )
+    case :ssl.connect(
+           target.address,
+           target.port,
+           [
+             mode: :binary,
+             active: false,
+             packet: :raw,
+             # ONE passive recv must not pull a hostile body whole — this caps
+             # the pull; the read loops stop at their bounds
+             buffer: @recv_slice
+           ] ++ Target.ssl_options(target.host),
+           opts[:connect_timeout] || @default_connect_timeout
+         ) do
+      {:ok, socket} ->
+        # IP-SAN verification runs HERE — the ssl socket must reach
+        # :ssl.peercert/1 as a direct opaque binding (see verify_ip_san)
+        case verify_ip_san(socket, target) do
+          :ok ->
+            {:ok, {:ssl, socket}}
+
+          {:error, _reason} = error ->
+            :ssl.close(socket)
+            error
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp connect(target, opts) do
-    :gen_tcp.connect(
-      target.address,
-      target.port,
-      [
-        mode: :binary,
-        active: false,
-        packet: :raw,
-        # ONE passive recv must not pull a hostile body whole — this caps
-        # the pull; the read loops stop at their bounds
-        buffer: @recv_slice
-      ],
-      opts[:connect_timeout] || @default_connect_timeout
-    )
+    case :gen_tcp.connect(
+           target.address,
+           target.port,
+           [
+             mode: :binary,
+             active: false,
+             packet: :raw,
+             # ONE passive recv must not pull a hostile body whole — this caps
+             # the pull; the read loops stop at their bounds
+             buffer: @recv_slice
+           ],
+           opts[:connect_timeout] || @default_connect_timeout
+         ) do
+      {:ok, socket} -> {:ok, {:tcp, socket}}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp send_all(socket, data) do
-    mod = if is_port(socket), do: :gen_tcp, else: :ssl
+  defp send_all({:tcp, socket}, data), do: send_all(:gen_tcp, socket, data)
+  defp send_all({:ssl, socket}, data), do: send_all(:ssl, socket, data)
 
+  defp send_all(mod, socket, data) do
     case mod.send(socket, data) do
       :ok -> :ok
       {:error, reason} -> {:error, {:send_failed, reason}}
     end
   end
 
-  defp close(socket) do
-    if is_port(socket), do: :gen_tcp.close(socket), else: :ssl.close(socket)
-  end
+  defp close({:tcp, socket}), do: :gen_tcp.close(socket)
+  defp close({:ssl, socket}), do: :ssl.close(socket)
 
-  defp recv(socket, timeout) do
-    if is_port(socket), do: :gen_tcp.recv(socket, 0, timeout), else: :ssl.recv(socket, 0, timeout)
-  end
+  defp recv({:tcp, socket}, timeout), do: :gen_tcp.recv(socket, 0, timeout)
+  defp recv({:ssl, socket}, timeout), do: :ssl.recv(socket, 0, timeout)
 
   # ── response reading: header block, then body by framing ──────────
 

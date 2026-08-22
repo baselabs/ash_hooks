@@ -20,7 +20,8 @@ defmodule AshHooks.MixProject do
       description:
         "Webhooks for Ash Framework — inbound verification + dedup, outbound signing + delivery",
       source_url: @source_url,
-      homepage_url: @source_url
+      homepage_url: @source_url,
+      dialyzer: [plt_add_apps: [:mix]]
     ]
   end
 
@@ -59,6 +60,7 @@ defmodule AshHooks.MixProject do
         {:igniter, "~> 0.6", only: [:dev, :test], runtime: false, optional: true},
         {:ex_doc, "~> 0.31", only: :dev, runtime: false},
         {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+        {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
         {:simple_sat, "~> 0.1", only: [:dev, :test], runtime: false},
         # Test substrate for the fenced-ledger concurrency tests (ADR-0003
         # names sqlite as the best-effort matrix leg). Dev/test-only: never
