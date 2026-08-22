@@ -1,43 +1,55 @@
 # Publishing ash_hooks (the operator checklist)
 
-One canonical run-sheet for a release. Everything here is human-owned:
-the publish itself is issue #15 (`needs-human`) and is a STOP line for
-agent sessions.
+One canonical run-sheet for a release, human-owned end to end
+(the publish itself is issue #15, labeled `needs-human`).
 
 ## Pre-publish (verify, in order)
 
 1. `git status` clean; `git rev-parse HEAD` recorded; CI green on that
-   SHA (all three matrix legs — 1.17, 1.18, 1.20).
+   SHA — all three matrix legs: Elixir 1.17/OTP 27, 1.18/OTP 27, and
+   1.18/OTP 27 no-optional (there is NO 1.20 CI leg; local 1.20 gates
+   below cover it).
 2. Gates locally: `mix compile --warnings-as-errors && mix format --check-formatted &&
    mix credo --strict` (zero) and both test legs:
    `mix test` AND `ASH_HOOKS_NO_OPTIONAL=1 mix test`.
-3. `CHANGELOG.md`: the release section is complete and dated; version
-   bumped in `mix.exs` (`@version`).
-4. `mix docs` builds clean; skim `doc/index.html` for the README,
+3. **Env guard:** `env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish ...` for
+   every publish/dry-run command below. If the variable were exported,
+   mix.exs would silently drop oban/plug from the hex metadata and the
+   first-publish tarball is permanent. The dry-run metadata must list
+   `oban (optional)` and `plug (optional)`.
+4. `CHANGELOG.md`: BEFORE publishing, rename the `## Unreleased`
+   section to the dated version heading and bump `@version` in
+   `mix.exs` — `CHANGELOG*` ships inside the tarball, so the rename
+   must not wait for post-publish.
+5. `mix docs` builds clean; skim `doc/index.html` for the README,
    tutorial, and DSL cheat sheets rendering.
-5. Name availability: `mix hex.info ash_hooks` → "No package with
+6. Name availability: `mix hex.info ash_hooks` → "No package with
    name ash_hooks" (re-verified 2026-08-22; first-publish-first-owned —
    if this now EXISTS and is not ours, STOP and escalate).
-6. Dry run: `echo "1" | mix hex.publish --dry-run` — the piped "1"
-   answers the interactive first-publish OWNER selection (choose your
-   account/org deliberately; the list is printed — verify the choice).
-   Expect exit 0; cosmetic "hidden module" doc-reference warnings are
-   known and acceptable.
+7. Dry run: `env -u ASH_HOOKS_NO_OPTIONAL sh -c 'echo 1 | mix hex.publish --dry-run'`
+   — the piped "1" answers the numbered first-publish owner prompt
+   ("yourself as owner or an organization"). Selection "1" is YOURSELF;
+   publishing under an organization requires
+   `mix hex.publish --organization <org>` instead — decide ownership
+   BEFORE this step and verify the prompt's list still matches. Expect
+   exit 0; cosmetic "hidden module" doc-reference warnings are known
+   and acceptable.
 7. `mix hex.audit` clean (no retired deps in the resolved set).
 
 ## Publish (#15 — human hands on keyboard)
 
-8. `echo "1" | mix hex.publish` (or run interactively to pick the owner
-   with the arrow keys). Requires `HEX_API_KEY` for the chosen owner.
+8. Run INTERACTIVELY in a terminal: `env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish`
+   (add `--organization <org>` for org ownership). Requires
+   `HEX_API_KEY` for the chosen owner. Read the owner prompt on screen —
+   never blind-pipe the real publish.
 9. Verify: `mix hex.info ash_hooks` shows the version; the docs link
    renders on hex.pm.
 10. Tag: `git tag v<version> && git push origin v<version>`.
 
 ## Post-publish
 
-11. Un-pin the CHANGELOG "Unreleased" section into the version heading.
-12. GitHub release from the tag, summary from the CHANGELOG section.
-13. Adoption coordination tickets (#12 commerce_platform, #13
+11. GitHub release from the tag, summary from the CHANGELOG section.
+12. Adoption coordination tickets (#12 commerce_platform, #13
     navyler_cdc) can proceed against the published version.
 
 ## Known notes
