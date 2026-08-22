@@ -72,6 +72,22 @@ defmodule AshHooks.SsrfTest do
       refute Ssrf.safe_url?("http://[::ffff:10.0.0.1]/x")
     end
 
+    test "rejects the FULL ULA/link-local/multicast prefix blocks (review regressions)" do
+      # fc00::/7 covers fc00–fdff; fe80::/10 covers fe80–febf; ff00::/8
+      # covers ff00–ffff — single-range checks let these through (the
+      # reviewers' live probes)
+      refute Ssrf.safe_url?("http://[fc00::1]/x")
+      refute Ssrf.safe_url?("http://[fe90::1]/x")
+      refute Ssrf.safe_url?("http://[ff02::1]/x")
+    end
+
+    test "rejects IPv4-embedding transition forms (6to4, Teredo, NAT64-private)" do
+      # 2002:0a00:0001:: is 6to4 wrapping 10.0.0.1
+      refute Ssrf.safe_url?("http://[2002:0a00:1::]/x")
+      # 64:ff9b::a00:1 is NAT64 wrapping 10.0.0.1
+      refute Ssrf.safe_url?("http://[64:ff9b::a00:1]/x")
+    end
+
     test "accepts public literals (incl. IPv4-mapped public)" do
       assert Ssrf.safe_url?("http://93.184.216.34/x")
       assert Ssrf.safe_url?("http://[2606:2800:220:1:248:1893:25c8:1946]/x")

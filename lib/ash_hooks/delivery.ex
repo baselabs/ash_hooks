@@ -65,6 +65,9 @@ defmodule AshHooks.Delivery do
 
       :missing ->
         :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -107,8 +110,17 @@ defmodule AshHooks.Delivery do
       {:ok, endpoint} ->
         attempt_enabled(row, endpoint, config)
 
-      _gone ->
-        dead_letter(row, "endpoint_gone", config)
+      # only a GONE endpoint row is terminal — a transient read error must
+      # retry, never permanently dead-letter (cross-vendor finding)
+      {:error, %Ash.Error.Invalid{errors: reasons}} = error ->
+        if Enum.all?(reasons, &is_struct(&1, Ash.Error.Query.NotFound)) do
+          dead_letter(row, "endpoint_gone", config)
+        else
+          {:error, error}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -149,11 +161,18 @@ defmodule AshHooks.Delivery do
   end
 
   defp record(row, endpoint, %{status: 410} = _response, config) do
-    config[:endpoints]
-    |> Ash.Query.filter(id == ^endpoint.id)
-    |> Ash.bulk_update(:disable, %{}, authorize?: false)
+    # the durable disable is the circuit breaker — a failed write must NOT
+    # be swallowed behind the row's dead-letter (cross-vendor finding):
+    # surface the error so the job retries and the 410 is re-processed
+    result =
+      config[:endpoints]
+      |> Ash.Query.filter(id == ^endpoint.id)
+      |> Ash.bulk_update(:disable, %{}, authorize?: false, return_errors?: true)
 
-    dead_letter(row, "gone_410", config)
+    case result do
+      %Ash.BulkResult{status: :success} -> dead_letter(row, "gone_410", config)
+      other -> {:error, {:disable_failed, other}}
+    end
   end
 
   defp record(row, _endpoint, %{status: status} = response, config)
@@ -206,7 +225,11 @@ defmodule AshHooks.Delivery do
     ArgumentError -> {:error, :signing_failed}
   end
 
-  defp resolve(ref, resolver) when is_binary(ref) and ref != "" do
+  defp resolve(ref, {m, f}) when is_binary(ref) and ref != "" and is_atom(m) and is_atom(f) do
+    resolve(ref, &apply(m, f, [&1]))
+  end
+
+  defp resolve(ref, resolver) when is_binary(ref) and ref != "" and is_function(resolver, 1) do
     case resolver.(ref) do
       {:ok, secret} when is_binary(secret) and secret != "" -> {:ok, secret}
       {:error, reason} -> {:error, {:secret_resolution, reason}}
@@ -262,13 +285,18 @@ defmodule AshHooks.Delivery do
     end
   end
 
+  # Reconcile writes are NEVER swallowed (cross-vendor finding): with job
+  # uniqueness at states: :all / period: :infinity, a lost terminal write
+  # strands the row in :sending with no possible re-trigger — surface the
+  # error so the job error-retries and the reconcile re-runs.
   defp mark_succeeded(row, response, config) do
-    gated_update(row, config, :mark_succeeded, %{
-      response_status: response.status,
-      response_snippet: redact(response[:body] || response.body)
-    })
-
-    :ok
+    case gated_update(row, config, :mark_succeeded, %{
+           response_status: response.status,
+           response_snippet: redact(response[:body] || response.body)
+         }) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:reconcile_failed, reason}}
+    end
   end
 
   defp retry(row, error, config, retry_after) do
@@ -278,28 +306,31 @@ defmodule AshHooks.Delivery do
       delay = delay_seconds(row, config, retry_after)
       next_at = DateTime.add(now(config), delay, :second)
 
-      gated_update(row, config, :mark_send_failed, %{
-        error: error,
-        next_attempt_at: next_at,
-        dead_letter?: false
-      })
-
-      {:snooze, delay}
+      case gated_update(row, config, :mark_send_failed, %{
+             error: error,
+             next_attempt_at: next_at,
+             dead_letter?: false
+           }) do
+        {:ok, _} -> {:snooze, delay}
+        {:error, reason} -> {:error, {:reconcile_failed, reason}}
+      end
     end
   end
 
   defp dead_letter(row, error, config) do
-    gated_update(
-      row,
-      config,
-      :mark_send_failed,
-      %{error: error, next_attempt_at: nil, dead_letter?: true},
-      # dead-letter can land from a pre-send state (disabled endpoint, SSRF
-      # refusal) or mid-send — never from a terminal row
-      [:pending, :sending, :failed_retryable]
-    )
-
-    :ok
+    case gated_update(
+           row,
+           config,
+           :mark_send_failed,
+           %{error: error, next_attempt_at: nil, dead_letter?: true},
+           # dead-letter can land from any pre-send or mid-send state —
+           # including :enqueue_failed rows the runtime re-drove — never
+           # from a terminal row
+           [:pending, :sending, :failed_retryable, :enqueue_failed]
+         ) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:reconcile_failed, reason}}
+    end
   end
 
   # The WHERE gate IS the fence (portable pattern): id + a status set the
@@ -366,21 +397,35 @@ defmodule AshHooks.Delivery do
     end
   end
 
+  # Remote-controlled header value: ANY failure must parse to nil (backoff
+  # fallback), never raise out of the driver (cross-vendor finding — bad
+  # numerics in a GMT-shaped value crash the bangs).
   defp parse_http_date(string) do
     case DateTime.from_iso8601(string) do
       {:ok, dt, _offset} ->
         dt
 
       _rfc1123 ->
-        # "Mon, 01 Jan 2026 00:00:00 GMT" — parse the time fields
+        # "Mon, 01 Jan 2026 00:00:00 GMT" — parse the fields tolerantly
         with [_wd, date, month, year, time, "GMT"] <- String.split(string, " "),
              {:ok, month_n} <- month_number(month),
-             [d, y] <- Enum.map([date, year], &String.to_integer/1),
-             [h, m, s] <- Enum.map(String.split(time, ":"), &String.to_integer/1) do
-          DateTime.new!(Date.new!(y, month_n, d), Time.new!(h, m, s), "Etc/UTC")
+             {d, ""} <- Integer.parse(date),
+             {y, ""} <- Integer.parse(year),
+             [h, m, s] <- Enum.map(String.split(time, ":"), &parse_int_or_nil/1),
+             nil not in [h, m, s],
+             {:ok, date_d} <- Date.new(y, month_n, d),
+             {:ok, time_t} <- Time.new(h, m, s) do
+          DateTime.new!(date_d, time_t, "Etc/UTC")
         else
-          _ -> nil
+          _malformed -> nil
         end
+    end
+  end
+
+  defp parse_int_or_nil(string) do
+    case Integer.parse(string) do
+      {n, ""} -> n
+      _ -> nil
     end
   end
 

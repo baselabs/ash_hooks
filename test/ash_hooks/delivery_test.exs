@@ -377,6 +377,62 @@ defmodule AshHooks.DeliveryTest do
       assert {:snooze, delay} = DeliveryRuntime.run(args(row), config())
       assert delay >= 1
     end
+
+    test "a GMT-shaped Retry-After with BAD NUMERICS falls back to backoff (review regression)" do
+      HttpDouble.set_responses([
+        {:ok,
+         %{status: 429, headers: [{"retry-after", "Mon, 32 Jan 2026 25:61:61 GMT"}], body: ""}}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert {:snooze, delay} = DeliveryRuntime.run(args(row), config())
+      assert delay >= 4
+    end
+  end
+
+  describe "cross-vendor review regressions (2)" do
+    test "an endpoint READ ERROR retries; only a GONE endpoint dead-letters" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+      Repo.query!("DROP TABLE #{@endpoints}")
+
+      assert {:error, _reason} = DeliveryRuntime.run(args(row), config())
+      assert HttpDouble.calls() == []
+
+      Repo.query!("""
+      CREATE TABLE #{@endpoints} (
+        id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
+        secret_ref TEXT NOT NULL, previous_secret_ref TEXT, legacy_secret_ref TEXT,
+        legacy_previous_secret_ref TEXT
+      )
+      """)
+    end
+
+    test "an :enqueue_failed row re-driven by the runtime dead-letters pre-send when disabled" do
+      ep = endpoint!()
+      Ash.update!(ep, %{}, action: :disable, authorize?: false)
+
+      row =
+        Ash.create!(
+          Delivery,
+          %{
+            event_uuid: "msg_enq_failed_predl",
+            event_type: "order_paid",
+            payload: @payload,
+            endpoint_id: ep.id
+          },
+          action: :dispatch,
+          authorize?: false
+        )
+
+      Repo.query!("UPDATE #{@deliveries} SET status = 'enqueue_failed' WHERE id = ?", [row.id])
+
+      assert :ok = DeliveryRuntime.run(args(row), config())
+      assert row!(row.id).status == :dead_letter
+      assert row!(row.id).last_error =~ "endpoint_disabled"
+    end
   end
 
   describe "backoff, ceiling, dead-letter" do

@@ -2,11 +2,12 @@ defmodule AshHooks.Http.Httpc do
   @moduledoc """
   The default `AshHooks.Http` adapter: OTP's `:httpc`.
 
-  `:httpc` NEVER follows redirects natively — a 3xx returns as a response
-  and the runtime classifies it `redirect_refused` (the spec's "redirects
-  refused" is the platform default, not a workaround). TLS verifies peers
-  against the OTP CA store. Connect/receive are bounded (`:timeout` /
-  `:connect_timeout`); the Oban job timeout is the outer bound.
+  Redirects are DISABLED (`autoredirect: false`) — `:httpc` follows them
+  by default (a 303 on a POST is re-issued as GET), which would both hide
+  the 3xx from the runtime's `redirect_refused` classification and bypass
+  the send-time SSRF check (cross-vendor live probe). TLS verifies peers
+  against the OTP CA store. Connect/receive are bounded; the Oban job
+  timeout is the outer bound.
   """
 
   @behaviour AshHooks.Http
@@ -16,23 +17,27 @@ defmodule AshHooks.Http.Httpc do
 
   @impl true
   def request(method, url, headers, body, opts \\ []) do
-    request = {
-      method |> to_charlist() |> String.to_atom() |> then(&if &1 == :post, do: :post, else: &1),
-      String.to_charlist(url),
-      Enum.map(headers, fn {name, value} ->
-        {String.to_charlist(name), String.to_charlist(value)}
-      end),
-      content_type(headers),
-      body || ""
-    }
+    method = if is_binary(method), do: String.to_atom(method), else: method
+
+    url = String.to_charlist(url)
+    ct = content_type(headers)
+
+    headers =
+      Map.new(headers)
+      |> Enum.map(fn {name, value} -> {String.to_charlist(name), String.to_charlist(value)} end)
 
     http_options = [
       ssl: ssl_options(),
+      # :httpc FOLLOWS redirects by default (a 303-on-POST is re-issued as
+      # GET) — the runtime must see the 3xx itself to refuse it, and a
+      # followed redirect is an SSRF bypass past the send-time check
+      # (cross-vendor finding, live-probed)
+      autoredirect: false,
       timeout: opts[:timeout] || @default_timeout,
       connect_timeout: opts[:connect_timeout] || @default_connect_timeout
     ]
 
-    case :httpc.request(request, http_options) do
+    case :httpc.request(method, {url, headers, ct, body || ""}, http_options, []) do
       {:ok, {{_version, status, _phrase}, resp_headers, resp_body}} ->
         {:ok,
          %{

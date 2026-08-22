@@ -101,6 +101,7 @@ defmodule AshHooks.Worker do
       @ash_hooks_delivery_config unquote(delivery_config)
       @ash_hooks_oban unquote(oban_instance)
 
+      @impl Oban.Worker
       def perform(%Oban.Job{args: args}) do
         AshHooks.Delivery.run(args, @ash_hooks_delivery_config)
       end

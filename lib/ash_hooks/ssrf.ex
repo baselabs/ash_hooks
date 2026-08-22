@@ -162,9 +162,31 @@ defmodule AshHooks.Ssrf do
   defp ipv4_public?(a, _, _, _) when a in 224..255, do: false
   defp ipv4_public?(_, _, _, _), do: true
 
+  # Prefix masks per RFC 4291/4193, not single-range checks (cross-vendor
+  # finding: fc00::/7 covers fc00–fdff, fe80::/10 covers fe80–febf,
+  # ff00::/8 covers ff00–ffff — the old /16 checks let fc00::, fe90:: and
+  # ff02:: through).
   defp ipv6_public?({0, 0, 0, 0, 0, 0, 0, 1}), do: false
-  defp ipv6_public?({a, _, _, _, _, _, _, _}) when a in 0xFD00..0xFDFF, do: false
-  defp ipv6_public?({0xFE80, _, _, _, _, _, _, _}), do: false
-  defp ipv6_public?({0xFF00, _, _, _, _, _, _, _}), do: false
+  # ULA fc00::/7
+  defp ipv6_public?({a, _, _, _, _, _, _, _}) when band(a, 0xFE00) == 0xFC00, do: false
+  # link-local fe80::/10
+  defp ipv6_public?({a, _, _, _, _, _, _, _}) when band(a, 0xFFC0) == 0xFE80, do: false
+  # multicast ff00::/8
+  defp ipv6_public?({a, _, _, _, _, _, _, _}) when band(a, 0xFF00) == 0xFF00, do: false
+  # transition forms embedding a (possibly private) IPv4 (cross-vendor
+  # note): 6to4 2002::/16 and Teredo 2001:0::/32 are refused outright;
+  # NAT64 64:ff9b::/96 unwraps its embedded v4
+  defp ipv6_public?({0x2002, _, _, _, _, _, _, _}), do: false
+  defp ipv6_public?({0x2001, 0, _, _, _, _, _, _}), do: false
+
+  defp ipv6_public?({0x0064, 0xFF9B, _, _, _, _, hi, lo}),
+    do:
+      ipv4_public?(
+        band(hi, 0xFF00) >>> 8,
+        band(hi, 0x00FF),
+        band(lo, 0xFF00) >>> 8,
+        band(lo, 0x00FF)
+      )
+
   defp ipv6_public?(_), do: true
 end
