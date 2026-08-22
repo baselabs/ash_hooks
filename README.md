@@ -277,6 +277,46 @@ still compiles and runs Oban-free (CI no-optional leg + the inbound-only
 proof); `use AshHooks.Worker` without Oban on the host fails
 deterministically at compile.
 
+### Dispatch-time capture (consumer-owned, no package change)
+
+`snippet_capture` is deliberately a per-call runtime config key, not a
+worker-macro knob — but dispatch-time opt-in needs no contract change:
+bring your own enqueue seam and your own Oban worker driving the public
+runtime with the flag merged in.
+
+```elixir
+defmodule MyApp.CaptureWorker do
+  use Oban.Worker, queue: :webhook_diagnostics
+
+  def perform(%Oban.Job{args: args}) do
+    AshHooks.Delivery.run(args,
+      deliveries: MyApp.OutboundDelivery,
+      endpoints: MyApp.WebhookEndpoint,
+      secret_resolver: {MyApp.Secrets, :webhook_secret},
+      snippet_capture: true
+    )
+  end
+end
+
+# the enqueue seam contract is (delivery, event) -> :ok | {:error, term}
+AshHooks.dispatch(Order, :order_paid, event,
+  enqueue: fn delivery, _event ->
+    %{ "endpoint_id" => to_string(delivery.endpoint_id),
+       "event_uuid" => delivery.event_uuid }
+    |> MyApp.CaptureWorker.new()
+    |> Oban.insert()
+    |> case do
+      {:ok, _job} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+)
+```
+
+For a one-row diagnostic re-drive of an already-dispatched event, call
+`AshHooks.Delivery.run/2` directly with `snippet_capture: true` — the
+row's `{endpoint_id, event_uuid}` args and your config are all it takes.
+
 ## Design records
 
 Architectural decisions live in [`docs/adr/`](docs/adr/).
