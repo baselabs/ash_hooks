@@ -55,7 +55,8 @@ defmodule AshHooks.Http.Bounded do
 
     request = [request_line, header_lines, "\r\n", body]
 
-    with {:ok, socket} <- connect(target, opts) do
+    with {:ok, socket} <- connect(target, opts),
+         :ok <- verify_ip_san(socket, target) do
       try do
         case send_all(socket, IO.iodata_to_binary(request)) do
           :ok -> read_response(socket, opts)
@@ -66,6 +67,74 @@ defmodule AshHooks.Http.Bounded do
       end
     end
   end
+
+  # For literal-IP https destinations TLS has no NAME to check — require
+  # the peer cert to carry the IP in its iPAddress SAN (chain validation
+  # alone lets ANY publicly-trusted cert authenticate the peer;
+  # cross-vendor finding). No-op for http and named hosts (the RFC 6125
+  # hostname check covers those).
+  defp verify_ip_san(socket, %{uri: %URI{scheme: "https"}, host: host, address: address}) do
+    if Target.ip_literal?(host) do
+      with {:ok, der} <- :ssl.peercert(socket),
+           {:ok, cert} <- :public_key.pkix_decode_cert(der, :plain),
+           true <- ip_in_san?(cert, address) do
+        :ok
+      else
+        _no_ip_san -> {:error, :cert_ip_mismatch}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp verify_ip_san(_socket, _target), do: :ok
+
+  # OTP record shapes (public_key.hrl): 'OTPCertificate'{tbsCertificate},
+  # 'OTPTBSCertificate'{..., extensions :: ['Extension'{}]}, 'Extension'{
+  # extnID, critical, extnValue}. The SAN extnID is 2.5.29.17; the
+  # decoded extnValue general-names carry iPAddress tuples.
+  defp ip_in_san?(otp_cert, address) do
+    otp_cert
+    |> elem(1)
+    |> record_field(9)
+    |> List.wrap()
+    |> Enum.find_value(false, fn ext ->
+      with {:Extension, {2, 5, 29, 17}, _crit, san} <- ext,
+           {:ok, names} <- decode_san(san),
+           ips <- san_ips(names) do
+        Enum.any?(ips, &(&1 == address))
+      else
+        _ -> false
+      end
+    end)
+  rescue
+    _ -> false
+  end
+
+  defp record_field(record, index), do: elem(record, index)
+
+  # extnValue arrives as raw DER — re-decode with the SAN template
+  defp decode_san(san_der) do
+    case :public_key.der_decode(:SubjectAltName, san_der) do
+      names when is_list(names) -> {:ok, names}
+      _other -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp san_ips(names) when is_list(names) do
+    names
+    |> Enum.flat_map(fn
+      {:iPAddress, ip} -> [to_ip(ip)]
+      _other -> []
+    end)
+  end
+
+
+  defp to_ip({a, b, c, d}) when is_integer(a), do: {a, b, c, d}
+  defp to_ip(other) when is_tuple(other) and tuple_size(other) == 8, do: other
+  defp to_ip(_), do: nil
 
   defp request_path(%{path: nil, query: nil}), do: "/"
   defp request_path(%{path: nil, query: q}), do: "/?" <> q
@@ -162,13 +231,14 @@ defmodule AshHooks.Http.Bounded do
     end
   end
 
-  # check the bound BEFORE the terminator match — a hostile header block
-  # must be refused even when its terminator arrives in the same pull
-  defp head_step(acc, max) when byte_size(acc) > max, do: {:error, :header_block_too_large}
-
-  defp head_step(acc, _max) do
+  # terminator FIRST: same-pull body bytes must not count against the
+  # header bound (a legit header + trailing body in one slice); the bound
+  # refuses only a header block that keeps GROWING without a terminator
+  defp head_step(acc, max) do
     case :binary.match(acc, "\r\n\r\n") do
-      {index, _} -> split_head(acc, index + 4)
+      {index, _} when index + 4 <= max -> split_head(acc, index + 4)
+      {_over_max, _} -> {:error, :header_block_too_large}
+      :nomatch when byte_size(acc) > max -> {:error, :header_block_too_large}
       :nomatch -> {:more, acc}
     end
   end
@@ -180,11 +250,20 @@ defmodule AshHooks.Http.Bounded do
   defp parse_head(head) do
     [status_line | header_lines] = String.split(head, "\r\n", trim: false)
 
-    with [_, status_binary, _reason] <- String.split(status_line, " ", parts: 3),
+    with {:ok, status_binary} <- status_binary(status_line),
          {status, ""} <- Integer.parse(status_binary) do
       {:ok, {status, parse_header_lines(header_lines)}}
     else
       _malformed -> {:error, :malformed_status_line}
+    end
+  end
+
+  # embedded/minimal servers may omit the reason phrase ("HTTP/1.1 200")
+  defp status_binary(status_line) do
+    case String.split(status_line, " ", parts: 3) do
+      [_, status, _reason] -> {:ok, status}
+      [_, status] -> {:ok, status}
+      _ -> :error
     end
   end
 
@@ -209,8 +288,25 @@ defmodule AshHooks.Http.Bounded do
 
       framed_length = List.keyfind(headers, "content-length", 0) ->
         {_name, length_binary} = framed_length
-        {length, ""} = Integer.parse(length_binary)
-        read_sized(socket, status, headers, acc, length, max, timeout)
+
+        case Integer.parse(length_binary) do
+          {length, ""} when length >= 0 ->
+            # the body bytes that arrived WITH the header block count
+            # against the declared length — otherwise termination waits
+            # for a close the server may never send (cross-vendor probe)
+            read_sized(
+              socket,
+              status,
+              headers,
+              acc,
+              max(0, length - byte_size(acc)),
+              max,
+              timeout
+            )
+
+          _malformed ->
+            {:error, :malformed_content_length}
+        end
 
       true ->
         read_to_close(socket, status, headers, acc, max, timeout)
@@ -239,7 +335,10 @@ defmodule AshHooks.Http.Bounded do
         read_sized(socket, status, headers, acc, remaining - byte_size(chunk), max, timeout)
 
       {:error, :closed} ->
-        {:ok, %{status: status, headers: headers, body: acc}}
+        # a Content-Length-framed body that ends early is a truncated
+        # response — the driver must retry, never mark 2xx succeeded on
+        # partial bytes (cross-vendor finding)
+        {:error, :truncated_body}
 
       {:error, reason} ->
         {:error, reason}
@@ -272,7 +371,7 @@ defmodule AshHooks.Http.Bounded do
         end
 
       :malformed ->
-        {:ok, acc}
+        {:error, :malformed_chunked}
     end
   end
 
@@ -292,7 +391,14 @@ defmodule AshHooks.Http.Bounded do
     end
   end
 
+  # The declared chunk size is ATTACKER-CONTROLLED — never buffer toward
+  # it (a 1TB declaration must not allocate). Retain at most the
+  # remaining ALLOWANCE of the chunk's bytes, consume the rest slice-wise
+  # (cross-vendor live probe: both peers). Recv pulls are already capped
+  # by the socket's buffer option, so the buffered excess is one slice.
   defp take_chunk(socket, buffer, acc, size, max, timeout) do
+    allowance = max(max - byte_size(acc), 0)
+    keep = min(size, allowance)
     needed = size + 2
 
     if byte_size(buffer) < needed do
@@ -301,11 +407,10 @@ defmodule AshHooks.Http.Bounded do
         {:error, _} -> {"", acc}
       end
     else
-      chunk = binary_part(buffer, 0, min(size, max - byte_size(acc)))
       # carry the POST-chunk remainder forward — the next size line (and
       # possibly more chunks) may already be buffered
       rest = binary_part(buffer, needed, byte_size(buffer) - needed)
-      {rest, acc <> chunk}
+      {rest, acc <> binary_part(buffer, 0, keep)}
     end
   end
 

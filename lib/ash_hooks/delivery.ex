@@ -153,7 +153,7 @@ defmodule AshHooks.Delivery do
 
     with {:ok, headers} <- signing_headers(row, endpoint, config),
          {:ok, response} <-
-           request.(:post, endpoint.url, headers, row.payload, []) do
+           send_request(request, endpoint, headers, row) do
       record(row, endpoint, response, config)
     else
       # a pin-time SSRF refusal is a caught rebinding flip — terminal, per
@@ -164,6 +164,14 @@ defmodule AshHooks.Delivery do
       {:error, reason} ->
         retry(row, error_string(reason), config, nil)
     end
+  end
+
+  # an adapter RAISE must not crash the job out of the row-owned policy —
+  # classify it as a retryable transport failure (cross-vendor finding)
+  defp send_request(request, endpoint, headers, row) do
+    request.(:post, endpoint.url, headers, row.payload, [])
+  rescue
+    reason -> {:error, {:adapter_crash, error_string(reason)}}
   end
 
   defp record(row, _endpoint, %{status: status} = response, config)
@@ -481,6 +489,10 @@ defmodule AshHooks.Delivery do
     |> decode_step(&URI.decode_www_form/1)
     |> decode_step(&json_unescape/1)
     |> apply_redaction_patterns()
+    # strip control bytes — a hostile NUL would make the post-send
+    # ledger write fail on TEXT columns AFTER a successful send
+    # (cross-vendor finding: re-send poison loop)
+    |> String.replace(~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/, "")
     |> String.replace(~r/[\r\n]+/, " ")
     |> String.slice(0, @snippet_max)
   end
@@ -493,10 +505,17 @@ defmodule AshHooks.Delivery do
     ArgumentError -> input
   end
 
+  # per-escape fallback: a surrogate/high escape must not abort the whole
+  # replace (that would fail the LAYER open and let a co-resident disguise
+  # survive — cross-vendor probe)
   defp json_unescape(string) do
-    Regex.replace(~r/\\u([0-9a-fA-F]{4})/, string, fn _whole, code ->
-      <<String.to_integer(code, 16)::utf8>>
-    end)
+    Regex.replace(~r/\\u([0-9a-fA-F]{4})/, string, &escape_to_char/2)
+  end
+
+  defp escape_to_char(whole, code) do
+    <<String.to_integer(code, 16)::utf8>>
+  rescue
+    ArgumentError -> whole
   end
 
   defp apply_redaction_patterns(body) do

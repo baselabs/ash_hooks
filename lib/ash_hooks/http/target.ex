@@ -93,7 +93,7 @@ defmodule AshHooks.Http.Target do
     end
   end
 
-  defp ip_literal?(host) do
+  def ip_literal?(host) do
     bare = host |> String.replace("[", "") |> String.replace("]", "")
     match?({:ok, _}, :inet.parse_address(String.to_charlist(bare)))
   end
