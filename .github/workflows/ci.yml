@@ -120,6 +120,8 @@ jobs:
             _build
           key: package-1.18-27-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
+      - name: DSL cheat sheets match the DSL (generated files must not drift)
+        run: mix spark.cheat_sheets --check
       - name: Tarball carries every publish surface
         run: |
           env -u ASH_HOOKS_NO_OPTIONAL mix hex.build
@@ -128,6 +130,8 @@ jobs:
           grep -qx "README.md" /tmp/tar-list.txt
           grep -qx "CHANGELOG.md" /tmp/tar-list.txt
           grep -qx "usage-rules.md" /tmp/tar-list.txt
+          grep -qx "UPGRADING.md" /tmp/tar-list.txt
+          grep -qx "SECURITY.md" /tmp/tar-list.txt
           grep -qx "LICENSE" /tmp/tar-list.txt
       - run: mix docs
 

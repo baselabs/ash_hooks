@@ -16,13 +16,19 @@ dep is absent — and current Oban uniqueness config requires `fields: [:args]` 
 
 ## Decision
 
-`{:oban, "~> 2.20", optional: true}`. The delivery runtime is a behaviour
-(`AshHooks.Delivery`); the Oban adapter is a **host-injected `use AshHooks.Worker` macro**
-that expands `use Oban.Worker` inside the consuming app — the Oban beam only compiles where
-Oban exists; queue configuration stays host-owned. Selecting the Oban adapter without Oban
-fails deterministically before any delivery work is accepted. The package compiles
-Oban-free, proven by a compile-matrix gate and an inbound-only fixture app asserting Oban
-never loads. No Oban APIs beyond 2.20 (2.21+ requires PostgreSQL 14).
+`{:oban, "~> 2.20", optional: true}`. As built (trued up 2026-08-22): the delivery runtime
+is the concrete row-driven driver `AshHooks.Delivery` (ADR-0008; the package's one
+pluggable behaviour is `AshHooks.Http`, not the runtime); the Oban integration is a
+**host-injected `use AshHooks.Worker` macro** that expands `use Oban.Worker` inside the
+consuming app and delegates each job to `AshHooks.Delivery.run/2` — the Oban beam only
+compiles where Oban exists; queue configuration stays host-owned. Selecting the Oban
+adapter without Oban fails deterministically before any delivery work is accepted. The
+package compiles and runs Oban-free, proven by the CI no-optional matrix leg
+(`ASH_HOOKS_NO_OPTIONAL=1`) plus an in-suite assertion
+(`test/ash_hooks/oban_free_test.exs` and the CI `:code.which` step) that Oban never loads.
+Uniqueness semantics were verified against Oban 2.23.1 (ADR-0007) — the `~> 2.20` floor
+constrains APIs, not the verified version. (The earlier "2.21+ requires PostgreSQL 14"
+note applies only to Oban's Postgres engine; MySQL/SQLite engines are unaffected.)
 
 ## Consequences
 

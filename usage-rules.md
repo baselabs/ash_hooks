@@ -10,9 +10,10 @@ For AI assistants working in codebases that use ash_hooks.
   invokes the provider handler, and marks the outcome in one call. The
   low-level lease primitives (`claim_delivery/2`, `mark_processed/3`,
   `mark_failed/5`, `renew/3`, `reap/1`) are public for custom async
-  pipelines; do NOT call them after ingest/4 (the row is already
-  terminal). The ledger's unique index IS the dedup — never build your
-  own seen-table.
+  pipelines; ingest/4 itself drives the row to a terminal or
+  re-driveable state in one call (`:failed_retryable` rows are
+  non-terminal — the lease machine re-drives them). The ledger's unique
+  index IS the dedup — never build your own seen-table.
 - Sending webhooks: put `AshHooks` on the emitting resource with an
   `outbound :event` declaration; the subscription/endpoint/delivery
   extensions carry the fanout; `use AshHooks.Worker` in the consuming
@@ -66,8 +67,12 @@ For AI assistants working in codebases that use ash_hooks.
 
 - Declaring `replay_window_seconds` for a provider without a timestamp
   header — the DSL verifier rejects it.
-- Reading the delivery row's fields through consumer actions — the
-  machine-written fields (`response_*`, `attempts`, `next_attempt_at`,
-  `last_error`) accept no action input; build read views instead.
+- Reading the delivery row's fields through consumer actions —
+  `response_status`/`response_snippet`/`next_attempt_at` are
+  `writable?: false` (no consumer action accepts them anywhere);
+  `attempts`/`last_error` are excluded from the INJECTED actions' accept
+  lists only — a consumer-defined action with a broad accept list could
+  write them, so keep consumer actions narrow; build read views
+  instead.
 - Expecting `:telemetry` prefix handlers to fire: `execute/3` matches
   exact names (verified against telemetry 1.4 source).

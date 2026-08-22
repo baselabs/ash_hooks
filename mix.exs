@@ -74,7 +74,8 @@ defmodule AshHooks.MixProject do
   defp package do
     [
       maintainers: ["rjpalermo"],
-      files: ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules*),
+      files:
+        ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules* SECURITY* CONTRIBUTING* UPGRADING*),
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url}
     ]
@@ -86,7 +87,7 @@ defmodule AshHooks.MixProject do
       source_ref: "v#{@version}",
       source_url: @source_url,
       extras:
-        ["README.md", "CHANGELOG.md", "usage-rules.md"] ++
+        ["README.md", "CHANGELOG.md", "usage-rules.md", "UPGRADING.md", "SECURITY.md"] ++
           Path.wildcard("documentation/tutorials/*.md") ++
           Path.wildcard("documentation/dsls/*.md") ++
           Path.wildcard("documentation/livebooks/*.livemd"),

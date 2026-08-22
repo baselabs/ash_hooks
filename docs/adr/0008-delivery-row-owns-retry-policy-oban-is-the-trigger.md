@@ -21,7 +21,7 @@ TRIGGER only. `perform/1` loads the row and drives its state machine:
   idempotent, the effect-once guarantee lives in the row;
 - a `:failed_retryable` row before `next_attempt_at` → `{:snooze, s}` —
   snooze EXTENDS the job's `max_attempts` (verified in local oban 2.23.1,
-  worker.ex:273-278), so waiting never exhausts the job and only the ROW's
+  the uniqueness engine source of that release), so waiting never exhausts the job and only the ROW's
   `attempts >= ceiling` decides `:dead_letter`;
 - the attempt itself: WHERE-gated atomic `mark_sending` (status flip +
   `attempts + 1` in ONE statement — the portable-fence pattern) BEFORE the
