@@ -1,6 +1,12 @@
 # ADR-0005 — Security floors ship in the package, not as consumer homework
 
-- **Status:** Accepted (2026-08-20)
+- **Status:** Accepted (2026-08-20) — snippet policy amended 2026-08-22
+  (scout-approved, spec `.kimosabe/specs/2026-08-22-snippet-dlp.md`):
+  response snippets store NO body bytes by default (status + allowlisted
+  content-type token only, no digest); body capture is an explicit
+  per-call opt-in under the package floor (NFKC + decode chain +
+  ≥16-char union-alphabet entropy run + separator-tolerant markers) with
+  a fail-closed consumer `snippet_redactor` callback ahead of the floor
 - **Deciders:** scout + cross-family adversarial review (Category-10 blocking finding)
 
 ## Context
