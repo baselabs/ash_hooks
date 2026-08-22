@@ -141,6 +141,16 @@ defmodule AshHooks.BoundedHttpTest do
       assert {:error, :truncated_body} =
                Bounded.request(:get, base <> "/cut-sized", %{}, nil, opts)
     end
+
+    test "a NEGATIVE chunk-size line is malformed, never a raise" do
+      {base, opts} =
+        raw_server(
+          "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n-1\r\nabc"
+        )
+
+      assert {:error, :malformed_chunked} =
+               Bounded.request(:get, base <> "/negative-chunk", %{}, nil, opts)
+    end
   end
 
   describe "the header-block bound" do

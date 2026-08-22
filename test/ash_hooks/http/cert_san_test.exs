@@ -42,14 +42,21 @@ defmodule AshHooks.CertSanTest do
       refute CertSan.ip_san_match?("not a certificate", {127, 0, 0, 1})
     end
 
-    test "an IPv6-mapped SAN matches the 8-tuple form" do
-      # IPv6 ::1 — exercises the 8-tuple clause; generated fixture side
-      # covers the shape via decode, asserted structurally below
-      der = cert_der("ip-san-cert.pem")
-      # the fixture carries an IPv4 SAN only; the 8-tuple branch is
-      # exercised by the shape test in san_ips (unit) — here we pin the
-      # public contract: an 8-tuple not carried is a non-match
-      refute CertSan.ip_san_match?(der, {0, 0, 0, 0, 0, 0, 0, 1})
+    test "matches the IPv6 SAN the cert carries (inet 8-tuple of 16-bit words)" do
+      # 2001:db8::1 — the inet form is {0x2001, 0x0db8, 0, 0, 0, 0, 0, 1}
+      assert CertSan.ip_san_match?(
+               cert_der("ipv6-san-cert.pem"),
+               {0x2001, 0x0DB8, 0, 0, 0, 0, 0, 1}
+             )
+    end
+
+    test "an IPv6 address the cert does not carry never matches" do
+      refute CertSan.ip_san_match?(
+               cert_der("ipv6-san-cert.pem"),
+               {0x2001, 0x0DB8, 0, 0, 0, 0, 0, 2}
+             )
+
+      refute CertSan.ip_san_match?(cert_der("ipv6-san-cert.pem"), {0, 0, 0, 0, 0, 0, 0, 1})
     end
   end
 end

@@ -373,8 +373,14 @@ defmodule AshHooks.Http.Bounded do
 
       {index, _} ->
         case buffer |> binary_part(0, index) |> Integer.parse(16) do
-          {size, _rest} ->
+          # a chunk-size line is a hex length — negative parses are
+          # hostile (Integer.parse accepts "-1"); they must classify as
+          # malformed, never reach binary_part and raise
+          {size, _rest} when size >= 0 ->
             {:ok, size, binary_part(buffer, index + 2, byte_size(buffer) - index - 2)}
+
+          {_negative, _rest} ->
+            :malformed
 
           :error ->
             :malformed

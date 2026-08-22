@@ -57,15 +57,13 @@ defmodule AshHooks.Http.CertSan do
   end
 
   # der_decode(:SubjectAltName) yields iPAddress as RAW BYTES — a 4-byte
-  # binary (IPv4) or 16-byte binary (IPv6); tuple forms kept for other
-  # decode paths. Normalized to inet tuples for the match.
+  # binary (IPv4) or 16-byte binary (IPv6). Normalized to the inet tuple
+  # forms ({a,b,c,d} / an 8-tuple of 16-bit words) for the match.
   defp san_ips(names) when is_list(names) do
     names
     |> Enum.flat_map(fn
       {:iPAddress, <<a, b, c, d>>} -> [{a, b, c, d}]
       {:iPAddress, ip} when is_binary(ip) and byte_size(ip) == 16 -> [ipv6_tuple(ip)]
-      {:iPAddress, {a, _, _, _}} = ip when is_integer(a) -> [ip]
-      {:iPAddress, ip} when is_tuple(ip) and tuple_size(ip) == 8 -> [ip]
       _other -> []
     end)
   end
@@ -74,7 +72,7 @@ defmodule AshHooks.Http.CertSan do
     ip
     |> :binary.bin_to_list()
     |> Enum.chunk_every(2)
-    |> Enum.map(&List.to_tuple/1)
+    |> Enum.map(fn [hi, lo] -> hi * 256 + lo end)
     |> List.to_tuple()
   end
 end
