@@ -21,7 +21,7 @@ defmodule AshHooks.MixProject do
         "Webhooks for Ash Framework — inbound verification + dedup, outbound signing + delivery",
       source_url: @source_url,
       homepage_url: @source_url,
-      dialyzer: [plt_add_apps: [:mix]]
+      dialyzer: [plt_add_apps: [:mix, :ash_sqlite]]
     ]
   end
 
