@@ -131,7 +131,6 @@ defmodule AshHooks.Http.Bounded do
     end)
   end
 
-
   defp to_ip({a, b, c, d}) when is_integer(a), do: {a, b, c, d}
   defp to_ip(other) when is_tuple(other) and tuple_size(other) == 8, do: other
   defp to_ip(_), do: nil
