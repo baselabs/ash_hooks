@@ -149,11 +149,18 @@ defmodule AshHooks.Delivery do
   defp send(row, endpoint, config) do
     adapter = config[:http] || AshHooks.Http.Httpc
 
+    request = if is_function(adapter, 5), do: adapter, else: &adapter.request/5
+
     with {:ok, headers} <- signing_headers(row, endpoint, config),
          {:ok, response} <-
-           adapter.request(:post, endpoint.url, headers, row.payload, []) do
+           request.(:post, endpoint.url, headers, row.payload, []) do
       record(row, endpoint, response, config)
     else
+      # a pin-time SSRF refusal is a caught rebinding flip — terminal, per
+      # the classification table (never burn the retry ceiling on it)
+      {:error, :unsafe_destination} ->
+        dead_letter(row, "unsafe_destination", config)
+
       {:error, reason} ->
         retry(row, error_string(reason), config, nil)
     end
@@ -465,13 +472,28 @@ defmodule AshHooks.Delivery do
   # ────────────────────────── redaction ──────────────────────────
 
   defp redact(body) when is_binary(body) do
-    @redaction_patterns
-    |> Enum.reduce(body, &String.replace(&2, &1, "[redacted]"))
+    # patterns run against the RAW and the percent-DECODED forms — an
+    # encoded disguise must not survive (cross-vendor live probe:
+    # "%77hsec_shortkey" passed the raw-only patterns)
+    raw = apply_redaction_patterns(body)
+
+    decoded =
+      try do
+        apply_redaction_patterns(URI.decode_www_form(body))
+      rescue
+        ArgumentError -> raw
+      end
+
+    decoded
     |> String.replace(~r/[\r\n]+/, " ")
     |> String.slice(0, @snippet_max)
   end
 
   defp redact(_other), do: nil
+
+  defp apply_redaction_patterns(body) do
+    Enum.reduce(@redaction_patterns, body, &String.replace(&2, &1, "[redacted]"))
+  end
 
   defp error_string(term) when is_binary(term), do: String.slice(term, 0, 255)
   defp error_string(term) when is_atom(term), do: Atom.to_string(term)

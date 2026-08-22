@@ -393,6 +393,42 @@ defmodule AshHooks.DeliveryTest do
   end
 
   describe "cross-vendor review regressions (2)" do
+    test "a PERCENT-ENCODED secret disguise is redacted (derisk review regression)" do
+      HttpDouble.set_responses([
+        {:ok,
+         %{
+           status: 200,
+           headers: [],
+           body: ~s({"e": "%77hsec_) <> "dGVzdHNlY3JldDEyMzQ1Njc4OTA" <> ~s(", "ok": 1})
+         }}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config())
+
+      snippet = row!(row.id).response_snippet
+      refute snippet =~ "77hsec"
+      refute snippet =~ "dGVzdHNlY3JldDEyMzQ1Njc4OTA"
+      assert snippet =~ "[redacted]"
+    end
+
+    test "an ADAPTER pin-time SSRF refusal dead-letters immediately (never burns the ceiling)" do
+      refusing = fn _method, _url, _headers, _body, _opts -> {:error, :unsafe_destination} end
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(http: refusing, max_attempts: 50))
+      assert HttpDouble.calls() == []
+
+      final = row!(row.id)
+      assert final.status == :dead_letter
+      assert final.attempts == 1
+      assert final.last_error =~ "unsafe_destination"
+    end
+
     test "an endpoint READ ERROR retries; only a GONE endpoint dead-letters" do
       ep = endpoint!()
       row = pending_row!(ep)

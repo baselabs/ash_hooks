@@ -115,30 +115,54 @@ defmodule AshHooks.Http.Httpc do
 
     with {:ok, req_id} <-
            :httpc.request(method, request, http_options, sync: false, stream: :self) do
-      collect(req_id, opts[:max_body_bytes] || @default_max_body_bytes)
+      collect(req_id, opts[:max_body_bytes] || @default_max_body_bytes, backstop(opts))
     end
   end
 
+  # the wall-clock backstop scales with the caller's own timeout so a
+  # larger configured timeout is not silently capped at 30s
+  defp backstop(opts), do: (opts[:timeout] || @default_timeout) + 5_000
+
   # :httpc streams ONLY 2xx (200/206 — see httpc_response.erl's result/2);
   # every other status arrives as the complete result message, so the
-  # status is always recoverable: streamed ⇒ 2xx.
-  defp collect(req_id, max_body) do
+  # status is always recoverable: streamed ⇒ 2xx. A streamed 206 is
+  # indistinguishable from a 200 in this client's streaming API and is
+  # recorded as 200 (classification is unaffected — both are 2xx).
+  defp collect(req_id, max_body, backstop) do
     receive do
       {:http, {^req_id, :stream_start, headers}} ->
         stream_body(req_id, headers, 200, "", max_body)
 
       {:http, {^req_id, {{_version, status, _phrase}, headers, body}}} ->
-        {:ok, %{status: status, headers: normalize_headers(headers), body: safe_body(body)}}
+        # the transparent path assembles inside :httpc before delivery
+        # (no earlier cut exists in the client API) — truncate OUR
+        # retention at the bound; the transient allocation is the
+        # documented residual
+        {:ok,
+         %{
+           status: status,
+           headers: normalize_headers(headers),
+           body: truncate(safe_body(body), max_body)
+         }}
 
       {:http, {^req_id, {:error, reason}}} ->
         {:error, reason}
     after
-      30_000 -> {:error, :response_timeout}
+      backstop ->
+        :httpc.cancel_request(req_id)
+        {:error, :response_timeout}
     end
   end
 
   defp stream_body(req_id, headers, status, acc, max_body) do
     receive do
+      # a mid-stream transport failure is delivered this way — without
+      # this clause the caller stalls to the backstop and loses the
+      # reason (cross-vendor live probe)
+      {:http, {^req_id, {:error, reason}}} ->
+        :httpc.cancel_request(req_id)
+        {:error, reason}
+
       {:http, {^req_id, :stream, chunk}} ->
         acc = acc <> chunk
 
@@ -165,28 +189,46 @@ defmodule AshHooks.Http.Httpc do
     end
   end
 
+  defp truncate(nil, _max), do: nil
+
+  defp truncate(body, max) when byte_size(body) > max, do: binary_part(body, 0, max)
+  defp truncate(body, _max), do: body
+
   defp default_port("https"), do: 443
   defp default_port(_http), do: 80
 
   defp host_header(host, 443, "https"), do: host
   defp host_header(host, 80, "http"), do: host
-  defp host_header(host, port, _), do: "#{host}:#{port}"
+
+  defp host_header(host, port, _) do
+    if String.contains?(host, ":"), do: "[#{host}]:#{port}", else: "#{host}:#{port}"
+  end
 
   # the pinned URL carries the validated IP; TLS still names the ORIGINAL
   # host (SNI + RFC 6125 hostname check against it)
   defp ssl_options("https", host) do
-    [
-      verify: :verify_peer,
-      cacerts: :public_key.cacerts_get(),
-      depth: 3,
-      server_name_indication: String.to_charlist(host),
-      customize_hostname_check: [
-        match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-      ]
-    ]
+    base = [verify: :verify_peer, cacerts: :public_key.cacerts_get(), depth: 3]
+
+    # a literal-IP destination has no name to verify — chain validation
+    # only, SNI disabled (cross-vendor note: SNI-ing an IP is not a name)
+    if ip_literal?(host) do
+      Keyword.put(base, :server_name_indication, :disable)
+    else
+      Keyword.merge(base,
+        server_name_indication: String.to_charlist(host),
+        customize_hostname_check: [
+          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+        ]
+      )
+    end
   end
 
   defp ssl_options(_http, _host), do: []
+
+  defp ip_literal?(host) do
+    bare = host |> String.replace("[", "") |> String.replace("]", "")
+    match?({:ok, _}, :inet.parse_address(String.to_charlist(bare)))
+  end
 
   # an empty :ssl option on a plain-http request is rejected by :httpc —
   # only attach it for https
@@ -202,10 +244,9 @@ defmodule AshHooks.Http.Httpc do
     end
   end
 
-  defp format_address(address) do
-    formatted = address |> :inet.ntoa() |> to_string()
-    if String.contains?(formatted, ":"), do: "[#{formatted}]", else: formatted
-  end
+  # UNbracketed: URI.to_string brackets a ":"-containing host itself —
+  # pre-wrapping here produced double brackets (cross-vendor live probe)
+  defp format_address(address), do: address |> :inet.ntoa() |> to_string()
 
   defp normalize_headers(headers) do
     Enum.map(headers, fn {name, value} -> {to_string(name), to_string(value)} end)

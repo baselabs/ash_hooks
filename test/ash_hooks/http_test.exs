@@ -16,15 +16,21 @@ defmodule AshHooks.HttpTest do
   @cap 1_024
 
   setup_all do
-    File.write!("/tmp/ash_hooks_http_test_small.json", ~s({"ok": true}))
-    File.write!("/tmp/ash_hooks_http_test_big.json", String.duplicate("x", @big_bytes))
+    # a PRIVATE throwaway doc root + loopback-only bind (cross-vendor
+    # finding: :httpd's default binds :any and the fixture served /tmp)
+    root = Path.join(System.tmp_dir!(), "ash_hooks_http_test_#{System.unique_integer()}")
+    File.mkdir_p!(Path.join(root, "logs"))
+    File.write!(Path.join(root, "small.json"), ~s({"ok": true}))
+    File.write!(Path.join(root, "big.json"), String.duplicate("x", @big_bytes))
 
     {:ok, pid} =
       :inets.start(:httpd, [
         {:port, 0},
+        {:bind_address, ~c"127.0.0.1"},
         {:server_name, ~c"ash_hooks_test"},
+        # document_root must be a CHARLIST — a binary root serves only 500s
         {:server_root, ~c"/tmp"},
-        {:document_root, ~c"/tmp"},
+        {:document_root, String.to_charlist(root)},
         {:mime_types, [{~c"json", ~c"application/json"}]}
       ])
 
@@ -32,8 +38,7 @@ defmodule AshHooks.HttpTest do
 
     on_exit(fn ->
       :inets.stop(:httpd, pid)
-      File.rm_rf("/tmp/ash_hooks_http_test_small.json")
-      File.rm_rf("/tmp/ash_hooks_http_test_big.json")
+      File.rm_rf(root)
     end)
 
     %{base: "http://127.0.0.1:#{port}", opts: [validate_destination: false]}
@@ -60,7 +65,7 @@ defmodule AshHooks.HttpTest do
   describe "status + body round-trip" do
     test "a 200 streams its full body with status and headers", %{base: base, opts: opts} do
       assert {:ok, %{status: 200, headers: headers, body: body}} =
-               Httpc.request(:get, base <> "/ash_hooks_http_test_small.json", %{}, nil, opts)
+               Httpc.request(:get, base <> "/small.json", %{}, nil, opts)
 
       assert body == ~s({"ok": true})
       assert List.keyfind(headers, "content-type", 0) |> elem(1) =~ "application/json"
@@ -80,7 +85,7 @@ defmodule AshHooks.HttpTest do
       assert {:ok, %{status: 200, body: body}} =
                Httpc.request(
                  :get,
-                 base <> "/ash_hooks_http_test_big.json",
+                 base <> "/big.json",
                  %{},
                  nil,
                  Keyword.put(opts, :max_body_bytes, @cap)
@@ -91,7 +96,7 @@ defmodule AshHooks.HttpTest do
 
     test "the default bound applies without an explicit opt", %{base: base, opts: opts} do
       assert {:ok, %{body: body}} =
-               Httpc.request(:get, base <> "/ash_hooks_http_test_big.json", %{}, nil, opts)
+               Httpc.request(:get, base <> "/big.json", %{}, nil, opts)
 
       assert byte_size(body) <= 65_536
     end
