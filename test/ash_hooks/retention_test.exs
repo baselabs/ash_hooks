@@ -239,6 +239,37 @@ defmodule AshHooks.RetentionTest do
       assert {:error, error} = AshHooks.Delivery.prune(NoTimestamps, older_than: @old)
       assert Exception.message(error) =~ "timestamps"
     end
+
+    test "a destroy that errors surfaces the bulk error (never a silent zero)" do
+      on_exit(fn ->
+        Repo.query!("""
+        CREATE TABLE IF NOT EXISTS #{@deliveries} (
+          id TEXT PRIMARY KEY, event_uuid TEXT NOT NULL, event_type TEXT NOT NULL,
+          payload BLOB NOT NULL, endpoint_id TEXT NOT NULL, subscription_id TEXT,
+          signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
+          attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
+          response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
+          inserted_at TEXT, updated_at TEXT
+        )
+        """)
+
+        Repo.query!(
+          "CREATE UNIQUE INDEX IF NOT EXISTS #{@deliveries}_unique_delivery_index ON #{@deliveries} (endpoint_id, event_uuid)"
+        )
+      end)
+
+      Repo.query!(
+        "CREATE TRIGGER IF NOT EXISTS #{@deliveries}_no_delete BEFORE DELETE ON #{@deliveries} BEGIN SELECT RAISE(ABORT, 'no'); END"
+      )
+
+      on_exit(fn ->
+        Repo.query!("DROP TRIGGER IF EXISTS #{@deliveries}_no_delete")
+      end)
+
+      delivery_row!(:succeeded, @old, "dlv-old-trigger")
+
+      assert {:error, _reason} = AshHooks.Delivery.prune(DeliveryLedger, older_than: @old)
+    end
   end
 
   describe "Ingress.redact_payload/4" do

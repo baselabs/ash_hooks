@@ -130,7 +130,10 @@ defmodule AshHooks.DeliveryTest do
 
     @impl true
     def request(method, url, headers, body, opts) do
-      Agent.get(__MODULE__, fn {_, _, on_call} -> if on_call, do: on_call.(), else: :ok end)
+      # the hook runs in the CALLER (the delivery driver's process) — an
+      # on_call raise must surface to the driver's rescue, not kill the agent
+      on_call = Agent.get(__MODULE__, fn {_, _, on_call} -> on_call end)
+      if on_call, do: on_call.(), else: :ok
 
       Agent.update(__MODULE__, fn
         {[next | rest], calls, on_call} ->
@@ -156,6 +159,15 @@ defmodule AshHooks.DeliveryTest do
     def call(body), do: "raw:" <> body
   end
 
+  # {m,f} secret resolver for the tuple-resolver seam: a compile-time-fixed
+  # secret so the test can verify the envelope it produced
+  defmodule TupleResolver do
+    @moduledoc false
+    @resolved "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))
+    def call("acme-main"), do: {:ok, @resolved}
+    def resolved, do: @resolved
+  end
+
   use ExUnit.Case, async: false
 
   alias AshHooks.Delivery, as: DeliveryRuntime
@@ -171,6 +183,20 @@ defmodule AshHooks.DeliveryTest do
   @secret "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))
 
   setup_all do
+    create_tables!()
+
+    on_exit(fn ->
+      Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
+      Repo.query!("DROP TABLE IF EXISTS #{@subscriptions}")
+      Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
+    end)
+
+    :ok
+  end
+
+  # the drop-injection tests (reconcile failures) drop a table mid-run and
+  # must restore the schema before the next test's DELETE FROM
+  defp create_tables! do
     Repo.query!("""
     CREATE TABLE IF NOT EXISTS #{@endpoints} (
       id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
@@ -198,14 +224,6 @@ defmodule AshHooks.DeliveryTest do
     Repo.query!(
       "CREATE UNIQUE INDEX IF NOT EXISTS #{@deliveries}_unique_delivery_index ON #{@deliveries} (endpoint_id, event_uuid)"
     )
-
-    on_exit(fn ->
-      Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
-      Repo.query!("DROP TABLE IF EXISTS #{@subscriptions}")
-      Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
-    end)
-
-    :ok
   end
 
   setup do
@@ -1168,6 +1186,471 @@ defmodule AshHooks.DeliveryTest do
       {:ok, _} = Dispatcher.dispatch(Emitter, :order_paid, event)
 
       assert hd(Ash.read!(Delivery, authorize?: false)).signing_mode == :dual
+    end
+  end
+
+  # ────────────────── coverage: fetch/gate/reconcile arms ──────────────────
+
+  describe "row fetch arms" do
+    test "args without ids are a completed delivery (:ok, no send)" do
+      assert :ok = DeliveryRuntime.run(%{}, config())
+      assert HttpDouble.calls() == []
+    end
+
+    test "ids matching no row are :missing — the durable row is the record" do
+      assert :ok =
+               DeliveryRuntime.run(
+                 %{"endpoint_id" => Ash.UUID.generate(), "event_uuid" => Ash.UUID.generate()},
+                 config()
+               )
+
+      assert HttpDouble.calls() == []
+    end
+
+    test "a row read that errors surfaces the error" do
+      on_exit(fn -> create_tables!() end)
+      Repo.query!("DROP TABLE #{@deliveries}")
+
+      assert {:error, _reason} =
+               DeliveryRuntime.run(
+                 %{"endpoint_id" => "ep", "event_uuid" => "ev"},
+                 config()
+               )
+
+      create_tables!()
+    end
+  end
+
+  describe "a gone endpoint" do
+    test "a row whose endpoint was deleted dead-letters as endpoint_gone" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+      Repo.query!("DELETE FROM #{@endpoints} WHERE id = ?", [ep.id])
+
+      assert :ok = DeliveryRuntime.run(args(row), config())
+
+      final = row!(row.id)
+      assert final.status == :dead_letter
+      assert final.last_error == "endpoint_gone"
+      assert HttpDouble.calls() == []
+    end
+  end
+
+  describe "a contended row" do
+    test "mark_sending matching zero rows snoozes 1 (another executor owns the transition)" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      # flip the row OUT of the mark_sending gate from inside the send-time
+      # check — the same window a concurrent executor's transition occupies
+      contending =
+        Keyword.put(config(), :ssrf_check, fn _url ->
+          Repo.query!("UPDATE #{@deliveries} SET status = 'succeeded' WHERE id = ?", [row.id])
+          true
+        end)
+
+      assert {:snooze, 1} = DeliveryRuntime.run(args(row), contending)
+
+      # no adapter call fired — the transition was never ours
+      assert HttpDouble.calls() == []
+    end
+  end
+
+  describe "an adapter crash" do
+    test "a raising adapter classifies as a retryable transport failure" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      HttpDouble.on_call(fn -> raise ArgumentError, "adapter exploded" end)
+
+      assert {:snooze, _delay} = DeliveryRuntime.run(args(row), config())
+
+      final = row!(row.id)
+      assert final.status == :failed_retryable
+      assert final.last_error == "adapter_crash"
+    end
+  end
+
+  describe "reconcile failures surface (never swallowed)" do
+    test "a failed mark_succeeded returns the error for a job retry" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      on_exit(fn -> create_tables!() end)
+      HttpDouble.on_call(fn -> Repo.query!("DROP TABLE #{@deliveries}") end)
+
+      assert {:error, {:reconcile_failed, _reason}} =
+               DeliveryRuntime.run(args(row), config())
+
+      create_tables!()
+    end
+
+    test "a failed mark_send_failed on the retry path returns the error" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      HttpDouble.set_responses([{:ok, %{status: 429, headers: []}}])
+      on_exit(fn -> create_tables!() end)
+      HttpDouble.on_call(fn -> Repo.query!("DROP TABLE #{@deliveries}") end)
+
+      assert {:error, {:reconcile_failed, _reason}} = DeliveryRuntime.run(args(row), config())
+
+      create_tables!()
+    end
+
+    test "a failed dead-letter write returns the error" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      HttpDouble.set_responses([{:ok, %{status: 404, headers: []}}])
+      on_exit(fn -> create_tables!() end)
+      HttpDouble.on_call(fn -> Repo.query!("DROP TABLE #{@deliveries}") end)
+
+      assert {:error, {:reconcile_failed, _reason}} = DeliveryRuntime.run(args(row), config())
+
+      create_tables!()
+    end
+
+    test "a failed durable disable on 410 surfaces :disable_failed" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      HttpDouble.set_responses([{:ok, %{status: 410, headers: []}}])
+      on_exit(fn -> create_tables!() end)
+      HttpDouble.on_call(fn -> Repo.query!("DROP TABLE #{@endpoints}") end)
+
+      assert {:error, {:disable_failed, _other}} = DeliveryRuntime.run(args(row), config())
+
+      create_tables!()
+    end
+  end
+
+  describe "secret resolution shapes" do
+    test "an {m, f} resolver tuple resolves through apply/3" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok =
+               DeliveryRuntime.run(args(row), config(secret_resolver: {TupleResolver, :call}))
+
+      [call] = HttpDouble.calls()
+
+      assert {:ok, _} =
+               AshHooks.Signing.verify(@payload, call.headers, TupleResolver.resolved(),
+                 now: String.to_integer(call.headers["webhook-timestamp"])
+               )
+    end
+
+    test "a resolver returning an invalid shape is a secret_resolution failure (retryable)" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert {:snooze, _delay} =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(secret_resolver: fn _ref -> {:ok, nil} end)
+               )
+
+      assert row!(row.id).last_error == "secret_resolution"
+    end
+
+    test "an endpoint with an empty secret_ref fails :no_secret (retryable, fixable)" do
+      ep_id = Ash.UUID.generate()
+
+      Repo.query!(
+        "INSERT INTO #{@endpoints} (id, url, status, secret_ref) VALUES (?, ?, 'enabled', '')",
+        [ep_id, "https://hooks.example.test/accept"]
+      )
+
+      row = pending_row!(%{id: ep_id})
+
+      assert {:snooze, _delay} = DeliveryRuntime.run(args(row), config())
+      assert row!(row.id).last_error == "no_secret"
+    end
+  end
+
+  describe "signing option wiring" do
+    test "a whsk_-prefixed base secret signs through the whsk slot (v1a)" do
+      {whsk, whpk} = AshHooks.Signing.generate_signing_keypair()
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(secret_resolver: fn "acme-main" -> {:ok, whsk} end)
+               )
+
+      [call] = HttpDouble.calls()
+
+      assert {:ok, _} =
+               AshHooks.Signing.verify(@payload, call.headers, whpk,
+                 now: String.to_integer(call.headers["webhook-timestamp"])
+               )
+    end
+
+    test "previous_secret_ref resolves into the previous slots (whsk and whsec)" do
+      for prefix <- ["whsk_", "whsec_"] do
+        ep =
+          Ash.create!(
+            Endpoint,
+            %{
+              url: "https://hooks.example.test/accept",
+              secret_ref: "acme-main",
+              previous_secret_ref: "acme-prev"
+            },
+            authorize?: false
+          )
+
+        row = pending_row!(ep)
+
+        assert :ok =
+                 DeliveryRuntime.run(
+                   args(row),
+                   config(
+                     secret_resolver: fn
+                       "acme-main" ->
+                         {:ok, @secret}
+
+                       "acme-prev" ->
+                         {:ok, prefix <> Base.encode64(:crypto.strong_rand_bytes(32))}
+                     end
+                   )
+                 )
+
+        assert row!(row.id).status == :succeeded
+      end
+    end
+
+    test "legacy plus legacy_previous refs emit the dual envelope off both" do
+      legacy = "legacy-secret-material-1"
+      legacy_prev = "legacy-secret-material-0"
+
+      ep =
+        Ash.create!(
+          Endpoint,
+          %{
+            url: "https://hooks.example.test/accept",
+            secret_ref: "acme-main",
+            legacy_secret_ref: "acme-legacy",
+            legacy_previous_secret_ref: "acme-legacy-prev"
+          },
+          authorize?: false
+        )
+
+      Ash.create!(
+        Subscription,
+        %{endpoint_id: ep.id, event_types: ["order_paid"], signing_mode: :dual},
+        authorize?: false
+      )
+
+      {:ok, event} = Event.new(type: :order_paid, payload: @payload)
+      {:ok, _} = Dispatcher.dispatch(Emitter, :order_paid, event)
+      row = hd(Ash.read!(Delivery, authorize?: false))
+
+      assert :ok =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(
+                   secret_resolver: fn
+                     "acme-main" -> {:ok, @secret}
+                     "acme-legacy" -> {:ok, legacy}
+                     "acme-legacy-prev" -> {:ok, legacy_prev}
+                   end
+                 )
+               )
+
+      [call] = HttpDouble.calls()
+      assert call.headers["x-webhook-signature"]
+      assert call.headers["webhook-signature"]
+    end
+
+    test "a :legacy row without a legacy ref is a caught :signing_failed retry" do
+      ep = endpoint!()
+
+      row =
+        Ash.create!(
+          Delivery,
+          %{
+            event_uuid: Ash.UUID.generate(),
+            event_type: "order_paid",
+            payload: @payload,
+            endpoint_id: ep.id,
+            signing_mode: :legacy
+          },
+          action: :dispatch,
+          authorize?: false
+        )
+
+      assert {:snooze, _delay} = DeliveryRuntime.run(args(row), config())
+      assert row!(row.id).last_error == "signing_failed"
+    end
+  end
+
+  describe "the Retry-After grammar" do
+    @now ~U[2026-01-01 00:00:00Z]
+    @day 86_400
+
+    defp retry_run(header_value) do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      HttpDouble.set_responses([
+        {:ok, %{status: 429, headers: [{"retry-after", header_value}]}}
+      ])
+
+      result =
+        DeliveryRuntime.run(
+          args(row),
+          config(now: fn -> @now end, retry_after_cap_seconds: 100_000_000)
+        )
+
+      {result, row!(row.id)}
+    end
+
+    test "every RFC-1123 month parses to its exact day offset" do
+      # 2026-01-01 is a Thursday; the weekday token is not validated by design
+      months = [
+        {"Feb", 31},
+        {"Mar", 59},
+        {"Apr", 90},
+        {"May", 120},
+        {"Jun", 151},
+        {"Jul", 181},
+        {"Aug", 212},
+        {"Sep", 243},
+        {"Oct", 273},
+        {"Nov", 304},
+        {"Dec", 334}
+      ]
+
+      for {month, days} <- months do
+        expected = days * @day
+        assert {{:snooze, ^expected}, _row} = retry_run("Thu, 01 #{month} 2026 00:00:00 GMT")
+      end
+    end
+
+    test "an unknown month name falls back to backoff" do
+      assert {{:snooze, delay}, _row} = retry_run("Thu, 01 Xyz 2026 00:00:00 GMT")
+      assert delay in 4..7
+    end
+
+    test "an ISO-8601 Retry-After parses" do
+      expected = 31 * @day
+      assert {{:snooze, ^expected}, _row} = retry_run("2026-02-01T00:00:00Z")
+    end
+
+    test "a malformed hms shape falls back to backoff" do
+      assert {{:snooze, delay}, _row} = retry_run("Thu, 01 Jan 2026 1200 GMT")
+      assert delay in 4..7
+    end
+
+    test "a non-integer hms component falls back to backoff" do
+      assert {{:snooze, delay}, _row} = retry_run("Thu, 01 Jan 2026 12x:00:00 GMT")
+      assert delay in 4..7
+    end
+
+    test "a 429 with NO retry-after header falls back to backoff" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      HttpDouble.set_responses([{:ok, %{status: 429, headers: [{"content-type", "text/plain"}]}}])
+
+      assert {:snooze, delay} = DeliveryRuntime.run(args(row), config())
+      assert delay in 4..7
+    end
+
+    test "a 429 response with no headers at all falls back to backoff" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      HttpDouble.set_responses([{:ok, %{status: 429}}])
+
+      assert {:snooze, delay} = DeliveryRuntime.run(args(row), config())
+      assert delay in 4..7
+      assert row!(row.id).last_error == "http_429"
+    end
+  end
+
+  describe "summarize/2 kind vocabulary (binary family)" do
+    test "octet-stream is allowlisted binary" do
+      assert DeliveryRuntime.summarize(200, [{"content-type", "application/octet-stream"}]) ==
+               "200 binary token=application/octet-stream"
+    end
+
+    test "image/, audio/, video/, and bare application/ types are unallowlisted binary" do
+      for type <- ["image/png", "audio/ogg", "video/mp4", "application/foo"] do
+        assert DeliveryRuntime.summarize(200, [{"content-type", type}]) ==
+                 "200 binary token=other"
+      end
+    end
+
+    test "an unmatched type family is :other" do
+      assert DeliveryRuntime.summarize(200, [{"content-type", "foo/bar"}]) ==
+               "200 other token=other"
+    end
+  end
+
+  describe "redact/1 edges" do
+    test "a non-binary body redacts to nil (no snippet)" do
+      assert DeliveryRuntime.redact(nil) == nil
+      assert DeliveryRuntime.redact(42) == nil
+    end
+
+    test "a malformed percent escape never raises and never materializes invalid UTF-8" do
+      # "%E0%A4%A" — an incomplete escape URI.decode would raise on; the
+      # floor keeps the input as-is instead
+      assert DeliveryRuntime.redact("token %E0%A4%A tail") == "token %E0%A4%A tail"
+    end
+
+    test "a surrogate \\u escape keeps its escape form instead of aborting the layer" do
+      kept = DeliveryRuntime.redact("a \\uD800 b")
+
+      assert kept =~ "\\uD800"
+      assert kept =~ "a"
+    end
+
+    test "a deeply layered disguise exhausts the decode bound, not the memory" do
+      # 20 %-layers over a marker-bearing seed — each pass strips two; the
+      # fixpoint's 8-pass bound is the brake, so material survives the
+      # decode layers and still dies to the marker pattern
+      layered =
+        Enum.reduce(1..20, "tok%25n whsec_material1", fn _, acc ->
+          String.replace(acc, "%", "%25")
+        end)
+
+      assert String.contains?(layered, "%")
+      reddited = DeliveryRuntime.redact(layered)
+      assert reddited =~ "[redacted]"
+    end
+  end
+
+  describe "snippet redactor fault classes" do
+    test "an EXITING snippet_redactor degrades to the sanitized summary" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(snippet_capture: true, snippet_redactor: fn _body -> exit(:boom) end)
+               )
+
+      assert row!(row.id).response_snippet == "200 other token=other"
+    end
+
+    test "a THROWING snippet_redactor degrades to the sanitized summary" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(snippet_capture: true, snippet_redactor: fn _body -> throw(:x) end)
+               )
+
+      assert row!(row.id).response_snippet == "200 other token=other"
     end
   end
 end
