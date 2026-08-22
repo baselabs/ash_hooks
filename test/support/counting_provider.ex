@@ -48,9 +48,15 @@ defmodule AshHooks.CountingProvider do
       send(pid, {:handled, event_type, payload})
     end
 
-    case :persistent_term.get({__MODULE__, :outcome}, :ok) do
+    case resolve_outcome(:persistent_term.get({__MODULE__, :outcome}, :ok)) do
       :ok -> {:ok, %{type: event_type, payload: payload}}
       {:error, kind, term} when kind in [:retry, :permanent] -> {:error, kind, term}
+      {:error, term} -> {:error, term}
     end
   end
+
+  # a 0-arity fn outcome lets a test run arbitrary effects mid-handle (row
+  # mutation for the stale-token fence, raises for the re-drive crash path)
+  defp resolve_outcome(fun) when is_function(fun, 0), do: fun.()
+  defp resolve_outcome(other), do: other
 end

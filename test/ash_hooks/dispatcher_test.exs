@@ -105,6 +105,10 @@ defmodule AshHooks.DispatcherTest do
       resource(AshHooks.DispatcherTest.Subscription)
       resource(AshHooks.DispatcherTest.Delivery)
       resource(AshHooks.DispatcherTest.Emitter)
+      resource(AshHooks.DispatcherTest.BareEmitter)
+      resource(AshHooks.DispatcherTest.NonResourceDeliveriesEmitter)
+      resource(AshHooks.DispatcherTest.ThrowingDeliveryEmitter)
+      resource(AshHooks.DispatcherTest.ThrowingDelivery)
     end
   end
 
@@ -114,14 +118,25 @@ defmodule AshHooks.DispatcherTest do
   alias AshHooks.Event
   alias AshHooks.Test.Repo
 
-  require Ash.Query
-
   @endpoints "dispatcher_test_endpoints"
   @subscriptions "dispatcher_test_subscriptions"
   @deliveries "dispatcher_test_deliveries"
   @payload Jason.encode!(%{"order" => 1, "total" => 42})
 
   setup_all do
+    create_tables!()
+
+    on_exit(fn ->
+      Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
+      Repo.query!("DROP TABLE IF EXISTS #{@subscriptions}")
+      Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
+    end)
+
+    :ok
+  end
+
+  # the drop-injection tests restore the schema before the next test's sweep
+  defp create_tables! do
     Repo.query!("""
     CREATE TABLE IF NOT EXISTS #{@endpoints} (
       id TEXT PRIMARY KEY,
@@ -164,14 +179,6 @@ defmodule AshHooks.DispatcherTest do
     Repo.query!(
       "CREATE UNIQUE INDEX IF NOT EXISTS #{@deliveries}_unique_delivery_index ON #{@deliveries} (endpoint_id, event_uuid)"
     )
-
-    on_exit(fn ->
-      Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
-      Repo.query!("DROP TABLE IF EXISTS #{@subscriptions}")
-      Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
-    end)
-
-    :ok
   end
 
   setup do
@@ -660,6 +667,362 @@ defmodule AshHooks.DispatcherTest do
       assert {:error, _reason} =
                Dispatcher.dispatch(Emitter, :order_paid, :not_an_event, enqueue: &enqueue_ok/2)
 
+      assert delivery_rows() == []
+    end
+  end
+
+  # ────────────────── coverage: fault arms + enqueue seam shapes ──────────────────
+
+  defmodule Enqueuer do
+    @moduledoc false
+    def ok(_delivery, _event), do: :ok
+  end
+
+  defmodule BareEmitter do
+    @moduledoc false
+    # outbound with NO resource modules — resolve_module must fail closed
+    use Ash.Resource,
+      domain: AshHooks.DispatcherTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks]
+
+    sqlite do
+      table("dispatcher_test_emitters")
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+    end
+
+    actions do
+      defaults([:read, :create])
+      default_accept(:*)
+    end
+
+    webhooks do
+      outbound :order_paid do
+      end
+    end
+  end
+
+  describe "DSL module resolution fail-closed" do
+    test "an outbound declaration without module opts errors before any write" do
+      assert {:error, error} = Dispatcher.dispatch(BareEmitter, :order_paid, event!())
+      assert Exception.message(error) =~ "missing its :subscriptions"
+      assert delivery_rows() == []
+    end
+  end
+
+  describe "storage fault arms" do
+    test "a subscription-set read error is a global error before any row" do
+      on_exit(fn -> create_tables!() end)
+      Repo.query!("DROP TABLE #{@subscriptions}")
+
+      assert {:error, _error} = Dispatcher.dispatch(Emitter, :order_paid, event!())
+    end
+
+    test "an upsert error is an isolated :endpoint_error" do
+      on_exit(fn -> create_tables!() end)
+      Repo.query!("DROP TABLE #{@deliveries}")
+
+      good = endpoint!()
+      subscription!(good.id, event_types: ["order_paid"])
+
+      assert {:ok, [entry]} =
+               Dispatcher.dispatch(Emitter, :order_paid, event!(), enqueue: &enqueue_ok/2)
+
+      assert entry.status == :endpoint_error
+      assert entry.endpoint_id == good.id
+    end
+  end
+
+  describe "repair CAS fault arms" do
+    test "a claim bulk error is :endpoint_error, never a mislabeled :duplicate" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+      ev = event!()
+
+      {:ok, _} = Dispatcher.dispatch(Emitter, :order_paid, ev, enqueue: &enqueue_error/2)
+
+      assert [%{status: :enqueue_failed}] = delivery_rows()
+
+      Repo.query!(
+        "CREATE TRIGGER dispatch_abort_updates BEFORE UPDATE ON #{@deliveries} WHEN NEW.status != OLD.status BEGIN SELECT RAISE(ABORT, 'blocked'); END"
+      )
+
+      on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS dispatch_abort_updates") end)
+
+      assert {:ok, [entry]} =
+               Dispatcher.dispatch(Emitter, :order_paid, ev, enqueue: &enqueue_ok/2)
+
+      assert entry.status == :endpoint_error
+      assert entry.endpoint_id == ep.id
+      assert [%{status: :enqueue_failed}] = delivery_rows()
+    end
+
+    test "a won claim whose row vanishes before reload is :endpoint_error" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+      ev = event!()
+
+      {:ok, _} = Dispatcher.dispatch(Emitter, :order_paid, ev, enqueue: &enqueue_error/2)
+
+      # the requeue CAS commits (enqueue_failed -> pending) and the row is
+      # deleted in the same statement's AFTER phase — reload finds nothing
+      Repo.query!(
+        "CREATE TRIGGER dispatch_del_after_requeue AFTER UPDATE ON #{@deliveries} WHEN NEW.status = 'pending' AND OLD.status = 'enqueue_failed' BEGIN DELETE FROM #{@deliveries} WHERE id = NEW.id; END"
+      )
+
+      on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS dispatch_del_after_requeue") end)
+
+      assert {:ok, [entry]} =
+               Dispatcher.dispatch(Emitter, :order_paid, ev, enqueue: &enqueue_ok/2)
+
+      assert entry.status == :endpoint_error
+      assert entry.endpoint_id == ep.id
+      assert delivery_rows() == []
+    end
+  end
+
+  describe "mark + enqueue failure composition" do
+    test "an enqueue failure whose mark ALSO fails records :mark_failed" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+
+      # status-CHANGE discrimination: the no-touch upsert's ON CONFLICT DO
+      # UPDATE (status unchanged) passes; the mark's status flip aborts
+      Repo.query!(
+        "CREATE TRIGGER dispatch_abort_marks BEFORE UPDATE ON #{@deliveries} WHEN NEW.status != OLD.status BEGIN SELECT RAISE(ABORT, 'blocked'); END"
+      )
+
+      on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS dispatch_abort_marks") end)
+
+      assert {:ok, [entry]} =
+               Dispatcher.dispatch(Emitter, :order_paid, event!(), enqueue: &enqueue_error/2)
+
+      assert entry.status == :mark_failed
+      assert elem(entry.error, 0) == :enqueue
+      # the row keeps its pre-mark state (the trigger blocked the write)
+      assert [%{status: :pending}] = delivery_rows()
+    end
+
+    test "a row flipped off :pending mid-enqueue marks :stale_row (:mark_failed)" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+
+      assert {:ok, [entry]} =
+               Dispatcher.dispatch(
+                 Emitter,
+                 :order_paid,
+                 event!(),
+                 enqueue: fn delivery, _event ->
+                   Repo.query!(
+                     "UPDATE #{@deliveries} SET status = 'sending' WHERE id = ?",
+                     [delivery.id]
+                   )
+
+                   {:error, :queue_down}
+                 end
+               )
+
+      assert entry.status == :mark_failed
+      assert entry.error == {:enqueue, "queue_down", :mark, :stale_row}
+      assert [%{status: :sending}] = delivery_rows()
+    end
+  end
+
+  describe "enqueue seam shapes" do
+    test "an {m, f} enqueuer applies through apply/3" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+
+      assert {:ok, [%{status: :created}]} =
+               Dispatcher.dispatch(Emitter, :order_paid, event!(), enqueue: {Enqueuer, :ok})
+    end
+
+    test "an invalid enqueuer value fails the enqueue (isolated)" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+
+      assert {:ok, [entry]} =
+               Dispatcher.dispatch(Emitter, :order_paid, event!(), enqueue: :bogus)
+
+      assert entry.status == :enqueue_failed
+      assert entry.error == :invalid_enqueuer
+    end
+
+    test "an enqueuer returning a non-result shape is an invalid enqueue result" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+
+      assert {:ok, [entry]} =
+               Dispatcher.dispatch(Emitter, :order_paid, event!(), enqueue: fn _, _ -> :wat end)
+
+      assert entry.status == :enqueue_failed
+      assert entry.error == :invalid_enqueue_result
+    end
+
+    test "a non-atom exit reason classifies contents-free; a binary throw keeps its token" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+
+      assert {:ok, [exit_entry]} =
+               Dispatcher.dispatch(
+                 Emitter,
+                 :order_paid,
+                 event!(),
+                 enqueue: fn _, _ -> exit({:busy, :x}) end
+               )
+
+      assert exit_entry.status == :enqueue_failed
+      assert exit_entry.error == "exit: unclassified"
+
+      assert {:ok, [throw_entry]} =
+               Dispatcher.dispatch(
+                 Emitter,
+                 :order_paid,
+                 event!(),
+                 enqueue: fn _, _ -> throw("boom") end
+               )
+
+      assert throw_entry.error == "throw: boom"
+    end
+  end
+
+  defmodule NonResourceDeliveriesEmitter do
+    @moduledoc false
+    # resolve_module accepts any atom — a non-resource deliveries module
+    # makes the per-endpoint machine raise, and the fanout must contain it
+    use Ash.Resource,
+      domain: AshHooks.DispatcherTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks]
+
+    sqlite do
+      table("dispatcher_test_emitters")
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+    end
+
+    actions do
+      defaults([:read, :create])
+      default_accept(:*)
+    end
+
+    webhooks do
+      outbound :order_paid do
+        subscriptions(AshHooks.DispatcherTest.Subscription)
+        deliveries(AshHooks.DispatcherTest.NotAResource)
+      end
+    end
+  end
+
+  # a resource-level change that THROWS on the create path — the fault
+  # escapes Ash.create inside dispatch_one but OUTSIDE the enqueuer's own
+  # catch (the fanout-isolation belt for storage-side throws). atomic/3
+  # keeps the extension's gated updates atomic-analyzable (no DSL warnings)
+  defmodule ThrowingCreateChange do
+    @moduledoc false
+    use Ash.Resource.Change
+
+    @impl true
+    def change(_changeset, _opts, _ctx), do: throw(:from_change)
+
+    @impl true
+    def atomic(changeset, _opts, _ctx), do: {:ok, changeset}
+  end
+
+  defmodule ThrowingDelivery do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.DispatcherTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.OutboundDelivery]
+
+    sqlite do
+      table("dispatcher_test_deliveries")
+      repo(AshHooks.Test.Repo)
+    end
+
+    changes do
+      change({ThrowingCreateChange, []})
+    end
+
+    actions do
+      defaults([:read])
+    end
+  end
+
+  defmodule ThrowingDeliveryEmitter do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.DispatcherTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks]
+
+    sqlite do
+      table("dispatcher_test_emitters")
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+    end
+
+    actions do
+      defaults([:read, :create])
+      default_accept(:*)
+    end
+
+    webhooks do
+      outbound :order_paid do
+        subscriptions(AshHooks.DispatcherTest.Subscription)
+        deliveries(AshHooks.DispatcherTest.ThrowingDelivery)
+      end
+    end
+  end
+
+  defmodule NotAResource do
+    @moduledoc false
+    # a plain module — not an Ash resource
+    def anything, do: :ok
+  end
+
+  describe "fanout crash isolation" do
+    test "a deliveries resource whose change THROWS is contained as :endpoint_error" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+
+      assert {:ok, [entry]} =
+               Dispatcher.dispatch(
+                 ThrowingDeliveryEmitter,
+                 :order_paid,
+                 event!(),
+                 enqueue: &enqueue_ok/2
+               )
+
+      assert entry.status == :endpoint_error
+      assert entry.error == "throw: unclassified"
+    end
+
+    test "a deliveries module that is not a resource is contained as :endpoint_error" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+
+      assert {:ok, [entry]} =
+               Dispatcher.dispatch(
+                 NonResourceDeliveriesEmitter,
+                 :order_paid,
+                 event!(),
+                 enqueue: &enqueue_ok/2
+               )
+
+      assert entry.status == :endpoint_error
+      assert is_binary(entry.error)
       assert delivery_rows() == []
     end
   end

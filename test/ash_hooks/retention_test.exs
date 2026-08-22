@@ -104,7 +104,7 @@ defmodule AshHooks.RetentionTest do
 
   use ExUnit.Case, async: false
 
-  alias AshHooks.{Delivery, Ingress}
+  alias AshHooks.Ingress
   alias AshHooks.Test.Repo
 
   @ledgers "retention_test_ledgers"
@@ -238,6 +238,18 @@ defmodule AshHooks.RetentionTest do
     test "a resource without timestamps returns an error tuple naming the fix (Ingress.prune/2 contract)" do
       assert {:error, error} = AshHooks.Delivery.prune(NoTimestamps, older_than: @old)
       assert Exception.message(error) =~ "timestamps"
+    end
+
+    test "an Ingress.prune destroy that errors surfaces the bulk error too" do
+      Repo.query!(
+        "CREATE TRIGGER IF NOT EXISTS #{@ledgers}_no_delete BEFORE DELETE ON #{@ledgers} BEGIN SELECT RAISE(ABORT, 'no'); END"
+      )
+
+      on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS #{@ledgers}_no_delete") end)
+
+      row!(@ledgers, :processed, @old, "evt-old-trigger")
+
+      assert {:error, _reason} = Ingress.prune(Ledger, older_than: @old)
     end
 
     test "a destroy that errors surfaces the bulk error (never a silent zero)" do

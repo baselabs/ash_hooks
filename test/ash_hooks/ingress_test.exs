@@ -25,7 +25,7 @@ defmodule AshHooks.IngressTest do
     end
 
     attributes do
-      attribute(:account_id, :string, allow_nil?: false)
+      attribute(:account_id, :string, allow_nil?: false, constraints: [max_length: 16])
     end
 
     actions do
@@ -55,10 +55,52 @@ defmodule AshHooks.IngressTest do
         secret {AshHooks.IngressTest, :secret, []}
         replay_window_seconds(300)
       end
+
+      inbound :appenv do
+        provider(AshHooks.CountingProvider)
+        secret {:app_env, [:ingress_app_env_test, :webhook_secret]}
+      end
+
+      inbound :badfun do
+        provider(AshHooks.CountingProvider)
+        secret fn -> {:error, :gone} end
+      end
+
+      inbound :perconn do
+        provider(AshHooks.IngressTest.PerConnectionProvider)
+        secret {AshHooks.IngressTest, :secret, []}
+      end
     end
 
     def event_id(%{"id" => id}) when is_binary(id), do: {:ok, id}
     def event_id(_payload), do: :error
+  end
+
+  # A per-CONNECTION secret provider: the secret arrives with the request
+  # context's connection (Plug.Conn in a real app; a map here)
+  defmodule PerConnectionProvider do
+    @moduledoc false
+    @behaviour AshHooks.Provider
+    alias AshHooks.Provider
+
+    @impl Provider
+    def webhook_secret_scope, do: :per_connection
+
+    @impl Provider
+    def webhook_signing_secret(%{secret: secret}) when is_binary(secret) and secret != "",
+      do: {:ok, secret}
+
+    def webhook_signing_secret(_other), do: {:error, :no_webhook_secret}
+
+    @impl Provider
+    def verify_signature(raw_body, ctx, secret),
+      do: Provider.default_verify_signature(raw_body, ctx.signature, secret, :hmac_sha256)
+
+    @impl Provider
+    defdelegate parse_event_type(payload), to: AshHooks.CountingProvider
+
+    @impl Provider
+    defdelegate handle_event(type, payload), to: AshHooks.CountingProvider
   end
 
   defmodule Domain do
@@ -74,6 +116,7 @@ defmodule AshHooks.IngressTest do
 
   alias AshHooks.CountingProvider
   alias AshHooks.Errors.Invalid
+  alias AshHooks.Errors.Invalid.NoWebhookSecret
   alias AshHooks.Ingress
   alias AshHooks.Test.Repo
 
@@ -607,5 +650,238 @@ defmodule AshHooks.IngressTest do
 
       assert poison_status == [["claimed"]]
     end
+  end
+
+  # ────────────── coverage: secret sources, shapes, fault arms ──────────────
+
+  defp with_trigger(name, when_clause) do
+    Repo.query!(
+      "CREATE TRIGGER #{name} BEFORE UPDATE ON #{@table} #{when_clause} BEGIN SELECT RAISE(ABORT, 'blocked'); END"
+    )
+
+    on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS #{name}") end)
+  end
+
+  describe "secret resolution sources" do
+    test "an {:app_env, path} secret resolves from Application env" do
+      on_exit(fn -> Application.delete_env(:ingress_app_env_test, :webhook_secret) end)
+      Application.put_env(:ingress_app_env_test, :webhook_secret, @secret)
+
+      raw = body("evt_appenv")
+      assert {:ok, :created, _} = Ingress.ingest(Ledger, :appenv, raw, ctx(raw))
+    end
+
+    test "a missing/empty app_env value fails closed as NoWebhookSecret" do
+      raw = body("evt_appenv_missing")
+
+      assert {:error, %NoWebhookSecret{}} =
+               Ingress.ingest(Ledger, :appenv, raw, ctx(raw, signature: "nope"))
+    end
+
+    test "a 0-arity fun secret returning a non-ok shape fails closed" do
+      raw = body("evt_badfun")
+      assert {:error, %NoWebhookSecret{}} = Ingress.ingest(Ledger, :badfun, raw, ctx(raw))
+    end
+
+    test "a per-connection provider takes the secret from the request context" do
+      ok_raw = body("evt_perconn")
+
+      assert {:ok, :created, _} =
+               Ingress.ingest(
+                 Ledger,
+                 :perconn,
+                 ok_raw,
+                 ctx(ok_raw, connection: %{secret: @secret})
+               )
+
+      bad_raw = body("evt_perconn2")
+
+      assert {:error, %NoWebhookSecret{}} =
+               Ingress.ingest(Ledger, :perconn, bad_raw, ctx(bad_raw, connection: %{}))
+    end
+  end
+
+  describe "scope + payload shapes" do
+    test "atom-keyed scope values feed the declared identity slots" do
+      raw = body("evt_atomscope")
+
+      assert {:ok, :created, delivery} =
+               Ingress.ingest(Ledger, :counter, raw, ctx(raw, scope: %{account_id: "acct-atom"}))
+
+      assert delivery.account_id == "acct-atom"
+    end
+
+    test "an ingest whose create fails a constraint surfaces the error (non-contention)" do
+      raw = body("evt_toolong")
+
+      # 16 is the Ledger's account_id cap — the create fails OUTSIDE the
+      # transient-contention class (a plain Invalid error, never retried)
+      assert {:error, _error} =
+               Ingress.ingest(
+                 Ledger,
+                 :counter,
+                 raw,
+                 ctx(raw,
+                   scope: %{
+                     "account_id" => "account-id-longer-than-sixteen"
+                   }
+                 )
+               )
+
+      assert rows() == []
+    end
+
+    test "a valid-JSON SCALAR body persists and dead-letters as malformed" do
+      raw = "42"
+
+      assert {:ok, :created, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+
+      assert delivery.status == :failed_permanent
+      assert delivery.error_class == "malformed_payload"
+    end
+  end
+
+  describe "claim + mark fault arms" do
+    test "a claim bulk error surfaces (never a silent :lease_held)" do
+      with_trigger("ing_abort_all_updates", "")
+      raw = body("evt_claimfail")
+
+      assert {:error, _error} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+
+      # the row persisted :received — the ledger of record survived
+      assert [%{status: :received}] = rows()
+    end
+
+    test "a mark bulk error surfaces the write failure" do
+      # the claim bumps the fencing token (allowed); the marks do not (aborted)
+      with_trigger("ing_abort_marks", "WHEN NEW.fencing_token = OLD.fencing_token")
+      raw = body("evt_markfail")
+
+      assert {:error, _error} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+
+      assert [%{status: :claimed}] = rows()
+    end
+
+    test "a stale token at mark time returns the reloaded row, not an error" do
+      raw = body("evt_staletok")
+
+      CountingProvider.put_outcome(fn ->
+        Repo.query!(
+          "UPDATE " <>
+            @table <>
+            " SET fencing_token = fencing_token + 1 WHERE external_event_id = 'evt_staletok'"
+        )
+
+        :ok
+      end)
+
+      assert {:ok, :created, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+
+      # never marked processed — the reaper owns the re-drive
+      assert delivery.status == :claimed
+    end
+
+    test "a plain {:error, term} from the handler surfaces without a mark" do
+      CountingProvider.put_outcome({:error, :boom})
+      raw = body("evt_plainerr")
+
+      assert {:error, :boom} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+
+      assert [%{status: :claimed}] = rows()
+    end
+
+    test "a crashing re-drive is contained (reap counts it out, never raises)" do
+      row = stranded_received_row("evt_crash")
+      {:ok, _, _} = Ingress.claim_delivery(Ledger, row.id)
+      expire_lease("evt_crash")
+
+      CountingProvider.put_outcome(fn -> raise "handler exploded" end)
+
+      assert {:ok, 0} = Ingress.reap(Ledger)
+    end
+  end
+
+  describe "redact_payload fault shapes" do
+    setup do
+      # hold a row :claimed via a plain-error outcome (no mark fires)
+      CountingProvider.put_outcome({:error, :boom})
+
+      raw = body("evt_redact")
+      {:error, :boom} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+
+      %{row: hd(rows())}
+    end
+
+    test "a nil redactor result leaves the payload unchanged", %{row: row} do
+      assert :ok = Ingress.redact_payload(Ledger, row.id, row.fencing_token, fn _ -> nil end)
+      assert hd(rows()).payload == row.payload
+    end
+
+    test "an EXITING redactor fails safe (:redactor_crash, payload kept)", %{row: row} do
+      assert {:error, :redactor_crash} =
+               Ingress.redact_payload(Ledger, row.id, row.fencing_token, fn _ -> exit(:boom) end)
+
+      assert hd(rows()).payload == row.payload
+    end
+
+    test "a THROWING redactor fails safe", %{row: row} do
+      assert {:error, :redactor_crash} =
+               Ingress.redact_payload(Ledger, row.id, row.fencing_token, fn _ -> throw(:x) end)
+    end
+
+    test "an {m, f} redactor tuple applies through apply/3", %{row: row} do
+      assert :ok =
+               Ingress.redact_payload(
+                 Ledger,
+                 row.id,
+                 row.fencing_token,
+                 {__MODULE__.SquashingRedactor, :call}
+               )
+
+      assert hd(rows()).payload == %{"squashed" => true}
+    end
+
+    test "a read error under redact surfaces", %{row: row} do
+      on_exit(fn ->
+        # the ledger table is recreated by the next test file's setup; for
+        # THIS module's remaining tests restore it immediately after
+        :ok
+      end)
+
+      Repo.query!("DROP TABLE #{@table}")
+
+      assert {:error, _reason} =
+               Ingress.redact_payload(Ledger, row.id, row.fencing_token, fn _ -> nil end)
+
+      recreate_ledger!()
+    end
+  end
+
+  defp recreate_ledger! do
+    Repo.query!("""
+    CREATE TABLE IF NOT EXISTS #{@table} (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      external_event_id TEXT NOT NULL,
+      external_event_type TEXT,
+      payload TEXT NOT NULL,
+      payload_digest TEXT NOT NULL,
+      status TEXT NOT NULL,
+      fencing_token INTEGER NOT NULL DEFAULT 0,
+      lease_expires_at TEXT,
+      error_class TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      account_id TEXT NOT NULL
+    )
+    """)
+
+    Repo.query!(
+      "CREATE UNIQUE INDEX IF NOT EXISTS #{@table}_unique_ingest_index ON #{@table} (provider, external_event_id, account_id)"
+    )
+  end
+
+  defmodule SquashingRedactor do
+    @moduledoc false
+    def call(_payload), do: %{"squashed" => true}
   end
 end
