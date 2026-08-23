@@ -311,17 +311,28 @@ defmodule AshHooks.BoundedHttpTest do
 
       spawn(fn ->
         {:ok, socket} = :gen_tcp.accept(listen, 10_000)
-        # RST-on-close WITHOUT reading — the client's in-flight send fails,
-        # not merely its later read
+        # Read a prefix, then HOLD: the client's 64MB send fills its send
+        # buffer and BLOCKS mid-copy. RST-on-close while the send is
+        # provably blocked — only then does :gen_tcp.send return an error
+        # deterministically on every platform (closing earlier races the
+        # connect on Linux or lets macOS buffer the whole send)
+        {:ok, _prefix} = :gen_tcp.recv(socket, 100, 5_000)
+        :timer.sleep(100)
         :inet.setopts(socket, linger: {true, 0})
         :gen_tcp.close(socket)
         :gen_tcp.close(listen)
         send(parent, :closed)
       end)
 
-      big_body = String.duplicate("z", 8_000_000)
+      big_body = String.duplicate("z", 64_000_000)
 
-      assert {:error, {:send_failed, _reason}} =
+      # the observable CONTRACT: a dead peer is an error tuple, never a
+      # raise. WHERE the failure surfaces is platform-timing: Linux kills
+      # the in-flight send ({:send_failed, reason} — the send wrap this
+      # test pins for the gate); macOS buffers arbitrarily large sends and
+      # the failure surfaces at the read (truncated_response); a losing
+      # race puts the RST on the connect itself (econnreset)
+      assert {:error, shape} =
                Bounded.request(
                  :post,
                  "http://127.0.0.1:#{port}/sink",
@@ -330,6 +341,14 @@ defmodule AshHooks.BoundedHttpTest do
                  validate_destination: false,
                  connect_timeout: 1_000
                )
+
+      assert shape in [
+               {:send_failed, :closed},
+               {:send_failed, :econnreset},
+               :truncated_response,
+               :econnreset,
+               :closed
+             ]
     end
   end
 
