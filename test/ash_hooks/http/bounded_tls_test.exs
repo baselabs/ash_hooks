@@ -80,6 +80,49 @@ defmodule AshHooks.Http.BoundedTlsTest do
              Bounded.request(:get, "https://127.0.0.1:#{port}/hook", %{}, nil, opts())
   end
 
+  test "a TLS peer that dies mid-send fails the send as an error tuple" do
+    parent = self()
+
+    {:ok, listen} =
+      :ssl.listen(0,
+        certfile: String.to_charlist(Path.join(@dir, "server-both-san.pem")),
+        keyfile: String.to_charlist(Path.join(@dir, "server.key")),
+        ip: {127, 0, 0, 1},
+        active: false,
+        mode: :binary
+      )
+
+    {:ok, {_addr, port}} = :ssl.sockname(listen)
+
+    spawn(fn ->
+      {:ok, socket} = :ssl.transport_accept(listen, 10_000)
+      {:ok, socket} = :ssl.handshake(socket, 10_000)
+      {:ok, _prefix} = :ssl.recv(socket, 100, 5_000)
+      # TLS records must be ACKED by a live session — a closed peer fails
+      # the writer once its buffers fill (unlike raw TCP, where Linux
+      # drains sends into a dead socket and surfaces the error later)
+      :ssl.close(socket)
+      :ssl.close(listen)
+      send(parent, :dead)
+    end)
+
+    big_body = String.duplicate("z", 512_000_000)
+
+    result =
+      Bounded.request(
+        :post,
+        "https://127.0.0.1:#{port}/sink",
+        %{},
+        big_body,
+        Keyword.put(opts(), :connect_timeout, 1_000)
+      )
+
+    IO.puts("TLS SEND-FAILURE SHAPE: #{inspect(elem(result, 1))}")
+
+    assert {:error, shape} = result
+    assert shape in [{:send_failed, :closed}, {:send_failed, :econnreset}, :truncated_response]
+  end
+
   test "the default trust store is unchanged — no local CA injection, no session" do
     {_listen, port} = tls_server("server-both-san.pem")
 
