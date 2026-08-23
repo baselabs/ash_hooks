@@ -1,0 +1,5 @@
+# Deliberately-committed THROWAWAY test material (never trusted anywhere):
+# the local-CA TLS fixtures for the bounded/httpc loopback suites (wayfinder D3,
+# issue #22 — localhost-only, CN=ash-hooks-test-ca / CN=localhost, 10y expiry).
+test/fixtures/tls/local-ca.key
+test/fixtures/tls/server.key
