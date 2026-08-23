@@ -342,7 +342,7 @@ defmodule AshHooks.BoundedHttpTest do
           connect_timeout: 1_000
         )
 
-      IO.inspect(elem(result, 1), label: "SEND-FAILURE SHAPE")
+      IO.puts("SEND-FAILURE SHAPE: #{inspect(elem(result, 1))}")
 
       assert {:error, shape} = result
 
