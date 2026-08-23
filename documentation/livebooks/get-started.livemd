@@ -11,7 +11,7 @@
 
 Everything runs inside this notebook — one in-process sqlite database,
 one local socket server, no external services. Validated against
-ash_hooks **1.0.1**.
+ash_hooks **1.0.2**.
 
 <!-- livebook:{"break_marks":true} -->
 

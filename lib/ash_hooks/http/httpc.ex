@@ -54,6 +54,20 @@ defmodule AshHooks.Http.Httpc do
   end
 
   defp pinned_request(method, target, headers, body, opts) do
+    # A literal-IP https destination FAILS CLOSED on this adapter: without
+    # a hostname there is no RFC 6125 check, and :httpc never hands us the
+    # socket so the iPAddress-SAN floor (cert_san.ex — Bounded enforces it)
+    # cannot run. Chain validation alone would let ANY cert chaining to
+    # the trust store authenticate the endpoint IP. Use Bounded (the
+    # default adapter) for literal-IP https endpoints.
+    if target.uri.scheme == "https" and Target.ip_literal?(target.host) do
+      {:error, :ip_literal_https_needs_bounded}
+    else
+      do_pinned_request(method, target, headers, body, opts)
+    end
+  end
+
+  defp do_pinned_request(method, target, headers, body, opts) do
     host = target.host
     pinned_uri = %{target.uri | host: format_address(target.address)}
 
@@ -153,31 +167,23 @@ defmodule AshHooks.Http.Httpc do
 
   # the pinned URL carries the validated IP; TLS still names the ORIGINAL
   # host (SNI + RFC 6125 hostname check against it). Same :cacerts seam as
-  # Bounded — a pinned private-CA bundle survives an adapter swap.
+  # Bounded — a pinned private-CA bundle survives an adapter swap. Named
+  # hosts only: pinned_request refuses literal-IP https before this runs.
   defp ssl_options(host, cacerts) do
-    base = [verify: :verify_peer, cacerts: cacerts || :public_key.cacerts_get(), depth: 3]
-
-    # a literal-IP destination has no name to verify — chain validation
-    # only, SNI disabled (cross-vendor note: SNI-ing an IP is not a name)
-    if ip_literal?(host) do
-      Keyword.put(base, :server_name_indication, :disable)
-    else
-      Keyword.merge(base,
-        server_name_indication: String.to_charlist(host),
-        customize_hostname_check: [
-          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-        ]
-      )
-    end
-  end
-
-  defp ip_literal?(host) do
-    bare = host |> String.replace("[", "") |> String.replace("]", "")
-    match?({:ok, _}, :inet.parse_address(String.to_charlist(bare)))
+    [
+      verify: :verify_peer,
+      cacerts: cacerts || :public_key.cacerts_get(),
+      depth: 3,
+      server_name_indication: String.to_charlist(host),
+      customize_hostname_check: [
+        match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+      ]
+    ]
   end
 
   # an empty :ssl option on a plain-http request is rejected by :httpc —
-  # only attach it for https
+  # only attach it for https (named hosts only; literal-IP https never
+  # reaches here — pinned_request refuses it first)
   defp maybe_put_ssl(options, "https", host, cacerts),
     do: Keyword.put(options, :ssl, ssl_options(host, cacerts))
 

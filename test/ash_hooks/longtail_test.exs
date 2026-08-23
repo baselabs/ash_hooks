@@ -8,8 +8,13 @@ defmodule AshHooks.LongTailTest do
 
   use ExUnit.Case, async: true
 
+  alias AshHooks.Endpoint.{SecretRef, Url}
   alias AshHooks.Errors.Invalid
+  alias AshHooks.Errors.Unknown
   alias AshHooks.Errors.Unknown.UnknownError
+  alias AshHooks.Http.CertSan
+  alias AshHooks.InboundDelivery.Payload
+  alias AshHooks.Provider.HubSpotV3
 
   describe "error message/1 clauses" do
     test "every Invalid class renders its message" do
@@ -32,7 +37,7 @@ defmodule AshHooks.LongTailTest do
     end
 
     test "the error-class module answers its class" do
-      assert AshHooks.Errors.Unknown.error_class?()
+      assert Unknown.error_class?()
     end
 
     test "UnknownError passes through exception messages and inspects terms" do
@@ -149,8 +154,6 @@ defmodule AshHooks.LongTailTest do
 
   describe "Ash.Type surfaces (direct)" do
     test "Endpoint.Url casts and refuses" do
-      alias AshHooks.Endpoint.Url
-
       assert Url.cast_input(nil, []) == {:ok, nil}
       assert {:error, message} = Url.cast_input(42, [])
       assert message =~ "must be a URL string"
@@ -160,16 +163,12 @@ defmodule AshHooks.LongTailTest do
     end
 
     test "Endpoint.SecretRef casts and refuses" do
-      alias AshHooks.Endpoint.SecretRef
-
       assert {:error, _} = SecretRef.cast_input(42, [])
       assert {:error, _} = SecretRef.cast_stored(42, [])
       assert {:error, _} = SecretRef.dump_to_native(42, [])
     end
 
     test "InboundDelivery.Payload edge arms" do
-      alias AshHooks.InboundDelivery.Payload
-
       assert Payload.cast_stored(nil, []) == {:ok, nil}
       assert :error = Payload.cast_stored(42, [])
       assert :error = Payload.dump_to_native(42, [])
@@ -208,15 +207,15 @@ defmodule AshHooks.LongTailTest do
 
   describe "CertSan DER fallbacks" do
     test "garbage DER fails closed as a plain false, never a raise" do
-      refute AshHooks.Http.CertSan.ip_san_match?(<<1, 2, 3>>, {127, 0, 0, 1})
-      refute AshHooks.Http.CertSan.ip_san_match?(<<0>>, {127, 0, 0, 1})
+      refute CertSan.ip_san_match?(<<1, 2, 3>>, {127, 0, 0, 1})
+      refute CertSan.ip_san_match?(<<0>>, {127, 0, 0, 1})
     end
   end
 
   describe "HubSpot v3 guard arms" do
     test "verification without a v1-shaped signature fails closed" do
       assert {:error, :invalid_signature} =
-               AshHooks.Provider.HubSpotV3.verify_signature(
+               HubSpotV3.verify_signature(
                  "raw",
                  %{headers: %{}, signature: nil},
                  "s"
@@ -225,10 +224,10 @@ defmodule AshHooks.LongTailTest do
 
     test "non-secret and headerless-ctx shapes hit the guard catch-alls" do
       assert {:error, :invalid_signature} =
-               AshHooks.Provider.HubSpotV3.verify_signature("raw", %{}, :not_a_secret)
+               HubSpotV3.verify_signature("raw", %{}, :not_a_secret)
 
       assert {:error, :invalid_signature} =
-               AshHooks.Provider.HubSpotV3.verify_signature(
+               HubSpotV3.verify_signature(
                  "raw",
                  %{signature: "v1=abc"},
                  "secret"

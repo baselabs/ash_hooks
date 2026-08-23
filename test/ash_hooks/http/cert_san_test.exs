@@ -45,7 +45,7 @@ defmodule AshHooks.CertSanTest do
       [{:Certificate, der, _}] =
         :public_key.pem_decode(File.read!("test/fixtures/bad-san-cert.pem"))
 
-      assert AshHooks.Http.CertSan.ip_san_match?(der, {127, 0, 0, 1}) == false
+      assert CertSan.ip_san_match?(der, {127, 0, 0, 1}) == false
     end
 
     test "garbage DER fails closed (no raise, no match)" do

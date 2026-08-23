@@ -112,8 +112,10 @@ defmodule AshHooks.Worker do
         secret_resolver: {expand.(resolver_m), resolver_f},
         snippet_redactor: snippet_redactor,
         http: maybe_expand(Keyword.get(opts, :http), expand),
-        # the adapter-opts seam (:cacerts private-CA bundles, timeout
-        # overrides) — threaded or the option is silently dropped
+        # the adapter-opts seam (timeout overrides, :cacerts private-CA
+        # bundles). Compile-time LITERALS bake as-is; anything computed
+        # must arrive as {m, f, a} and is applied per-perform (a macro-time
+        # function call would otherwise bake as unevaluated AST)
         http_opts: Keyword.get(opts, :http_opts),
         max_attempts: Keyword.get(opts, :delivery_max_attempts, 10),
         base_backoff_seconds: Keyword.get(opts, :base_backoff_seconds, 2),
@@ -144,7 +146,18 @@ defmodule AshHooks.Worker do
 
       @impl Oban.Worker
       def perform(%Oban.Job{args: args}) do
-        AshHooks.Delivery.run(args, @ash_hooks_delivery_config)
+        AshHooks.Delivery.run(args, resolve_http_opts(@ash_hooks_delivery_config))
+      end
+
+      # an {m, f, a} http_opts resolves at run time; literal lists pass as-is
+      defp resolve_http_opts(config) do
+        case config[:http_opts] do
+          {m, f, a} when is_atom(m) and is_atom(f) and is_list(a) ->
+            Keyword.put(config, :http_opts, apply(m, f, a))
+
+          _literal_or_nil ->
+            config
+        end
       end
 
       # The #6 enqueue seam (`enqueue: {__MODULE__, :enqueue}`): inserts

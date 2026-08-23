@@ -78,6 +78,8 @@ if Code.ensure_loaded?(Oban) do
         timeout: 5_000
     end
 
+    def http_opts, do: [timeout: 5_000]
+
     defmodule Redactor do
       @moduledoc false
       def call(_body), do: "consumer-diagnostic"
@@ -286,19 +288,23 @@ if Code.ensure_loaded?(Oban) do
       assert final.last_error =~ "destination"
     end
 
+    defp offset(source, needle) do
+      case :binary.match(source, needle) do
+        {idx, _len} -> idx
+        :nomatch -> nil
+      end
+    end
+
     describe "the adapter-opts seam bake (cross-vendor review regression)" do
       test "the macro threads :http_opts into the baked delivery config" do
         path = Path.expand("../../lib/ash_hooks/worker.ex", __DIR__)
-        {:ok, ast} = Code.string_to_quoted(File.read!(path))
+        source = File.read!(path)
 
-        {_, found?} =
-          Macro.prewalk(ast, false, fn
-            {:http_opts, _value} = node, _acc -> {node, true}
-            node, acc -> {node, acc}
-          end)
+        bake_at = offset(source, "http_opts: Keyword.get(opts, :http_opts)")
+        config_at = offset(source, "delivery_config =")
 
-        assert found?,
-               "use AshHooks.Worker must bake :http_opts into the delivery config or the option is silently dropped"
+        assert bake_at && config_at && bake_at > config_at,
+               "use AshHooks.Worker must bake :http_opts (exactly the Keyword.get/2 form) inside the delivery_config block, or the option is silently dropped"
       end
     end
 
@@ -311,6 +317,20 @@ if Code.ensure_loaded?(Oban) do
           secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}
       end
       """
+
+      test "an {m, f, a} http_opts compiles (the runtime resolution path for computed bundles)" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        http_opts: {AshHooks.WorkerTest, :http_opts, []}"
+          )
+
+        assert Enum.any?(Code.compile_string(source), fn {m, _} -> m == RuntimeWorker end)
+      after
+        _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
 
       test "a snippet_redactor with a non-module half raises at compile" do
         source =

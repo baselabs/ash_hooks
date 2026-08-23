@@ -44,16 +44,15 @@ jobs:
       - run: mix format --check-formatted
       - run: mix credo --strict
       - run: mix test
-      # advisory coverage printout (threshold 0 in mix.exs). Known
-      # non-zero exits, both root-caused and inherent: the code-server
-      # fixture purges its own beam and :cover.stop cannot collect a
-      # purged module; the E2E fixture deliberately compiles an invalid
-      # DSL (runtime-backstop test) whose downgraded verifier warning is
-      # expected noise. The percentage still prints in the log
-      - name: Coverage report
+      # the 100% line-coverage GATE (D1/D2, wayfinder #20-#22): every
+      # runtime-reachable lib/ line is covered; the ignore list in mix.exs
+      # carries only :cover-invisible lines (Spark's generated DSL
+      # sections, test-support, four compile-window module-body lines).
+      # The code-server purge test reloads its fixture, so :cover.stop
+      # collects everything and this step FAILS on a real miss
+      - name: Coverage gate (100% of lib/ runtime lines)
         run: mix test --cover
         if: matrix.no_optional != '1' && matrix.elixir == '1.18'
-        continue-on-error: true
       - name: Assert optional deps never loaded (no-optional leg)
         if: matrix.no_optional == '1'
         run: |

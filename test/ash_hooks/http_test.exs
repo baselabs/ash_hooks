@@ -207,6 +207,24 @@ defmodule AshHooks.HttpTest do
       assert body == ""
     end
 
+    test "a POST with a content-type header passes it through" do
+      {base, opts} =
+        raw_server(
+          send: "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+          pause: 100,
+          close: :close
+        )
+
+      assert {:ok, %{status: 200, body: "ok"}} =
+               Httpc.request(
+                 :post,
+                 base <> "/x",
+                 %{"content-type" => "application/merge-patch+json"},
+                 "{}",
+                 opts
+               )
+    end
+
     test "a POST without a content-type header defaults to application/json" do
       {base, opts} =
         raw_server(

@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.0.2 — 2026-08-22
+
+The 100% coverage release: the maintainership directive (2026-08-22)
+superseding 1.0.1's print-only posture, worked through the wayfinder
+decisions (#20-#22) — line coverage of `lib/` now GATES in CI, and the
+release carries the surfaces that build required.
+
+### Added
+
+- `Target.ssl_options/2` and both HTTP adapters accept an injectable
+  `:cacerts` trust bundle (`[cacerts: der_list]` in the adapter opts —
+  on the Oban path, `use AshHooks.Worker, http_opts: ...`): pin a
+  private CA for private-CA endpoints. Default UNCHANGED (the OTP CA
+  store). The worker's `http_opts` takes compile-time literals, or an
+  `{m, f, a}` resolved per-perform for computed bundles.
+- TLS success paths are covered by REAL CA-verified loopback sessions
+  against committed local fixtures, including the literal-IP iPAddress-SAN
+  floor and its fail-closed mismatch.
+
+### Fixed
+
+- `AshHooks.Http.CertSan.ip_san_match?/2` fails closed (returns `false`)
+  instead of CRASHING its caller when a certificate's SAN extension
+  carries non-DER bytes: asn1's decode EXITS on invalid tags, which the
+  previous error-only rescue could not catch.
+- `AshHooks.Http.Httpc` (the alternate adapter) refuses literal-IP HTTPS
+  destinations with `{:error, :ip_literal_https_needs_bounded}`: it
+  never holds the socket, so the iPAddress-SAN floor cannot run there
+  and chain-validation alone would let any chain-valid certificate
+  authenticate the endpoint IP. Use `AshHooks.Http.Bounded` (the
+  default) for literal-IP HTTPS endpoints. Cross-vendor-reviewed
+  (both peers), pre-existing hazard class.
+- `use AshHooks.Worker` threads `:http_opts` into the delivery config
+  (the option was previously accepted and silently dropped).
+
+### Changed
+
+- `mix test --cover` GATES at 100% line coverage of `lib/`'s
+  runtime-reachable lines (CI fails on a miss). The ignore list carries
+  exactly the `:cover`-invisible classes: Spark's generated DSL
+  sections, test-support modules, and four compile-window module-body
+  lines. 31 provably-dead defensive arms were DELETED with proofs
+  (commit d6f3788) rather than exempted; the shipped surface behaves
+  identically.
+
 ## 1.0.1 — 2026-08-22
 
 Docs-and-tests release (no functional changes). The 1.0.0 ship report's

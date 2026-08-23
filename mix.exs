@@ -1,7 +1,7 @@
 defmodule AshHooks.MixProject do
   use Mix.Project
 
-  @version "1.0.1"
+  @version "1.0.2"
   @source_url "https://github.com/baselabs/ash_hooks"
 
   def project do
@@ -29,7 +29,37 @@ defmodule AshHooks.MixProject do
       # exclusion lists don't prevent that. The CI step carries
       # continue-on-error with this root cause named.) Safety properties
       # are gated by the red-proven tripwires, not a global percentage.
-      test_coverage: [threshold: 0]
+      # SUPERSEDED 2026-08-22 (wayfinder D1/D2, issues #20-#22): 100% LINE
+      # coverage of lib/ now GATES (the 1.0.1 print-only posture is retired;
+      # see CHANGELOG 1.0.2). ignore_modules carries exactly the lines
+      # :cover cannot observe, never runtime behavior:
+      #   * Spark's entity-builder macro output (the Options structs) —
+      #     generated code, not library code;
+      #   * test-support modules (CountingProvider, the AST tripwire, the
+      #     code-server fixture) — compiled in :test only, never shipped;
+      #   * four compile-window module-body lines (the Url/SecretRef/
+      #     Payload defmodule lines and the install task's `use` line) —
+      #     macro-expansion lines that only execute before :cover starts;
+      #     their runtime lines are covered like every other module's.
+      # The dead defensive arms that could never execute were DELETED with
+      # proofs (d6f3788), not exempted. The code-server purge test reloads
+      # its fixture, so :cover.stop collects everything and the gate is
+      # real: a red here means an uncovered runtime line in lib/.
+      test_coverage: [
+        summary: [threshold: 100],
+        ignore_modules: [
+          ~r/^AshHooks\.Webhooks\.Inbound$/,
+          ~r/^AshHooks\.Webhooks\.Outbound$/,
+          ~r/AshHooks\.Webhooks\.(Inbound|Outbound)\.Options/,
+          ~r/AshHooks\.CountingProvider/,
+          ~r/AshHooks\.TestAstTripwire/,
+          ~r/AshHooks\.TestPerConnectionProvider/,
+          ~r/AshHooks\.Endpoint\.Url/,
+          ~r/AshHooks\.Endpoint\.SecretRef/,
+          ~r/AshHooks\.InboundDelivery\.Payload/,
+          ~r/Mix\.Tasks\.AshHooks\.Install/
+        ]
+      ]
     ]
   end
 
