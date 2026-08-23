@@ -97,6 +97,10 @@ defmodule AshHooks.Http.BoundedTlsTest do
     spawn(fn ->
       {:ok, socket} = :ssl.transport_accept(listen, 10_000)
       {:ok, socket} = :ssl.handshake(socket, 10_000)
+      # same anti-buffering cap as the TCP twin: the receive window pinned
+      # to 1KB defeats sysctl autotuning, so the client's 16MB send is
+      # provably still in flight when the session dies
+      :ssl.setopts(socket, rcvbuf: 1024)
       {:ok, _prefix} = :ssl.recv(socket, 100, 5_000)
       :timer.sleep(100)
       :ssl.close(socket)
@@ -104,7 +108,7 @@ defmodule AshHooks.Http.BoundedTlsTest do
       send(parent, :dead)
     end)
 
-    big_body = String.duplicate("z", 512_000_000)
+    big_body = String.duplicate("z", 16_000_000)
 
     assert {:error, shape} =
              Bounded.request(

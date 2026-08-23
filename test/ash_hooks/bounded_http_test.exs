@@ -324,7 +324,7 @@ defmodule AshHooks.BoundedHttpTest do
         send(parent, :closed)
       end)
 
-      big_body = String.duplicate("z", 512_000_000)
+      big_body = String.duplicate("z", 16_000_000)
 
       assert {:error, shape} =
                Bounded.request(
