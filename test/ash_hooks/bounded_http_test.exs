@@ -324,7 +324,7 @@ defmodule AshHooks.BoundedHttpTest do
         send(parent, :closed)
       end)
 
-      big_body = String.duplicate("z", 64_000_000)
+      big_body = String.duplicate("z", 512_000_000)
 
       # the observable CONTRACT: a dead peer is an error tuple, never a
       # raise. WHERE the failure surfaces is platform-timing: Linux kills
