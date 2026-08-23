@@ -311,11 +311,11 @@ defmodule AshHooks.BoundedHttpTest do
 
       spawn(fn ->
         {:ok, socket} = :gen_tcp.accept(listen, 10_000)
-        # Read a prefix, then HOLD: the client's 64MB send fills its send
-        # buffer and BLOCKS mid-copy. RST-on-close while the send is
-        # provably blocked — only then does :gen_tcp.send return an error
-        # deterministically on every platform (closing earlier races the
-        # connect on Linux or lets macOS buffer the whole send)
+        # Cap OUR receive window (defeats any sysctl autotuning), read a
+        # prefix, then HOLD: the client's 512MB send fills the tiny window
+        # and BLOCKS in the kernel. RST-on-close while the send is provably
+        # blocked — only then does :gen_tcp.send return an error
+        :inet.setopts(socket, rcvbuf: 1024)
         {:ok, _prefix} = :gen_tcp.recv(socket, 100, 5_000)
         :timer.sleep(100)
         :inet.setopts(socket, linger: {true, 0})
@@ -343,6 +343,17 @@ defmodule AshHooks.BoundedHttpTest do
         )
 
       IO.puts("SEND-FAILURE SHAPE: #{inspect(elem(result, 1))}")
+
+      sysctls = ~w(net.core.wmem_max net.core.rmem_max net.ipv4.tcp_wmem net.ipv4.tcp_rmem)
+
+      IO.puts(
+        "send-failure sysctls: " <>
+          (sysctls
+           |> Enum.map(fn s ->
+             "#{s}=#{elem(System.cmd("sysctl", ["-n", s]), 0) |> String.trim()}"
+           end)
+           |> Enum.join(" "))
+      )
 
       assert {:error, shape} = result
 
