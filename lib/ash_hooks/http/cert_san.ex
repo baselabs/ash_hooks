@@ -15,14 +15,14 @@ defmodule AshHooks.Http.CertSan do
   def ip_san_match?(der, address) when is_binary(der) do
     cert = :public_key.pkix_decode_cert(der, :plain)
     ip_in_san?(cert, address)
-  rescue
-    _ -> false
   catch
-    # asn1's der_decode EXITS on invalid tags ({:error, {:asn1, ...}} —
-    # probed on OTP 29), and a rescue cannot catch an exit: without this
-    # clause a garbage-SAN certificate CRASHES the caller instead of
-    # failing closed (cross-vendor review finding)
-    :exit, _reason -> false
+    # Fail closed on EVERY non-local class: malformed DER RAISES on
+    # OTP 27/28, while asn1's der_decode EXITS on invalid tags on OTP 29
+    # ({:error, {:asn1, ...}} — probed; a rescue alone cannot catch an
+    # exit). The bare catch covers error, exit, and throw alike — a
+    # garbage-SAN certificate never crashes the caller (cross-vendor
+    # review finding)
+    _kind, _reason -> false
   end
 
   # public_key :plain record shapes (verified against a fixture,

@@ -332,15 +332,19 @@ defmodule AshHooks.BoundedHttpTest do
       # test pins for the gate); macOS buffers arbitrarily large sends and
       # the failure surfaces at the read (truncated_response); a losing
       # race puts the RST on the connect itself (econnreset)
-      assert {:error, shape} =
-               Bounded.request(
-                 :post,
-                 "http://127.0.0.1:#{port}/sink",
-                 %{},
-                 big_body,
-                 validate_destination: false,
-                 connect_timeout: 1_000
-               )
+      result =
+        Bounded.request(
+          :post,
+          "http://127.0.0.1:#{port}/sink",
+          %{},
+          big_body,
+          validate_destination: false,
+          connect_timeout: 1_000
+        )
+
+      IO.inspect(elem(result, 1), label: "SEND-FAILURE SHAPE")
+
+      assert {:error, shape} = result
 
       assert shape in [
                {:send_failed, :closed},
