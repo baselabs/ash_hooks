@@ -53,6 +53,12 @@ jobs:
       - name: Coverage gate (100% of lib/ runtime lines)
         run: mix test --cover
         if: matrix.no_optional != '1' && matrix.elixir == '1.18'
+      - name: Upload coverage HTML on a gate miss
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cover-html
+          path: cover/
       - name: Assert optional deps never loaded (no-optional leg)
         if: matrix.no_optional == '1'
         run: |
