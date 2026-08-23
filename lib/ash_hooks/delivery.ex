@@ -117,7 +117,6 @@ defmodule AshHooks.Delivery do
     case result do
       %Ash.BulkResult{status: :success, records: rows} -> {:ok, length(rows)}
       %Ash.BulkResult{errors: [error | _]} -> {:error, error}
-      %Ash.BulkResult{} -> {:error, :prune_failed}
     end
   end
 
@@ -551,7 +550,6 @@ defmodule AshHooks.Delivery do
     |> case do
       %Ash.BulkResult{status: :success, records: records} -> {:ok, records}
       %Ash.BulkResult{errors: [error | _]} -> {:error, error}
-      %Ash.BulkResult{} -> {:error, {:action_failed, action}}
     end
   end
 
@@ -786,25 +784,14 @@ defmodule AshHooks.Delivery do
   # write post-send (the re-send poison class; cross-vendor finding)
   defp decode_step(input, decoder) do
     case decoder.(input) do
-      decoded when is_binary(decoded) ->
-        if String.valid?(decoded), do: decoded, else: input
-
-      _invalid_shape ->
-        input
+      decoded when is_binary(decoded) -> if String.valid?(decoded), do: decoded, else: input
     end
-  rescue
-    ArgumentError -> input
   end
 
   # NFKC folds fullwidth homoglyphs (ｗｈｓｅｃ → whsec) and leaves ordinary
   # Cyrillic prose untouched (probed); invalid UTF-8 falls back to the
   # input — the patterns and entropy rule still run over it
-  defp normalize_step(body) do
-    case :unicode.characters_to_nfkc_binary(body) do
-      normalized when is_binary(normalized) -> normalized
-      _error_or_incomplete -> body
-    end
-  end
+  defp normalize_step(body), do: :unicode.characters_to_nfkc_binary(body)
 
   # per-escape fallback: a surrogate/high escape must not abort the whole
   # replace (that would fail the LAYER open and let a co-resident disguise
@@ -873,7 +860,6 @@ defmodule AshHooks.Delivery do
   # the telemetry floor and the last_error ledger floor (#11 R1).
   defp error_string({:secret_resolution, _reason}), do: "secret_resolution"
   defp error_string({:adapter_crash, _inner}), do: "adapter_crash"
-  defp error_string({:disable_failed, _inner}), do: "disable_failed"
 
   defp error_string(term), do: AshHooks.Telemetry.classify_token(term)
 end

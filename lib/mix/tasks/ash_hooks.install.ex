@@ -56,10 +56,9 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
       end)
     end
 
-    # `plug Plug.Parsers` parses as an alias AST node; `plug :"Plug.Parsers"`
-    # (unlikely but legal) as an atom.
+    # `plug Plug.Parsers` parses as an alias AST node (the Elixir.-prefixed
+    # spelling also parses as an aliases node); anything else is not it.
     defp parsers_argument?({:__aliases__, _, [:Plug, :Parsers]}), do: true
-    defp parsers_argument?(Plug.Parsers), do: true
     defp parsers_argument?(_), do: false
 
     defp add_body_reader(zipper) do

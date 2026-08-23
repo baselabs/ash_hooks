@@ -141,9 +141,7 @@ defmodule AshHooks.Ssrf do
     end
   end
 
-  # IPv6 literals arrive bracketed in the URL; brackets are not part of
-  # the address.
-  defp host_without_brackets("[" <> rest), do: String.trim_trailing(rest, "]")
+  # uri.host arrives bracketless — URI.new strips IPv6 brackets
   defp host_without_brackets(host), do: host
 
   defp resolved_addresses(_uri, charlist) do
@@ -202,8 +200,7 @@ defmodule AshHooks.Ssrf do
   # finding: fc00::/7 covers fc00–fdff, fe80::/10 covers fe80–febf,
   # ff00::/8 covers ff00–ffff — the old /16 checks let fc00::, fe90:: and
   # ff02:: through).
-  defp ipv6_public?({0, 0, 0, 0, 0, 0, 0, 1}), do: false
-  # ULA fc00::/7
+  # ::1 is handled by the embedded-v4 reduction below (hi == 0). ULA fc00::/7
   defp ipv6_public?({a, _, _, _, _, _, _, _}) when band(a, 0xFE00) == 0xFC00, do: false
   # link-local fe80::/10
   defp ipv6_public?({a, _, _, _, _, _, _, _}) when band(a, 0xFFC0) == 0xFE80, do: false

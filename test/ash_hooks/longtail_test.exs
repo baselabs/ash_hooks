@@ -31,6 +31,10 @@ defmodule AshHooks.LongTailTest do
       assert Exception.message(%Invalid.MalformedPayload{}) == "malformed webhook payload"
     end
 
+    test "the error-class module answers its class" do
+      assert AshHooks.Errors.Unknown.error_class?()
+    end
+
     test "UnknownError passes through exception messages and inspects terms" do
       assert Exception.message(UnknownError.exception(error: %ArgumentError{message: "boom"})) ==
                "boom"
@@ -170,6 +174,35 @@ defmodule AshHooks.LongTailTest do
       assert :error = Payload.cast_stored(42, [])
       assert :error = Payload.dump_to_native(42, [])
       assert {:ok, nil} = Payload.apply_constraints(nil, [])
+    end
+  end
+
+  describe "the Ash.Type use-injected helpers" do
+    test "the trivial 0-arity introspection surface answers" do
+      for mod <- [
+            AshHooks.Endpoint.Url,
+            AshHooks.Endpoint.SecretRef,
+            AshHooks.InboundDelivery.Payload
+          ] do
+        assert mod.ash_type?()
+        refute mod.embedded?()
+        assert mod.simple_equality?()
+        assert is_atom(mod.ecto_type())
+        assert is_list(mod.constraints())
+        assert is_list(mod.array_constraints())
+        assert is_atom(mod.storage_type(nil))
+        assert mod.handle_change?() == false
+        assert mod.prepare_change?() == false
+        assert mod.custom_apply_constraints_array?() == false
+        assert mod.simple_equality_comparable?() == false
+        assert {:ok, nil} = mod.init(nil)
+        assert mod.can_load?(nil) == false
+        assert mod.cast_in_query?(nil) == true
+        assert mod.composite?(nil) == false
+        assert is_list(mod.composite_types(nil))
+        assert is_binary(mod.describe(nil))
+        assert is_boolean(mod.matches_type?(:any, :any))
+      end
     end
   end
 

@@ -322,7 +322,6 @@ defmodule AshHooks.Signing do
   defp decode_verify_secret(whsec) do
     case decode_b64(strip_prefix(whsec, @secret_prefix)) do
       {:ok, secret} when byte_size(secret) > 0 -> {:ok, secret}
-      {:ok, _empty} -> {:error, :invalid_secret}
       :error -> {:error, :invalid_secret}
     end
   end

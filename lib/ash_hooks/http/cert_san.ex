@@ -40,21 +40,14 @@ defmodule AshHooks.Http.CertSan do
         _ -> false
       end
     end)
-  rescue
-    _ -> false
   end
 
   defp record_field(record, index), do: elem(record, index)
 
-  # extnValue arrives as raw DER — re-decode with the SAN template
-  defp decode_san(san_der) do
-    case :public_key.der_decode(:SubjectAltName, san_der) do
-      names when is_list(names) -> {:ok, names}
-      _other -> :error
-    end
-  rescue
-    _ -> :error
-  end
+  # extnValue arrives as raw DER — re-decode with the SAN template. A SAN
+  # that pkix_decode_cert accepted always re-decodes here (same template):
+  # malformed SAN bytes raise at pkix itself and hit ip_san_match?'s rescue.
+  defp decode_san(san_der), do: {:ok, :public_key.der_decode(:SubjectAltName, san_der)}
 
   # der_decode(:SubjectAltName) yields iPAddress as RAW BYTES — a 4-byte
   # binary (IPv4) or 16-byte binary (IPv6). Normalized to the inet tuple

@@ -120,13 +120,10 @@ defmodule AshHooks.Ingress do
 
   # dialyzer proved (Elixir 1.18 and 1.20 alike) that every error reaching
   # here is one of the Invalid exception structs — the class is the
-  # underscored final segment. The rescue keeps any future non-exception
-  # drift from crashing telemetry emission.
+  # underscored final segment.
   defp error_class(error) do
     [_ash_hooks, _errors, _invalid, class] = error.__struct__ |> Module.split()
     Macro.underscore(class) |> String.to_atom()
-  rescue
-    _ -> nil
   end
 
   @doc """
@@ -220,9 +217,6 @@ defmodule AshHooks.Ingress do
 
       %Ash.BulkResult{errors: [error | _]} ->
         {:error, error}
-
-      %Ash.BulkResult{} ->
-        {:error, :claim_failed}
     end
   end
 
@@ -263,7 +257,6 @@ defmodule AshHooks.Ingress do
       case result do
         %Ash.BulkResult{status: :success, records: rows} -> {:ok, length(rows)}
         %Ash.BulkResult{errors: [error | _]} -> {:error, error}
-        %Ash.BulkResult{} -> {:error, :prune_failed}
       end
     end
   end
@@ -548,7 +541,6 @@ defmodule AshHooks.Ingress do
       %Ash.BulkResult{status: :success, records: [_]} -> :ok
       %Ash.BulkResult{status: :success, records: []} -> {:error, :stale_token}
       %Ash.BulkResult{errors: [error | _]} -> {:error, error}
-      %Ash.BulkResult{} -> {:error, {:action_failed, action}}
     end
   end
 

@@ -54,15 +54,11 @@ defmodule AshHooks.Http.Target do
   end
 
   defp lookup(host) do
-    bare =
-      case host do
-        "[" <> rest -> String.trim_trailing(rest, "]")
-        plain -> plain
-      end
-
-    case :inet.parse_address(String.to_charlist(bare)) do
+    # uri.host arrives bracketless — URI.new strips IPv6 brackets — so no
+    # unwrapping happens here
+    case :inet.parse_address(String.to_charlist(host)) do
       {:ok, literal} -> {:ok, literal}
-      {:error, _} -> :inet.getaddr(String.to_charlist(bare), :inet)
+      {:error, _} -> :inet.getaddr(String.to_charlist(host), :inet)
     end
   end
 

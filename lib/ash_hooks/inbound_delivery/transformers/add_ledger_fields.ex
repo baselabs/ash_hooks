@@ -100,10 +100,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
   defp add_attributes(dsl_state) do
     Enum.reduce_while(attributes_spec(), {:ok, dsl_state}, fn {name, type, opts},
                                                               {:ok, dsl_state} ->
-      case Builder.add_new_attribute(dsl_state, name, type, opts) do
-        {:ok, dsl_state} -> {:cont, {:ok, dsl_state}}
-        {:error, error} -> {:halt, {:error, error}}
-      end
+      {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
     end)
   end
 

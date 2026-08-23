@@ -85,20 +85,16 @@ defmodule AshHooks.Http.Httpc do
 
     with {:ok, req_id} <-
            :httpc.request(method, request, http_options, sync: false, stream: :self) do
-      collect(req_id, opts[:max_body_bytes] || @default_max_body_bytes, backstop(opts))
+      collect(req_id, opts[:max_body_bytes] || @default_max_body_bytes)
     end
   end
-
-  # the wall-clock backstop scales with the caller's own timeout so a
-  # larger configured timeout is not silently capped at 30s
-  defp backstop(opts), do: (opts[:timeout] || @default_timeout) + 5_000
 
   # :httpc streams ONLY 2xx (200/206 — see httpc_response.erl's result/2);
   # every other status arrives as the complete result message, so the
   # status is always recoverable: streamed ⇒ 2xx. A streamed 206 is
   # indistinguishable from a 200 in this client's streaming API and is
   # recorded as 200 (classification is unaffected — both are 2xx).
-  defp collect(req_id, max_body, backstop) do
+  defp collect(req_id, max_body) do
     receive do
       {:http, {^req_id, :stream_start, headers}} ->
         stream_body(req_id, headers, 200, "", max_body)
@@ -107,20 +103,17 @@ defmodule AshHooks.Http.Httpc do
         # the transparent path assembles inside :httpc before delivery
         # (no earlier cut exists in the client API) — truncate OUR
         # retention at the bound; the transient allocation is the
-        # documented residual
+        # documented residual. :httpc delivers its own timeout error
+        # message first, so no caller-side backstop fires here.
         {:ok,
          %{
            status: status,
            headers: normalize_headers(headers),
-           body: truncate(safe_body(body), max_body)
+           body: truncate(body, max_body)
          }}
 
       {:http, {^req_id, {:error, reason}}} ->
         {:error, reason}
-    after
-      backstop ->
-        :httpc.cancel_request(req_id)
-        {:error, :response_timeout}
     end
   end
 
@@ -152,21 +145,15 @@ defmodule AshHooks.Http.Httpc do
 
       {:http, {^req_id, :stream_end, _headers}} ->
         {:ok, %{status: status, headers: normalize_headers(headers), body: acc}}
-    after
-      30_000 ->
-        :httpc.cancel_request(req_id)
-        {:error, :response_timeout}
     end
   end
-
-  defp truncate(nil, _max), do: nil
 
   defp truncate(body, max) when byte_size(body) > max, do: binary_part(body, 0, max)
   defp truncate(body, _max), do: body
 
   # the pinned URL carries the validated IP; TLS still names the ORIGINAL
   # host (SNI + RFC 6125 hostname check against it)
-  defp ssl_options("https", host) do
+  defp ssl_options(host) do
     base = [verify: :verify_peer, cacerts: :public_key.cacerts_get(), depth: 3]
 
     # a literal-IP destination has no name to verify — chain validation
@@ -183,8 +170,6 @@ defmodule AshHooks.Http.Httpc do
     end
   end
 
-  defp ssl_options(_http, _host), do: []
-
   defp ip_literal?(host) do
     bare = host |> String.replace("[", "") |> String.replace("]", "")
     match?({:ok, _}, :inet.parse_address(String.to_charlist(bare)))
@@ -193,7 +178,7 @@ defmodule AshHooks.Http.Httpc do
   # an empty :ssl option on a plain-http request is rejected by :httpc —
   # only attach it for https
   defp maybe_put_ssl(options, "https", host),
-    do: Keyword.put(options, :ssl, ssl_options("https", host))
+    do: Keyword.put(options, :ssl, ssl_options(host))
 
   defp maybe_put_ssl(options, _http, _host), do: options
 
@@ -211,8 +196,4 @@ defmodule AshHooks.Http.Httpc do
   defp normalize_headers(headers) do
     Enum.map(headers, fn {name, value} -> {to_string(name), to_string(value)} end)
   end
-
-  defp safe_body(body) when is_binary(body), do: body
-  defp safe_body(body) when is_list(body), do: IO.iodata_to_binary(body)
-  defp safe_body(_), do: nil
 end

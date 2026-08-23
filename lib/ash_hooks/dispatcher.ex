@@ -290,7 +290,6 @@ defmodule AshHooks.Dispatcher do
       %Ash.BulkResult{status: :success, records: [_]} -> :ok
       %Ash.BulkResult{status: :success, records: []} -> {:error, :stale_row}
       %Ash.BulkResult{errors: [error | _]} -> {:error, error}
-      %Ash.BulkResult{} -> {:error, :mark_failed}
     end
   end
 
@@ -475,10 +474,6 @@ defmodule AshHooks.Dispatcher do
 
       module when is_atom(module) ->
         {:ok, module}
-
-      _other ->
-        {:error,
-         UnknownError.exception(error: "outbound #{inspect(key)} must be a resource module")}
     end
   end
 

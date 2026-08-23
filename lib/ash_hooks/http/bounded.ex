@@ -199,10 +199,9 @@ defmodule AshHooks.Http.Bounded do
         end
 
       {:error, :closed} ->
-        case :binary.match(acc, "\r\n\r\n") do
-          {index, _} -> split_head(acc, index + 4)
-          :nomatch -> {:error, :truncated_response}
-        end
+        # acc cannot hold a terminator here: head_step splits any complete
+        # one on arrival, so a close means the head never finished
+        {:error, :truncated_response}
 
       {:error, reason} ->
         {:error, reason}
@@ -442,8 +441,6 @@ defmodule AshHooks.Http.Bounded do
   # takes exactly n bytes out of (buffer ++ socket) — bounded by n plus
   # one recv slice; used only where n is attacker-INdependent (the
   # allowance, the 2-byte terminator) or already bounded by it
-  defp take_bytes(_socket, buffer, 0, _timeout), do: {:ok, "", buffer}
-
   defp take_bytes(_socket, buffer, n, _timeout) when byte_size(buffer) >= n,
     do: {:ok, binary_part(buffer, 0, n), binary_part(buffer, n, byte_size(buffer) - n)}
 
