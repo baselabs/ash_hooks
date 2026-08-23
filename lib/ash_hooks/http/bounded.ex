@@ -113,7 +113,7 @@ defmodule AshHooks.Http.Bounded do
              # ONE passive recv must not pull a hostile body whole — this caps
              # the pull; the read loops stop at their bounds
              buffer: @recv_slice
-           ] ++ Target.ssl_options(target.host),
+           ] ++ Target.ssl_options(target.host, opts[:cacerts]),
            opts[:connect_timeout] || @default_connect_timeout
          ) do
       {:ok, socket} ->

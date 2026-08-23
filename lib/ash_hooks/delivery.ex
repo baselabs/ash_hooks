@@ -234,8 +234,9 @@ defmodule AshHooks.Delivery do
     request = if is_function(adapter, 5), do: adapter, else: &adapter.request/5
 
     # adapter opts seam (test listeners' validate_destination: false; real
-    # consumers' timeout overrides). Consumer-trusted config like :ssrf_check:
-    # it CAN disable the adapter's destination pin — the driver's send-time
+    # consumers' timeout overrides and a pinned :cacerts trust bundle for
+    # private-CA endpoints). Consumer-trusted config like :ssrf_check: it
+    # CAN disable the adapter's destination pin — the driver's send-time
     # check above is the residual guarantee, not a full replacement
     adapter_opts = config[:http_opts] || []
 

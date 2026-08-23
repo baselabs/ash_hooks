@@ -417,6 +417,19 @@ defmodule AshHooks.BoundedHttpTest do
   end
 
   describe "body framing faults" do
+    test "a sized body straddling pulls reassembles" do
+      {base, opts} =
+        scripted_server(
+          send: "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhel",
+          pause: 60,
+          send: "lo",
+          close: true
+        )
+
+      assert {:ok, %{status: 200, body: "hello"}} =
+               Bounded.request(:get, base <> "/split-sized", %{}, nil, opts)
+    end
+
     test "a sized body whose server stalls mid-body is a recv timeout" do
       {base, opts} =
         scripted_server(

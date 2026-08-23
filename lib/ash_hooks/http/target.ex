@@ -79,10 +79,16 @@ defmodule AshHooks.Http.Target do
   end
 
   # TLS names the ORIGINAL host; a literal-IP destination has no name to
-  # verify (SNI disabled, chain validation kept)
-  @spec ssl_options(String.t()) :: keyword()
-  def ssl_options(host) do
-    base = [verify: :verify_peer, cacerts: :public_key.cacerts_get(), depth: 3]
+  # verify (SNI disabled, chain validation kept).
+  #
+  # `cacerts/1` is the injectable trust-store seam (D3, 2026-08-22): the
+  # default is UNCHANGED — the OTP CA store — but a caller (adapter opts
+  # `[cacerts: der_list]`, threaded from the worker's `:http_opts`) can pin
+  # a private CA bundle, which is also how the test suite drives CA-verified
+  # loopback sessions against committed local fixtures.
+  @spec ssl_options(String.t(), list() | nil) :: keyword()
+  def ssl_options(host, cacerts \\ nil) do
+    base = [verify: :verify_peer, cacerts: cacerts || :public_key.cacerts_get(), depth: 3]
 
     if ip_literal?(host) do
       Keyword.put(base, :server_name_indication, :disable)
