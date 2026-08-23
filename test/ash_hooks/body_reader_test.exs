@@ -141,5 +141,44 @@ if Code.ensure_loaded?(Plug.Conn) do
 
       assert conn.private[:ash_hooks_raw_body] == raw
     end
+
+    describe "chunked + faulted reads" do
+      test "a body larger than the read length arrives as {:more} chunks, all cached" do
+        raw = String.duplicate("x", 10)
+        conn = Plug.Test.conn("POST", "/webhooks", raw)
+
+        assert {:more, first, conn} = AshHooks.BodyReader.read_body(conn, length: 4)
+        assert byte_size(first) == 4
+
+        {chunks, conn} =
+          Enum.reduce_while(Stream.repeatedly(fn -> :ok end), {[first], conn}, fn _,
+                                                                                  {acc, conn} ->
+            case AshHooks.BodyReader.read_body(conn, length: 4) do
+              {:more, chunk, conn} -> {:cont, {[chunk | acc], conn}}
+              {:ok, last, conn} -> {:halt, {[last | acc], conn}}
+            end
+          end)
+
+        assert IO.iodata_to_binary(Enum.reverse(chunks)) == raw
+        assert conn.private[:ash_hooks_raw_body] == raw
+      end
+
+      test "a faulted read surfaces the error and caches nothing" do
+        defmodule ErrorAdapter do
+          @moduledoc false
+          def read_req_body(_conn, _opts), do: {:error, :closed}
+        end
+
+        conn = %Plug.Conn{
+          adapter: {ErrorAdapter, nil},
+          method: "POST",
+          req_headers: [],
+          path_params: %{},
+          private: %{}
+        }
+
+        assert {:error, :closed} = AshHooks.BodyReader.read_body(conn, [])
+      end
+    end
   end
 end

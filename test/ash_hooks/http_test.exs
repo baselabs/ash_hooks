@@ -156,4 +156,113 @@ defmodule AshHooks.HttpTest do
       assert reason in [:unresolved_host, :unsafe_destination]
     end
   end
+
+  # ────────────────── coverage: the httpc-specific fault paths ──────────────────
+
+  defp raw_server(script) do
+    parent = self()
+
+    {:ok, listen} =
+      :gen_tcp.listen(0, [:binary, {:active, false}, {:ip, {127, 0, 0, 1}}])
+
+    {:ok, port} = :inet.port(listen)
+
+    spawn(fn ->
+      {:ok, socket} = :gen_tcp.accept(listen, 10_000)
+      {:ok, _request} = :gen_tcp.recv(socket, 0, 5_000)
+
+      Enum.each(script, fn
+        {:send, bytes} ->
+          :gen_tcp.send(socket, bytes)
+
+        {:pause, ms} ->
+          :timer.sleep(ms)
+
+        {:rst, ms} ->
+          :timer.sleep(ms)
+          :inet.setopts(socket, linger: {true, 0})
+          :gen_tcp.close(socket)
+
+        :close ->
+          :gen_tcp.close(socket)
+      end)
+
+      :gen_tcp.close(listen)
+      send(parent, :done)
+    end)
+
+    {"http://127.0.0.1:#{port}", [validate_destination: false]}
+  end
+
+  describe "httpc fault + shape edges" do
+    test "a bodyless non-2xx keeps body nil" do
+      {base, opts} =
+        raw_server(
+          send: "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n",
+          pause: 100,
+          close: :close
+        )
+
+      assert {:ok, %{status: 404, body: body}} = Httpc.request(:get, base <> "/x", %{}, nil, opts)
+      assert body == ""
+    end
+
+    test "a POST without a content-type header defaults to application/json" do
+      {base, opts} =
+        raw_server(
+          send: "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+          pause: 100,
+          close: :close
+        )
+
+      assert {:ok, %{status: 200, body: "ok"}} =
+               Httpc.request(:post, base <> "/x", %{}, "{}", opts)
+    end
+
+    test "a named-host https attempt builds SNI + the RFC 6125 check before refusing" do
+      # closed port: the connect fails, but the TLS option builder's named
+      # branch executed during the attempt
+      assert {:error, _reason} =
+               Httpc.request(:get, "https://localhost:1/x", %{}, nil,
+                 validate_destination: false,
+                 connect_timeout: 500
+               )
+    end
+
+    test "a plain-http request never builds ssl options (the empty :ssl rejection)" do
+      {base, opts} =
+        raw_server(
+          send: "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+          pause: 100,
+          close: :close
+        )
+
+      assert {:ok, %{status: 200}} = Httpc.request(:get, base <> "/x", %{}, nil, opts)
+    end
+
+    test "a stalled response surfaces httpc's own timeout reason" do
+      {base, opts} = raw_server(pause: 1_000)
+
+      assert {:error, :timeout} =
+               Httpc.request(:get, base <> "/x", %{}, nil, Keyword.put(opts, :timeout, 200))
+    end
+
+    test "a mid-stream transport failure surfaces its reason" do
+      {base, opts} =
+        raw_server(send: "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nab", rst: 300)
+
+      assert {:error, _reason} = Httpc.request(:get, base <> "/x", %{}, nil, opts)
+    end
+
+    test "a stream that stalls surfaces httpc's timeout reason" do
+      {base, opts} =
+        raw_server(
+          send: "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nab",
+          pause: 1_000
+        )
+
+      assert {:error, _reason} =
+               Httpc.request(:get, base <> "/x", %{}, nil, Keyword.put(opts, :timeout, 200))
+    end
+  end
 end

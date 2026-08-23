@@ -285,5 +285,40 @@ if Code.ensure_loaded?(Oban) do
       assert final.status == :dead_letter
       assert final.last_error =~ "destination"
     end
+
+    describe "the macro's option validation (runtime compiles)" do
+      @worker_base """
+      defmodule RuntimeWorker do
+        use AshHooks.Worker,
+          deliveries: AshHooks.WorkerTest.Delivery,
+          endpoints: AshHooks.WorkerTest.Endpoint,
+          secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}
+      end
+      """
+
+      test "a snippet_redactor with a non-module half raises at compile" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        snippet_redactor: {\"not-a-module\", :call}"
+          )
+
+        assert_raise ArgumentError, ~r/must be \{module, function\}/, fn ->
+          Code.compile_string(source)
+        end
+      after
+        :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "defaults (no :oban, no :snippet_redactor, no :http) compile clean" do
+        assert [{module, _beam}] = Code.compile_string(@worker_base)
+        assert module == RuntimeWorker
+      after
+        :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+    end
   end
 end

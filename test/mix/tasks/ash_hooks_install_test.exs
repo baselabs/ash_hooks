@@ -78,5 +78,58 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
     defp render(igniter, path) do
       igniter.rewrite |> Rewrite.source!(path) |> Source.get(:content)
     end
+
+    describe "parsers argument shapes" do
+      test "the Elixir.-prefixed alias and stringly atom forms are not the alias node" do
+        for replacement <- ["plug Elixir.Plug.Parsers,", ~s(plug :"Plug.Parsers",)] do
+          source = String.replace(@endpoint_source, "plug Plug.Parsers,", replacement)
+
+          igniter =
+            Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
+            |> Install.igniter()
+
+          refute render(igniter, "lib/my_app_web/endpoint.ex") =~ "body_reader"
+        end
+      end
+
+      test "a Plug.Parsers whose options are not a keyword list is left alone" do
+        source =
+          String.replace(
+            @endpoint_source,
+            ~r/plug Plug\.Parsers,\s*parsers:[^\)]*\)/s,
+            "plug Plug.Parsers, %{parsers: [:json]}"
+          )
+
+        assert source =~ "%{parsers:"
+
+        igniter =
+          Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
+          |> Install.igniter()
+
+        rendered = render(igniter, "lib/my_app_web/endpoint.ex")
+        assert rendered =~ "Plug.Parsers"
+        refute rendered =~ "body_reader"
+      end
+
+      test "a Plug.Parsers with no options is left alone (the manual step)" do
+        source =
+          String.replace(
+            @endpoint_source,
+            ~r/plug Plug\.Parsers,\s*parsers:[^\)]*\)/s,
+            "plug Plug.Parsers"
+          )
+
+        # the surgical replace landed: exactly one bare Plug.Parsers plug remains
+        assert source =~ "plug Plug.Parsers\n"
+
+        igniter =
+          Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
+          |> Install.igniter()
+
+        rendered = render(igniter, "lib/my_app_web/endpoint.ex")
+        assert rendered =~ "Plug.Parsers"
+        refute rendered =~ "body_reader"
+      end
+    end
   end
 end
