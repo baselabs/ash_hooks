@@ -286,6 +286,22 @@ if Code.ensure_loaded?(Oban) do
       assert final.last_error =~ "destination"
     end
 
+    describe "the adapter-opts seam bake (cross-vendor review regression)" do
+      test "the macro threads :http_opts into the baked delivery config" do
+        path = Path.expand("../../lib/ash_hooks/worker.ex", __DIR__)
+        {:ok, ast} = Code.string_to_quoted(File.read!(path))
+
+        {_, found?} =
+          Macro.prewalk(ast, false, fn
+            {:http_opts, _value} = node, _acc -> {node, true}
+            node, acc -> {node, acc}
+          end)
+
+        assert found?,
+               "use AshHooks.Worker must bake :http_opts into the delivery config or the option is silently dropped"
+      end
+    end
+
     describe "the macro's option validation (runtime compiles)" do
       @worker_base """
       defmodule RuntimeWorker do

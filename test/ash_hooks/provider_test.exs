@@ -187,6 +187,11 @@ defmodule AshHooks.ProviderTest do
       refute(:code.is_loaded(module) != false, "fixture should be unloaded before resolving")
 
       assert Provider.secret_scope(module) == :per_connection
+    after
+      # restore the instrumented instance: a module left purged breaks
+      # :cover.stop's collection at suite end (exit 3 under a real gate)
+      {:module, AshHooks.TestPerConnectionProvider} =
+        Code.ensure_loaded(AshHooks.TestPerConnectionProvider)
     end
   end
 

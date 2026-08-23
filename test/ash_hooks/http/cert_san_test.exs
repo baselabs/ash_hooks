@@ -38,6 +38,16 @@ defmodule AshHooks.CertSanTest do
       refute CertSan.ip_san_match?(cert_der("no-ip-san-cert.pem"), {127, 0, 0, 1})
     end
 
+    test "garbage-SAN extnValue EXITS at asn1 and is caught — fails closed, never crashes" do
+      # a well-formed chain whose SAN extension carries non-DER bytes:
+      # der_decode EXITS ({:error, {:asn1, ...}}) — uncatchable by rescue,
+      # the failure class the cross-vendor review found
+      [{:Certificate, der, _}] =
+        :public_key.pem_decode(File.read!("test/fixtures/bad-san-cert.pem"))
+
+      assert AshHooks.Http.CertSan.ip_san_match?(der, {127, 0, 0, 1}) == false
+    end
+
     test "garbage DER fails closed (no raise, no match)" do
       refute CertSan.ip_san_match?("not a certificate", {127, 0, 0, 1})
     end

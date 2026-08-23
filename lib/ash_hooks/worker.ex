@@ -112,6 +112,9 @@ defmodule AshHooks.Worker do
         secret_resolver: {expand.(resolver_m), resolver_f},
         snippet_redactor: snippet_redactor,
         http: maybe_expand(Keyword.get(opts, :http), expand),
+        # the adapter-opts seam (:cacerts private-CA bundles, timeout
+        # overrides) — threaded or the option is silently dropped
+        http_opts: Keyword.get(opts, :http_opts),
         max_attempts: Keyword.get(opts, :delivery_max_attempts, 10),
         base_backoff_seconds: Keyword.get(opts, :base_backoff_seconds, 2),
         max_backoff_seconds: Keyword.get(opts, :max_backoff_seconds, 3600),

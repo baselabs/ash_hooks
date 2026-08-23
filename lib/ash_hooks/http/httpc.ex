@@ -68,7 +68,7 @@ defmodule AshHooks.Http.Httpc do
         timeout: opts[:timeout] || @default_timeout,
         connect_timeout: opts[:connect_timeout] || @default_connect_timeout
       ]
-      |> maybe_put_ssl(target.uri.scheme, host)
+      |> maybe_put_ssl(target.uri.scheme, host, opts[:cacerts])
 
     url = String.to_charlist(URI.to_string(pinned_uri))
 
@@ -152,9 +152,10 @@ defmodule AshHooks.Http.Httpc do
   defp truncate(body, _max), do: body
 
   # the pinned URL carries the validated IP; TLS still names the ORIGINAL
-  # host (SNI + RFC 6125 hostname check against it)
-  defp ssl_options(host) do
-    base = [verify: :verify_peer, cacerts: :public_key.cacerts_get(), depth: 3]
+  # host (SNI + RFC 6125 hostname check against it). Same :cacerts seam as
+  # Bounded — a pinned private-CA bundle survives an adapter swap.
+  defp ssl_options(host, cacerts) do
+    base = [verify: :verify_peer, cacerts: cacerts || :public_key.cacerts_get(), depth: 3]
 
     # a literal-IP destination has no name to verify — chain validation
     # only, SNI disabled (cross-vendor note: SNI-ing an IP is not a name)
@@ -177,10 +178,10 @@ defmodule AshHooks.Http.Httpc do
 
   # an empty :ssl option on a plain-http request is rejected by :httpc —
   # only attach it for https
-  defp maybe_put_ssl(options, "https", host),
-    do: Keyword.put(options, :ssl, ssl_options(host))
+  defp maybe_put_ssl(options, "https", host, cacerts),
+    do: Keyword.put(options, :ssl, ssl_options(host, cacerts))
 
-  defp maybe_put_ssl(options, _http, _host), do: options
+  defp maybe_put_ssl(options, _http, _host, _cacerts), do: options
 
   defp content_type(headers) do
     case Map.get(headers, "content-type") do

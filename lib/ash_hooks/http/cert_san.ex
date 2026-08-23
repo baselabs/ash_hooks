@@ -17,6 +17,12 @@ defmodule AshHooks.Http.CertSan do
     ip_in_san?(cert, address)
   rescue
     _ -> false
+  catch
+    # asn1's der_decode EXITS on invalid tags ({:error, {:asn1, ...}} —
+    # probed on OTP 29), and a rescue cannot catch an exit: without this
+    # clause a garbage-SAN certificate CRASHES the caller instead of
+    # failing closed (cross-vendor review finding)
+    :exit, _reason -> false
   end
 
   # public_key :plain record shapes (verified against a fixture,
@@ -44,9 +50,9 @@ defmodule AshHooks.Http.CertSan do
 
   defp record_field(record, index), do: elem(record, index)
 
-  # extnValue arrives as raw DER — re-decode with the SAN template. A SAN
-  # that pkix_decode_cert accepted always re-decodes here (same template):
-  # malformed SAN bytes raise at pkix itself and hit ip_san_match?'s rescue.
+  # extnValue arrives as raw DER — re-decode with the SAN template. Malformed
+  # SAN bytes EXIT (asn1 invalid-tag) and are caught at ip_san_match?'s
+  # catch — failing closed, never crashing the caller.
   defp decode_san(san_der), do: {:ok, :public_key.der_decode(:SubjectAltName, san_der)}
 
   # der_decode(:SubjectAltName) yields iPAddress as RAW BYTES — a 4-byte

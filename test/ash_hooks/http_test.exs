@@ -229,6 +229,42 @@ defmodule AshHooks.HttpTest do
                )
     end
 
+    test "a pinned private-CA bundle completes the https roundtrip (the adapter-agnostic seam)" do
+      parent = self()
+
+      {:ok, listen} =
+        :ssl.listen(0,
+          certfile: ~c"test/fixtures/tls/server-both-san.pem",
+          keyfile: ~c"test/fixtures/tls/server.key",
+          ip: {127, 0, 0, 1},
+          active: false,
+          mode: :binary
+        )
+
+      {:ok, {_addr, port}} = :ssl.sockname(listen)
+
+      spawn(fn ->
+        {:ok, socket} = :ssl.transport_accept(listen, 10_000)
+        {:ok, socket} = :ssl.handshake(socket, 10_000)
+        {:ok, _request} = :ssl.recv(socket, 0, 5_000)
+        :ssl.send(socket, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+        :timer.sleep(100)
+        :ssl.close(socket)
+        :ssl.close(listen)
+        send(parent, :done)
+      end)
+
+      [{:Certificate, ca_der, :not_encrypted}] =
+        :public_key.pem_decode(File.read!("test/fixtures/tls/local-ca.pem"))
+
+      assert {:ok, %{status: 200, body: "ok"}} =
+               Httpc.request(:get, "https://localhost:#{port}/hook", %{}, nil,
+                 validate_destination: false,
+                 cacerts: [ca_der],
+                 timeout: 5_000
+               )
+    end
+
     test "a plain-http request never builds ssl options (the empty :ssl rejection)" do
       {base, opts} =
         raw_server(
