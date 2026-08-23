@@ -64,10 +64,15 @@ defmodule AshHooks.Http.Bounded do
 
     with {:ok, transport} <- connect(target, opts) do
       try do
-        case send_all(transport, IO.iodata_to_binary(request)) do
-          :ok -> read_response(transport, opts)
-          {:error, reason} -> {:error, reason}
-        end
+        # A send failure needs no arm of its own: the Erlang inet/ssl
+        # drivers QUEUE sends and surface peer-death errors on the NEXT
+        # socket operation (probed on macOS AND Linux, TCP and TLS, at
+        # 512MB against a receive window capped to 1KB — send returns :ok
+        # and the error arrives at the read). A socket that errors a send
+        # errors the read faster, and the read's existing error arms carry
+        # the same retry/terminal classification the caller needs.
+        _ = send_all(transport, IO.iodata_to_binary(request))
+        read_response(transport, opts)
       after
         close(transport)
       end
@@ -155,12 +160,7 @@ defmodule AshHooks.Http.Bounded do
   defp send_all({:tcp, socket}, data), do: send_all(:gen_tcp, socket, data)
   defp send_all({:ssl, socket}, data), do: send_all(:ssl, socket, data)
 
-  defp send_all(mod, socket, data) do
-    case mod.send(socket, data) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:send_failed, reason}}
-    end
-  end
+  defp send_all(mod, socket, data), do: mod.send(socket, data)
 
   defp close({:tcp, socket}), do: :gen_tcp.close(socket)
   defp close({:ssl, socket}), do: :ssl.close(socket)

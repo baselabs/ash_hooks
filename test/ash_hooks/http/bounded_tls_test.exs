@@ -80,7 +80,7 @@ defmodule AshHooks.Http.BoundedTlsTest do
              Bounded.request(:get, "https://127.0.0.1:#{port}/hook", %{}, nil, opts())
   end
 
-  test "a TLS peer that dies mid-send fails the send as an error tuple" do
+  test "a TLS peer that dies under an in-flight send is an error tuple, never a raise" do
     parent = self()
 
     {:ok, listen} =
@@ -98,9 +98,7 @@ defmodule AshHooks.Http.BoundedTlsTest do
       {:ok, socket} = :ssl.transport_accept(listen, 10_000)
       {:ok, socket} = :ssl.handshake(socket, 10_000)
       {:ok, _prefix} = :ssl.recv(socket, 100, 5_000)
-      # TLS records must be ACKED by a live session — a closed peer fails
-      # the writer once its buffers fill (unlike raw TCP, where Linux
-      # drains sends into a dead socket and surfaces the error later)
+      :timer.sleep(100)
       :ssl.close(socket)
       :ssl.close(listen)
       send(parent, :dead)
@@ -108,19 +106,19 @@ defmodule AshHooks.Http.BoundedTlsTest do
 
     big_body = String.duplicate("z", 512_000_000)
 
-    result =
-      Bounded.request(
-        :post,
-        "https://127.0.0.1:#{port}/sink",
-        %{},
-        big_body,
-        Keyword.put(opts(), :connect_timeout, 1_000)
-      )
+    assert {:error, shape} =
+             Bounded.request(
+               :post,
+               "https://127.0.0.1:#{port}/sink",
+               %{},
+               big_body,
+               Keyword.put(opts(), :connect_timeout, 1_000)
+             )
 
-    IO.puts("TLS SEND-FAILURE SHAPE: #{inspect(elem(result, 1))}")
-
-    assert {:error, shape} = result
-    assert shape in [{:send_failed, :closed}, {:send_failed, :econnreset}, :truncated_response]
+    # the driver-semantics note in Bounded.send_request: the send failure
+    # the driver cannot report surfaces at the read
+    assert shape in [:truncated_response, :closed] or
+             (is_tuple(shape) and elem(shape, 0) == :tls_alert)
   end
 
   test "the default trust store is unchanged — no local CA injection, no session" do

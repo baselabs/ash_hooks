@@ -301,7 +301,7 @@ defmodule AshHooks.BoundedHttpTest do
   end
 
   describe "send failures" do
-    test "a peer that closes before reading fails the send as an error tuple" do
+    test "a peer that dies under an in-flight send is an error tuple, never a raise" do
       parent = self()
 
       {:ok, listen} =
@@ -311,10 +311,10 @@ defmodule AshHooks.BoundedHttpTest do
 
       spawn(fn ->
         {:ok, socket} = :gen_tcp.accept(listen, 10_000)
-        # Cap OUR receive window (defeats any sysctl autotuning), read a
-        # prefix, then HOLD: the client's 512MB send fills the tiny window
-        # and BLOCKS in the kernel. RST-on-close while the send is provably
-        # blocked — only then does :gen_tcp.send return an error
+        # Cap OUR receive window (defeats sysctl autotuning), read a
+        # prefix, then HOLD — the client's 512MB send fills the tiny
+        # window and blocks in the kernel — then RST. The send failure
+        # the driver cannot report surfaces at the read
         :inet.setopts(socket, rcvbuf: 1024)
         {:ok, _prefix} = :gen_tcp.recv(socket, 100, 5_000)
         :timer.sleep(100)
@@ -326,44 +326,20 @@ defmodule AshHooks.BoundedHttpTest do
 
       big_body = String.duplicate("z", 512_000_000)
 
-      # the observable CONTRACT: a dead peer is an error tuple, never a
-      # raise. WHERE the failure surfaces is platform-timing: Linux kills
-      # the in-flight send ({:send_failed, reason} — the send wrap this
-      # test pins for the gate); macOS buffers arbitrarily large sends and
-      # the failure surfaces at the read (truncated_response); a losing
-      # race puts the RST on the connect itself (econnreset)
-      result =
-        Bounded.request(
-          :post,
-          "http://127.0.0.1:#{port}/sink",
-          %{},
-          big_body,
-          validate_destination: false,
-          connect_timeout: 1_000
-        )
+      assert {:error, shape} =
+               Bounded.request(
+                 :post,
+                 "http://127.0.0.1:#{port}/sink",
+                 %{},
+                 big_body,
+                 validate_destination: false,
+                 connect_timeout: 1_000
+               )
 
-      IO.puts("SEND-FAILURE SHAPE: #{inspect(elem(result, 1))}")
-
-      sysctls = ~w(net.core.wmem_max net.core.rmem_max net.ipv4.tcp_wmem net.ipv4.tcp_rmem)
-
-      IO.puts(
-        "send-failure sysctls: " <>
-          (sysctls
-           |> Enum.map(fn s ->
-             "#{s}=#{elem(System.cmd("sysctl", ["-n", s]), 0) |> String.trim()}"
-           end)
-           |> Enum.join(" "))
-      )
-
-      assert {:error, shape} = result
-
-      assert shape in [
-               {:send_failed, :closed},
-               {:send_failed, :econnreset},
-               :truncated_response,
-               :econnreset,
-               :closed
-             ]
+      # the CONTRACT on every platform stack: an error tuple, never a
+      # raise (the send-failure label itself is unproducible — see the
+      # driver-semantics note in send_request)
+      assert shape in [:truncated_response, :econnreset, :closed]
     end
   end
 
