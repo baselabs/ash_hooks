@@ -20,7 +20,9 @@ defmodule AshHooks.Http.Bounded do
 
   `AshHooks.Http.Httpc` remains available as an alternative adapter
   (swap via the worker's `:http` opt) — its non-2xx streaming limitation
-  is why this module exists as the default.
+  is why this module exists as the default. TLS trusts the OTP CA store
+  by default; a private-CA bundle can be pinned through the adapter opts
+  (`[cacerts: der_list]`, threaded from the worker's `:http_opts`).
   """
 
   @behaviour AshHooks.Http

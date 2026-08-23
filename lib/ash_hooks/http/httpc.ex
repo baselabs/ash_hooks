@@ -21,8 +21,16 @@ defmodule AshHooks.Http.Httpc do
 
   Redirects are DISABLED (`autoredirect: false` — a 303-on-POST is
   otherwise re-issued as GET and the target's body returned). TLS
-  verifies peers against the OTP CA store. Connect/receive are bounded;
-  the Oban job timeout is the outer bound.
+  verifies peers against the OTP CA store, or a pinned private-CA bundle
+  via the adapter opts (`[cacerts: der_list]` — same seam as Bounded).
+  Connect/receive are bounded; the Oban job timeout is the outer bound.
+
+  **Literal-IP HTTPS fails closed here** (`{:error,
+  :ip_literal_https_needs_bounded}`): this adapter never holds the
+  socket, so the iPAddress-SAN floor `Bounded` enforces cannot run, and
+  chain validation alone would let ANY chain-valid certificate
+  authenticate the endpoint IP. Use the default adapter for literal-IP
+  HTTPS endpoints.
   """
 
   @behaviour AshHooks.Http

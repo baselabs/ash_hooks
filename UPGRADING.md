@@ -1,5 +1,25 @@
 # Upgrading
 
+## 1.0.1 → 1.0.2+
+
+Two behavior corrections to know about (both security-posture fixes; no API change):
+
+### 1. The alternate `:httpc` adapter refuses literal-IP HTTPS
+
+`AshHooks.Http.Httpc` (NOT the default) now returns `{:error, :ip_literal_https_needs_bounded}`
+for `https://<ip-literal>` destinations. It previously validated only the chain — which let
+any chain-valid certificate authenticate the endpoint IP. The default adapter
+(`AshHooks.Http.Bounded`) enforces the iPAddress-SAN floor and keeps working; if you swapped
+to `:httpc` AND deliver to literal-IP HTTPS endpoints, switch those deliveries back (or drop
+the `:http` override).
+
+### 2. `use AshHooks.Worker` no longer drops `:http_opts`
+
+`http_opts:` was accepted and silently ignored; it now threads to the adapter. A config that
+passed it with a wrong shape could start behaving differently (correctly) — see the `:cacerts`
+seam in the README/CHANGELOG for the intended use (private-CA bundles: compile-time literals,
+or `{m, f, a}` resolved per-perform for computed values).
+
 ## 0.2.x → 1.0.0
 
 1.0.0 is the semver freeze (ADR-0010). There are **no public API removals or renames**

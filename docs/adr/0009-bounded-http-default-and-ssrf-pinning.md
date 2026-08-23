@@ -64,3 +64,7 @@ handling would re-issue POST as GET.
   surprises.
 - Certificates for literal-IP endpoints must carry the iPAddress SAN (or the endpoint
   dead-letters with `:cert_ip_mismatch`) — compliant with how modern CAs issue IP certs.
+- Trust-store injection (D3, 2026-08-22): `Target.ssl_options/2` and both adapters take
+  an injectable `:cacerts` bundle (adapter opts; worker `:http_opts`) for private-CA
+  endpoints — default unchanged, the OTP CA store. The alternate `:httpc` adapter
+  refuses literal-IP HTTPS fail-closed instead: it cannot run the IP-SAN floor.

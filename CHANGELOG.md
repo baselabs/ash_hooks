@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.0.3 — 2026-08-23
+
+Docs-and-tests release (no functional changes; 1.0.2's gate and fixes
+unchanged):
+
+### Changed
+
+- The send-failure contract tests dropped their 512MB bodies for 16MB
+  with the peer's receive window pinned to 1KB — the same in-flight
+  guarantee at 1/32nd the allocation, closing the resource-pressure
+  residual from the 1.0.2 ship report. CI uploads the cover HTML when
+  the coverage gate reds (triage data, not guesswork).
+
+### Docs
+
+- UPGRADING carries the 1.0.2 behavior notes (the `:httpc` literal-IP
+  HTTPS refusal, the `:http_opts` threading).
+- The `:httpc` and `Bounded` moduledocs document the literal-IP posture
+  and the `:cacerts` trust-store seam; ADR-0009 records the seam
+  decision (wayfinder D3) in Consequences.
+
 ## 1.0.2 — 2026-08-22
 
 The 100% coverage release: the maintainership directive (2026-08-22)
