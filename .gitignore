@@ -39,3 +39,4 @@ priv/plts/
 
 # Test coverage output
 cover/
+/.forge/
