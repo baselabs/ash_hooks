@@ -8,7 +8,14 @@ defmodule AshHooks.MixProject do
     [
       app: :ash_hooks,
       version: @version,
-      elixir: "~> 1.17",
+      # LOCKSTEP RULE: this exact pin, .tool-versions, and CI's
+      # elixir/otp versions move together in ONE commit — divergence between
+      # the three is a defect. A bare version is an EXACT requirement: Mix
+      # raises Mix.ElixirVersionError on any other Elixir at deps
+      # loadpaths, so a foreign toolchain can never compile silently and
+      # poison shared _build/PLT state. The OTP half of the pin (which
+      # System.version/0 cannot encode) is asserted in config/config.exs.
+      elixir: "1.20.4",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       consolidate_protocols: Mix.env() != :test,
@@ -21,7 +28,11 @@ defmodule AshHooks.MixProject do
         "Webhooks for Ash Framework — inbound verification + dedup, outbound signing + delivery",
       source_url: @source_url,
       homepage_url: @source_url,
-      dialyzer: [plt_add_apps: [:mix, :ash_sqlite]],
+      # :ecto_sql is explicit because `use AshSqlite.Repo` (test/support)
+      # macro-emits Ecto.Adapters.SQL delegations — the deps-PLT app
+      # enumeration does not reliably include it, and without it dialyzer
+      # reports those delegations as unknown functions.
+      dialyzer: [plt_add_apps: [:mix, :ash_sqlite, :ecto_sql]],
       # coverage PRINTS, never gates: Elixir's default 90% threshold would
       # make `mix test --cover` exit 3 on a percentage. (One residual
       # exit-3 source remains by design: the code-server fixture purges

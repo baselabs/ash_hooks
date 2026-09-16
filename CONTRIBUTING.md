@@ -17,6 +17,22 @@ ASH_HOOKS_NO_OPTIONAL=1 mix test   # the Oban/Plug-free leg
 mix dialyzer
 ```
 
+## Toolchain and dependency currency
+
+The toolchain is self-enforcing and lockstep-pinned to Elixir 1.20.4 /
+Erlang/OTP 28: the exact Elixir pin in `mix.exs`, `.tool-versions`, and
+CI's elixir/otp versions move together in ONE commit — divergence between
+the three is a defect. A foreign Elixir refuses at deps loadpaths
+(`Mix.ElixirVersionError`); a foreign OTP runtime refuses in
+`config/config.exs` before anything compiles.
+
+Dependency currency is checked mechanically, not remembered:
+
+```
+./scripts/check-currency.sh    # nonzero on resolver-updatable drift
+mix hex.audit                  # re-run after EVERY dependency move
+```
+
 ## What good changes look like
 
 - **Red-first tests for behavior changes.** A test that never failed proves nothing —

@@ -9,20 +9,24 @@ jobs:
   # Default legs build with the full dev dep set; the no-optional leg proves
   # the package compiles/tests/runs with oban and plug entirely absent
   # (ADR-0004).
+  #
+  # LOCKSTEP: these elixir/otp versions, mix.exs' exact Elixir pin, and
+  # .tool-versions move together in ONE commit. The pin is exact, so CI
+  # cannot run any other Elixir — a different toolchain refuses at deps
+  # loadpaths by design. (The former 1.17/1.18 matrix legs are gone for
+  # exactly that reason.)
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - elixir: "1.17"
-            otp: "27"
-          - elixir: "1.18"
-            otp: "27"
+          - elixir: "1.20.4"
+            otp: "28"
           # ADR-0004 proof: oban/plug dropped from the dep list entirely —
           # the package must compile, test, and run with neither loaded.
-          - elixir: "1.18"
-            otp: "27"
+          - elixir: "1.20.4"
+            otp: "28"
             no_optional: "1"
     env:
       MIX_ENV: test
@@ -40,6 +44,11 @@ jobs:
             _build
           key: mix-${{ matrix.elixir }}-${{ matrix.otp }}-noopt-${{ matrix.no_optional }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
+      # CVE discipline: hex.audit runs in CI and after every dependency
+      # move (it can lag public advisories by hours — after a fresh
+      # disclosure also check OSV/GHSA ranges for directly-consumed
+      # packages in the affected family).
+      - run: mix hex.audit
       - run: mix compile --warnings-as-errors
       - run: mix format --check-formatted
       - run: mix credo --strict
@@ -52,7 +61,7 @@ jobs:
       # collects everything and this step FAILS on a real miss
       - name: Coverage gate (100% of lib/ runtime lines)
         run: mix test --cover
-        if: matrix.no_optional != '1' && matrix.elixir == '1.18'
+        if: matrix.no_optional != '1'
       - name: Upload coverage HTML on a gate miss
         if: failure()
         uses: actions/upload-artifact@v4
@@ -64,13 +73,16 @@ jobs:
         run: |
           mix run --no-start -e 'if :code.which(Oban) != :non_existing or :code.which(Plug) != :non_existing, do: (IO.puts("optional dep loaded"); System.halt(1))'
 
-  # The declared Elixir ~> 1.17 minimum, resolved AT THE FLOORS: the lock
-  # is dropped so the resolver picks the newest versions whose own floors
-  # still admit the minimum — the combination a fresh consumer actually
-  # gets. (The original 1.15 claim was DISPROVEN by this leg on its first
-  # run: modern ash uses the Duration struct, added in Elixir 1.17 — no
-  # ash 3.x compiles on 1.15/1.16. Never keep a floor this leg disproves.)
-  floor:
+  # Fresh-consumer resolve: the lock is dropped so the resolver picks the
+  # newest versions the CURRENT mix.exs requirements admit — the
+  # combination a fresh clone gets before mix.lock exists. The former
+  # purpose (proving a ~> 1.17 floor) died with the exact toolchain pin:
+  # no other Elixir may compile this repo, floor included. The leg still
+  # proves the requirements alone resolve to a green build on the pinned
+  # toolchain. (Historical lesson kept: the original 1.15 claim was
+  # DISPROVEN by this leg on its first run — never keep a floor a clean
+  # resolve disproves.)
+  fresh_resolve:
     runs-on: ubuntu-latest
     env:
       MIX_ENV: test
@@ -78,14 +90,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.17"
-          otp-version: "27"
+          elixir-version: "1.20.4"
+          otp-version: "28"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             deps
             _build
-          key: mix-floor-1.17-27-${{ hashFiles('mix.exs') }}
+          key: mix-fresh-resolve-1.20.4-28-${{ hashFiles('mix.exs') }}
       - run: rm mix.lock
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
@@ -101,15 +113,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.18"
-          otp-version: "27"
+          elixir-version: "1.20.4"
+          otp-version: "28"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             deps
             _build
             ~/.mix
-          key: dialyzer-1.18-27-${{ hashFiles('mix.lock') }}
+          key: dialyzer-1.20.4-28-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - run: mix dialyzer
 
@@ -123,14 +135,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.18"
-          otp-version: "27"
+          elixir-version: "1.20.4"
+          otp-version: "28"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             deps
             _build
-          key: package-1.18-27-${{ hashFiles('mix.lock') }}
+          key: package-1.20.4-28-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - name: DSL cheat sheets match the DSL (generated files must not drift)
         run: mix spark.cheat_sheets --check
@@ -156,8 +168,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.18"
-          otp-version: "27"
+          elixir-version: "1.20.4"
+          otp-version: "28"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |

@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- Toolchain self-enforcement, lockstep-pinned to Elixir 1.20.4 / Erlang/OTP
+  28: `mix.exs` declares an EXACT Elixir pin (a bare version is an exact
+  requirement — Mix raises `Mix.ElixirVersionError` on any other Elixir at
+  deps loadpaths), and `config/config.exs` asserts the running OTP major
+  before anything compiles (`System.version/0` does not encode the OTP
+  build, so a same-Elixir foreign build passes Mix's check while compiling
+  incompatible BEAMs). A foreign toolchain now refuses loudly instead of
+  compiling silently and poisoning shared `_build`/PLT state. The pin,
+  `.tool-versions`, and CI's elixir/otp versions move together in ONE
+  commit — divergence between the three is a defect. CI's former
+  1.17/1.18 matrix legs are gone (a different Elixir refusing is the
+  point); the floor leg is now a lock-free fresh-resolve proof.
+- Dependencies moved to latest (`mix hex.outdated` shows zero "Update
+  possible"): oban 2.23.1 → 2.24.1, dialyxir 1.4.7 → 1.4.8, ex_doc
+  0.40.3 → 0.40.4. `mix hex.audit` clean before and after (and OSV shows
+  no advisories against the three new versions); CI now runs
+  `mix hex.audit` on every push.
+
+### Added
+
+- `scripts/check-currency.sh`: exits nonzero whenever `mix hex.outdated`
+  shows resolvable drift, and prints the packages whose latest release the
+  resolver will not take under current requirements — each of those must
+  carry an inline deliberate-pin reason in `mix.exs`. Fail-closed: an
+  errored `hex.outdated` run (lock mismatch, resolver failure) also exits
+  nonzero.
+
 ## 1.0.4 — 2026-09-16
 
 Current-Ash compatibility release: the repo's own app surfaces carry Ash

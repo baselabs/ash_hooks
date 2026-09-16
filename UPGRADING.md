@@ -1,5 +1,18 @@
 # Upgrading
 
+## Unreleased
+
+### The package now declares an EXACT Elixir/OTP toolchain
+
+`mix.exs` declares `elixir: "1.20.4"` (exact — not `~>`), and the repo's
+own build asserts OTP 28. For CONSUMERS the Hex-level requirement is the
+exact Elixir pin: an application resolving ash_hooks on any other Elixir
+gets a hard resolver error at deps loadpaths instead of compiling — by
+design. To adopt: build your application on Elixir 1.20.4 (any OTP-28
+Erlang works for consumers; the OTP assert is repo-local and never
+shipped). If you cannot move yet, stay on the previously released
+version.
+
 ## 1.0.3 → 1.0.4+
 
 Behavior corrections (all also under "Fixed" in the CHANGELOG; no API change):
