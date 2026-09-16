@@ -174,8 +174,6 @@ defmodule AshHooks.DeliveryTest do
   alias AshHooks.{Dispatcher, Event}
   alias AshHooks.Test.Repo
 
-  require Ash.Query
-
   @endpoints "delivery_test_endpoints"
   @subscriptions "delivery_test_subscriptions"
   @deliveries "delivery_test_deliveries"

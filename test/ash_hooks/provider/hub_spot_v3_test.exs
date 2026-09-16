@@ -573,7 +573,7 @@ defmodule AshHooks.Provider.HubSpotV3E2ETest do
       )
       |> Base.encode64()
 
-  defp deliver(name, body, ts),
+  defp deliver(_name, body, ts),
     do: %{
       signature: sign(body, ts),
       headers: %{"x-hubspot-request-timestamp" => ts},

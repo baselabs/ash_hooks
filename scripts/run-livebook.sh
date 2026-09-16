@@ -6,6 +6,7 @@
 set -euo pipefail
 notebook="${1:?usage: run-livebook.sh <notebook.livemd>}"
 work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
 python3 - "$notebook" "$work/cells.exs" <<'PY'
 import sys, re
 src = open(sys.argv[1]).read()
