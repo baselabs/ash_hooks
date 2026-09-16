@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Captured snippets and error summaries are now capped in BYTES instead of
+  grapheme-sliced. Under Ash 3.33's `:codepoints` counting the injected
+  `max_length` constraints count codepoints, and a grapheme-sliced
+  2048-character snippet of combining characters spans 4000+ codepoints —
+  the post-send ledger write then violated its own constraint and crashed
+  (`mark_succeeded` failed on a hostile response body), the same re-send
+  poison class the control-byte strip closes. The byte cap (on a codepoint
+  boundary) bounds the value under every counting mode, on every supported
+  Ash. Covers the response-snippet capture path, the redaction floor, and
+  the inbound `error_class` / dispatcher exit-string bounds. Found by
+  mining a timed-out cross-vendor review probe; regression is red-proven
+  against the grapheme-sliced code.
 - Current-Ash compatibility: Ash 3.33 requires every application that
   compiles resources to set `config :ash, :default_string_length_count`
   (the app-level half of GHSA-cwjv-574p-59f6), which broke the CI floor

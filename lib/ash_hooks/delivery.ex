@@ -704,7 +704,7 @@ defmodule AshHooks.Delivery do
       # (cross-vendor finding: re-send poison loop)
       |> String.replace(~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/, "")
       |> String.replace(~r/[\r\n]+/, " ")
-      |> String.slice(0, @snippet_max)
+      |> AshHooks.BoundedText.cap(@snippet_max)
     else
       @binary_placeholder
     end
@@ -727,9 +727,10 @@ defmodule AshHooks.Delivery do
   defp captured_snippet(body, response, config) do
     case apply_snippet_redactor(body, config[:snippet_redactor]) do
       {:ok, material} ->
-        # the combined string re-sliced so the 2048 attribute constraint
-        # holds WITH the marker inside it
-        String.slice(@captured_prefix <> redact(material), 0, @snippet_max)
+        # the combined string re-capped so the 2048 attribute constraint
+        # holds WITH the marker inside it — a byte cap bounds codepoints
+        # and graphemes alike, in either counting mode
+        AshHooks.BoundedText.cap(@captured_prefix <> redact(material), @snippet_max)
 
       :sanitize ->
         # crash / invalid / nil callback return: the sanitized summary —
@@ -746,7 +747,7 @@ defmodule AshHooks.Delivery do
 
   defp apply_snippet_redactor(body, redactor) do
     case redactor_fun(redactor).(body) do
-      out when is_binary(out) -> {:ok, String.slice(out, 0, @snippet_max)}
+      out when is_binary(out) -> {:ok, AshHooks.BoundedText.cap(out, @snippet_max)}
       nil -> :sanitize
       _other -> :sanitize
     end

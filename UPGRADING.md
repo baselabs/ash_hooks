@@ -27,7 +27,10 @@ constraints (event ids and error summaries at 255, response snippets at
 2048). Under `:codepoints` those bounds limit codepoints; under
 `:mixed`, Elixir-side validation of the same constraints counts
 graphemes — the exact tradeoff Ash documents for your own attributes.
-Your application owns the choice. See Ash's
+The diagnostic response-snippet capture is capped in bytes (on a
+codepoint boundary), so a captured snippet always satisfies its
+constraint under either mode. Your application owns the choice. See
+Ash's
 [backwards-compatibility config guide](https://hexdocs.pm/ash/backwards-compatibility-config.html#default_string_length_count)
 for per-attribute overrides.
 

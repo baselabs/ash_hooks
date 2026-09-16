@@ -418,6 +418,32 @@ defmodule AshHooks.DeliveryTest do
     end
   end
 
+  describe "Ash 3.33 counting-mode regressions" do
+    # Under the test app's :codepoints config (Ash 3.33's required choice),
+    # the injected response_snippet constraint counts CODEPOINTS — and a
+    # grapheme-sliced 2048 snippet of combining characters spans 4000+
+    # codepoints, failing the post-send ledger write on its own constraint
+    # (the same re-send poison class the control-byte strip closes). Found
+    # by mining a timed-out cross-vendor probe; the byte cap bounds the
+    # snippet in every counting mode.
+    test "a combining-character body still records its captured snippet" do
+      HttpDouble.set_responses([
+        {:ok, %{status: 200, headers: [], body: String.duplicate("à́", 3000)}}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(snippet_capture: true))
+
+      snippet = row!(row.id).response_snippet
+      assert String.starts_with?(snippet, "[captured] ")
+      assert String.valid?(snippet)
+      assert byte_size(snippet) <= 2048
+      assert snippet |> String.to_charlist() |> length() <= 2048
+    end
+  end
+
   describe "cross-vendor review regressions (2)" do
     test "a PERCENT-ENCODED secret disguise is redacted (derisk review regression)" do
       HttpDouble.set_responses([

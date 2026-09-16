@@ -481,8 +481,9 @@ defmodule AshHooks.Dispatcher do
 
   # exit/throw reasons classify without their contents — a thrown term can
   # carry payload or secret material (the bounded-classification rule).
+  # Byte cap so the 255 constraint holds in any counting mode.
   defp error_string({:exit, reason}) when is_atom(reason),
-    do: ("exit: " <> Atom.to_string(reason)) |> String.slice(0, 255)
+    do: ("exit: " <> Atom.to_string(reason)) |> AshHooks.BoundedText.cap(255)
 
   defp error_string({:exit, _reason}), do: "exit: unclassified"
 
