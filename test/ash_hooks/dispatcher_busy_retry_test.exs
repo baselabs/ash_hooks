@@ -128,6 +128,11 @@ if Code.ensure_loaded?(AshSqlite) do
         busy_timeout: 5_000
       )
 
+      # another busy-repo module's repo can still hold the name while
+      # ExUnit's lazy module teardown finishes — stop any survivor so this
+      # module starts on ITS OWN pool config (CI flake: already_started
+      # crashed setup_all and invalidated the module's tests)
+      if Process.whereis(BusyRepo), do: :ok = BusyRepo.stop(30_000)
       {:ok, _boot} = BusyRepo.start_link()
 
       BusyRepo.query!("""
