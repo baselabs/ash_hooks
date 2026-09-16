@@ -32,9 +32,9 @@ touch surfaces 1 or 6.
 ## Pre-publish (verify, in order)
 
 1. `git status` clean; `git rev-parse HEAD` recorded; CI green on that
-   SHA — ALL legs: the matrix (1.17/27, 1.18/27, 1.18/27 no-optional),
-   floor (1.17/27, lock-free), dialyzer, package (tarball + docs), and
-   livebook.
+   SHA — ALL legs: the matrix (1.20.4/28, 1.20.4/29, 1.20.4/28
+   no-optional), floor (1.20/28, lock-free), dialyzer, package (tarball
+   + docs), and livebook.
 2. Gates locally: `mix compile --warnings-as-errors && mix format --check-formatted &&
    mix credo --strict` (zero), `mix dialyzer` (zero), and both test legs:
    `mix test` AND `ASH_HOOKS_NO_OPTIONAL=1 mix test`.

@@ -6,16 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.1.0 — 2026-09-16
+
+Support-window release: the Elixir floor rises to 1.20 (a minor, not a
+major, by ADR-0010 rule 4 — the first exercise of that rule), the
+repo's own toolchain becomes self-enforcing and lockstep-pinned, and
+dependencies sit at latest with `mix hex.audit` running in CI.
+
 ### Changed
 
-- BREAKING: the supported Elixir window is now `~> 1.20` (was
-  `~> 1.17`) — nothing below Elixir 1.20 is supported, by owner
-  decision. Consumers on 1.17–1.19 get a resolver-level refusal instead
-  of a compile; stay on the previously released version if you cannot
-  move yet. CI tests the window on Erlang/OTP 28 (the dev default,
-  pinned in `.tool-versions` and mirrored by a dedicated leg) and 29;
-  the floor leg drops the lock and resolves at the floor to keep the
-  requirement honest.
+- The supported Elixir window is now `~> 1.20` (was `~> 1.17`) —
+  nothing below Elixir 1.20 is supported, by owner decision; the OTP
+  floor is 28 (CI tests 28 and 29). Consumers on 1.17–1.19 get a
+  resolver-level refusal instead of a compile. ADR-0010 rule 4 makes a
+  supported-floor bump a MINOR release, so a `~> 1.0` pin resolves
+  1.1.0 and then fails resolution on old Elixirs — pin
+  `{:ash_hooks, "~> 1.0.4"}` until you can move (see UPGRADING.md). CI
+  tests the window on Erlang/OTP 28 (the dev default, pinned in
+  `.tool-versions` and mirrored by a dedicated leg) and 29; the floor
+  leg drops the lock and resolves at the floor to keep the requirement
+  honest.
 - Repo-local toolchain enforcement — consumers are unaffected: `config/`
   is excluded from the hex tarball. Development runs on one pinned
   toolchain (`.tool-versions`: Elixir 1.20.4 / Erlang/OTP 28) mirrored

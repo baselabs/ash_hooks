@@ -36,7 +36,7 @@ need no queue infrastructure at all.
 - Telemetry events for the whole send/receive lifecycle — structured so
   they can never leak secrets or payloads into your metrics backend.
 
-Requires Elixir ~> 1.17 (OTP 27+) and Ash ~> 3.0. Oban (~> 2.20) is needed only
+Requires Elixir ~> 1.20 (OTP 28+) and Ash ~> 3.0. Oban (~> 2.20) is needed only
 for outbound delivery; Phoenix or Plug only for receiving. From 1.0
 the package follows semantic versioning with a named public surface —
 see [Stability](#stability).
@@ -46,7 +46,7 @@ see [Stability](#stability).
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 1.0"},
+    {:ash_hooks, "~> 1.1"},
     # only for outbound delivery:
     {:oban, "~> 2.20"}
   ]
@@ -286,8 +286,8 @@ telemetry events, error classes) — breaking changes only in 2.0,
 deprecations run two minors minimum, safety corrections ship as fixes
 ([ADR-0010](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0010-semver-and-support-policy.md)).
 
-Minimum supported versions, each CI-tested: Elixir ~> 1.17 (OTP 27+),
-Ash ~> 3.0, Oban ~> 2.20 (optional, outbound only). On Ash 3.33+ your
+Minimum supported versions: Elixir ~> 1.20 (OTP 28+; CI-tested on
+Erlang/OTP 28 and 29), Ash ~> 3.0, Oban ~> 2.20 (optional, outbound only). On Ash 3.33+ your
 application must also set Ash's required `default_string_length_count`
 config — an Ash requirement for every app compiling resources, not an
 ash_hooks one ([UPGRADING.md](UPGRADING.md)). One nuance: a fix

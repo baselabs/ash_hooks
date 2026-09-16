@@ -1,13 +1,19 @@
 # Upgrading
 
-## Unreleased
+## 1.0.4 → 1.1.0+
 
 ### Elixir 1.20+ required (previously 1.17+)
 
 The supported Elixir window is now `~> 1.20`. Applications resolving
 ash_hooks on Elixir 1.17–1.19 get a hard resolver error at deps
-loadpaths instead of a compile. If you cannot move to 1.20 yet, stay on
-the previously released version.
+loadpaths instead of a compile. Per ADR-0010 rule 4 a supported-floor
+bump ships as a MINOR release — so a `~> 1.0` pin will happily resolve
+1.1.0 and then fail resolution on old Elixirs. If you cannot move to
+Elixir 1.20 yet, pin the floor release instead:
+
+```elixir
+{:ash_hooks, "~> 1.0.4"}
+```
 
 ## 1.0.3 → 1.0.4+
 

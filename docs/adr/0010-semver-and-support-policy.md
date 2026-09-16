@@ -1,6 +1,11 @@
 # ADR-0010 — Semver and support policy (the 1.0.0 contract)
 
-- **Status:** Accepted (2026-08-22) — effective with the 1.0.0 release
+- **Status:** Accepted (2026-08-22) — effective with the 1.0.0 release;
+  support floors amended 2026-09-16 (owner decision, released as 1.1.0):
+  the Elixir floor rose from ~> 1.17 to ~> 1.20 and the OTP floor from
+  27+ to 28+ (CI tests 28 and 29; 1.17–1.19 support was retired, not
+  merely discouraged). The minor-release treatment of floor bumps below
+  is unchanged — 1.1.0 is its first exercise.
 - **Deciders:** maintainer
 
 ## Context
@@ -36,12 +41,14 @@ Rules:
    truncated bodies as success) is fixed forward and CHANGELOG'd under "Fixed", even
    where a consumer might have depended on the defect.
 4. **Support matrix:** the newest minor release of ash_hooks receives fixes; the
-   supported floors are Elixir ~> 1.17, OTP 27+, Ash ~> 3.0 — each floor is
+   supported floors are Elixir ~> 1.20, OTP 28+, Ash ~> 3.0 *(amended
+   2026-09-16, released as 1.1.0: previously Elixir ~> 1.17, OTP 27+. History: the
+   original 1.15 claim was disproven by the floor leg — modern ash requires the
+   `Duration` struct, added in Elixir 1.17)* — each floor is
    CI-tested (the `floor` leg resolves dependencies at the declared
-   minimums; the original 1.15 claim was disproven by that leg: modern ash
-   requires the `Duration` struct, added in Elixir 1.17). When a floor must
-   rise, it rises in a MINOR release with an UPGRADING.md note (a supported-floor bump
-   is explicitly not treated as major — the ecosystem convention for library floors).
+   minimums). When a floor must rise, it rises in a MINOR release with an
+   UPGRADING.md note (a supported-floor bump is explicitly not treated as
+   major — the ecosystem convention for library floors).
 5. **Security fixes** land on the supported minor and are released as patches
    (see SECURITY.md).
 
