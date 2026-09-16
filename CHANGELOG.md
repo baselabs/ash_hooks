@@ -8,19 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Repo-local toolchain enforcement — consumers are unaffected: the
-  package's Elixir requirement stays `~> 1.17` (a floor, not a pin), and
-  `config/` is excluded from the hex tarball. What changed is how the
-  repo enforces its own builds: development runs on one pinned toolchain
-  (`.tool-versions`: Elixir 1.20.4 / Erlang/OTP 28) mirrored by a
-  dedicated CI leg; `config/config.exs` refuses any OTP release CI does
-  not test (currently 27/28) before anything compiles, because
+- BREAKING: the supported Elixir window is now `~> 1.20` (was
+  `~> 1.17`) — nothing below Elixir 1.20 is supported, by owner
+  decision. Consumers on 1.17–1.19 get a resolver-level refusal instead
+  of a compile; stay on the previously released version if you cannot
+  move yet. CI tests the window on Erlang/OTP 28 (the dev default,
+  pinned in `.tool-versions` and mirrored by a dedicated leg) and 29;
+  the floor leg drops the lock and resolves at the floor to keep the
+  requirement honest.
+- Repo-local toolchain enforcement — consumers are unaffected: `config/`
+  is excluded from the hex tarball. Development runs on one pinned
+  toolchain (`.tool-versions`: Elixir 1.20.4 / Erlang/OTP 28) mirrored
+  by a dedicated CI leg; `config/config.exs` refuses any OTP release CI
+  does not test (currently 28/29) before anything compiles, because
   `System.version/0` does not encode the OTP build and a same-Elixir
-  foreign build would otherwise compile incompatible BEAMs silently. The
-  CI matrix brackets the supported window (floor 1.17, middle 1.18, dev
-  default 1.20.4); the window, `.tool-versions`, the OTP allowlist, and
-  the matrix move together in ONE commit. `mix hex.audit` now runs in CI
-  on every push.
+  foreign build would otherwise compile incompatible BEAMs silently.
+  The window, `.tool-versions`, the OTP allowlist, and the CI matrix
+  move together in ONE commit. `mix hex.audit` now runs in CI on every
+  push.
 - Dependencies moved to latest (`mix hex.outdated` shows zero "Update
   possible"): oban 2.23.1 → 2.24.1, dialyxir 1.4.7 → 1.4.8, ex_doc
   0.40.3 → 0.40.4. `mix hex.audit` clean before and after (and OSV shows
@@ -28,14 +33,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- The package now compiles on Elixir 1.17–1.18 running on OTP 28: a
-  `%Regex{}` inside the `@redaction_patterns` module attribute embeds the
-  compiled `re_pattern`, which is a reference on OTP 28 — Elixir < 1.19
-  cannot escape references when injecting an attribute into a function
-  body, so consumers on 1.18×OTP 28 (a supported combination) got a
-  compile-time `ArgumentError`. The patterns are now built by a `defp`
-  (identical regexes, flags, and order); CI gained a 1.18×OTP-28 leg so
-  the cell stays compiling. All 555 tests pass on that cell.
+- A `%Regex{}` inside a module attribute (`@redaction_patterns`) embeds
+  the compiled `re_pattern`, which is a reference on OTP 28 — Elixir
+  < 1.19 cannot escape references when injecting an attribute into a
+  function body, so the package did not compile for consumers on
+  1.17–1.19 × OTP 28 (a combination the old window admitted). The
+  patterns are now built by a `defp` (identical regexes, flags, and
+  order); with the floor now at 1.20 that combination is out-of-window,
+  and the `defp` keeps the escape class dead if the floor ever drops
+  below 1.19.
 - `mix dialyzer` on a fresh PLT no longer reports 13 unknown-function/
   unknown-type warnings in `test/support`: `use AshSqlite.Repo` emits
   `Ecto.Adapters.SQL` delegations, and the deps-PLT app enumeration does

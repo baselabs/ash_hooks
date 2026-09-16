@@ -1,5 +1,14 @@
 # Upgrading
 
+## Unreleased
+
+### Elixir 1.20+ required (previously 1.17+)
+
+The supported Elixir window is now `~> 1.20`. Applications resolving
+ash_hooks on Elixir 1.17–1.19 get a hard resolver error at deps
+loadpaths instead of a compile. If you cannot move to 1.20 yet, stay on
+the previously released version.
+
 ## 1.0.3 → 1.0.4+
 
 Behavior corrections (all also under "Fixed" in the CHANGELOG; no API change):

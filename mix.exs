@@ -9,15 +9,16 @@ defmodule AshHooks.MixProject do
       app: :ash_hooks,
       version: @version,
       # CONSUMER-FACING SUPPORT WINDOW: a floor, never a pin — a library
-      # must not force every consumer onto one Elixir build. Floor 1.17 is
-      # proven by CI's floor leg (the historical 1.15 claim was disproven
-      # there: modern ash needs the Duration struct from 1.17). The repo's
+      # must not force every consumer onto one Elixir build. Floor is 1.20
+      # (owner decision 2026-09-16: nothing below 1.20 is supported); CI's
+      # floor leg proves the resolver stays coherent at it. The repo's
       # OWN development runs on one pinned toolchain (.tool-versions,
       # mirrored by a dedicated CI leg) and config/config.exs refuses any
       # OTP release CI does not test — that repo-local enforcement never
       # ships (config/ is excluded from the package). The window,
-      # .tool-versions, and the CI matrix move together in ONE commit.
-      elixir: "~> 1.17",
+      # .tool-versions, the OTP allowlist, and the CI matrix move
+      # together in ONE commit.
+      elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       consolidate_protocols: Mix.env() != :test,

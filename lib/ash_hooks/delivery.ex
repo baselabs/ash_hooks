@@ -49,7 +49,9 @@ defmodule AshHooks.Delivery do
   # every consuming function body at compile time, and a %Regex{} carries
   # the compiled re_pattern — a reference on OTP 28, which Elixir < 1.19
   # cannot escape ("cannot inject attribute ... cannot escape
-  # #Reference"). The 1.18×OTP-28 CI leg compiles exactly that cell.
+  # #Reference"). The window floor is 1.20, so that combination is
+  # out-of-window today; the defp keeps the escape class dead if the
+  # floor ever drops below 1.19.
   defp redaction_patterns do
     [
       ~r/w[\s._+\-]{0,3}h[\s._+\-]{0,3}(?:s[\s._+\-]{0,3}(?:e[\s._+\-]{0,3}c|k)|p[\s._+\-]{0,3}k)[\s._+\-]{0,3}[A-Za-z0-9+\/%=_\-]+/i,

@@ -14,7 +14,7 @@ import Config
 # mandatory — :erlang.system_info(:otp_release) returns a charlist,
 # which can never equal a binary and would make the assert raise
 # unconditionally.
-supported_otp_releases = ["27", "28"]
+supported_otp_releases = ["28", "29"]
 running_otp = to_string(:erlang.system_info(:otp_release))
 
 if running_otp not in supported_otp_releases do
