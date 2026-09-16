@@ -287,7 +287,10 @@ deprecations run two minors minimum, safety corrections ship as fixes
 ([ADR-0010](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0010-semver-and-support-policy.md)).
 
 Minimum supported versions, each CI-tested: Elixir ~> 1.17 (OTP 27+),
-Ash ~> 3.0, Oban ~> 2.20 (optional, outbound only). One nuance: a fix
+Ash ~> 3.0, Oban ~> 2.20 (optional, outbound only). On Ash 3.33+ your
+application must also set Ash's required `default_string_length_count`
+config — an Ash requirement for every app compiling resources, not an
+ash_hooks one ([UPGRADING.md](UPGRADING.md)). One nuance: a fix
 that closes a safety hole can change behavior in a patch release (a
 delivery that wrongly succeeded may now retry, for example) — such
 corrections are always called out under "Fixed" in the

@@ -4,7 +4,7 @@ This walkthrough takes a new application from install to a verified
 inbound webhook and a delivered outbound webhook. Both halves are
 independently consumable: inbound-only applications need no Oban.
 
-Requirements: Elixir ~> 1.15, Ash ~> 3.0. Optional components: Oban
+Requirements: Elixir ~> 1.17, Ash ~> 3.0. Optional components: Oban
 (~> 2.20) for outbound delivery, Plug/Phoenix for inbound receipt.
 
 ## Installation
@@ -22,6 +22,21 @@ end
 Or `mix igniter.install ash_hooks`, which also ATTEMPTS to patch your
 endpoint's `Plug.Parsers` with a `body_reader` (see below) — review the
 generated diff; if the patch could not be applied, add it by hand.
+
+One Ash-side requirement to know about: Ash 3.33 and later require every
+application to choose how string length is counted, and compiling any
+resource fails until it is set:
+
+```elixir
+# config/config.exs
+config :ash, default_string_length_count: :codepoints
+```
+
+`:codepoints` is Ash's recommendation — `max_length` bounds value size
+and matches how SQL data layers count. `:mixed` keeps the pre-3.33
+grapheme counting if you need it. This is an Ash requirement for every
+app compiling resources, not an ash_hooks one; an application already on
+Ash 3.33+ necessarily has it set.
 
 ## The database migrations
 

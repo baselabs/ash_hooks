@@ -1,5 +1,36 @@
 # Upgrading
 
+## Ash 3.33+: the required `default_string_length_count` config
+
+Ash 3.33 made `config :ash, :default_string_length_count` REQUIRED for
+every application that compiles Ash resources — resource compilation
+fails until it is set. This is an Ash-level requirement (part of the fix
+for GHSA-cwjv-574p-59f6, where grapheme-based counting let values built
+from unbounded combining characters through `max_length` limits), not an
+ash_hooks one; ash_hooks writes no `:ash` configuration for you. Set it
+in your application's `config/config.exs`:
+
+```elixir
+# Recommended: counts unicode codepoints, so max_length bounds value
+# size and validation matches how SQL data layers count.
+config :ash, default_string_length_count: :codepoints
+
+# Keeps pre-3.33 behavior: graphemes are counted when validating in
+# Elixir; a single grapheme can carry unboundedly many codepoints, so
+# max_length does not bound the size of a value.
+config :ash, default_string_length_count: :mixed
+```
+
+ash_hooks works under both. One nuance worth knowing: the fields
+ash_hooks injects onto ledger and delivery resources carry `max_length`
+constraints (event ids and error summaries at 255, response snippets at
+2048). Under `:codepoints` those bounds limit codepoints; under
+`:mixed`, Elixir-side validation of the same constraints counts
+graphemes — the exact tradeoff Ash documents for your own attributes.
+Your application owns the choice. See Ash's
+[backwards-compatibility config guide](https://hexdocs.pm/ash/backwards-compatibility-config.html#default_string_length_count)
+for per-attribute overrides.
+
 ## 1.0.1 → 1.0.2+
 
 Two behavior corrections to know about (both security-posture fixes; no API change):

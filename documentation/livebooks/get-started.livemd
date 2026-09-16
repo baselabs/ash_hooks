@@ -27,6 +27,14 @@ Mix.install([
 ```
 
 ```elixir
+# Ash 3.33+ requires every application to choose how string length is
+# counted before any resource compiles — this notebook is its own app.
+# :codepoints is Ash's recommended value: max_length bounds value size
+# and matches how SQL data layers count.
+Application.put_env(:ash, :default_string_length_count, :codepoints)
+```
+
+```elixir
 defmodule Tour.Repo do
   use AshSqlite.Repo, otp_app: :ash_hooks
 end

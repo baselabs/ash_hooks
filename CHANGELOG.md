@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- Current-Ash compatibility: Ash 3.33 requires every application that
+  compiles resources to set `config :ash, :default_string_length_count`
+  (the app-level half of GHSA-cwjv-574p-59f6), which broke the CI floor
+  and Livebook legs — both resolve Ash lock-free at latest and failed
+  resource compilation. The test application (`config/test.exs`,
+  repo-local and never shipped), the get-started Livebook, and the
+  tutorial now carry the setting. The package itself still writes no
+  `:ash` configuration — consumers keep that choice, and both documented
+  values work (see UPGRADING.md). A new tripwire test locks the boundary:
+  `lib/` never writes `:ash` application environment.
+- The tutorial's requirements line now matches the tested floor (Elixir
+  `~> 1.17`; the `~> 1.15` claim was disproven by the CI floor leg, per
+  ADR-0010).
+
+### Changed
+
+- `mix.lock`: ash 3.33.4, and the dev/test substrate cleared of its
+  published advisories (ash_sqlite 0.2.19 / ash_sql 0.7.5 — test-only,
+  never shipped in the package; `mix hex.audit` now clean).
+
 ## 1.0.3 — 2026-08-23
 
 Docs-and-tests release (no functional changes; 1.0.2's gate and fixes
