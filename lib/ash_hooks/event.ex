@@ -77,8 +77,8 @@ defmodule AshHooks.Event do
       String.contains?(id, ".") ->
         {:error, "event id must not contain a dot (\".\") — it is the canonical-string delimiter"}
 
-      String.length(id) > 255 ->
-        {:error, "event id must be at most 255 characters (the ledger column bound)"}
+      byte_size(id) > 255 ->
+        {:error, "event id must be at most 255 bytes (the ledger column bound)"}
 
       id =~ ~r/[\r\n\t ]/ ->
         {:error,
@@ -94,11 +94,17 @@ defmodule AshHooks.Event do
   defp cast_type(%{type: type}) when is_atom(type) and not is_nil(type),
     do: cast_type(%{type: Atom.to_string(type)})
 
+  # Byte bounds, not String.length (graphemes): the injected event_uuid /
+  # event_type attributes carry max_length: 255, which under Ash 3.33's
+  # :codepoints mode counts codepoints — a grapheme-counted check here
+  # passed values the ledger then rejected (every endpoint's :dispatch
+  # create failing on an event the library itself validated). Bytes bound
+  # codepoints and graphemes alike, in either counting mode.
   defp cast_type(%{type: type}) when is_binary(type) and type != "" do
-    if String.length(type) <= 255 do
+    if byte_size(type) <= 255 do
       {:ok, type}
     else
-      {:error, "event type must be at most 255 characters (the ledger column bound)"}
+      {:error, "event type must be at most 255 bytes (the ledger column bound)"}
     end
   end
 

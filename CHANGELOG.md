@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Delta-review completions of the byte-bound invariant, each red-proven:
+  - `Event.new/1` and the dispatcher's event guards bound ids/types by
+    BYTES, not `String.length` (graphemes) — under Ash 3.33 `:codepoints`,
+    a 128-grapheme combining-character type (512 bytes) passed validation
+    and then failed every endpoint's `:dispatch` create. The inbound side
+    already bounded bytes; outbound now matches, in either counting mode.
+  - A thrown 255-character token no longer overflows `last_error`:
+    `"throw: " <> classify_token(...)` could reach 262 bytes and fail the
+    enqueue-failure ledger write itself (mode-independent, ASCII); the
+    combined string is capped now, like the `:exit` sibling.
+  - An inbound handler failing with an invalid-UTF-8 binary no longer
+    loses its failure record: the error class collapses to the
+    redaction floor's `[binary]` placeholder instead of failing the
+    `:mark_failed` write and leaving the delivery re-drivable.
 - Captured snippets and error summaries are now capped in BYTES instead of
   grapheme-sliced. Under Ash 3.33's `:codepoints` counting the injected
   `max_length` constraints count codepoints, and a grapheme-sliced

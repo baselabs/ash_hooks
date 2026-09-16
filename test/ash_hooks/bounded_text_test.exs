@@ -40,4 +40,16 @@ defmodule AshHooks.BoundedTextTest do
     assert byte_size(capped) == 47
     refute String.valid?(capped)
   end
+
+  # Documented (delta review note): input invalid BEFORE the cut can burn
+  # the repair budget on already-invalid bytes, dropping valid bytes the
+  # cut never touched. No caller hits this today — every caller either
+  # validates first (redact, error_class_string) or feeds classify_token
+  # output (ASCII or "unclassified"). This test pins the contract.
+  test "input invalid before the cut stays bounded but is not repaired" do
+    capped = AshHooks.BoundedText.cap(<<0xFF, 0xFF>> <> "abc", 4)
+
+    assert byte_size(capped) <= 4
+    refute String.valid?(capped)
+  end
 end

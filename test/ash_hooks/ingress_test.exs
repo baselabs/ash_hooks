@@ -344,6 +344,21 @@ defmodule AshHooks.IngressTest do
       assert [%{attempts: 2, status: :processed}] = rows()
     end
 
+    # Delta-review regression: a handler may fail with an arbitrary binary
+    # (provider-controlled bytes). Invalid UTF-8 passed straight through
+    # the error-class bound; the :string write then rejected it, the
+    # failure was never recorded, and the delivery stayed re-drivable.
+    # It collapses to the [binary] placeholder now — the redaction floor's
+    # own convention.
+    test "an invalid-UTF-8 handler failure still records (collapses to [binary])" do
+      CountingProvider.put_outcome({:error, :retry, <<0xFF, 0xFE, 0xFF>>})
+      raw = body("evt_invalid_utf8")
+
+      assert {:ok, :created, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+      assert delivery.status == :failed_retryable
+      assert delivery.error_class == "[binary]"
+    end
+
     test "a permanent handler failure is terminal for redelivery" do
       CountingProvider.put_outcome({:error, :permanent, "poison"})
       raw = body("evt_poison")

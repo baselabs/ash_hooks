@@ -40,6 +40,21 @@ defmodule AshHooks.EventTest do
       assert reason =~ "dot"
     end
 
+    # Delta-review regression: String.length counts GRAPHEMES, the injected
+    # event_uuid/event_type max_length: 255 counts codepoints under Ash
+    # 3.33 :codepoints — 128 combining graphemes (512 bytes) passed this
+    # check and then failed every endpoint's :dispatch create. The bound is
+    # bytes now, holding in either counting mode.
+    test "rejects multi-byte ids and types past the 255-byte ledger bound" do
+      combining = String.duplicate("à́", 128)
+
+      assert {:error, reason} = Event.new(id: combining, type: :order_paid, payload: @payload)
+      assert reason =~ "255 bytes"
+
+      assert {:error, reason} = Event.new(type: combining, payload: @payload)
+      assert reason =~ "255 bytes"
+    end
+
     test "rejects an empty id" do
       assert {:error, _reason} = Event.new(id: "", type: :order_paid, payload: @payload)
     end

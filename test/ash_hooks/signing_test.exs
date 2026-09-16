@@ -106,10 +106,10 @@ defmodule AshHooks.SigningTest do
     test "rejects an empty msg_id and non-integer timestamps (guard-level)" do
       assert_raise FunctionClauseError, fn -> Signing.sign("", @go_ts, @go_payload, @go_key) end
 
-      # a variable, not a literal: the negative test still passes a STRING
-      # timestamp at runtime, without the literal tripping the compiler's
-      # spec-type check
-      string_ts = "1614265330"
+      # built from an integer so the checker cannot tie a string literal to
+      # the spec: the negative test still passes a STRING timestamp at
+      # runtime without tripping the literal-type check
+      string_ts = to_string(1_614_265_330)
 
       assert_raise FunctionClauseError, fn ->
         Signing.sign(@go_msg_id, string_ts, @go_payload, @go_key)

@@ -458,10 +458,16 @@ defmodule AshHooks.Dispatcher do
     end
   end
 
+  # Byte bounds, not String.length (graphemes): the injected event_uuid /
+  # event_type attributes carry max_length: 255, which under Ash 3.33's
+  # :codepoints mode counts codepoints — a grapheme-counted guard passed
+  # 255 combining-grapheme values the ledger then rejected, failing every
+  # endpoint's :dispatch create. Bytes bound codepoints and graphemes
+  # alike; the inbound side already bounds bytes (ingress external ids).
   defp valid_event_id?(id),
-    do: is_binary(id) and id != "" and not String.contains?(id, ".") and String.length(id) <= 255
+    do: is_binary(id) and id != "" and not String.contains?(id, ".") and byte_size(id) <= 255
 
-  defp valid_event_type?(type), do: is_binary(type) and type != "" and String.length(type) <= 255
+  defp valid_event_type?(type), do: is_binary(type) and type != "" and byte_size(type) <= 255
 
   defp resolve_module(entity, key) do
     case Map.get(entity, key) do
@@ -489,9 +495,12 @@ defmodule AshHooks.Dispatcher do
 
   # contents route through the shared contents-free classifier (the
   # enqueue_failed EVENT and the ledger write share this floor; a thrown
-  # or messaged term can carry secret material — cross-vendor finding)
+  # or messaged term can carry secret material — cross-vendor finding).
+  # The cap covers the 7-byte prefix too: classify_token alone can return
+  # 255, and "throw: " <> 255 violated last_error's max_length in every
+  # counting mode, failing the enqueue-failure ledger write itself.
   defp error_string({:throw, value}) when is_binary(value),
-    do: "throw: " <> AshHooks.Telemetry.classify_token(value)
+    do: AshHooks.BoundedText.cap("throw: " <> AshHooks.Telemetry.classify_token(value), 255)
 
   defp error_string({:throw, _value}), do: "throw: unclassified"
 

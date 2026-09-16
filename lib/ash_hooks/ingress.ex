@@ -847,9 +847,15 @@ defmodule AshHooks.Ingress do
   # error_class is a bounded classification field, never an arbitrary dump:
   # binaries truncate, atoms name themselves, and structures (which can carry
   # payloads or secrets) classify without their contents (cross-vendor
-  # finding). The cap counts bytes so the 255 constraint holds in any
-  # counting mode (Ash 3.33 :codepoints vs :mixed).
-  defp error_class_string(term) when is_binary(term), do: AshHooks.BoundedText.cap(term, 255)
+  # finding). The attribute itself carries no max_length — the cap bounds
+  # what reaches the TEXT column in any counting mode. Invalid UTF-8
+  # collapses to the [binary] placeholder (the redaction floor's convention):
+  # the :string write would reject invalid bytes and the failure would never
+  # be recorded, leaving the delivery re-drivable.
+  defp error_class_string(term) when is_binary(term) do
+    if String.valid?(term), do: AshHooks.BoundedText.cap(term, 255), else: "[binary]"
+  end
+
   defp error_class_string(term) when is_atom(term), do: Atom.to_string(term)
   defp error_class_string(_term), do: "unclassified"
 

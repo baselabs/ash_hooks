@@ -268,6 +268,29 @@ defmodule AshHooks.DispatcherTest do
       assert by_endpoint[bad.id].status == :enqueue_failed
       assert Enum.find(delivery_rows(), &(&1.endpoint_id == bad.id)).last_error =~ "boom"
     end
+
+    # Delta-review regression: classify_token can return a full 255-char
+    # token, and "throw: " <> 255 = 262 bytes violated last_error's
+    # max_length: 255 in EVERY counting mode — the enqueue-failure ledger
+    # write itself failed and the row reported :mark_failed.
+    test "a thrown 255-char token still records :enqueue_failed (prefix overflow)" do
+      ep = endpoint!()
+      subscription!(ep.id)
+
+      assert {:ok, results} =
+               Dispatcher.dispatch(
+                 Emitter,
+                 :order_paid,
+                 event!(),
+                 enqueue: fn _delivery, _event -> throw(String.duplicate("a", 255)) end
+               )
+
+      assert [%{status: :enqueue_failed}] = results
+      row = Enum.find(delivery_rows(), &(&1.endpoint_id == ep.id))
+      assert row.status == :enqueue_failed
+      assert byte_size(row.last_error) <= 255
+      assert row.last_error =~ "throw: "
+    end
   end
 
   describe "durable rows" do

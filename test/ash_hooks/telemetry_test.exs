@@ -440,16 +440,22 @@ defmodule AshHooks.TelemetryTest do
     do:
       received |> Enum.filter(fn {n, _, _} -> n == name end) |> Enum.map(fn {_, _, md} -> md end)
 
+  # Multi-clause instead of an is_* or-chain: Elixir 1.20's type checker
+  # flags the chain's progressively-narrowed comparisons as always-disjoint;
+  # the catch-all preserves the original "anything else fails" assertion.
   defp assert_flat_safe(map) do
     map
     |> Map.values()
-    |> Enum.each(fn value ->
-      assert is_atom(value) or is_integer(value) or is_binary(value) or is_nil(value) or
-               is_float(value)
-
-      if is_binary(value), do: refute(value =~ "whsec")
-    end)
+    |> Enum.each(&assert_flat_value/1)
   end
+
+  defp assert_flat_value(value) when is_atom(value), do: :ok
+  defp assert_flat_value(value) when is_integer(value), do: :ok
+  defp assert_flat_value(value) when is_float(value), do: :ok
+
+  defp assert_flat_value(value) when is_binary(value), do: refute(value =~ "whsec")
+
+  defp assert_flat_value(value), do: flunk("non-flat telemetry value: #{inspect(value)}")
 
   defp ingress_ctx(body) do
     %{
