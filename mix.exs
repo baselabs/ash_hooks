@@ -8,14 +8,16 @@ defmodule AshHooks.MixProject do
     [
       app: :ash_hooks,
       version: @version,
-      # LOCKSTEP RULE: this exact pin, .tool-versions, and CI's
-      # elixir/otp versions move together in ONE commit — divergence between
-      # the three is a defect. A bare version is an EXACT requirement: Mix
-      # raises Mix.ElixirVersionError on any other Elixir at deps
-      # loadpaths, so a foreign toolchain can never compile silently and
-      # poison shared _build/PLT state. The OTP half of the pin (which
-      # System.version/0 cannot encode) is asserted in config/config.exs.
-      elixir: "1.20.4",
+      # CONSUMER-FACING SUPPORT WINDOW: a floor, never a pin — a library
+      # must not force every consumer onto one Elixir build. Floor 1.17 is
+      # proven by CI's floor leg (the historical 1.15 claim was disproven
+      # there: modern ash needs the Duration struct from 1.17). The repo's
+      # OWN development runs on one pinned toolchain (.tool-versions,
+      # mirrored by a dedicated CI leg) and config/config.exs refuses any
+      # OTP release CI does not test — that repo-local enforcement never
+      # ships (config/ is excluded from the package). The window,
+      # .tool-versions, and the CI matrix move together in ONE commit.
+      elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       consolidate_protocols: Mix.env() != :test,

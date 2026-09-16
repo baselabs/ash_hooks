@@ -45,11 +45,18 @@ defmodule AshHooks.Delivery do
   # The entropy rule dies on any ≥16-char union-alphabet run — markerless
   # base32/hex/base64url material. Bearer keeps its own dot-bearing
   # material class (JWT separators).
-  @redaction_patterns [
-    ~r/w[\s._+\-]{0,3}h[\s._+\-]{0,3}(?:s[\s._+\-]{0,3}(?:e[\s._+\-]{0,3}c|k)|p[\s._+\-]{0,3}k)[\s._+\-]{0,3}[A-Za-z0-9+\/%=_\-]+/i,
-    ~r/Bearer[\s._+\-]{0,3}[A-Za-z0-9._\-%]+/i,
-    ~r/[A-Za-z0-9+\/=%_\-]{16,}/
-  ]
+  # A defp, NOT a module attribute: an attribute's value is injected into
+  # every consuming function body at compile time, and a %Regex{} carries
+  # the compiled re_pattern — a reference on OTP 28, which Elixir < 1.19
+  # cannot escape ("cannot inject attribute ... cannot escape
+  # #Reference"). The 1.18×OTP-28 CI leg compiles exactly that cell.
+  defp redaction_patterns do
+    [
+      ~r/w[\s._+\-]{0,3}h[\s._+\-]{0,3}(?:s[\s._+\-]{0,3}(?:e[\s._+\-]{0,3}c|k)|p[\s._+\-]{0,3}k)[\s._+\-]{0,3}[A-Za-z0-9+\/%=_\-]+/i,
+      ~r/Bearer[\s._+\-]{0,3}[A-Za-z0-9._\-%]+/i,
+      ~r/[A-Za-z0-9+\/=%_\-]{16,}/
+    ]
+  end
 
   @snippet_max 2_048
   @captured_prefix "[captured] "
@@ -808,7 +815,7 @@ defmodule AshHooks.Delivery do
   end
 
   defp apply_redaction_patterns(body) do
-    Enum.reduce(@redaction_patterns, body, &String.replace(&2, &1, "[redacted]"))
+    Enum.reduce(redaction_patterns(), body, &String.replace(&2, &1, "[redacted]"))
   end
 
   # ── summarize's fixed vocabulary ──

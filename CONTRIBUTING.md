@@ -19,12 +19,15 @@ mix dialyzer
 
 ## Toolchain and dependency currency
 
-The toolchain is self-enforcing and lockstep-pinned to Elixir 1.20.4 /
-Erlang/OTP 28: the exact Elixir pin in `mix.exs`, `.tool-versions`, and
-CI's elixir/otp versions move together in ONE commit — divergence between
-the three is a defect. A foreign Elixir refuses at deps loadpaths
-(`Mix.ElixirVersionError`); a foreign OTP runtime refuses in
-`config/config.exs` before anything compiles.
+The supported Elixir window for CONSUMERS is `~> 1.17` (mix.exs) — a
+floor, never a pin; CI brackets it with a floor leg (1.17, lock-free
+resolve), a middle leg (1.18), and the dev default. Development itself
+happens on ONE pinned toolchain (`.tool-versions`: Elixir 1.20.4 /
+Erlang/OTP 28) mirrored by a dedicated CI leg, and
+`config/config.exs` (never shipped) refuses any OTP release CI does not
+test — so the repo's own `_build`/PLT state never mixes toolchains. The
+window, `.tool-versions`, the OTP allowlist, and the CI matrix move
+together in ONE commit.
 
 Dependency currency is checked mechanically, not remembered:
 
