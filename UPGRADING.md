@@ -1,5 +1,36 @@
 # Upgrading
 
+## 1.0.3 → next (unreleased)
+
+Behavior corrections (all also under "Fixed" in the CHANGELOG; no API change):
+
+### 1. Event ids and types are bounded by BYTES, not characters
+
+`AshHooks.Event.new/1` and dispatch previously accepted ids and types up to
+255 *characters* (graphemes). Long multi-byte values could pass that check
+and then fail the delivery write — under Ash 3.33's `:codepoints` counting,
+every endpoint's dispatch errored on an event the library had validated.
+Ids and types are now rejected above 255 **bytes** at `Event.new/1`, with a
+clear error. If you build event types from multi-byte text, values between
+255 characters and 255 bytes now fail fast at construction — which, under
+`:codepoints`, previously failed (less clearly) at dispatch.
+
+### 2. Captured snippets and error fields are byte-capped
+
+The 2048-character snippet cap and 255-character error-summary caps counted
+graphemes; they now cap **bytes** (on a codepoint boundary). Captured
+diagnostic snippets of multi-byte content come out slightly shorter, and a
+hostile response body built from combining characters can no longer crash
+the post-send ledger write — the same applies to thrown/exit error
+classifications.
+
+### 3. Handler failures with invalid-UTF-8 binaries still record
+
+A handler returning `{:error, :retry | :permanent, term}` where `term` is
+invalid UTF-8 previously made the failure-recording write itself fail, so
+the delivery stayed re-drivable with no record. It now records `[binary]`
+as the error class.
+
 ## Ash 3.33+: the required `default_string_length_count` config
 
 Ash 3.33 made `config :ash, :default_string_length_count` REQUIRED for
