@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.0.4 — 2026-09-16
+
+Current-Ash compatibility release: the repo's own app surfaces carry Ash
+3.33's required `default_string_length_count`, and the byte-bound
+correction family that requirement exposed is fixed.
+
 ### Fixed
 
 - Delta-review completions of the byte-bound invariant, each red-proven:

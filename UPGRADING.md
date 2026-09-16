@@ -1,6 +1,6 @@
 # Upgrading
 
-## 1.0.3 → next (unreleased)
+## 1.0.3 → 1.0.4+
 
 Behavior corrections (all also under "Fixed" in the CHANGELOG; no API change):
 
