@@ -6,19 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.1.1 — 2026-09-16
+
+Tri-OS proof release. No covered-surface change (patch, ADR-0010): the
+package now carries mechanical proof of macOS, Linux, and Windows
+support — a dedicated CI leg per OS runs the full 555-test suite on
+the dev-default toolchain, all nine legs green, and the README claims
+exactly the OSes the legs prove.
+
 ### Added
 
-- CI legs on macOS and Windows (dev-default toolchain 1.20.4/OTP 28,
-  compile + full suite): tri-OS support is now mechanically enforced —
-  Linux was already proven by every existing leg, and the README claims
-  exactly the OSes the legs prove. The first Windows run exposed and
-  fixed three test-side portability defects (the package and its NIF
-  substrate compiled and ran on Windows throughout): two `:inets` httpd
-  fixtures hardcoded `server_root: "/tmp"` (nonexistent on Windows —
-  one invalidated a whole module via `setup_all`; both now use
-  `System.tmp_dir!()`), and CRLF checkout on Windows broke the
-  install-task fixture's byte assertions — `.gitattributes` now forces
-  LF on every OS so checkouts are byte-identical.
+- CI legs on macOS and Windows (dev-default toolchain Elixir 1.20.4 /
+  OTP 28, `compile --warnings-as-errors` + the full suite). Linux was
+  already proven by every existing leg.
+- `.gitattributes` (`* text=auto eol=lf`): every OS checks out
+  byte-identical sources; all tracked files were already LF, so no
+  renormalization was needed.
+
+### Fixed
+
+- Four test-side portability defects exposed by the first Windows run
+  (the package and its sqlite NIF substrate compiled and ran on
+  Windows throughout — every defect was in fixtures):
+  - two `:inets` httpd fixtures hardcoded `server_root: "/tmp"`,
+    nonexistent on Windows — one failure hid as a `setup_all`
+    invalidation that silently excludes a whole module's tests from
+    the failed count; both now use `System.tmp_dir!()`;
+  - CRLF checkout on Windows broke the install-task fixture's byte
+    assertions (`=~ "plug Plug.Parsers\n"` vs `"\r\n"` bytes);
+  - httpd's URL→path translation mangles backslashes, so every request
+    returned 500 on Windows — the fixtures now hand httpd
+    forward-slash `server_root`/`document_root` (a no-op on unix).
 
 ## 1.1.0 — 2026-09-16
 
