@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- CI legs on macOS and Windows (dev-default toolchain 1.20.4/OTP 28,
+  compile + full suite): tri-OS support is now mechanically enforced —
+  Linux was already proven by every existing leg, and the README claims
+  exactly the OSes the legs prove. Known tri-OS hazards re-checked: the
+  test substrate's sqlite NIF (exqlite) must provide Windows builds,
+  and the in-code toolchain guards (Elixir floor in mix.exs, OTP
+  allowlist in config/config.exs) are platform-independent by
+  construction.
+
 ## 1.1.0 — 2026-09-16
 
 Support-window release: the Elixir floor rises to 1.20 (a minor, not a

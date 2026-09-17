@@ -103,6 +103,53 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix test
 
+  # Tri-OS capability (owner rule, 2026-09-16): the package must build
+  # and pass on macOS, Linux, AND Windows — a missing OS is a defect.
+  # Linux is proven by every leg above; these two legs carry the other
+  # OSes on the dev-default toolchain. Docs may claim exactly the OSes
+  # these legs prove.
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          elixir-version: "1.20.4"
+          otp-version: "28"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            deps
+            _build
+          key: mix-macos-1.20.4-28-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          elixir-version: "1.20.4"
+          otp-version: "28"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            deps
+            _build
+          key: mix-windows-1.20.4-28-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+
   # Type-check gate on the public API (found the dead IP-SAN matcher on
   # its first run — 2026-08-22).
   dialyzer:

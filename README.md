@@ -287,7 +287,9 @@ deprecations run two minors minimum, safety corrections ship as fixes
 ([ADR-0010](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0010-semver-and-support-policy.md)).
 
 Minimum supported versions: Elixir ~> 1.20 (OTP 28+; CI-tested on
-Erlang/OTP 28 and 29), Ash ~> 3.0, Oban ~> 2.20 (optional, outbound only). On Ash 3.33+ your
+Erlang/OTP 28 and 29), Ash ~> 3.0, Oban ~> 2.20 (optional, outbound only).
+The package builds and passes its suite on macOS, Linux, and Windows —
+each OS carries a dedicated CI leg on the dev-default toolchain. On Ash 3.33+ your
 application must also set Ash's required `default_string_length_count`
 config — an Ash requirement for every app compiling resources, not an
 ash_hooks one ([UPGRADING.md](UPGRADING.md)). One nuance: a fix
