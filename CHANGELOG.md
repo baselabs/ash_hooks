@@ -11,11 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - CI legs on macOS and Windows (dev-default toolchain 1.20.4/OTP 28,
   compile + full suite): tri-OS support is now mechanically enforced —
   Linux was already proven by every existing leg, and the README claims
-  exactly the OSes the legs prove. Known tri-OS hazards re-checked: the
-  test substrate's sqlite NIF (exqlite) must provide Windows builds,
-  and the in-code toolchain guards (Elixir floor in mix.exs, OTP
-  allowlist in config/config.exs) are platform-independent by
-  construction.
+  exactly the OSes the legs prove. The first Windows run exposed and
+  fixed three test-side portability defects (the package and its NIF
+  substrate compiled and ran on Windows throughout): two `:inets` httpd
+  fixtures hardcoded `server_root: "/tmp"` (nonexistent on Windows —
+  one invalidated a whole module via `setup_all`; both now use
+  `System.tmp_dir!()`), and CRLF checkout on Windows broke the
+  install-task fixture's byte assertions — `.gitattributes` now forces
+  LF on every OS so checkouts are byte-identical.
 
 ## 1.1.0 — 2026-09-16
 

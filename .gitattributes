@@ -1,0 +1,5 @@
+# Identical bytes on every OS (tri-OS rule, 2026-09-16): force LF on
+# checkout everywhere. A CRLF checkout on Windows broke the install-task
+# fixture assertions and would break `mix format --check-formatted`;
+# Elixir tooling and this repo's gates are LF-native.
+* text=auto eol=lf
