@@ -28,12 +28,13 @@ defmodule AshHooks.HttpTest do
         {:port, 0},
         {:bind_address, ~c"127.0.0.1"},
         {:server_name, ~c"ash_hooks_test"},
-        # document_root must be a CHARLIST — a binary root serves only 500s;
-        # server_root must be a REAL directory — "/tmp" does not exist on
-        # Windows and httpd fails with {:invalid_option, {:non_existing,
-        # {:server_root, ...}}} (tri-OS rule, 2026-09-16)
-        {:server_root, String.to_charlist(System.tmp_dir!())},
-        {:document_root, String.to_charlist(root)},
+        # document_root must be a CHARLIST — a binary root serves only
+        # 500s. And httpd's URL→path translation mangles backslashes
+        # (every request 500s on Windows), so hand it FORWARD slashes —
+        # file: accepts both forms on every OS; unix paths are unchanged
+        # (tri-OS rule, 2026-09-16).
+        {:server_root, String.to_charlist(String.replace(System.tmp_dir!(), "\\", "/"))},
+        {:document_root, String.to_charlist(String.replace(root, "\\", "/"))},
         {:mime_types, [{~c"json", ~c"application/json"}]}
       ])
 
