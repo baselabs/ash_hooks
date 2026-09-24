@@ -36,7 +36,7 @@ defmodule AshHooks.Delivery do
 
   alias Ash.Resource.Info, as: ResourceInfo
   alias AshHooks.Errors.Unknown.UnknownError
-  alias AshHooks.Signing
+  alias AshHooks.{Signing, Tenancy}
 
   # The ADR-0005 snippet floor (amended 2026-08-22): markers are
   # case-blind (NFKC folds homoglyphs, never case) and tolerate ≤3
@@ -92,25 +92,31 @@ defmodule AshHooks.Delivery do
   migration). Non-terminal rows are never deleted. Returns
   `{:ok, deleted_count}`, or `{:error, error}` when the resource lacks
   `inserted_at` — the same error contract as `AshHooks.Ingress.prune/2`.
+
+  `:tenant` scopes the sweep (required on multitenant resources — a
+  tenant-less global sweep over them is the named
+  `{:error, :tenant_required}` before any data access).
   """
   @spec prune(module(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def prune(deliv_mod, opts) do
     older_than = DateTime.truncate(Keyword.fetch!(opts, :older_than), :microsecond)
 
-    if ResourceInfo.attribute(deliv_mod, :inserted_at) do
-      prune!(deliv_mod, older_than)
-    else
-      {:error,
-       UnknownError.exception(
-         error:
-           inspect(deliv_mod) <>
-             " has no :inserted_at — add `timestamps()` to its attributes " <>
-             "(and the columns to its migration) to use the retention hooks"
-       )}
+    with {:ok, tenant} <- Tenancy.resolve([deliv_mod], opts[:tenant]) do
+      if ResourceInfo.attribute(deliv_mod, :inserted_at) do
+        prune!(deliv_mod, older_than, tenant)
+      else
+        {:error,
+         UnknownError.exception(
+           error:
+             inspect(deliv_mod) <>
+               " has no :inserted_at — add `timestamps()` to its attributes " <>
+               "(and the columns to its migration) to use the retention hooks"
+         )}
+      end
     end
   end
 
-  defp prune!(deliv_mod, older_than) do
+  defp prune!(deliv_mod, older_than, tenant) do
     require Ash.Query
 
     result =
@@ -120,7 +126,8 @@ defmodule AshHooks.Delivery do
         authorize?: false,
         return_records?: true,
         return_errors?: true,
-        strategy: [:atomic]
+        strategy: [:atomic],
+        tenant: tenant
       )
 
     case result do
@@ -130,45 +137,74 @@ defmodule AshHooks.Delivery do
   end
 
   @doc """
-  Drives one delivery (args: `%{"endpoint_id" => ..., "event_uuid" => ...}`,
-  string keys — Oban's JSON round-trip shape; atom keys tolerated).
+  Drives one delivery (args: `%{"endpoint_id" => ..., "event_uuid" => ...,
+  "tenant" => ...}`, string keys — Oban's JSON round-trip shape; atom keys
+  tolerated). The tenant arg is the enqueue seam's serialized row tenant
+  (the worker reads it off the multitenancy attribute at enqueue time);
+  `run/2` re-parses it through the resource's tenancy pipeline by passing
+  it as the tenant on every data call — a worker restart or replica
+  handoff recovers full tenant context from args alone.
 
   Returns `:ok` (terminal or attempted-to-terminal), `{:snooze, seconds}`
   (retry later), or `{:error, term}` for a broken trigger (row missing →
   `:ok`; the durable row is the record — a missing row is a completed or
-  reaped delivery, not a failure).
+  reaped delivery, not a failure). A tenant-less trigger against
+  multitenant resources is `{:error, :tenant_required}` before any data
+  access (pre-tenancy jobs drained before the cutover fail closed here —
+  correct, and loud).
   """
   @spec run(map(), keyword()) :: :ok | {:snooze, pos_integer()} | {:error, term()}
   def run(args, config) when is_map(args) do
     endpoint_id = key(args, :endpoint_id)
     event_uuid = key(args, :event_uuid)
 
-    case fetch_row(config[:deliveries], endpoint_id, event_uuid) do
-      {:ok, row} ->
-        case row.status do
-          status when status in [:succeeded, :dead_letter] -> :ok
-          :failed_retryable -> maybe_wait(row, config)
-          _attemptable -> attempt(row, config)
-        end
+    with {:ok, tenant} <-
+           Tenancy.resolve([config[:deliveries], config[:endpoints]], value(args, :tenant)),
+         {:ok, row} <- fetch_row_result(config[:deliveries], endpoint_id, event_uuid, tenant) do
+      drive_row(row, config, tenant)
+    end
+  end
 
-      :missing ->
-        :ok
+  # a missing row is a completed or reaped delivery — the record says done
+  defp drive_row(nil, _config, _tenant), do: :ok
 
-      {:error, reason} ->
-        {:error, reason}
+  defp drive_row(row, config, tenant) do
+    case row.status do
+      status when status in [:succeeded, :dead_letter] -> :ok
+      :failed_retryable -> maybe_wait(row, config, tenant)
+      _attemptable -> attempt(row, config, tenant)
+    end
+  end
+
+  # :missing is a COMPLETED delivery (the durable row is the record), not a
+  # failure — normalized to :ok so the with-chain stays flat
+  defp fetch_row_result(deliv_mod, endpoint_id, event_uuid, tenant) do
+    case fetch_row(deliv_mod, endpoint_id, event_uuid, tenant) do
+      {:ok, row} -> {:ok, row}
+      :missing -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   defp key(args, name) do
-    value = Map.get(args, Atom.to_string(name)) || Map.get(args, name)
-    value && to_string(value)
+    case value(args, name) do
+      nil -> nil
+      value -> to_string(value)
+    end
   end
 
-  defp fetch_row(deliv_mod, endpoint_id, event_uuid)
+  # the tenant rides args in its JSON round-trip shape (string/integer —
+  # never stringified: Ash.ToTenant accepts those verbatim, and the
+  # resource's parse_attribute is applied by Ash itself)
+  defp value(args, name) do
+    Map.get(args, Atom.to_string(name)) || Map.get(args, name)
+  end
+
+  defp fetch_row(deliv_mod, endpoint_id, event_uuid, tenant)
        when is_binary(endpoint_id) and is_binary(event_uuid) do
     deliv_mod
     |> Ash.Query.filter(endpoint_id == ^endpoint_id and event_uuid == ^event_uuid)
-    |> Ash.read_one(authorize?: false)
+    |> Ash.read_one(authorize?: false, tenant: tenant)
     |> case do
       {:ok, nil} -> :missing
       {:ok, row} -> {:ok, row}
@@ -176,33 +212,33 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  defp fetch_row(_deliv_mod, _nil_id, _uuid), do: :missing
+  defp fetch_row(_deliv_mod, _nil_id, _uuid, _tenant), do: :missing
 
   # ────────────────────────── gating ──────────────────────────
 
-  defp maybe_wait(row, config) do
+  defp maybe_wait(row, config, tenant) do
     now = now(config)
 
     if row.next_attempt_at && DateTime.compare(row.next_attempt_at, now) == :gt do
       {:snooze, clamp_snooze(DateTime.diff(row.next_attempt_at, now, :second))}
     else
-      attempt(row, config)
+      attempt(row, config, tenant)
     end
   end
 
-  defp attempt(row, config) do
-    case Ash.get(config[:endpoints], row.endpoint_id, authorize?: false) do
+  defp attempt(row, config, tenant) do
+    case Ash.get(config[:endpoints], row.endpoint_id, authorize?: false, tenant: tenant) do
       {:ok, %{status: :disabled}} ->
-        dead_letter(row, "endpoint_disabled", config)
+        dead_letter(row, "endpoint_disabled", config, tenant)
 
       {:ok, endpoint} ->
-        attempt_enabled(row, endpoint, config)
+        attempt_enabled(row, endpoint, config, tenant)
 
       # only a GONE endpoint row is terminal — a transient read error must
       # retry, never permanently dead-letter (cross-vendor finding)
       {:error, %Ash.Error.Invalid{errors: reasons}} = error ->
         if Enum.all?(reasons, &is_struct(&1, Ash.Error.Query.NotFound)) do
-          dead_letter(row, "endpoint_gone", config)
+          dead_letter(row, "endpoint_gone", config, tenant)
         else
           {:error, error}
         end
@@ -212,25 +248,25 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  defp attempt_enabled(row, endpoint, config) do
+  defp attempt_enabled(row, endpoint, config, tenant) do
     # send-time re-check: full DNS re-resolution by default (ADR-0005);
     # the seam is injectable so deterministic tests use the
     # literal-only variant
     check = config[:ssrf_check] || (&AshHooks.Ssrf.safe_url?/1)
 
     if check.(endpoint.url) do
-      case mark_sending(row, config) do
-        {:ok, sending} -> send(sending, endpoint, config)
+      case mark_sending(row, config, tenant) do
+        {:ok, sending} -> send(sending, endpoint, config, tenant)
         :contended -> {:snooze, 1}
       end
     else
-      dead_letter(row, "unsafe_destination", config)
+      dead_letter(row, "unsafe_destination", config, tenant)
     end
   end
 
   # ────────────────────────── the send ──────────────────────────
 
-  defp send(row, endpoint, config) do
+  defp send(row, endpoint, config, tenant) do
     :telemetry.execute(
       [:ash_hooks, :delivery, :attempt],
       %{},
@@ -248,18 +284,18 @@ defmodule AshHooks.Delivery do
     # check above is the residual guarantee, not a full replacement
     adapter_opts = config[:http_opts] || []
 
-    with {:ok, headers} <- signing_headers(row, endpoint, config),
+    with {:ok, headers} <- signing_headers(row, endpoint, config, tenant),
          {:ok, response} <-
            send_request(request, endpoint, headers, row, adapter_opts) do
-      record(row, endpoint, response, config)
+      record(row, endpoint, response, config, tenant)
     else
       # a pin-time SSRF refusal is a caught rebinding flip — terminal, per
       # the classification table (never burn the retry ceiling on it)
       {:error, :unsafe_destination} ->
-        dead_letter(row, "unsafe_destination", config)
+        dead_letter(row, "unsafe_destination", config, tenant)
 
       {:error, reason} ->
-        retry(row, error_string(reason), config, nil)
+        retry(row, error_string(reason), config, tenant, nil)
     end
   end
 
@@ -271,52 +307,67 @@ defmodule AshHooks.Delivery do
     reason -> {:error, {:adapter_crash, error_string(reason)}}
   end
 
-  defp record(row, _endpoint, %{status: status} = response, config)
+  defp record(row, _endpoint, %{status: status} = response, config, tenant)
        when status in 200..299 do
-    mark_succeeded(row, response, config)
+    mark_succeeded(row, response, config, tenant)
   end
 
-  defp record(row, endpoint, %{status: 410} = response, config) do
+  # The 410 disable rides the ROW's tenant: a cross-tenant 410 (org_b's
+  # worker seeing org_a's endpoint id) cannot even resolve org_a's
+  # endpoint (the tenant-scoped fetch dead-letters it as endpoint_gone
+  # first), and the disable write itself is tenant-filtered. The matched
+  # count is checked — a zero-match "success" (the endpoint vanished
+  # between fetch and write) is surfaced, never counted as a completed
+  # circuit-break (cross-vendor finding, both peers).
+  defp record(row, endpoint, %{status: 410} = response, config, tenant) do
     # the durable disable is the circuit breaker — a failed write must NOT
     # be swallowed behind the row's dead-letter (cross-vendor finding):
     # surface the error so the job retries and the 410 is re-processed
     result =
       config[:endpoints]
       |> Ash.Query.filter(id == ^endpoint.id)
-      |> Ash.bulk_update(:disable, %{}, authorize?: false, return_errors?: true)
+      |> Ash.bulk_update(:disable, %{},
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        tenant: tenant
+      )
 
     case result do
-      %Ash.BulkResult{status: :success} ->
+      %Ash.BulkResult{status: :success, records: [_]} ->
         :telemetry.execute(
           [:ash_hooks, :delivery, :disable],
           %{},
           %{endpoint_id: endpoint.id, reason: :gone_410}
         )
 
-        dead_letter(row, "gone_410", config, failure_summary(response))
+        dead_letter(row, "gone_410", config, tenant, failure_summary(response))
+
+      %Ash.BulkResult{status: :success, records: []} ->
+        {:error, {:disable_failed, :endpoint_vanished}}
 
       other ->
         {:error, {:disable_failed, other}}
     end
   end
 
-  defp record(row, _endpoint, %{status: status} = response, config)
+  defp record(row, _endpoint, %{status: status} = response, config, tenant)
        when status in [408, 429] do
-    retry(row, "http_#{status}", config, retry_after(response, config), failure_summary(response))
+    retry(row, "http_#{status}", config, tenant, retry_after(response, config), failure_summary(response))
   end
 
-  defp record(row, _endpoint, %{status: status} = response, config)
+  defp record(row, _endpoint, %{status: status} = response, config, tenant)
        when status in 300..399 do
-    dead_letter(row, "redirect_refused_#{status}", config, failure_summary(response))
+    dead_letter(row, "redirect_refused_#{status}", config, tenant, failure_summary(response))
   end
 
-  defp record(row, _endpoint, %{status: status} = response, config)
+  defp record(row, _endpoint, %{status: status} = response, config, tenant)
        when status in 400..499 do
-    dead_letter(row, "http_#{status}", config, failure_summary(response))
+    dead_letter(row, "http_#{status}", config, tenant, failure_summary(response))
   end
 
-  defp record(row, _endpoint, %{status: status} = response, config) do
-    retry(row, "http_#{status}", config, nil, failure_summary(response))
+  defp record(row, _endpoint, %{status: status} = response, config, tenant) do
+    retry(row, "http_#{status}", config, tenant, nil, failure_summary(response))
   end
 
   # failed rows keep the story-1 half of the snippet policy: status + kind,
@@ -326,13 +377,17 @@ defmodule AshHooks.Delivery do
 
   # ────────────────────────── signing ──────────────────────────
 
-  defp signing_headers(row, endpoint, config) do
+  defp signing_headers(row, endpoint, config, tenant) do
     resolver = config[:secret_resolver]
+    # the worker macro's :tenant_aware_secrets switch: the resolver
+    # contract becomes f(ref, tenant) — explicit, no arity magic
+    tenant_aware? = config[:tenant_aware_secrets] == true
 
-    with {:ok, secret} <- resolve(endpoint.secret_ref, resolver),
-         {:ok, previous} <- resolve_opt(endpoint.previous_secret_ref, resolver),
-         {:ok, legacy} <- resolve_opt(endpoint.legacy_secret_ref, resolver),
-         {:ok, legacy_previous} <- resolve_opt(endpoint.legacy_previous_secret_ref, resolver) do
+    with {:ok, secret} <- resolve(endpoint.secret_ref, resolver, tenant, tenant_aware?),
+         {:ok, previous} <- resolve_opt(endpoint.previous_secret_ref, resolver, tenant, tenant_aware?),
+         {:ok, legacy} <- resolve_opt(endpoint.legacy_secret_ref, resolver, tenant, tenant_aware?),
+         {:ok, legacy_previous} <-
+           resolve_opt(endpoint.legacy_previous_secret_ref, resolver, tenant, tenant_aware?) do
       opts =
         sw_secret(secret)
         |> Keyword.merge(sw_previous(previous))
@@ -355,22 +410,51 @@ defmodule AshHooks.Delivery do
     ArgumentError -> {:error, :signing_failed}
   end
 
-  defp resolve(ref, {m, f}) when is_binary(ref) and ref != "" and is_atom(m) and is_atom(f) do
-    resolve(ref, &apply(m, f, [&1]))
+  # No ref means no secret — checked FIRST so a config-shaped resolver can
+  # never be misclassified as a missing reference (and vice versa).
+  defp resolve(ref, _resolver, _tenant, _tenant_aware?)
+       when not is_binary(ref) or ref == "",
+       do: {:error, :no_secret}
+
+  defp resolve(ref, {m, f}, tenant, tenant_aware?)
+       when is_binary(ref) and is_atom(m) and is_atom(f) do
+    if tenant_aware? do
+      resolve_checked(fn -> apply(m, f, [ref, tenant]) end)
+    else
+      resolve_checked(fn -> apply(m, f, [ref]) end)
+    end
   end
 
-  defp resolve(ref, resolver) when is_binary(ref) and ref != "" and is_function(resolver, 1) do
-    case resolver.(ref) do
+  defp resolve(ref, resolver, _tenant, false) when is_binary(ref) and is_function(resolver, 1),
+    do: resolve_checked(fn -> resolver.(ref) end)
+
+  defp resolve(ref, resolver, tenant, true) when is_binary(ref) and is_function(resolver, 2),
+    do: resolve_checked(fn -> resolver.(ref, tenant) end)
+
+  # a resolver whose shape does not match the declared contract (e.g. a
+  # 1-arity resolver under :tenant_aware_secrets) classifies as a
+  # retryable secret-resolution failure — a crash here would burn the job
+  # without a classified ledger write
+  defp resolve(_ref, _resolver, _tenant, _tenant_aware?),
+    do: {:error, {:secret_resolution, :invalid_resolver}}
+
+  defp resolve_checked(fun) do
+    case fun.() do
       {:ok, secret} when is_binary(secret) and secret != "" -> {:ok, secret}
       {:error, reason} -> {:error, {:secret_resolution, reason}}
       _other -> {:error, {:secret_resolution, :invalid_resolver_result}}
     end
+  rescue
+    _bad_arity_or_undef -> {:error, {:secret_resolution, :invalid_resolver}}
+  catch
+    :exit, _ -> {:error, {:secret_resolution, :invalid_resolver}}
+    :throw, _ -> {:error, {:secret_resolution, :invalid_resolver}}
   end
 
-  defp resolve(_missing_ref, _resolver), do: {:error, :no_secret}
+  defp resolve_opt(ref, resolver, tenant, tenant_aware?) when is_binary(ref) and ref != "",
+    do: resolve(ref, resolver, tenant, tenant_aware?)
 
-  defp resolve_opt(ref, resolver) when is_binary(ref) and ref != "", do: resolve(ref, resolver)
-  defp resolve_opt(_nil, _resolver), do: {:ok, nil}
+  defp resolve_opt(_nil, _resolver, _tenant, _tenant_aware?), do: {:ok, nil}
 
   # the resolved binary's prefix selects the SW option slot; unprefixed
   # material signs symmetric (v1) — the references' Signing contract
@@ -399,14 +483,15 @@ defmodule AshHooks.Delivery do
 
   # ────────────────────────── transitions ──────────────────────────
 
-  defp mark_sending(row, config) do
+  defp mark_sending(row, config, tenant) do
     result =
       gated_update(
         row,
         config,
         :mark_sending,
         %{},
-        [:pending, :sending, :failed_retryable, :enqueue_failed]
+        [:pending, :sending, :failed_retryable, :enqueue_failed],
+        tenant
       )
 
     case result do
@@ -419,11 +504,18 @@ defmodule AshHooks.Delivery do
   # uniqueness at states: :all / period: :infinity, a lost terminal write
   # strands the row in :sending with no possible re-trigger — surface the
   # error so the job error-retries and the reconcile re-runs.
-  defp mark_succeeded(row, response, config) do
-    case gated_update(row, config, :mark_succeeded, %{
-           response_status: response.status,
-           response_snippet: snippet_for(response, config)
-         }) do
+  defp mark_succeeded(row, response, config, tenant) do
+    case gated_update(
+           row,
+           config,
+           :mark_succeeded,
+           %{
+             response_status: response.status,
+             response_snippet: snippet_for(response, config)
+           },
+           [:sending],
+           tenant
+         ) do
       {:ok, _} ->
         :telemetry.execute(
           [:ash_hooks, :delivery, :result],
@@ -444,9 +536,9 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  defp retry(row, error, config, retry_after, summary \\ nil) do
+  defp retry(row, error, config, tenant, retry_after, summary \\ nil) do
     if row.attempts >= config[:max_attempts] do
-      dead_letter(row, error, config, summary)
+      dead_letter(row, error, config, tenant, summary)
     else
       delay = delay_seconds(row, config, retry_after)
       next_at = DateTime.add(now(config), delay, :second)
@@ -459,7 +551,9 @@ defmodule AshHooks.Delivery do
                error: error,
                next_attempt_at: next_at,
                dead_letter?: false
-             })
+             }),
+             [:sending],
+             tenant
            ) do
         {:ok, _} ->
           emit_result(row, summary, :failed_retryable, error)
@@ -483,7 +577,7 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  defp dead_letter(row, error, config, summary \\ nil) do
+  defp dead_letter(row, error, config, tenant, summary \\ nil) do
     case gated_update(
            row,
            config,
@@ -492,7 +586,8 @@ defmodule AshHooks.Delivery do
            # dead-letter can land from any pre-send or mid-send state —
            # including :enqueue_failed rows the runtime re-drove — never
            # from a terminal row
-           [:pending, :sending, :failed_retryable, :enqueue_failed]
+           [:pending, :sending, :failed_retryable, :enqueue_failed],
+           tenant
          ) do
       {:ok, _} ->
         emit_result(row, summary, :dead_letter, error)
@@ -545,7 +640,7 @@ defmodule AshHooks.Delivery do
   # transition legitimately starts from. :mark_sending re-drives :sending
   # (crash recovery — at-least-once, receivers dedup by webhook-id); the
   # reconcile marks are owned by the attempt that flipped to :sending.
-  defp gated_update(row, config, action, input, statuses \\ [:sending]) do
+  defp gated_update(row, config, action, input, statuses, tenant) do
     result = config[:deliveries]
 
     result
@@ -554,7 +649,8 @@ defmodule AshHooks.Delivery do
       authorize?: false,
       return_records?: true,
       return_errors?: true,
-      strategy: [:atomic]
+      strategy: [:atomic],
+      tenant: tenant
     )
     |> case do
       %Ash.BulkResult{status: :success, records: records} -> {:ok, records}

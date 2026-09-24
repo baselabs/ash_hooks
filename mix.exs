@@ -1,7 +1,7 @@
 defmodule AshHooks.MixProject do
   use Mix.Project
 
-  @version "1.1.1"
+  @version "1.2.0"
   @source_url "https://github.com/baselabs/ash_hooks"
 
   def project do
@@ -149,7 +149,7 @@ defmodule AshHooks.MixProject do
         DSLs: ~r"documentation/dsls/?"
       ],
       groups_for_modules: [
-        Core: [AshHooks, AshHooks.Info, AshHooks.Ssrf, AshHooks.Telemetry],
+        Core: [AshHooks, AshHooks.Info, AshHooks.Ssrf, AshHooks.Telemetry, AshHooks.Tenancy],
         Inbound: [
           AshHooks.BodyReader,
           AshHooks.Ingress,

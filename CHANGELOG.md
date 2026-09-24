@@ -6,6 +6,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.2.0 — 2026-09-24
+
+Tenancy release (ADR-0011, additive and opt-in): ash_hooks aligns with
+Ash attribute multitenancy — an explicit tenant threads every data call,
+and the package fails closed with named errors before any data access
+when a multitenant resource is touched without one. Single-tenant
+adopters change nothing: the entire pre-1.2 suite passes unchanged over
+tenant-less fixtures (that is a shipped proof — 600 tests total now —
+not a claim), because threading a tenant through resources with no
+multitenancy declaration is mechanically inert.
+
+### Added
+
+- **Tenant threading on every path** — `AshHooks.dispatch/4` (`:tenant`
+  opt), `AshHooks.Ingress.ingest/4` (`ctx[:tenant]`), the claim/mark/
+  renew/redact/prune/reap heads (`:tenant` opt, new optional arity),
+  `AshHooks.Delivery.run/2` (tenant recovered from job args), and both
+  prunes. The tenancy contract: consumers declare
+  `multitenancy :attribute, attribute: <same attr>, global?: false` on
+  the four resources; the package verifies the set on every entry
+  family and returns `{:error, :tenant_required}` /
+  `{:error, :tenancy_mismatch}` before any data access (Ash's native
+  fail-closed stays the backstop; `global?: true` is rejected — it
+  silently disables fail-closed reads). A compile-time verifier
+  additionally rejects `multitenancy :bypass` actions on multitenant
+  package resources.
+- **Per-tenant operations** — `AshHooks.reap_all/2` and
+  `AshHooks.prune_all/2` sweep a tenant enumerable sequentially with
+  per-tenant error isolation and totals
+  (`{:ok, %{results: %{tenant => {:ok, n} | {:error, reason}}, total: n}}`).
+- **`AshHooks.reconcile_pending/3`** — the supported reconciliation for
+  delivery rows stranded at `:pending` by a crash between row write and
+  enqueue: a WHERE-gated CAS flip to `:enqueue_failed` (real state
+  change — matched-records is the win signal; exactly one winner among
+  concurrent reconcilers under ANY enqueue seam, proven under a custom
+  non-Oban seam), then enqueue through the same seam dispatch takes.
+- **Tenant-aware secret resolution (all optional)** — the worker macro's
+  `:tenant_aware_secrets` (2-arity `f(ref, tenant)` resolver contract);
+  the inbound `secret fn tenant -> ... end` source; the provider
+  behaviour's optional `webhook_signing_secret/2`
+  (Organization × connection custody; `use AshHooks.Provider` ships an
+  overridable default delegating to `/1`); and `:tenant` in the
+  `verify_signature/3` context map.
+- **Oban args carry the tenant** — the generated `enqueue/2` serializes
+  the row's tenant (string tenants are the supported shape; non-string
+  tenants must round-trip `parse_attribute` over JSON); uniqueness keys
+  stay `[:endpoint_id, :event_uuid]`, and a pre-tenancy tenant-less job
+  still conflicts with the tenant-bearing job on the same pair (proven
+  on the real Oban engine).
+- The dispatch result contract is now a public typespec
+  (`AshHooks.Dispatcher.dispatch_result/0`) including the new
+  `:reconciled` status.
+- The multi-tenant adoption checklist
+  (documentation/tutorials/tenancy-adoption-checklist.md) and ADR-0011.
+
+### Migration notes
+
+Two adopter classes see action; single-tenant staying single-tenant
+sees none. See UPGRADING.md and the adoption checklist: (1) cutover
+with in-flight 1.1.x Oban jobs — drain before serving multitenant
+dispatch (pre-tenancy args fail closed, correct but noisy); (2)
+single→multi on populated tables — backfill the tenant attribute first
+(NULL-tenant rows form a shadow partition that strands effect-once),
+then regenerate identity indexes, then enable.
+
 ## 1.1.1 — 2026-09-16
 
 Tri-OS proof release. No covered-surface change (patch, ADR-0010): the

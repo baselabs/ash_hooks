@@ -30,6 +30,11 @@ defmodule AshHooks.Worker do
       rotation); legacy envelopes, when the signing mode uses them, are
       signed from the endpoint's `legacy_secret_ref` /
       `legacy_previous_secret_ref` references through this same resolver.
+    * `:tenant_aware_secrets` (optional, default `false`) — switches the
+      resolver contract to 2-arity: `f(ref, tenant)`. The tenant is the
+      run's args-threaded tenant (the delivery row's tenant, serialized at
+      enqueue). Explicit, no arity magic: the default 1-arity contract is
+      unchanged.
     * `:snippet_redactor` (`{m, f}`, optional) — a consumer callback run
       on the RAW captured body ahead of the package's snippet floor
       (domain-specific tokens need raw input). Only consulted on per-call
@@ -53,6 +58,15 @@ defmodule AshHooks.Worker do
   duplicate trigger after success or window expiry; both are overridden.
   A uniqueness conflict is `{:ok, %Oban.Job{conflict?: true}}` — the
   generated `enqueue/2` maps it to `:ok` (a conflict IS dedup success).
+  On multitenant deliveries the enqueue also serializes the row's tenant
+  into job args (the attribute value INVERTED through the resource's
+  `tenant_from_attribute`, so `Delivery.run/2`'s forward
+  `parse_attribute` round-trips for non-identity parsers too); the
+  uniqueness keys stay the pair (endpoint PKs are globally unique, and
+  Oban's `keys:` containment is indifferent to the extra arg). The
+  tenant must round-trip Oban's JSON encoding — string tenants (uuids,
+  slugs) are the supported shape; adopters with a custom `parse_attribute`
+  pair it with `tenant_from_attribute` (the default inverse is identity).
   """
 
   defp maybe_expand(nil, _expand), do: nil
@@ -67,6 +81,8 @@ defmodule AshHooks.Worker do
           "AshHooks.Worker :snippet_redactor must be {module, function} " <>
             "(a 1-arity fn is accepted in the delivery config) — got {#{inspect(m)}, #{inspect(f)}}"
       )
+
+  alias Ash.Resource.Info, as: ResourceInfo
 
   defmacro __using__(opts) do
     # resolved at macro time — `use Oban.Worker` needs literal options,
@@ -111,6 +127,7 @@ defmodule AshHooks.Worker do
         endpoints: expand.(Keyword.fetch!(opts, :endpoints)),
         secret_resolver: {expand.(resolver_m), resolver_f},
         snippet_redactor: snippet_redactor,
+        tenant_aware_secrets: Keyword.get(opts, :tenant_aware_secrets, false),
         http: maybe_expand(Keyword.get(opts, :http), expand),
         # the adapter-opts seam (timeout overrides, :cacerts private-CA
         # bundles). Compile-time LITERALS bake as-is; anything computed
@@ -162,12 +179,15 @@ defmodule AshHooks.Worker do
 
       # The #6 enqueue seam (`enqueue: {__MODULE__, :enqueue}`): inserts
       # the trigger with effect-once uniqueness; a uniqueness conflict is
-      # dedup success, not an error.
+      # dedup success, not an error. Multitenant deliveries carry their
+      # row tenant in the args (read off the multitenancy attribute — Ash
+      # itself set it from the dispatch tenant at create); single-tenant
+      # rows serialize no tenant key at all.
       def enqueue(delivery, _event) do
-        args = %{
-          "endpoint_id" => to_string(delivery.endpoint_id),
-          "event_uuid" => delivery.event_uuid
-        }
+        args =
+          %{endpoint_id: to_string(delivery.endpoint_id), event_uuid: delivery.event_uuid}
+          |> maybe_put_tenant(delivery)
+          |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
 
         changeset =
           __MODULE__.new(args,
@@ -182,6 +202,26 @@ defmodule AshHooks.Worker do
         case Oban.insert(@ash_hooks_oban, changeset) do
           {:ok, %Oban.Job{}} -> :ok
           {:error, reason} -> {:error, reason}
+        end
+      end
+
+      # the tenant rides the args only when the ledger carries a
+      # multitenancy attribute (undeclared → nil → no key)
+      # the row holds the ATTRIBUTE value; the args carry the TENANT —
+      # inverted through the resource's tenant_from_attribute so
+      # Delivery.run's forward parse_attribute round-trips for
+      # NON-identity parsers too (serializing the attribute value itself
+      # would be double-parsed there — cross-vendor finding, P1)
+      defp maybe_put_tenant(args, delivery) do
+        resource = delivery.__struct__
+
+        case ResourceInfo.multitenancy_attribute(resource) do
+          nil ->
+            args
+
+          attribute ->
+            {m, f, a} = ResourceInfo.multitenancy_tenant_from_attribute(resource)
+            Map.put(args, :tenant, apply(m, f, [Map.get(delivery, attribute) | a]))
         end
       end
     end

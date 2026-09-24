@@ -60,5 +60,5 @@ defmodule AshHooks.OutboundDelivery do
       AshHooks.OutboundDelivery.Transformers.AddDeliveryActions,
       AshHooks.OutboundDelivery.Transformers.AddSendActions
     ],
-    verifiers: []
+    verifiers: [AshHooks.Verifiers.MultitenancyNoBypass]
 end

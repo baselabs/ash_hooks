@@ -89,5 +89,5 @@ defmodule AshHooks.InboundDelivery do
       AshHooks.InboundDelivery.Transformers.AddLedgerIdentity,
       AshHooks.InboundDelivery.Transformers.AddFencedActions
     ],
-    verifiers: []
+    verifiers: [AshHooks.Verifiers.MultitenancyNoBypass]
 end

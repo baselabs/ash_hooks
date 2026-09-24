@@ -42,5 +42,5 @@ defmodule AshHooks.Endpoint do
       AshHooks.Endpoint.Transformers.AddEndpointFields,
       AshHooks.Endpoint.Transformers.AddEndpointActions
     ],
-    verifiers: []
+    verifiers: [AshHooks.Verifiers.MultitenancyNoBypass]
 end

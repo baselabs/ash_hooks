@@ -246,6 +246,60 @@ Deleting a terminal row re-opens its dedup identity — a replayed
 webhook re-processes, a re-emitted outbound event re-sends — so set the
 TTL beyond any replay or re-emission horizon.
 
+## Multi-tenancy
+
+If one app serves multiple organizations, ash_hooks works the way Ash
+does: declare **attribute multitenancy** on the four resources — your
+Subscription, Endpoint, inbound ledger, and outbound delivery ledger —
+and pass a `:tenant` to every call:
+
+```elixir
+# the four resources declare the same contract
+multitenancy do
+  strategy :attribute
+  attribute :org_id
+end
+
+# outbound: the tenant scopes the fanout, endpoint resolution, and rows
+AshHooks.dispatch(Order, :order_paid, event, tenant: org.id)
+
+# inbound: the tenant rides the request context
+AshHooks.Ingress.ingest(WebhookLedger, :stripe, raw_body, %{
+  signature: sig,
+  tenant: org.id
+})
+```
+
+From there the isolation is structural, not advisory: a dispatch for
+tenant A cannot create a delivery row for tenant B's endpoint, a
+subscription pointing at another tenant's endpoint id resolves to
+not-found and is skipped, the inbound dedup identity is per-tenant, and
+the claim fence and every mark are per-tenant. Touch a multitenant
+resource without a tenant and you get `{:error, :tenant_required}`
+before any data access; declare the four resources inconsistently and
+you get `{:error, :tenancy_mismatch}` — both named errors, both
+fail-closed.
+
+The async path carries its own weight: the Oban job args include the
+row's tenant (the worker recovers full context after any restart), the
+retention sweeps take a `:tenant` (with `AshHooks.reap_all/2` /
+`AshHooks.prune_all/2` sugar to sweep a tenant list), and
+`AshHooks.reconcile_pending/3` repairs rows stranded between the row
+write and the enqueue — per tenant, with single-winner semantics. If
+your signing secrets are per-tenant, resolution can be too: the worker
+macro's `tenant_aware_secrets: true` (the resolver becomes
+`f(ref, tenant)`), an inbound `secret fn tenant -> {:ok, secret} end`,
+and an optional provider `webhook_signing_secret(connection, tenant)`
+callback.
+
+Single-tenant app? Do none of this. No tenant passed means no tenant
+threaded — behavior is identical.
+
+Adopting tenancy on tables that already have rows is an ordered
+transition (backfill, then regenerate indexes, then enable) — the
+[adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
+walks it; ADR-0011 records the floor.
+
 ## Security
 
 The package enforces the guarantees it owns: constant-time signature

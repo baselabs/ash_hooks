@@ -1,5 +1,36 @@
 # Upgrading
 
+## 1.1.1 → 1.2.0+
+
+### Multi-tenancy is available and opt-in (ADR-0011)
+
+Nothing changes unless you declare multitenancy on the four resources
+(Subscription, Endpoint, both ledgers). If you do, read the adoption
+checklist (`documentation/tutorials/tenancy-adoption-checklist.md`) —
+the ordered transition for populated tables is **backfill the tenant
+attribute → regenerate identity indexes → enable multitenant
+dispatch**. A NULL-tenant legacy row forms a shadow partition: new
+tenant-bearing upserts create parallel rows and strand effect-once.
+
+Two obligations for multi-tenant adopters:
+
+1. **Drain in-flight 1.1.x Oban jobs before serving multitenant
+   dispatch.** Pre-tenancy job args carry no tenant and fail closed
+   (`{:error, :tenant_required}`) against multitenant resources —
+   correct, but noisy. Drain first.
+2. **String tenants are the supported job-args shape.** The worker
+   serializes the row's tenant into Oban args (JSON), inverting the
+   attribute value through the resource's `tenant_from_attribute`. A
+   custom `parse_attribute` should pair with `tenant_from_attribute`
+   (the default inverse is identity).
+
+New heads are additive: `reap/2`, `redact_payload/5`, `mark_processed/4`,
+`mark_failed/6`, `renew/4`, `claim_delivery/3` gained an optional
+`opts` (or `:tenant` for the prunes); all prior arities keep working.
+The `%{endpoint_id, subscription_id, status, error}` dispatch result
+container is now a typespec'd public contract with one NEW status:
+`:reconciled`.
+
 ## 1.0.4 → 1.1.0+
 
 ### Elixir 1.20+ required (previously 1.17+)

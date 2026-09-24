@@ -45,15 +45,17 @@ defmodule AshHooks.Ingress do
   alias AshHooks.Errors.Invalid.MalformedPayload
   alias AshHooks.Errors.Invalid.NoWebhookSecret
   alias AshHooks.Errors.Unknown.UnknownError
-  alias AshHooks.Info
-  alias AshHooks.Provider
+  alias AshHooks.{Info, Provider, Tenancy}
   alias Spark.Dsl.Extension
 
   @typedoc """
   The request context. `:signature` is the provider's signature header
   value; `:headers` the lowercased request headers; `:scope` carries values
   for the ledger's declared `scope_identity` slots; `:connection` is the
-  per-connection provider's secret source argument.
+  per-connection provider's secret source argument; `:tenant` is the
+  ingest tenant (required on multitenant ledgers — the named
+  `{:error, :tenant_required}` comes back before any data access when
+  absent).
   """
   @type ctx :: %{
           optional(:signature) => String.t(),
@@ -61,7 +63,8 @@ defmodule AshHooks.Ingress do
           optional(:method) => String.t() | nil,
           optional(:request_uri) => String.t() | nil,
           optional(:connection) => term(),
-          optional(:scope) => %{optional(atom() | String.t()) => term()}
+          optional(:scope) => %{optional(atom() | String.t()) => term()},
+          optional(:tenant) => term()
         }
 
   @lease_default_seconds 30
@@ -79,14 +82,17 @@ defmodule AshHooks.Ingress do
   # ────────────────────────── sync pipeline ──────────────────────────
 
   @doc """
-  Drives one inbound delivery through the full sync pipeline.
+  Drives one inbound delivery through the full sync pipeline. The tenant
+  rides the ctx (`ctx[:tenant]`) and threads every ledger call — the
+  dedup identity, the claim fence, and every mark are per-tenant.
   """
   @spec ingest(module(), atom(), binary() | nil, ctx()) ::
           {:ok, :created | :duplicate, struct()} | {:error, term()}
   def ingest(resource, name, raw_body, ctx) do
     started = System.monotonic_time()
 
-    with {:ok, env} <- verify(resource, name, raw_body, ctx, started),
+    with {:ok, tenant} <- Tenancy.resolve([resource], ctx[:tenant]),
+         {:ok, env} <- verify(resource, name, raw_body, Map.put(ctx, :tenant, tenant), started),
          {:ok, created?, delivery} <- ingest_delivery(resource, env) do
       drive(resource, env, delivery, created?)
     end
@@ -129,10 +135,17 @@ defmodule AshHooks.Ingress do
   @doc """
   Persists the ledger row (raw payload BEFORE handling) via the
   no-touch unique upsert. Classifies `:created` by comparing the surviving
-  row's client-generated id against ours.
+  row's client-generated id against ours. The env carries the resolved
+  tenant (`env[:tenant]`).
   """
   @spec ingest_delivery(module(), map()) :: {:ok, boolean(), struct()} | {:error, term()}
   def ingest_delivery(resource, env) do
+    with {:ok, tenant} <- Tenancy.resolve([resource], env[:tenant]) do
+      ingest_delivery!(resource, env, tenant)
+    end
+  end
+
+  defp ingest_delivery!(resource, env, tenant) do
     id = Ash.UUID.generate()
 
     input =
@@ -147,7 +160,7 @@ defmodule AshHooks.Ingress do
       |> Map.merge(env.scope)
 
     with_transient_retry(fn ->
-      case Ash.create(resource, input, action: :ingest, authorize?: false) do
+      case Ash.create(resource, input, action: :ingest, authorize?: false, tenant: tenant) do
         {:ok, delivery} ->
           created? = delivery.id == id
 
@@ -169,54 +182,58 @@ defmodule AshHooks.Ingress do
   Claims a delivery: WHERE-gated on `status == :received`, a re-driveable
   failure, or an EXPIRED lease — bumps the fencing token atomically and
   takes a fresh lease. A live foreign lease (or a terminal row) returns
-  `{:error, :lease_held}`.
+  `{:error, :lease_held}`. `:tenant` scopes the claim (required on
+  multitenant ledgers).
   """
-  @spec claim_delivery(module(), term()) ::
+  @spec claim_delivery(module(), term(), keyword()) ::
           {:ok, non_neg_integer(), struct()} | {:error, :lease_held | term()}
-  def claim_delivery(resource, delivery_id) do
-    # `now` and the lease are recomputed on EVERY attempt: a retry that
-    # spends contention time sleeping must not grant a lease that is
-    # shorter than configured — or already expired (cross-vendor finding).
-    result =
-      with_transient_retry(fn ->
-        attempt_now = now()
-        lease_expires_at = DateTime.add(attempt_now, lease_seconds(resource), :second)
+  def claim_delivery(resource, delivery_id, opts \\ []) do
+    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
+      # `now` and the lease are recomputed on EVERY attempt: a retry that
+      # spends contention time sleeping must not grant a lease that is
+      # shorter than configured — or already expired (cross-vendor finding).
+      result =
+        with_transient_retry(fn ->
+          attempt_now = now()
+          lease_expires_at = DateTime.add(attempt_now, lease_seconds(resource), :second)
 
-        resource
-        |> Ash.Query.filter(
-          id == ^delivery_id and
-            (status == :received or status == :failed_retryable or
-               (status == :claimed and lease_expires_at < ^attempt_now))
-        )
-        |> Ash.bulk_update(:claim, %{lease_expires_at: lease_expires_at},
-          authorize?: false,
-          return_records?: true,
-          return_errors?: true,
-          strategy: [:atomic]
-        )
-      end)
+          resource
+          |> Ash.Query.filter(
+            id == ^delivery_id and
+              (status == :received or status == :failed_retryable or
+                 (status == :claimed and lease_expires_at < ^attempt_now))
+          )
+          |> Ash.bulk_update(:claim, %{lease_expires_at: lease_expires_at},
+            authorize?: false,
+            return_records?: true,
+            return_errors?: true,
+            strategy: [:atomic],
+            tenant: tenant
+          )
+        end)
 
-    case result do
-      %Ash.BulkResult{status: :success, records: [delivery]} ->
-        :telemetry.execute(
-          [:ash_hooks, :ingress, :claim],
-          %{},
-          %{source: delivery.provider, outcome: :claimed}
-        )
+      case result do
+        %Ash.BulkResult{status: :success, records: [delivery]} ->
+          :telemetry.execute(
+            [:ash_hooks, :ingress, :claim],
+            %{},
+            %{source: delivery.provider, outcome: :claimed}
+          )
 
-        {:ok, delivery.fencing_token, delivery}
+          {:ok, delivery.fencing_token, delivery}
 
-      %Ash.BulkResult{status: :success, records: []} ->
-        :telemetry.execute(
-          [:ash_hooks, :ingress, :claim],
-          %{},
-          %{source: nil, outcome: :lease_held}
-        )
+        %Ash.BulkResult{status: :success, records: []} ->
+          :telemetry.execute(
+            [:ash_hooks, :ingress, :claim],
+            %{},
+            %{source: nil, outcome: :lease_held}
+          )
 
-        {:error, :lease_held}
+          {:error, :lease_held}
 
-      %Ash.BulkResult{errors: [error | _]} ->
-        {:error, error}
+        %Ash.BulkResult{errors: [error | _]} ->
+          {:error, error}
+      end
     end
   end
 
@@ -237,7 +254,8 @@ defmodule AshHooks.Ingress do
   def prune(resource, opts) do
     older_than = normalize_cutoff(Keyword.fetch!(opts, :older_than))
 
-    with :ok <- require_timestamps!(resource) do
+    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
+         :ok <- require_timestamps!(resource) do
       require Ash.Query
 
       result =
@@ -250,7 +268,8 @@ defmodule AshHooks.Ingress do
             authorize?: false,
             return_records?: true,
             return_errors?: true,
-            strategy: [:atomic]
+            strategy: [:atomic],
+            tenant: tenant
           )
         end)
 
@@ -277,24 +296,22 @@ defmodule AshHooks.Ingress do
   then mark promptly: a lease expiry between redact and mark re-drives
   the row with the redacted payload.
   """
-  @spec redact_payload(module(), term(), non_neg_integer(), term()) ::
+  @spec redact_payload(module(), term(), non_neg_integer(), term(), keyword()) ::
           :ok | {:error, :stale_token | :redactor_crash | :invalid_redactor_result | term()}
-  def redact_payload(resource, delivery_id, token, redactor) do
-    case Ash.get(resource, delivery_id, authorize?: false) do
-      {:ok, delivery} ->
-        # the fence is checked BEFORE the redactor sees the payload — a
-        # stale token must not receive sensitive bytes through the
-        # callback even though the eventual write would be rejected
-        # (cross-vendor finding)
-        if fence_valid?(delivery, token) do
-          apply_redactor(redactor, delivery.payload, resource, delivery_id, token)
-        else
-          {:error, :stale_token}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
+  def redact_payload(resource, delivery_id, token, redactor, opts \\ []) do
+    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
+         {:ok, delivery} <- Ash.get(resource, delivery_id, authorize?: false, tenant: tenant),
+         # the fence is checked BEFORE the redactor sees the payload — a
+         # stale token must not receive sensitive bytes through the
+         # callback even though the eventual write would be rejected
+         # (cross-vendor finding)
+         :ok <- check_fence(delivery, token) do
+      apply_redactor(redactor, delivery.payload, resource, delivery_id, token, tenant)
     end
+  end
+
+  defp check_fence(delivery, token) do
+    if fence_valid?(delivery, token), do: :ok, else: {:error, :stale_token}
   end
 
   defp fence_valid?(delivery, token) do
@@ -302,13 +319,13 @@ defmodule AshHooks.Ingress do
       DateTime.compare(delivery.lease_expires_at, now()) == :gt
   end
 
-  defp apply_redactor(redactor, payload, resource, delivery_id, token) do
+  defp apply_redactor(redactor, payload, resource, delivery_id, token, tenant) do
     case redactor_fun(redactor).(payload) do
       nil ->
         :ok
 
       new_payload when is_map(new_payload) or is_list(new_payload) ->
-        gated_update(resource, delivery_id, token, :redact_payload, %{payload: new_payload})
+        gated_update(resource, delivery_id, token, :redact_payload, %{payload: new_payload}, tenant)
 
       _other ->
         {:error, :invalid_redactor_result}
@@ -345,77 +362,101 @@ defmodule AshHooks.Ingress do
 
   @doc """
   Marks a claimed delivery processed — gated on the caller's token under an
-  unexpired lease.
+  unexpired lease. `:tenant` scopes the mark (required on multitenant
+  ledgers).
   """
-  @spec mark_processed(module(), term(), non_neg_integer()) ::
+  @spec mark_processed(module(), term(), non_neg_integer(), keyword()) ::
           :ok | {:error, :stale_token | term()}
-  def mark_processed(resource, delivery_id, token) do
-    gated_update(resource, delivery_id, token, :mark_processed, %{})
+  def mark_processed(resource, delivery_id, token, opts \\ []) do
+    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
+      gated_update(resource, delivery_id, token, :mark_processed, %{}, tenant)
+    end
   end
 
   @doc """
   Marks a claimed delivery failed — same token/lease gate as
-  `mark_processed/3`. `permanent?` selects `:failed_permanent` over
+  `mark_processed/4`. `permanent?` selects `:failed_permanent` over
   `:failed_retryable`.
   """
-  @spec mark_failed(module(), term(), non_neg_integer(), String.t(), boolean()) ::
+  @spec mark_failed(module(), term(), non_neg_integer(), String.t(), boolean(), keyword()) ::
           :ok | {:error, :stale_token | term()}
-  def mark_failed(resource, delivery_id, token, error_class, permanent?) do
-    gated_update(resource, delivery_id, token, :mark_failed, %{
-      error_class: error_class,
-      permanent?: permanent?
-    })
+  def mark_failed(resource, delivery_id, token, error_class, permanent?, opts \\ []) do
+    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
+      gated_update(
+        resource,
+        delivery_id,
+        token,
+        :mark_failed,
+        %{error_class: error_class, permanent?: permanent?},
+        tenant
+      )
+    end
   end
 
   @doc """
   Extends the caller's lease — gated on the caller's token under an
   unexpired lease.
   """
-  @spec renew(module(), term(), non_neg_integer()) :: :ok | {:error, :stale_token | term()}
-  def renew(resource, delivery_id, token) do
-    gated_update(resource, delivery_id, token, :renew, %{
-      lease_expires_at: DateTime.add(now(), lease_seconds(resource), :second)
-    })
+  @spec renew(module(), term(), non_neg_integer(), keyword()) ::
+          :ok | {:error, :stale_token | term()}
+  def renew(resource, delivery_id, token, opts \\ []) do
+    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
+      gated_update(resource, delivery_id, token, :renew, %{
+        lease_expires_at: DateTime.add(now(), lease_seconds(resource), :second)
+      }, tenant)
+    end
   end
 
   @doc """
   Re-drives deliveries whose claims died with an expired lease (crash
   between claim and mark). Returns the number re-driven; unexpired leases
-  and terminal rows are left alone.
+  and terminal rows are left alone. `:tenant` scopes the sweep — a
+  tenant-less global reap over a multitenant ledger is the named
+  `{:error, :tenant_required}` (this head would otherwise crash on the
+  bang read); per-tenant sweeps compose with `AshHooks.reap_all/2`.
 
   Rows that cannot be re-driven (inbound declaration removed, provider
   unresolved, a raising handler) are skipped without stopping the sweep —
   a poison row must never starve the rows behind it (cross-vendor finding).
   """
-  @spec reap(module()) :: {:ok, non_neg_integer()}
-  def reap(resource) do
-    now = now()
+  @spec reap(module(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, :tenant_required | :tenancy_mismatch}
+  def reap(resource, opts \\ []) do
+    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
+      now = now()
 
-    expired =
-      with_transient_retry(fn ->
-        resource
-        |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now)
-        |> Ash.read!(authorize?: false)
-      end)
+      expired =
+        with_transient_retry(fn ->
+          resource
+          |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now)
+          |> Ash.read!(authorize?: false, tenant: tenant)
+        end)
 
-    Enum.reduce(expired, {:ok, 0}, fn row, {:ok, count} ->
-      case safe_redrive(resource, row) do
-        {:ok, _} -> {:ok, count + 1}
-        _skipped -> {:ok, count}
-      end
-    end)
+      re_driven =
+        expired
+        |> Enum.map(&safe_redrive(resource, &1, tenant))
+        |> Enum.count(&match?({:ok, _}, &1))
+
+      {:ok, re_driven}
+    end
   end
 
-  defp safe_redrive(resource, row) do
-    redrive(resource, row)
+  # the redrive invokes the CONSUMER's handle_event — raises, throws,
+  # and exits (a GenServer.call timeout in a handler) are all contained
+  # (cross-vendor finding, both peers: a rescue-only wrapper let one
+  # poison handler abort a whole reap_all)
+  defp safe_redrive(resource, row, tenant) do
+    redrive(resource, row, tenant)
   rescue
     _reason -> {:error, :redrive_crashed}
+  catch
+    kind, _reason when kind in [:exit, :throw] -> {:error, :redrive_crashed}
   end
 
   # ────────────────────────── internals ──────────────────────────
 
   defp drive(resource, env, delivery, created?) do
-    case claim_delivery(resource, delivery.id) do
+    case claim_delivery(resource, delivery.id, tenant: env[:tenant]) do
       {:error, :lease_held} ->
         {:ok, result(created?), delivery}
 
@@ -437,34 +478,36 @@ defmodule AshHooks.Ingress do
   end
 
   defp handle_and_mark(resource, env, delivery_id, claimed) do
+    tenant = env[:tenant]
+
     with {:ok, type} <- env.parsed_type,
          {:ok, _event} <- env.provider.handle_event(type, env.payload) do
-      gated_update(resource, delivery_id, claimed.fencing_token, :mark_processed, %{})
+      gated_update(resource, delivery_id, claimed.fencing_token, :mark_processed, %{}, tenant)
     else
       {:error, :unknown_event_type} ->
         gated_update(resource, delivery_id, claimed.fencing_token, :mark_failed, %{
           error_class: "unknown_event_type",
           permanent?: true
-        })
+        }, tenant)
 
       {:error, :malformed_payload} ->
         gated_update(resource, delivery_id, claimed.fencing_token, :mark_failed, %{
           error_class: "malformed_payload",
           permanent?: true
-        })
+        }, tenant)
 
       {:error, kind, term} when kind in [:retry, :permanent] ->
         gated_update(resource, delivery_id, claimed.fencing_token, :mark_failed, %{
           error_class: error_class_string(term),
           permanent?: kind == :permanent
-        })
+        }, tenant)
 
       {:error, error} ->
         {:error, error}
     end
     |> case do
-      :ok -> {:ok, reload(resource, delivery_id)}
-      {:error, :stale_token} -> {:ok, reload(resource, delivery_id)}
+      :ok -> {:ok, reload(resource, delivery_id, tenant)}
+      {:error, :stale_token} -> {:ok, reload(resource, delivery_id, tenant)}
       {:error, error} -> {:error, error}
     end
   end
@@ -488,17 +531,22 @@ defmodule AshHooks.Ingress do
 
   # The reaper drives rows that already passed verification at ingest — no
   # signature to check, so it rebuilds the handling env from the stored row.
-  defp redrive(resource, row) do
+  defp redrive(resource, row, tenant) do
     with {:ok, inbound} <- fetch_inbound(resource, row.provider),
          {:ok, provider} <- resolve_provider(inbound, row.provider),
-         {:ok, _token, claimed} <- claim_delivery(resource, row.id) do
+         {:ok, _token, claimed} <- claim_delivery(resource, row.id, tenant: tenant) do
       parsed_type = provider.parse_event_type(row.payload)
 
-      handle_and_mark(resource, redrive_env(row, provider, parsed_type), row.id, claimed)
+      handle_and_mark(
+        resource,
+        redrive_env(row, provider, parsed_type, tenant),
+        row.id,
+        claimed
+      )
     end
   end
 
-  defp redrive_env(row, provider, parsed_type) do
+  defp redrive_env(row, provider, parsed_type, tenant) do
     %{
       name: row.provider,
       provider: provider,
@@ -508,20 +556,21 @@ defmodule AshHooks.Ingress do
       external_event_id: row.external_event_id,
       parsed_type: parsed_type,
       type_string: type_string(parsed_type),
-      scope: %{}
+      scope: %{},
+      tenant: tenant
     }
   end
 
-  defp reload(resource, delivery_id) do
+  defp reload(resource, delivery_id, tenant) do
     # the reload after a successful mark must not crash the caller for a
     # delivered-and-processed event under read contention (consumer journal
     # modes can block readers on writers)
     with_transient_retry(fn ->
-      Ash.get!(resource, delivery_id, authorize?: false)
+      Ash.get!(resource, delivery_id, authorize?: false, tenant: tenant)
     end)
   end
 
-  defp gated_update(resource, delivery_id, token, action, input) do
+  defp gated_update(resource, delivery_id, token, action, input, tenant) do
     result =
       with_transient_retry(fn ->
         resource
@@ -533,7 +582,8 @@ defmodule AshHooks.Ingress do
           authorize?: false,
           return_records?: true,
           return_errors?: true,
-          strategy: [:atomic]
+          strategy: [:atomic],
+          tenant: tenant
         )
       end)
 
@@ -624,7 +674,8 @@ defmodule AshHooks.Ingress do
          external_event_id: external_event_id(inbound, payload, digest),
          parsed_type: parsed_type,
          type_string: type_string(parsed_type),
-         scope: declared_scope(resource, ctx)
+         scope: declared_scope(resource, ctx),
+         tenant: ctx[:tenant]
        }}
     end
   end
@@ -699,23 +750,26 @@ defmodule AshHooks.Ingress do
 
   defp resolve_secret(provider, inbound, name, ctx) do
     if Provider.secret_scope(provider) == :per_connection do
-      case provider.webhook_signing_secret(ctx[:connection]) do
+      # the tenant rides the per-connection resolution: an overriding
+      # webhook_signing_secret/2 resolves per-tenant custody; a /1-only
+      # provider ignores it and compiles unchanged
+      case Provider.webhook_signing_secret(provider, ctx[:connection], ctx[:tenant]) do
         {:ok, secret} when is_binary(secret) and byte_size(secret) > 0 -> {:ok, secret}
         _else -> secret_error(name)
       end
     else
-      resolve_secret_source(inbound.secret, name)
+      resolve_secret_source(inbound.secret, name, ctx[:tenant])
     end
   end
 
-  defp resolve_secret_source({m, f, a}, name) do
+  defp resolve_secret_source({m, f, a}, name, _tenant) do
     case apply(m, f, a) do
       {:ok, secret} when is_binary(secret) and byte_size(secret) > 0 -> {:ok, secret}
       _else -> secret_error(name)
     end
   end
 
-  defp resolve_secret_source({:app_env, [app | rest]}, name) do
+  defp resolve_secret_source({:app_env, [app | rest]}, name, _tenant) do
     value = get_in(Application.get_all_env(app), rest)
 
     case value do
@@ -724,8 +778,17 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  defp resolve_secret_source(fun, name) when is_function(fun, 0) do
+  # the 0-arity source is app-global; the 1-arity source resolves the
+  # TENANT's secret (arity dispatch on literal fns is unambiguous)
+  defp resolve_secret_source(fun, name, _tenant) when is_function(fun, 0) do
     case fun.() do
+      {:ok, secret} when is_binary(secret) and byte_size(secret) > 0 -> {:ok, secret}
+      _else -> secret_error(name)
+    end
+  end
+
+  defp resolve_secret_source(fun, name, tenant) when is_function(fun, 1) do
+    case fun.(tenant) do
       {:ok, secret} when is_binary(secret) and byte_size(secret) > 0 -> {:ok, secret}
       _else -> secret_error(name)
     end
@@ -748,7 +811,8 @@ defmodule AshHooks.Ingress do
         signature: ctx[:signature],
         headers: ctx[:headers] || %{},
         method: ctx[:method],
-        request_uri: ctx[:request_uri]
+        request_uri: ctx[:request_uri],
+        tenant: ctx[:tenant]
       }
       |> maybe_put_replay_window(inbound)
 

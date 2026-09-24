@@ -48,6 +48,65 @@ if Code.ensure_loaded?(Oban) do
       end
     end
 
+    defmodule TenancyDelivery do
+      @moduledoc false
+      use Ash.Resource,
+        domain: AshHooks.WorkerTest.Domain,
+        data_layer: AshSqlite.DataLayer,
+        extensions: [AshHooks.OutboundDelivery]
+
+      sqlite do
+        table("tenancy_worker_deliveries")
+        repo(AshHooks.Test.Repo)
+      end
+
+      attributes do
+        attribute(:org_id, :string, allow_nil?: false)
+      end
+
+      multitenancy do
+        strategy(:attribute)
+        attribute(:org_id)
+      end
+
+      actions do
+        defaults([:read])
+      end
+    end
+
+    # attribute value = String.upcase(tenant); the INVERSE strips back to
+    # the tenant — exercises the enqueue's tenant_from_attribute inversion
+    defmodule ParsedTenancyDelivery do
+      @moduledoc false
+      use Ash.Resource,
+        domain: AshHooks.WorkerTest.Domain,
+        data_layer: AshSqlite.DataLayer,
+        extensions: [AshHooks.OutboundDelivery]
+
+      sqlite do
+        table("tenancy_worker_deliveries")
+        repo(AshHooks.Test.Repo)
+      end
+
+      attributes do
+        attribute(:org_id, :string, allow_nil?: false)
+      end
+
+      multitenancy do
+        strategy(:attribute)
+        attribute(:org_id)
+        parse_attribute({__MODULE__, :upcase, []})
+        tenant_from_attribute({__MODULE__, :downcase, []})
+      end
+
+      actions do
+        defaults([:read])
+      end
+
+      def upcase(tenant), do: String.upcase(to_string(tenant))
+      def downcase(attr), do: String.downcase(attr)
+    end
+
     defmodule Domain do
       @moduledoc false
       use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
@@ -55,6 +114,8 @@ if Code.ensure_loaded?(Oban) do
       resources do
         resource(AshHooks.WorkerTest.Endpoint)
         resource(AshHooks.WorkerTest.Delivery)
+        resource(AshHooks.WorkerTest.TenancyDelivery)
+        resource(AshHooks.WorkerTest.ParsedTenancyDelivery)
       end
     end
 
@@ -116,6 +177,29 @@ if Code.ensure_loaded?(Oban) do
         "CREATE UNIQUE INDEX IF NOT EXISTS #{@deliveries}_unique_delivery_index ON #{@deliveries} (endpoint_id, event_uuid)"
       )
 
+      Repo.query!("""
+      CREATE TABLE IF NOT EXISTS tenancy_worker_deliveries (
+        id TEXT PRIMARY KEY,
+        event_uuid TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        payload BLOB NOT NULL,
+        endpoint_id TEXT NOT NULL,
+        subscription_id TEXT,
+        signing_mode TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        response_status INTEGER,
+        response_snippet TEXT,
+        last_error TEXT,
+        next_attempt_at TEXT,
+        org_id TEXT NOT NULL
+      )
+      """)
+
+      Repo.query!(
+        "CREATE UNIQUE INDEX IF NOT EXISTS tenancy_worker_deliveries_unique_delivery_index ON tenancy_worker_deliveries (org_id, endpoint_id, event_uuid)"
+      )
+
       # a REAL Oban instance on the sqlite repo (Lite engine — the Oban
       # uniqueness facts ADR-0007 recorded from this same dep version)
       Application.put_env(:oban, AshHooks.WorkerTest.Oban,
@@ -172,6 +256,7 @@ if Code.ensure_loaded?(Oban) do
         Application.stop(:oban)
         Repo.query!("DROP TABLE IF EXISTS oban_jobs")
         Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
+        Repo.query!("DROP TABLE IF EXISTS tenancy_worker_deliveries")
         Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
       end)
 
@@ -180,6 +265,7 @@ if Code.ensure_loaded?(Oban) do
 
     setup do
       Repo.query!("DELETE FROM #{@deliveries}")
+      Repo.query!("DELETE FROM tenancy_worker_deliveries")
       Repo.query!("DELETE FROM #{@endpoints}")
       Repo.query!("DELETE FROM oban_jobs")
       :ok
@@ -305,6 +391,126 @@ if Code.ensure_loaded?(Oban) do
 
         assert bake_at && config_at && bake_at > config_at,
                "use AshHooks.Worker must bake :http_opts (exactly the Keyword.get/2 form) inside the delivery_config block, or the option is silently dropped"
+      end
+    end
+
+    describe "tenancy: the enqueue seam serializes the row tenant (D5)" do
+      defmodule TenantWorker do
+        @moduledoc false
+        use AshHooks.Worker,
+          deliveries: AshHooks.WorkerTest.TenancyDelivery,
+          endpoints: AshHooks.WorkerTest.Endpoint,
+          secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+          queue: :ash_hooks_tenancy,
+          oban: AshHooks.WorkerTest.Oban
+      end
+
+      defp tenancy_row!(endpoint, event_uuid, org) do
+        Ash.create!(
+          TenancyDelivery,
+          %{
+            event_uuid: event_uuid,
+            event_type: "order_paid",
+            payload: @payload,
+            endpoint_id: endpoint.id
+          },
+          action: :dispatch,
+          tenant: org,
+          authorize?: false
+        )
+      end
+
+      test "a multitenant row's enqueue carries the tenant arg; a single-tenant row's carries none" do
+        endpoint = endpoint!()
+        row = tenancy_row!(endpoint, "evt_tenancy_worker_1", "org_a")
+
+        assert :ok = TenantWorker.enqueue(row, nil)
+
+        [args] = job_args()
+        assert args["endpoint_id"] == endpoint.id
+        assert args["event_uuid"] == "evt_tenancy_worker_1"
+        assert args["tenant"] == "org_a"
+
+        # the single-tenant worker's row serializes NO tenant key (the
+        # multitenancy attribute is undeclared there)
+        plain = delivery_row!(endpoint, "evt_tenancy_worker_2")
+        assert :ok = AshHooks.WorkerTest.Worker.enqueue(plain, nil)
+
+        [tenant_args, plain_args] = Enum.sort_by(job_args(), &not Map.has_key?(&1, "tenant"))
+        assert tenant_args["tenant"] == "org_a"
+        refute Map.has_key?(plain_args, "tenant")
+      end
+
+      test "a non-identity parse_attribute round-trips: the enqueue inverts through tenant_from_attribute, run parses back to the row" do
+        defmodule ParsedTenantWorker do
+          @moduledoc false
+          use AshHooks.Worker,
+            deliveries: AshHooks.WorkerTest.ParsedTenancyDelivery,
+            endpoints: AshHooks.WorkerTest.Endpoint,
+            secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+            queue: :ash_hooks_tenancy,
+            oban: AshHooks.WorkerTest.Oban
+        end
+
+        endpoint = endpoint!()
+
+        row =
+          Ash.create!(
+            ParsedTenancyDelivery,
+            %{
+              event_uuid: "evt_parsed_roundtrip",
+              event_type: "order_paid",
+              payload: @payload,
+              endpoint_id: endpoint.id
+            },
+            action: :dispatch,
+            tenant: "MiXeD",
+            authorize?: false
+          )
+
+        # the row stores the PARSED attribute; the args carry the TENANT
+        assert row.org_id == "MIXED"
+
+        assert :ok = ParsedTenantWorker.enqueue(row, nil)
+
+        [args] = job_args()
+        assert args["tenant"] == "mixed"
+
+        # and the forward direction holds: the args tenant re-resolves the
+        # row (parse_attribute("mixed") == "MIXED" == the stored attribute)
+        found =
+          Ash.get!(ParsedTenancyDelivery, row.id, tenant: args["tenant"], authorize?: false)
+
+        assert found.id == row.id
+      end
+
+      test "mixed-args uniqueness: a pre-tenancy tenant-less job still conflicts with the tenant-bearing job on the same pair" do
+        endpoint = endpoint!()
+
+        # a pre-tenancy enqueued job: the 1.1.x args shape, same pair
+        {:ok, _old_job} =
+          Oban.insert(
+            AshHooks.WorkerTest.Oban,
+            Oban.Job.new(
+              %{
+                "endpoint_id" => endpoint.id,
+                "event_uuid" => "evt_tenancy_cutover"
+              },
+              worker: TenantWorker,
+              queue: :ash_hooks_tenancy
+            )
+          )
+
+        assert job_count() == 1
+
+        # the post-tenancy enqueue of the SAME pair (args now carrying the
+        # tenant) must still conflict — Oban's keys: containment is
+        # indifferent to the extra arg key (the design's verified claim,
+        # proven on the real engine)
+        row = tenancy_row!(endpoint, "evt_tenancy_cutover", "org_a")
+
+        assert :ok = TenantWorker.enqueue(row, nil)
+        assert job_count() == 1
       end
     end
 

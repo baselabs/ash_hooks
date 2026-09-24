@@ -35,6 +35,9 @@ defmodule AshHooks.Provider do
       `nil` when the caller does not supply it.
     * `:request_uri` — the exact request URI the provider signed. `nil` when
       not supplied.
+    * `:tenant` — the ingest tenant when the ledger is multitenant, `nil`
+      otherwise. A provider whose custody is per-tenant (per-connection
+      secrets keyed by organization) reads it here.
 
   A provider whose scheme needs only the signature reads `:signature` and
   ignores the rest.
@@ -43,7 +46,8 @@ defmodule AshHooks.Provider do
           signature: signature_header_value(),
           headers: %{optional(String.t()) => String.t()},
           method: String.t() | nil,
-          request_uri: String.t() | nil
+          request_uri: String.t() | nil,
+          tenant: term()
         }
 
   @typedoc """
@@ -71,6 +75,16 @@ defmodule AshHooks.Provider do
               {:ok, webhook_secret()} | {:error, :no_webhook_secret}
 
   @doc """
+  Tenant-aware per-connection secret resolution (optional, 1.2.0): resolves
+  the signing secret from the connection AND the ingest tenant — custody of
+  Organization × connection. A provider using `use AshHooks.Provider` gets a
+  default implementation delegating to `webhook_signing_secret/1` (existing
+  providers compile unchanged); a per-tenant provider overrides `/2`.
+  """
+  @callback webhook_signing_secret(connection :: struct(), tenant :: term()) ::
+              {:ok, webhook_secret()} | {:error, :no_webhook_secret}
+
+  @doc """
   Declares whether this provider's webhook signing secret is app-level
   (the default) or per-connection. Optional.
   """
@@ -85,7 +99,42 @@ defmodule AshHooks.Provider do
   """
   @callback timestamp_header() :: String.t() | nil
 
-  @optional_callbacks webhook_signing_secret: 1, webhook_secret_scope: 0, timestamp_header: 0
+  @optional_callbacks webhook_signing_secret: 1,
+                      webhook_signing_secret: 2,
+                      webhook_secret_scope: 0,
+                      timestamp_header: 0
+
+  @doc """
+  The `use` form for new providers: sets the behaviour and provides the
+  tenant-aware `webhook_signing_secret/2` as an overridable default that
+  delegates to `webhook_signing_secret/1` when the provider implements it
+  — implement `/1` and both shapes resolve; override `/2` for
+  Organization × connection custody; implement neither and the default
+  fails closed as `{:error, :no_webhook_secret}` (the optional-callback
+  semantics — an app-level provider never sees the callback called at
+  all). Providers written against the plain `@behaviour` keep working
+  unchanged (`webhook_signing_secret/3` resolves both).
+  """
+  defmacro __using__(_opts) do
+    quote do
+      @behaviour AshHooks.Provider
+
+      # dispatched dynamically: Elixir resolves same-name local calls at
+      # COMPILE time, so a plain `webhook_signing_secret(connection)` here
+      # is a compile error in providers that implement neither secret
+      # callback (cross-vendor finding — /1 is optional). The apply also
+      # lets the runtime branch fail closed for app-scope providers.
+      def webhook_signing_secret(connection, _tenant) do
+        if function_exported?(__MODULE__, :webhook_signing_secret, 1) do
+          apply(__MODULE__, :webhook_signing_secret, [connection])
+        else
+          {:error, :no_webhook_secret}
+        end
+      end
+
+      defoverridable webhook_signing_secret: 2
+    end
+  end
 
   @doc """
   Parses the event type from the DECODED request body — a map for
@@ -130,6 +179,22 @@ defmodule AshHooks.Provider do
       provider.timestamp_header()
     else
       nil
+    end
+  end
+
+  @doc """
+  Resolves the per-connection signing secret for an ingest: an overriding
+  `webhook_signing_secret/2` (tenant-aware custody) wins; otherwise the
+  call delegates to `webhook_signing_secret/1` — providers of either
+  implementation shape work through this one entry point.
+  """
+  @spec webhook_signing_secret(module(), struct(), term()) ::
+          {:ok, webhook_secret()} | {:error, :no_webhook_secret}
+  def webhook_signing_secret(provider, connection, tenant) when is_atom(provider) do
+    if Code.ensure_loaded?(provider) and function_exported?(provider, :webhook_signing_secret, 2) do
+      provider.webhook_signing_secret(connection, tenant)
+    else
+      provider.webhook_signing_secret(connection)
     end
   end
 

@@ -70,5 +70,5 @@ defmodule AshHooks.Subscription do
   use Spark.Dsl.Extension,
     sections: [@section],
     transformers: [AshHooks.Subscription.Transformers.AddSubscriptionFields],
-    verifiers: []
+    verifiers: [AshHooks.Verifiers.MultitenancyNoBypass]
 end
