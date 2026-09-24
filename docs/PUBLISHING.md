@@ -98,10 +98,11 @@ A MAJOR bump additionally owes (ADR-0010):
 
 - The package ships `lib`, `.formatter.exs`, `mix.exs`, `README*`,
   `LICENSE*`, `CHANGELOG*`, `usage-rules*`, `SECURITY*`, `CONTRIBUTING*`,
-  `UPGRADING*` (see `package/0`); `documentation/` is NOT shipped — it
-  feeds hexdocs via `docs()` extras, and ADRs stay on GitHub (the README
-  links there). The CI `package` leg asserts the tarball carries the
-  publish surfaces mechanically.
+  `UPGRADING*`, and the `documentation/` subtrees (tutorials, livebooks,
+  dsls — since 1.2.1; see `package/0`). `documentation/` ships because
+  shipped docs (UPGRADING.md, CHANGELOG) reference it by repo-relative
+  path; ADRs stay on GitHub (the README links there). The CI `package`
+  leg asserts the tarball carries the publish surfaces mechanically.
 - Optional deps (oban, plug) are marked `optional: true` in hex
   metadata; the no-optional CI leg proves the package runs without them
   (ADR-0004).

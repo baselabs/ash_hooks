@@ -204,6 +204,15 @@ jobs:
           grep -qx "UPGRADING.md" /tmp/tar-list.txt
           grep -qx "SECURITY.md" /tmp/tar-list.txt
           grep -qx "LICENSE" /tmp/tar-list.txt
+          # documentation/ ships because shipped docs reference it by
+          # repo-relative path (UPGRADING.md → tenancy adoption checklist);
+          # 1.2.0 published without it and the references went dead in
+          # every installed package.
+          grep -qx "documentation/tutorials/get-started.md" /tmp/tar-list.txt
+          grep -qx "documentation/tutorials/tenancy-adoption-checklist.md" /tmp/tar-list.txt
+          grep -qx "documentation/livebooks/get-started.livemd" /tmp/tar-list.txt
+          grep -qx "documentation/dsls/DSL-AshHooks.md" /tmp/tar-list.txt
+          ! grep -q "DS_Store" /tmp/tar-list.txt
       - run: mix docs
 
   # The get-started Livebook, verified headless on one leg: the elixir
