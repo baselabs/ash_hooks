@@ -43,7 +43,7 @@ defmodule AshHooks.Verifiers.ReplayWindowRequiresTimestamp do
     candidate = entity.provider || name_module(entity.name)
 
     # ensure_compiled waits for in-project parallel compilation where
-    # ensure_loaded? reports a sibling module as absent (cross-vendor finding)
+    # ensure_loaded? reports a sibling module as absent
     if is_atom(candidate) and Code.ensure_compiled(candidate) == {:module, candidate} and
          function_exported?(candidate, :verify_signature, 3) do
       {:ok, candidate}

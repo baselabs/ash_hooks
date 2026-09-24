@@ -28,7 +28,8 @@ defmodule AshHooks.Dispatcher do
       repairs cannot double-enqueue;
     * with no `:enqueue` configured the rows persist `:pending` and the
       results say `:deferred` — the durable ledger IS the source of
-      truth; the delivery runtime slice drives pending rows.
+      truth; the delivery runtime (`AshHooks.Delivery`) drives pending
+      rows from there.
 
   Global failures (unknown outbound declaration, an invalid event,
   missing DSL module opts, an unreadable subscription set, divergent
@@ -108,7 +109,7 @@ defmodule AshHooks.Dispatcher do
   # The declaration resolves configuration (resource modules, signing-mode
   # default); the event's type routes subscriptions. Letting the two
   # diverge routes one declaration's resources at another type's
-  # subscribers — fail closed on the mismatch (cross-vendor finding).
+  # subscribers — fail closed on the mismatch.
   defp check_type_alignment(name, %Event{type: type}) do
     if type == Atom.to_string(name) do
       :ok
@@ -139,8 +140,7 @@ defmodule AshHooks.Dispatcher do
   catch
     # An enqueue seam or storage op that EXITS (a GenServer.call timeout in
     # a queue client) or throws escapes `rescue` — catch it here or the
-    # whole fanout dies with later endpoints unprocessed (cross-vendor
-    # finding, both peers).
+    # whole fanout dies with later endpoints unprocessed.
     kind, reason -> result(endpoint, subscription, :endpoint_error, error_string({kind, reason}))
   end
 
@@ -149,7 +149,7 @@ defmodule AshHooks.Dispatcher do
   # Outcomes: CAS won → reload + enqueue; CAS LOST (another dispatcher
   # already flipped it) → :duplicate, the normal race outcome; CAS ERRORED
   # or reload failed → :endpoint_error, never a mislabeled :duplicate that
-  # would hide a state change without an enqueue (cross-vendor finding).
+  # would hide a state change without an enqueue.
   defp repair(deliv_mod, event, subscription, endpoint, row, opts, tenant) do
     if row.status != :enqueue_failed do
       result(endpoint, subscription, :duplicate)
@@ -288,8 +288,7 @@ defmodule AshHooks.Dispatcher do
     reason -> {:error, {:raised, reason}}
   catch
     # exits (queue-client GenServer.call timeouts) and throws escape
-    # `rescue`; they are enqueue failures like any other (cross-vendor
-    # finding, both peers).
+    # `rescue`; they are enqueue failures like any other.
     :exit, reason -> {:error, {:exit, reason}}
     :throw, value -> {:error, {:throw, value}}
   end
@@ -369,7 +368,7 @@ defmodule AshHooks.Dispatcher do
   end
 
   # Endpoint resolution distinguishes three outcomes per subscription
-  # (cross-vendor finding): an ENABLED endpoint matches; a gone or disabled
+  #: an ENABLED endpoint matches; a gone or disabled
   # one is SKIPPED by design (no row, no entry); a READ ERROR after the
   # transient retry is surfaced as a per-endpoint :endpoint_error result —
   # never silently conflated with gone, or a transient blip would drop the
@@ -463,7 +462,7 @@ defmodule AshHooks.Dispatcher do
 
   @doc """
   Reconciles delivery rows stranded at `:pending` by a crash between the
-  row write and the enqueue (D8): a WHERE-gated bulk CAS flips
+  row write and the enqueue: a WHERE-gated bulk CAS flips
   `status == :pending and inserted_at < cutoff` to `:enqueue_failed` on
   the already-injected `:mark_enqueue_failed` action — a REAL state flip,
   so of N concurrent reconcilers exactly one wins each row (the
@@ -483,11 +482,12 @@ defmodule AshHooks.Dispatcher do
   winner each — cross-MECHANISM exactly-once enqueue is the SEAM's
   contract: the canonical Oban seam's job uniqueness makes it effect-once
   (proven on the real engine); a custom seam must be idempotent itself.
-  The mechanisms can even cycle (reconcile claims → repair requeues → a
-  later reconcile with a REUSED fixed cutoff re-claims the old-`inserted_at`
-  row) — which is why the cutoff moves with the clock. A crash
-  mid-reconcile leaves the row at `:enqueue_failed`: repairable, never
-  lost.
+  Note that a row a re-dispatch repair requeued (back to `:pending`,
+  `inserted_at` unchanged) is eligible for a LATER reconciliation too —
+  a pending row awaiting its job is indistinguishable from a stranded
+  one until the job drives it. That is one more reason the enqueue seam
+  itself must tolerate a duplicate. A crash mid-reconcile leaves the row
+  at `:enqueue_failed`: repairable, never lost.
 
   Options: `:older_than` (staleness cutoff; default now − 5 minutes),
   `:tenant` (the pre-flight applies), `:enqueue` (the dispatch seam — it
@@ -583,8 +583,7 @@ defmodule AshHooks.Dispatcher do
 
   # the enqueue seam takes (delivery, event) — reconstruction from the
   # row instead of a nil, so a seam matching %Event{} or reading event
-  # fields works during reconciliation (cross-vendor finding: nil failed
-  # every such seam quietly). The ledger row persists id, type, and
+  # fields works during reconciliation. The ledger row persists id, type, and
   # payload ONLY: the reconstructed event carries an empty metadata map —
   # a seam that needs the ORIGINAL dispatch-time metadata must tolerate
   # that (the row never stored it).
@@ -620,7 +619,7 @@ defmodule AshHooks.Dispatcher do
   # A struct is not proof of validation: callers can construct
   # %AshHooks.Event{} directly, bypassing Event.new/1's contract checks —
   # re-validate the fields (a dot-bearing id would otherwise persist and
-  # break the signing delimiter invariant downstream; cross-vendor finding).
+  # break the signing delimiter invariant downstream).
   defp cast_event(%Event{} = event) do
     with :ok <- check_event_field(event.id, "id", &valid_event_id?/1),
          :ok <- check_event_field(event.type, "type", &valid_event_type?/1),
@@ -686,7 +685,7 @@ defmodule AshHooks.Dispatcher do
 
   # contents route through the shared contents-free classifier (the
   # enqueue_failed EVENT and the ledger write share this floor; a thrown
-  # or messaged term can carry secret material — cross-vendor finding).
+  # or messaged term can carry secret material).
   # The cap covers the 7-byte prefix too: classify_token alone can return
   # 255, and "throw: " <> 255 violated last_error's max_length in every
   # counting mode, failing the enqueue-failure ledger write itself.

@@ -68,7 +68,7 @@ defmodule AshHooks.Event do
   # Ids and types are bounded to the ledger's 255-char columns and ids to
   # header-safe characters: the id becomes the `webhook-id` HTTP header at
   # send time, and CR/LF/space in it is a header-injection surface handed
-  # to the delivery runtime (cross-vendor finding).
+  # to the delivery runtime.
   defp validate_id(id) when is_binary(id) do
     cond do
       id == "" ->

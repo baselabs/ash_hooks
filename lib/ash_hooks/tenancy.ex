@@ -1,7 +1,7 @@
 defmodule AshHooks.Tenancy do
   @moduledoc """
-  The tenancy contract resolver (the tenancy design's D2/D3): every public
-  entry family resolves the resources it touches BEFORE any data access.
+  The tenancy contract resolver: every public entry family resolves the
+  resources it touches BEFORE any data access.
 
     * a **single-tenant set** (no resource declares multitenancy) passes
       the tenant through unchanged — inert by construction: Ash applies a

@@ -1,8 +1,8 @@
 # ADR-0011 — Tenancy floor: explicit, attribute-aligned, fail-closed, not authorization
 
-- **Status:** Accepted (2026-09-24) — implements the reviewed tenancy design
-  (`.kimosabe/specs/2026-09-23-tenancy-design.md`, adversarial pass complete:
-  9 findings admitted and folded in); extends ADR-0005's floors doctrine.
+- **Status:** Accepted (2026-09-24) — implements the tenancy design,
+  which was independently adversarially reviewed before implementation;
+  extends ADR-0005's floors doctrine.
 - **Deciders:** maintainer; independent adversarial review of the design (blocking pass)
 
 ## Context

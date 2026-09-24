@@ -235,7 +235,7 @@ defmodule AshHooks.Delivery do
         attempt_enabled(row, endpoint, config, tenant)
 
       # only a GONE endpoint row is terminal — a transient read error must
-      # retry, never permanently dead-letter (cross-vendor finding)
+      # retry, never permanently dead-letter
       {:error, %Ash.Error.Invalid{errors: reasons}} = error ->
         if Enum.all?(reasons, &is_struct(&1, Ash.Error.Query.NotFound)) do
           dead_letter(row, "endpoint_gone", config, tenant)
@@ -300,7 +300,7 @@ defmodule AshHooks.Delivery do
   end
 
   # an adapter RAISE must not crash the job out of the row-owned policy —
-  # classify it as a retryable transport failure (cross-vendor finding)
+  # classify it as a retryable transport failure
   defp send_request(request, endpoint, headers, row, adapter_opts) do
     request.(:post, endpoint.url, headers, row.payload, adapter_opts)
   rescue
@@ -318,10 +318,10 @@ defmodule AshHooks.Delivery do
   # first), and the disable write itself is tenant-filtered. The matched
   # count is checked — a zero-match "success" (the endpoint vanished
   # between fetch and write) is surfaced, never counted as a completed
-  # circuit-break (cross-vendor finding, both peers).
+  # circuit-break.
   defp record(row, endpoint, %{status: 410} = response, config, tenant) do
     # the durable disable is the circuit breaker — a failed write must NOT
-    # be swallowed behind the row's dead-letter (cross-vendor finding):
+    # be swallowed behind the row's dead-letter:
     # surface the error so the job retries and the 410 is re-processed
     result =
       config[:endpoints]
@@ -500,7 +500,7 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  # Reconcile writes are NEVER swallowed (cross-vendor finding): with job
+  # Reconcile writes are NEVER swallowed: with job
   # uniqueness at states: :all / period: :infinity, a lost terminal write
   # strands the row in :sending with no possible re-trigger — surface the
   # error so the job error-retries and the reconcile re-runs.
@@ -701,8 +701,7 @@ defmodule AshHooks.Delivery do
   end
 
   # Remote-controlled header value: ANY failure must parse to nil (backoff
-  # fallback), never raise out of the driver (cross-vendor finding — bad
-  # numerics in a GMT-shaped value crash the bangs).
+  # fallback), never raise out of the driver.
   defp parse_http_date(string) do
     case DateTime.from_iso8601(string) do
       {:ok, dt, _offset} ->
@@ -806,7 +805,7 @@ defmodule AshHooks.Delivery do
       |> apply_redaction_patterns()
       # strip control bytes — a hostile NUL would make the post-send
       # ledger write fail on TEXT columns AFTER a successful send
-      # (cross-vendor finding: re-send poison loop)
+      #
       |> String.replace(~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/, "")
       |> String.replace(~r/[\r\n]+/, " ")
       |> AshHooks.BoundedText.cap(@snippet_max)
@@ -887,7 +886,7 @@ defmodule AshHooks.Delivery do
 
   # a decode that would MATERIALIZE invalid UTF-8 ("%FF"-class escapes)
   # is refused — the floor's output must never fail the ledger's TEXT
-  # write post-send (the re-send poison class; cross-vendor finding)
+  # write post-send (the re-send poison class)
   defp decode_step(input, decoder) do
     case decoder.(input) do
       decoded when is_binary(decoded) -> if String.valid?(decoded), do: decoded, else: input
@@ -901,7 +900,7 @@ defmodule AshHooks.Delivery do
 
   # per-escape fallback: a surrogate/high escape must not abort the whole
   # replace (that would fail the LAYER open and let a co-resident disguise
-  # survive — cross-vendor probe)
+  # survive)
   defp json_unescape(string) do
     Regex.replace(~r/\\u([0-9a-fA-F]{4})/, string, &escape_to_char/2)
   end

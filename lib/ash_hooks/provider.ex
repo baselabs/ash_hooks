@@ -122,7 +122,7 @@ defmodule AshHooks.Provider do
       # dispatched dynamically: Elixir resolves same-name local calls at
       # COMPILE time, so a plain `webhook_signing_secret(connection)` here
       # is a compile error in providers that implement neither secret
-      # callback (cross-vendor finding — /1 is optional). The apply also
+      # callback. The apply also
       # lets the runtime branch fail closed for app-scope providers.
       def webhook_signing_secret(connection, _tenant) do
         if function_exported?(__MODULE__, :webhook_signing_secret, 1) do

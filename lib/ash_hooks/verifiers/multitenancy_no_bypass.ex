@@ -47,7 +47,7 @@ defmodule AshHooks.Verifiers.MultitenancyNoBypass do
   end
 
   # Map.get, never struct access: the GENERIC action entity carries no
-  # :multitenancy key at all (Ash's own reads of the field use Map.get for
-  # the same reason — cross-vendor finding, both peers).
+  # :multitenancy key at all — Ash's own reads of the field use Map.get
+  # for the same reason.
   defp bypassed?(action), do: Map.get(action, :multitenancy) in [:bypass, :bypass_all, :allow_global]
 end

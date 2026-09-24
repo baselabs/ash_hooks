@@ -84,7 +84,7 @@ defmodule AshHooks.Http.Bounded do
   # For literal-IP https destinations TLS has no NAME to check — require
   # the peer cert to carry the IP in its iPAddress SAN (chain validation
   # alone lets ANY publicly-trusted cert authenticate the peer;
-  # cross-vendor finding). No-op for named hosts (the RFC 6125 hostname
+  # hardening). No-op for named hosts (the RFC 6125 hostname
   # check covers those). SAN matching lives in `AshHooks.Http.CertSan`
   # (fixture-tested): found broken by dialyzer 2026-08-22 —
   # `pkix_decode_cert/2` returns the cert record directly, so the old
@@ -272,7 +272,7 @@ defmodule AshHooks.Http.Bounded do
           {length, ""} when length >= 0 ->
             # the body bytes that arrived WITH the header block count
             # against the declared length — otherwise termination waits
-            # for a close the server may never send (cross-vendor probe)
+            # for a close the server may never send (a robustness probe)
             read_sized(
               socket,
               status,
@@ -316,7 +316,7 @@ defmodule AshHooks.Http.Bounded do
       {:error, :closed} ->
         # a Content-Length-framed body that ends early is a truncated
         # response — the driver must retry, never mark 2xx succeeded on
-        # partial bytes (cross-vendor finding)
+        # partial bytes
         {:error, :truncated_body}
 
       {:error, reason} ->

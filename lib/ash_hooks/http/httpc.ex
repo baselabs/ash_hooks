@@ -143,7 +143,7 @@ defmodule AshHooks.Http.Httpc do
     receive do
       # a mid-stream transport failure is delivered this way — without
       # this clause the caller stalls to the backstop and loses the
-      # reason (cross-vendor live probe)
+      # reason
       {:http, {^req_id, {:error, reason}}} ->
         :httpc.cancel_request(req_id)
         {:error, reason}
@@ -205,7 +205,7 @@ defmodule AshHooks.Http.Httpc do
   end
 
   # UNbracketed: URI.to_string brackets a ":"-containing host itself —
-  # pre-wrapping here produced double brackets (cross-vendor live probe)
+  # pre-wrapping here produced double brackets
   defp format_address(address), do: address |> :inet.ntoa() |> to_string()
 
   defp normalize_headers(headers) do

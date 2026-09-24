@@ -20,8 +20,7 @@ defmodule AshHooks.Http.CertSan do
     # OTP 27/28, while asn1's der_decode EXITS on invalid tags on OTP 29
     # ({:error, {:asn1, ...}} — probed; a rescue alone cannot catch an
     # exit). The bare catch covers error, exit, and throw alike — a
-    # garbage-SAN certificate never crashes the caller (cross-vendor
-    # review finding)
+    # garbage-SAN certificate never crashes the caller
     _kind, _reason -> false
   end
 

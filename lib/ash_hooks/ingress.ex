@@ -27,10 +27,12 @@ defmodule AshHooks.Ingress do
   ledger write (fail closed: missing secret verifies nothing; a missing raw
   body never runs).
 
-  The individual machine steps (`ingest_delivery/2`, `claim_delivery/2`,
-  `mark_processed/3`, `mark_failed/5`, `renew/3`, `reap/1`) are public for
+  The individual machine steps (`ingest_delivery/2`, `claim_delivery/3`,
+  `mark_processed/4`, `mark_failed/6`, `renew/4`, `reap/2`) are public for
   composition and monitoring — a consumer-driven async pipeline (your own
-  202-then-claim flow) and the reaper drive the same steps.
+  202-then-claim flow) and the reaper drive the same steps. Each accepts
+  the tenancy options; the pre-1.2 arities (one fewer argument) keep
+  working for single-tenant ledgers.
 
   All ledger operations run unauthorized: the signature verification IS the
   trust boundary for writes. The package injects NO read policies — read
@@ -191,7 +193,7 @@ defmodule AshHooks.Ingress do
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
       # `now` and the lease are recomputed on EVERY attempt: a retry that
       # spends contention time sleeping must not grant a lease that is
-      # shorter than configured — or already expired (cross-vendor finding).
+      # shorter than configured — or already expired.
       result =
         with_transient_retry(fn ->
           attempt_now = now()
@@ -304,7 +306,7 @@ defmodule AshHooks.Ingress do
          # the fence is checked BEFORE the redactor sees the payload — a
          # stale token must not receive sensitive bytes through the
          # callback even though the eventual write would be rejected
-         # (cross-vendor finding)
+         #
          :ok <- check_fence(delivery, token) do
       apply_redactor(redactor, delivery.payload, resource, delivery_id, token, tenant)
     end
@@ -417,7 +419,7 @@ defmodule AshHooks.Ingress do
 
   Rows that cannot be re-driven (inbound declaration removed, provider
   unresolved, a raising handler) are skipped without stopping the sweep —
-  a poison row must never starve the rows behind it (cross-vendor finding).
+  a poison row must never starve the rows behind it.
   """
   @spec reap(module(), keyword()) ::
           {:ok, non_neg_integer()} | {:error, :tenant_required | :tenancy_mismatch}
@@ -443,8 +445,7 @@ defmodule AshHooks.Ingress do
 
   # the redrive invokes the CONSUMER's handle_event — raises, throws,
   # and exits (a GenServer.call timeout in a handler) are all contained
-  # (cross-vendor finding, both peers: a rescue-only wrapper let one
-  # poison handler abort a whole reap_all)
+  #
   defp safe_redrive(resource, row, tenant) do
     redrive(resource, row, tenant)
   rescue
@@ -466,7 +467,7 @@ defmodule AshHooks.Ingress do
       {:ok, _token, claimed} ->
         # The persisted row is the record of truth: a byte-differing
         # redelivery under the same identity drives the FIRST persisted
-        # payload, never the new bytes (cross-vendor finding).
+        # payload, never the new bytes.
         handling_env = row_env(env, delivery)
 
         handle_and_mark(resource, handling_env, delivery.id, claimed)
@@ -634,8 +635,7 @@ defmodule AshHooks.Ingress do
   defp transient_sqlite_contention?(%Ash.Error.Unknown.UnknownError{error: inner}) do
     # splode's to_class flatten path can store a raw non-string term here;
     # `to_string` would raise Protocol.UndefinedError and relabel the real
-    # error — inspect it instead (cross-vendor finding, swept from the
-    # dispatcher sibling).
+    # error — inspect it instead.
     inner = if is_binary(inner), do: inner, else: inspect(inner)
     String.contains?(inner, "Exqlite.Error") and contentiously_busy?(inner)
   end
@@ -731,7 +731,7 @@ defmodule AshHooks.Ingress do
   # Runtime backstop for the compile-time verifier: a window on a
   # timestamp-less scheme silently verifies replays forever — reject before
   # anything runs. The verifier cannot see providers that were not loadable
-  # at compile time; this check always can (cross-vendor finding).
+  # at compile time; this check always can.
   defp check_replay_window(%{replay_window_seconds: nil}, _provider, _name), do: :ok
 
   defp check_replay_window(%{replay_window_seconds: window}, provider, name) do
@@ -833,7 +833,7 @@ defmodule AshHooks.Ingress do
 
   # Scope carries values for the DECLARED slots and nothing else: keys are
   # taken by allowlist, so caller scope data can never overwrite the
-  # verified ledger identity fields (cross-vendor finding), and unknown keys
+  # verified ledger identity fields, and unknown keys
   # are rejected rather than silently shaping the ingest input.
   defp check_scope(resource, ctx) do
     scope = Map.new(ctx[:scope] || %{})
@@ -910,8 +910,7 @@ defmodule AshHooks.Ingress do
 
   # error_class is a bounded classification field, never an arbitrary dump:
   # binaries truncate, atoms name themselves, and structures (which can carry
-  # payloads or secrets) classify without their contents (cross-vendor
-  # finding). The attribute itself carries no max_length — the cap bounds
+  # payloads or secrets) classify without their contents. The attribute itself carries no max_length — the cap bounds
   # what reaches the TEXT column in any counting mode. Invalid UTF-8
   # collapses to the [binary] placeholder (the redaction floor's convention):
   # the :string write would reject invalid bytes and the failure would never

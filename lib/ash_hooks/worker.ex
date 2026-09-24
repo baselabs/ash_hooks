@@ -211,7 +211,7 @@ defmodule AshHooks.Worker do
       # inverted through the resource's tenant_from_attribute so
       # Delivery.run's forward parse_attribute round-trips for
       # NON-identity parsers too (serializing the attribute value itself
-      # would be double-parsed there — cross-vendor finding, P1)
+      # would be double-parsed there)
       defp maybe_put_tenant(args, delivery) do
         resource = delivery.__struct__
 

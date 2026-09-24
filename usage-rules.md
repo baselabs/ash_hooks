@@ -38,7 +38,8 @@ For AI assistants working in codebases that use ash_hooks.
 ## Hard rules (package floors — do not work around)
 
 - Secrets are SOURCES, never literals: `{m, f, a}`, `{:app_env, path}`,
-  or a 0-arity function. A literal binary secret is rejected at DSL
+  a 0-arity function, or a 1-arity function receiving the tenant
+  (multi-tenant ledgers). A literal binary secret is rejected at DSL
   parse time (ADR-0005).
 - The endpoint `url` accepts only public http(s) destinations —
   private/loopback/link-local/metadata literals are rejected at

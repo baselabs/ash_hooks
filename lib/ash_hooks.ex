@@ -29,6 +29,16 @@ defmodule AshHooks do
 
   Both halves are independently consumable: inbound-only consumers pull no
   queue infrastructure (ADR-0004).
+
+  Multi-tenant? Declare Ash attribute multitenancy on the four resources
+  (subscription, endpoint, both ledgers) and pass `:tenant` /
+  `ctx[:tenant]` to every entry point — every query, write, dedup
+  identity, sweep, and job arg is tenant-scoped, and a tenant-less call
+  against a multitenant resource fails closed with
+  `{:error, :tenant_required}` before any data access. Single-tenant
+  apps change nothing. The
+  [adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
+  walks the ordered transition (ADR-0011).
   """
 
   @inbound %Spark.Dsl.Entity{
@@ -250,7 +260,7 @@ defmodule AshHooks do
   # rescue.
   defp sweep(tenants, call) do
     # a repeated tenant would overwrite its own earlier result while
-    # still counting into the total — deduplicated (cross-vendor finding)
+    # still counting into the total — deduplicated
     {results, total} =
       Enum.reduce(Enum.uniq(tenants), {%{}, 0}, fn tenant, {results, total} ->
         case safe_call(call, tenant) do

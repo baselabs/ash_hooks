@@ -7,7 +7,8 @@ Webhooks for [Ash Framework](https://ash-hq.org), in both directions:
 
 - **Inbound** — receive provider webhooks, verify their signatures,
   deduplicate them on a ledger (a table recording every delivery — the
-  dedup record itself), and run your handler once per delivery.
+  dedup record itself), and run your handler at least once per delivery:
+  durable deduplication, never a lost event, never a silent duplicate.
 - **Outbound** — sign and deliver your own webhooks with retries,
   backoff, and dead-lettering, on any queue backed by Oban.
 
@@ -17,8 +18,9 @@ need no queue infrastructure at all.
 - Verify signatures for [ComplyCube](https://docs.complycube.com/) and
   [HubSpot v3](https://developers.hubspot.com/) out of the box; bring
   your own scheme with a one-module provider behaviour.
-- Duplicate and replayed deliveries process exactly once on the ledger;
-  crashes mid-flight resume on redelivery instead of losing events.
+- Duplicate and replayed deliveries are deduplicated on the ledger —
+  exactly one row per delivery; crashes mid-flight resume on
+  redelivery instead of losing events (handlers run at-least-once).
 - Outbound webhooks follow the [Standard Webhooks](https://www.standardwebhooks.com)
   spec, so receivers verify with any conformant library. Key rotation
   and a legacy-envelope mode for receivers mid-migration are built in.
@@ -46,7 +48,7 @@ see [Stability](#stability).
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 1.1"},
+    {:ash_hooks, "~> 1.2"},
     # only for outbound delivery:
     {:oban, "~> 2.20"}
   ]
@@ -104,11 +106,13 @@ end
 ```
 
 Secrets are always sources — an `{m, f, a}` callback, an
-`{:app_env, path}`, or a zero-arity function — never literal values.
+`{:app_env, path}`, a zero-arity function, or (multi-tenant apps) a
+one-arity function that receives the tenant — never literal values.
 
 Your provider module also defines the handler — the `handle_event/2`
-callback that receives the verified payload (the tutorial shows one
-from scratch).
+callback that receives the verified payload (the
+[guided-tour Livebook](https://github.com/baselabs/ash_hooks/blob/main/documentation/livebooks/get-started.livemd)
+builds one from scratch in a few lines).
 
 From your controller, one call runs the whole pipeline: verify the
 signature over the raw bytes, persist the payload, deduplicate, claim
@@ -122,9 +126,11 @@ case AshHooks.Ingress.ingest(Ledger, :comply_cube, conn.private[:ash_hooks_raw_b
        headers: Map.new(conn.req_headers),
        scope: %{"account_id" => conn.params["account_id"]}
      }) do
-  {:ok, :created, %{status: :processed}} -> send_resp(conn, 200, "")
-  {:ok, :created, _} -> send_resp(conn, 500, "")   # handler failed
-  {:ok, :duplicate, _} -> send_resp(conn, 200, "") # already seen
+  # judge the row's STATUS, not just the tag: a :duplicate is re-drove
+  # on redelivery, and its handler may have failed again — answer 200
+  # only when the row actually finished
+  {:ok, _tag, %{status: :processed}} -> send_resp(conn, 200, "")
+  {:ok, _tag, _row} -> send_resp(conn, 500, "")    # handler failed
   {:error, _} -> send_resp(conn, 400, "")          # bad signature/payload
 end
 ```
@@ -133,17 +139,21 @@ end
 `:failed_permanent`) is never processed again. A crash after your
 handler ran but before the ledger recorded it will re-run the handler
 on redelivery — so write handlers idempotent, keyed on the provider's
-event id. In short: durable deduplication, at-least-once handler
-invocation.
+event id (for action-level idempotency elsewhere in your app, our
+sibling package
+[`ash_onetime`](https://hex.pm/packages/ash_onetime) is an optional
+companion — deliberately NOT a dependency here, because it would force
+ash_postgres on every consumer). In short: durable deduplication,
+at-least-once handler invocation.
 
 HubSpot's v3 scheme also signs the HTTP method and the full request
 URI, so its controller passes both — build the *public* URI from a base
 URL you configure, not from `conn`, which behind a TLS proxy carries
 the internal host and port.
 
-`claim_delivery/2`, `mark_processed/3`, and friends are public if you
+`claim_delivery/3`, `mark_processed/4`, and friends are public if you
 want to drive the lease machine from your own async pipeline;
-`AshHooks.Ingress.reap/1` re-drives deliveries whose claims died with
+`AshHooks.Ingress.reap/2` re-drives deliveries whose claims died with
 an expired lease.
 
 ## Sending webhooks
@@ -202,15 +212,28 @@ body is stored only after passing the package's built-in redaction
 secrets don't survive it), marked `[captured]` in the snippet:
 
 ```elixir
-# diagnostic: one row, one capture, floor-redacted
-AshHooks.Delivery.run(row, snippet_capture: true)
+# diagnostic: one row, one capture, floor-redacted — run/2 takes the
+# same config the worker bakes (it does not recover the worker's
+# settings on its own), plus the per-call capture flag:
+AshHooks.Delivery.run(
+  %{"endpoint_id" => row.endpoint_id, "event_uuid" => row.event_uuid},
+  snippet_capture: true,
+  deliveries: MyApp.Delivery,
+  endpoints: MyApp.Endpoint,
+  secret_resolver: {MyApp.Secrets, :webhook_secret},
+  max_attempts: 10, base_backoff_seconds: 2,
+  max_backoff_seconds: 3600, retry_after_cap_seconds: 86_400
+)
 ```
 
+Only non-terminal rows are driven — a row that already finished will
+not re-send; re-drive a failed one, or wait for its retry.
+
 For a domain-specific denylist, also pass a `snippet_redactor`
-(`{module, function}` or `fn body -> {:ok, body} | {:error, term}`)
-— it runs before the built-in redaction, and a failing redactor
-leaves the body uncaptured; see `AshHooks.Worker` for the
-worker-macro form.
+(`{module, function}` or `fn body -> body | nil` — return the
+redacted binary, or nil to leave the body uncaptured). It runs before
+the built-in redaction; a crashing redactor leaves the body
+uncaptured. See `AshHooks.Worker` for the worker-macro form.
 
 **Signing modes.** `:standard` (default) needs only the endpoint's
 `secret_ref`. `:dual` and `:legacy` additionally require a
@@ -238,7 +261,7 @@ job):
   TERMINAL rows older than a cutoff — retryable and in-flight rows are
   never touched. They key off the resource's `inserted_at`, so add
   Ash's `timestamps()` to the resource and its migration.
-- `AshHooks.Ingress.redact_payload/4` rewrites a claimed row's payload
+- `AshHooks.Ingress.redact_payload/5` rewrites a claimed row's payload
   under the claim fence (scrub sensitive fields while keeping the dedup
   identity; the original-bytes digest is preserved for audit).
 
@@ -276,9 +299,12 @@ subscription pointing at another tenant's endpoint id resolves to
 not-found and is skipped, the inbound dedup identity is per-tenant, and
 the claim fence and every mark are per-tenant. Touch a multitenant
 resource without a tenant and you get `{:error, :tenant_required}`
-before any data access; declare the four resources inconsistently and
-you get `{:error, :tenancy_mismatch}` — both named errors, both
-fail-closed.
+before any data access; mix tenancy declarations across the resources
+one operation touches (say, a tenant-scoped delivery ledger beside an
+undeclared endpoint table) and you get `{:error, :tenancy_mismatch}` —
+both named errors, both fail-closed. Each operation checks the set it
+actually reads: an inbound-only app declares tenancy on its ledger
+alone and needs none of the outbound resources.
 
 The async path carries its own weight: the Oban job args include the
 row's tenant (the worker recovers full context after any restart), the

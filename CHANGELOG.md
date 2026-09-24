@@ -13,9 +13,9 @@ Ash attribute multitenancy — an explicit tenant threads every data call,
 and the package fails closed with named errors before any data access
 when a multitenant resource is touched without one. Single-tenant
 adopters change nothing: the entire pre-1.2 suite passes unchanged over
-tenant-less fixtures (that is a shipped proof — 600 tests total now —
-not a claim), because threading a tenant through resources with no
-multitenancy declaration is mechanically inert.
+tenant-less fixtures inside the now-610-test gate, because threading a
+tenant through resources with no multitenancy declaration is
+mechanically inert.
 
 ### Added
 
@@ -24,14 +24,14 @@ multitenancy declaration is mechanically inert.
   renew/redact/prune/reap heads (`:tenant` opt, new optional arity),
   `AshHooks.Delivery.run/2` (tenant recovered from job args), and both
   prunes. The tenancy contract: consumers declare
-  `multitenancy :attribute, attribute: <same attr>, global?: false` on
-  the four resources; the package verifies the set on every entry
-  family and returns `{:error, :tenant_required}` /
+  `multitenancy :attribute, attribute: <same attr>` on the resources a
+  given operation touches; the package verifies that set on every entry
+  point and returns `{:error, :tenant_required}` /
   `{:error, :tenancy_mismatch}` before any data access (Ash's native
   fail-closed stays the backstop; `global?: true` is rejected — it
   silently disables fail-closed reads). A compile-time verifier
-  additionally rejects `multitenancy :bypass` actions on multitenant
-  package resources.
+  additionally rejects `multitenancy :bypass`, `:bypass_all`, and
+  `:allow_global` actions on multitenant package resources.
 - **Per-tenant operations** — `AshHooks.reap_all/2` and
   `AshHooks.prune_all/2` sweep a tenant enumerable sequentially with
   per-tenant error isolation and totals
@@ -39,9 +39,12 @@ multitenancy declaration is mechanically inert.
 - **`AshHooks.reconcile_pending/3`** — the supported reconciliation for
   delivery rows stranded at `:pending` by a crash between row write and
   enqueue: a WHERE-gated CAS flip to `:enqueue_failed` (real state
-  change — matched-records is the win signal; exactly one winner among
-  concurrent reconcilers under ANY enqueue seam, proven under a custom
-  non-Oban seam), then enqueue through the same seam dispatch takes.
+  change — matched-records is the win signal; exactly one winner per
+  row among concurrent reconcilers, proven under a custom non-Oban
+  seam), then enqueue through the same seam dispatch takes. Exactly-once
+  ACROSS claim mechanisms (reconciliation vs re-dispatch repair) is the
+  enqueue seam's contract — the canonical Oban seam's job uniqueness
+  provides it; a custom seam must be idempotent itself.
 - **Tenant-aware secret resolution (all optional)** — the worker macro's
   `:tenant_aware_secrets` (2-arity `f(ref, tenant)` resolver contract);
   the inbound `secret fn tenant -> ... end` source; the provider

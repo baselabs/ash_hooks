@@ -7,12 +7,19 @@ independently consumable: inbound-only applications need no Oban.
 Requirements: Elixir ~> 1.20 (OTP 28+), Ash ~> 3.0. Optional components: Oban
 (~> 2.20) for outbound delivery, Plug/Phoenix for inbound receipt.
 
+This walkthrough builds on a working Ash application — one with a
+domain, a repo (Postgres or sqlite), and a migration workflow. If you
+are starting from an empty directory, follow
+[Ash's get-started](https://ash-hq.org/docs/get_started) first; the
+examples below refer to your existing `MyApp.Domain` and `MyApp.Repo`
+(your names will differ).
+
 ## Installation
 
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 1.1"},
+    {:ash_hooks, "~> 1.2"},
     # for outbound delivery only:
     {:oban, "~> 2.20"}
   ]
@@ -180,9 +187,11 @@ case AshHooks.Ingress.ingest(MyApp.WebhookLedger, :comply_cube, raw, %{
     code = if status == :processed, do: 200, else: 500
     send_resp(conn, code, "")
 
-  {:ok, :duplicate, _delivery} ->
-    # already seen — respond however the provider expects a replay
-    send_resp(conn, 200, "")
+  {:ok, :duplicate, delivery} ->
+    # already seen — but a redelivery RE-DRIVES the row, so its handler
+    # may have failed again: judge the status, not just the tag
+    code = if delivery.status == :processed, do: 200, else: 500
+    send_resp(conn, code, "")
 
   {:error, _invalid_signature_or_payload} ->
     send_resp(conn, 400, "")
@@ -194,8 +203,8 @@ INVOCATION — a delivery whose row is terminal (`:processed` /
 `:failed_permanent`) is never processed again, but a crash after your
 handler's side effects and before the ledger mark will re-invoke it on
 redelivery. Write handlers idempotent, keyed on the external event
-identity. `claim_delivery/2`, `mark_processed/3`,
-`mark_failed/5`, `renew/3` and `reap/1` are public if you need to drive
+identity. `claim_delivery/3`, `mark_processed/4`,
+`mark_failed/6`, `renew/4` and `reap/2` are public if you need to drive
 the lease machine yourself (e.g. from your own async pipeline) — the
 sync `ingest/4` above is the default.
 
@@ -360,9 +369,12 @@ migration.
 
 Response snippets store NO body bytes by default (a status +
 content-type summary). For a one-row diagnostic capture, re-drive the
-row with `AshHooks.Delivery.run(row, snippet_capture: true)` — the
-captured body persists only after passing the package's redaction
-floor, marked `[captured]`.
+row with `AshHooks.Delivery.run/2` — it takes the same configuration
+the worker macro bakes (deliveries, endpoints, secret_resolver, retry
+policy) plus the per-call `snippet_capture: true`; the
+[guided-tour Livebook](../livebooks/get-started.livemd) shows a worked
+config. The captured body persists only after passing the package's
+redaction floor, marked `[captured]`.
 
 ## Observing: telemetry
 
@@ -386,3 +398,12 @@ end, nil)
 `attach_many` with the exact names is required — `:telemetry.execute/3`
 matches exact names only. Events carry ids, integers, fixed atoms, and
 classified reasons — never secrets, bodies, or payloads (ADR-0005).
+
+## Where next
+
+- [Multi-tenant adoption checklist](tenancy-adoption-checklist.md) —
+  when one app serves many organizations
+- [Guided tour (Livebook)](../livebooks/get-started.livemd) — run the
+  whole library inside one notebook
+- `AshHooks.Dispatcher`, `AshHooks.Delivery`, and `AshHooks.Ingress`
+  module docs — the machines this walkthrough drove

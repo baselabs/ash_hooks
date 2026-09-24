@@ -6,6 +6,7 @@
 
 * Receive an inbound webhook: verify its signature, deduplicate a replay, reject a tamper
 * Send an outbound webhook to a live local server, and watch the delivery machine work
+* Scope a multi-tenant deployment: one tenant's dispatch never reaches another's rows
 * Observe everything through telemetry
 * Prune old rows with the retention hooks
 
@@ -20,7 +21,7 @@ ash_hooks **1.2.0**.
 ```elixir
 Mix.install([
   {:ash, "~> 3.0"},
-  {:ash_hooks, "~> 1.1"},
+  {:ash_hooks, "~> 1.2"},
   {:ash_sqlite, "~> 0.2"},
   {:jason, "~> 1.2"}
 ])
@@ -51,11 +52,13 @@ defmodule Tour.Provider do
   def verify_signature(raw_body, %{signature: signature}, secret),
     do: AshHooks.Provider.default_verify_signature(raw_body, signature, secret, :hmac_sha256)
 
+  # Map the vendor's type strings to YOUR event atoms — an explicit
+  # table, never String.to_atom on provider input (that would let a
+  # hostile sender grow your atom table). Unknown types fail closed.
   @impl true
-  def parse_event_type(%{"type" => type}) when is_binary(type),
-    do: {:ok, String.to_atom(type)}
+  def parse_event_type(%{"type" => "order.paid"}), do: {:ok, :order_paid}
 
-  def parse_event_type(_), do: {:error, :malformed_payload}
+  def parse_event_type(_), do: {:error, :unknown_event_type}
 
   @impl true
   def handle_event(type, payload), do: {:ok, %{type: type, payload: payload}}
@@ -192,6 +195,10 @@ defmodule Tour.Domain do
     resource(Tour.Subscription)
     resource(Tour.Delivery)
     resource(Tour.Order)
+    resource(Tour.TenantEndpoint)
+    resource(Tour.TenantSubscription)
+    resource(Tour.TenantDelivery)
+    resource(Tour.TenantOrder)
   end
 end
 ```
@@ -349,10 +356,11 @@ port =
 
 IO.puts("local server listening on #{port}")
 
-# Registration rejects private/loopback URLs by design (the SSRF floor
-# lives on the url TYPE). For this local demo we create the endpoint
-# with a public placeholder and repoint the stored row at our listener —
-# the same pattern the package's own test suite uses.
+# Registration rejects private/loopback URLs by design — ash_hooks
+# treats webhook destinations as untrusted input. This demo needs a
+# loopback listener, so we register the endpoint with a public URL and
+# repoint the stored row at the local server purely for the demo; real
+# endpoints keep their public URLs.
 endpoint =
   Ash.create!(Tour.Endpoint, %{url: "https://partner.example.test/hook", secret_ref: "tour-endpoint"},
     authorize?: false
@@ -376,9 +384,11 @@ IO.inspect(Enum.map(results, & &1.status), label: "dispatch results")
 ```
 
 ```elixir
-# Drive the delivery machine directly — the diagnostic-re-drive shape.
-# The listener is loopback, so the adapter's destination pin is relaxed
-# via the public http_opts seam (and the driver-level ssrf_check seam).
+# Drive the delivery machine directly (the shape an Oban worker uses).
+# Two options let the local listener work: `ssrf_check` replaces the
+# send-time destination re-check, and http_opts' `validate_destination:
+# false` relaxes the HTTP adapter's own pin — both exist for tests and
+# diagnostics; production configs keep both guards on.
 config = [
   deliveries: Tour.Delivery,
   endpoints: Tour.Endpoint,
@@ -411,6 +421,195 @@ under the package's redaction floor).
 
 <!-- livebook:{"break_marks":true} -->
 
+## Multi-tenancy: one tenant's event, one tenant's rows
+
+```elixir
+# The same machine, scoped by an explicit tenant: declare attribute
+# multitenancy on the touched resources (in your app: the subscription,
+# the endpoint, and both ledgers) and pass :tenant to every call. Ash
+# scopes every query and write to the tenant; the package additionally
+# fails closed with a NAMED error when a multitenant resource is touched
+# without one.
+defmodule Tour.TenantEndpoint do
+  use Ash.Resource,
+    domain: Tour.Domain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks.Endpoint]
+
+  sqlite do
+    table("tour_tenant_endpoints")
+    repo(Tour.Repo)
+  end
+
+  attributes do
+    attribute(:org_id, :string, allow_nil?: false)
+  end
+
+  multitenancy do
+    strategy(:attribute)
+    attribute(:org_id)
+  end
+
+  actions do
+    defaults([:read, :create, :update])
+    default_accept(:*)
+  end
+end
+
+defmodule Tour.TenantSubscription do
+  use Ash.Resource,
+    domain: Tour.Domain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks.Subscription]
+
+  sqlite do
+    table("tour_tenant_subscriptions")
+    repo(Tour.Repo)
+  end
+
+  attributes do
+    attribute(:org_id, :string, allow_nil?: false)
+  end
+
+  multitenancy do
+    strategy(:attribute)
+    attribute(:org_id)
+  end
+
+  actions do
+    defaults([:read, :create])
+    default_accept(:*)
+  end
+
+  subscription do
+    endpoint_resource(Tour.TenantEndpoint)
+  end
+end
+
+defmodule Tour.TenantDelivery do
+  use Ash.Resource,
+    domain: Tour.Domain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks.OutboundDelivery]
+
+  sqlite do
+    table("tour_tenant_deliveries")
+    repo(Tour.Repo)
+  end
+
+  attributes do
+    attribute(:org_id, :string, allow_nil?: false)
+    timestamps()
+  end
+
+  multitenancy do
+    strategy(:attribute)
+    attribute(:org_id)
+  end
+
+  actions do
+    defaults([:read])
+  end
+end
+
+defmodule Tour.TenantOrder do
+  use Ash.Resource,
+    domain: Tour.Domain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks]
+
+  sqlite do
+    table("tour_tenant_orders")
+    repo(Tour.Repo)
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+  end
+
+  actions do
+    defaults([:read, :create])
+  end
+
+  webhooks do
+    outbound :order_paid do
+      subscriptions(Tour.TenantSubscription)
+      deliveries(Tour.TenantDelivery)
+    end
+  end
+end
+```
+
+```elixir
+# Tenant-bearing tables: the multitenancy attribute prefixes the unique
+# identity — "have I seen this event for this endpoint" is per-tenant
+Tour.Repo.query!("""
+CREATE TABLE tour_tenant_endpoints (
+  id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
+  secret_ref TEXT NOT NULL, previous_secret_ref TEXT, legacy_secret_ref TEXT,
+  legacy_previous_secret_ref TEXT, org_id TEXT NOT NULL)
+""")
+
+Tour.Repo.query!("""
+CREATE TABLE tour_tenant_subscriptions (
+  id TEXT PRIMARY KEY, event_types TEXT NOT NULL, endpoint_id TEXT NOT NULL,
+  signing_mode TEXT, org_id TEXT NOT NULL)
+""")
+
+Tour.Repo.query!("""
+CREATE TABLE tour_tenant_deliveries (
+  id TEXT PRIMARY KEY, event_uuid TEXT NOT NULL, event_type TEXT NOT NULL,
+  payload BLOB NOT NULL, endpoint_id TEXT NOT NULL, subscription_id TEXT,
+  signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
+  response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
+  org_id TEXT NOT NULL, inserted_at TEXT, updated_at TEXT)
+""")
+
+Tour.Repo.query!(
+  "CREATE UNIQUE INDEX tour_tenant_deliveries_unique ON tour_tenant_deliveries (org_id, endpoint_id, event_uuid)"
+)
+
+Tour.Repo.query!("CREATE TABLE IF NOT EXISTS tour_tenant_orders (id TEXT PRIMARY KEY)")
+:ok
+```
+
+```elixir
+# Two tenants, each with an endpoint subscribed to order_paid
+for org <- ["org_b", "org_a"] do
+  endpoint =
+    Ash.create!(Tour.TenantEndpoint, %{url: "https://#{org}.example.test/hook", secret_ref: "ref-#{org}"},
+      tenant: org,
+      authorize?: false
+    )
+
+  Ash.create!(Tour.TenantSubscription, %{endpoint_id: endpoint.id, event_types: ["order_paid"]},
+    tenant: org,
+    authorize?: false
+  )
+end
+
+{:ok, event} = AshHooks.Event.new(type: :order_paid, payload: Jason.encode!(%{"order" => 7}))
+
+# org_a dispatches: the fanout READ itself is tenant-scoped — org_b's
+# subscription is invisible, so no row, no signature, no bytes for org_b
+{:ok, [result]} = AshHooks.dispatch(Tour.TenantOrder, :order_paid, event, tenant: "org_a")
+IO.inspect(result.status, label: "org_a dispatch result")
+
+[a_row] = Ash.read!(Tour.TenantDelivery, authorize?: false, tenant: "org_a")
+IO.inspect({a_row.org_id, a_row.status}, label: "org_a's row")
+
+[] = Ash.read!(Tour.TenantDelivery, authorize?: false, tenant: "org_b")
+IO.puts("org_b's partition: empty — the event never existed for org_b")
+
+# A tenant-less call against a multitenant set fails closed BEFORE any
+# data access — the named error, not a crash:
+{:error, :tenant_required} = AshHooks.dispatch(Tour.TenantOrder, :order_paid, event)
+IO.puts("tenant-less dispatch: {:error, :tenant_required}")
+```
+
+<!-- livebook:{"break_marks":true} -->
+
 ## Retention: prune the terminal rows
 
 ```elixir
@@ -433,5 +632,6 @@ IO.puts("Pruned the terminal row — non-terminal rows are never touched.")
 ## Where to go next
 
 * [Get-started tutorial](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md) — the full walkthrough with Oban
+* [Multi-tenant adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
 * [DSL reference](https://github.com/baselabs/ash_hooks/tree/main/documentation/dsls)
 * `AshHooks.Telemetry`, `AshHooks.Delivery`, `AshHooks.Ingress` module docs
