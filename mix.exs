@@ -1,7 +1,7 @@
 defmodule AshHooks.MixProject do
   use Mix.Project
 
-  @version "1.2.0"
+  @version "1.2.1"
   @source_url "https://github.com/baselabs/ash_hooks"
 
   def project do
@@ -126,8 +126,12 @@ defmodule AshHooks.MixProject do
   defp package do
     [
       maintainers: ["rjpalermo"],
+      # The documentation tree ships because shipped docs (UPGRADING.md,
+      # CHANGELOG) point adopters at repo-relative paths under it. Subtrees
+      # are named individually — not `documentation` — so untracked files at
+      # its root (.DS_Store) can never ride a glob into the tarball.
       files:
-        ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules* SECURITY* CONTRIBUTING* UPGRADING*),
+        ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules* SECURITY* CONTRIBUTING* UPGRADING* documentation/tutorials documentation/livebooks documentation/dsls),
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url}
     ]

@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.2.1 — 2026-09-24
+
+### Fixed
+
+- **The documentation tree now ships in the hex tarball.** 1.2.0's package
+  carried only the top-level docs (README, CHANGELOG, UPGRADING, usage-rules),
+  so `documentation/` — including the multi-tenant adoption checklist — was
+  reachable only on GitHub/hexdocs while UPGRADING.md and the CHANGELOG
+  referenced it by repo-relative path. Installed-package readers now get the
+  tutorials (get-started, tenancy-adoption-checklist), the DSL reference, and
+  the Livebook alongside those references. No library code changed; hexdocs
+  and the package page README are unaffected.
+
 ## 1.2.0 — 2026-09-24
 
 Tenancy release (ADR-0011, additive and opt-in): ash_hooks aligns with
