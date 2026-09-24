@@ -436,7 +436,7 @@ if Code.ensure_loaded?(Oban) do
         plain = delivery_row!(endpoint, "evt_tenancy_worker_2")
         assert :ok = AshHooks.WorkerTest.Worker.enqueue(plain, nil)
 
-        [tenant_args, plain_args] = Enum.sort_by(job_args(), &not Map.has_key?(&1, "tenant"))
+        [tenant_args, plain_args] = Enum.sort_by(job_args(), &(not Map.has_key?(&1, "tenant")))
         assert tenant_args["tenant"] == "org_a"
         refute Map.has_key?(plain_args, "tenant")
       end

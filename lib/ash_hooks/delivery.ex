@@ -353,7 +353,14 @@ defmodule AshHooks.Delivery do
 
   defp record(row, _endpoint, %{status: status} = response, config, tenant)
        when status in [408, 429] do
-    retry(row, "http_#{status}", config, tenant, retry_after(response, config), failure_summary(response))
+    retry(
+      row,
+      "http_#{status}",
+      config,
+      tenant,
+      retry_after(response, config),
+      failure_summary(response)
+    )
   end
 
   defp record(row, _endpoint, %{status: status} = response, config, tenant)
@@ -384,7 +391,8 @@ defmodule AshHooks.Delivery do
     tenant_aware? = config[:tenant_aware_secrets] == true
 
     with {:ok, secret} <- resolve(endpoint.secret_ref, resolver, tenant, tenant_aware?),
-         {:ok, previous} <- resolve_opt(endpoint.previous_secret_ref, resolver, tenant, tenant_aware?),
+         {:ok, previous} <-
+           resolve_opt(endpoint.previous_secret_ref, resolver, tenant, tenant_aware?),
          {:ok, legacy} <- resolve_opt(endpoint.legacy_secret_ref, resolver, tenant, tenant_aware?),
          {:ok, legacy_previous} <-
            resolve_opt(endpoint.legacy_previous_secret_ref, resolver, tenant, tenant_aware?) do

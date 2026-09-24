@@ -96,7 +96,8 @@ defmodule AshHooks.Dispatcher do
          {:ok, deliv_mod} <- resolve_module(entity, :deliveries),
          {:ok, endpoint_mod} <- resolve_endpoint_resource(subs_mod),
          {:ok, tenant} <- Tenancy.resolve([subs_mod, endpoint_mod, deliv_mod], opts[:tenant]),
-         {:ok, matches, error_entries} <- match_subscriptions(subs_mod, endpoint_mod, event, tenant),
+         {:ok, matches, error_entries} <-
+           match_subscriptions(subs_mod, endpoint_mod, event, tenant),
          :ok <- check_conflicts(matches, entity) do
       {:ok,
        error_entries ++
@@ -368,7 +369,7 @@ defmodule AshHooks.Dispatcher do
   end
 
   # Endpoint resolution distinguishes three outcomes per subscription
-  #: an ENABLED endpoint matches; a gone or disabled
+  # : an ENABLED endpoint matches; a gone or disabled
   # one is SKIPPED by design (no row, no entry); a READ ERROR after the
   # transient retry is surfaced as a per-endpoint :endpoint_error result —
   # never silently conflated with gone, or a transient blip would drop the

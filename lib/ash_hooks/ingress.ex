@@ -327,7 +327,14 @@ defmodule AshHooks.Ingress do
         :ok
 
       new_payload when is_map(new_payload) or is_list(new_payload) ->
-        gated_update(resource, delivery_id, token, :redact_payload, %{payload: new_payload}, tenant)
+        gated_update(
+          resource,
+          delivery_id,
+          token,
+          :redact_payload,
+          %{payload: new_payload},
+          tenant
+        )
 
       _other ->
         {:error, :invalid_redactor_result}
@@ -403,9 +410,16 @@ defmodule AshHooks.Ingress do
           :ok | {:error, :stale_token | term()}
   def renew(resource, delivery_id, token, opts \\ []) do
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
-      gated_update(resource, delivery_id, token, :renew, %{
-        lease_expires_at: DateTime.add(now(), lease_seconds(resource), :second)
-      }, tenant)
+      gated_update(
+        resource,
+        delivery_id,
+        token,
+        :renew,
+        %{
+          lease_expires_at: DateTime.add(now(), lease_seconds(resource), :second)
+        },
+        tenant
+      )
     end
   end
 
@@ -486,22 +500,43 @@ defmodule AshHooks.Ingress do
       gated_update(resource, delivery_id, claimed.fencing_token, :mark_processed, %{}, tenant)
     else
       {:error, :unknown_event_type} ->
-        gated_update(resource, delivery_id, claimed.fencing_token, :mark_failed, %{
-          error_class: "unknown_event_type",
-          permanent?: true
-        }, tenant)
+        gated_update(
+          resource,
+          delivery_id,
+          claimed.fencing_token,
+          :mark_failed,
+          %{
+            error_class: "unknown_event_type",
+            permanent?: true
+          },
+          tenant
+        )
 
       {:error, :malformed_payload} ->
-        gated_update(resource, delivery_id, claimed.fencing_token, :mark_failed, %{
-          error_class: "malformed_payload",
-          permanent?: true
-        }, tenant)
+        gated_update(
+          resource,
+          delivery_id,
+          claimed.fencing_token,
+          :mark_failed,
+          %{
+            error_class: "malformed_payload",
+            permanent?: true
+          },
+          tenant
+        )
 
       {:error, kind, term} when kind in [:retry, :permanent] ->
-        gated_update(resource, delivery_id, claimed.fencing_token, :mark_failed, %{
-          error_class: error_class_string(term),
-          permanent?: kind == :permanent
-        }, tenant)
+        gated_update(
+          resource,
+          delivery_id,
+          claimed.fencing_token,
+          :mark_failed,
+          %{
+            error_class: error_class_string(term),
+            permanent?: kind == :permanent
+          },
+          tenant
+        )
 
       {:error, error} ->
         {:error, error}

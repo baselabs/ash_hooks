@@ -262,11 +262,14 @@ defmodule AshHooks.ReconcileTest do
 
     backdate = stale()
 
-    Repo.query!("UPDATE #{@deliveries} SET inserted_at = ?, updated_at = ? WHERE event_uuid = ?", [
-      DateTime.to_iso8601(backdate),
-      DateTime.to_iso8601(backdate),
-      uuid
-    ])
+    Repo.query!(
+      "UPDATE #{@deliveries} SET inserted_at = ?, updated_at = ? WHERE event_uuid = ?",
+      [
+        DateTime.to_iso8601(backdate),
+        DateTime.to_iso8601(backdate),
+        uuid
+      ]
+    )
   end
 
   defp row_state!(uuid, org) do
@@ -308,8 +311,13 @@ defmodule AshHooks.ReconcileTest do
   test "the cutoff gates the claim: fresh rows are left alone" do
     stranded_row!("org_a", "rec-fresh")
     # ...but backdate only 1 second — inside the default 5-minute cutoff
-    Repo.query!("UPDATE #{@deliveries} SET inserted_at = ?, updated_at = ? WHERE event_uuid = ?",
-      [DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), -1, :second)), DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), -1, :second)), "rec-fresh"]
+    Repo.query!(
+      "UPDATE #{@deliveries} SET inserted_at = ?, updated_at = ? WHERE event_uuid = ?",
+      [
+        DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), -1, :second)),
+        DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), -1, :second)),
+        "rec-fresh"
+      ]
     )
 
     assert {:ok, []} = Dispatcher.reconcile_pending(Emitter, :order_paid, tenant: "org_a")

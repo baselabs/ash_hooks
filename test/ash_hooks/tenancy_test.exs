@@ -181,13 +181,16 @@ defmodule AshHooks.TenancyTest do
     def webhook_signing_secret(%{secret: secret}), do: {:ok, secret}
 
     @impl AshHooks.Provider
-    def webhook_signing_secret(%{secret: :unconfigured}, _tenant), do: {:error, :no_webhook_secret}
+    def webhook_signing_secret(%{secret: :unconfigured}, _tenant),
+      do: {:error, :no_webhook_secret}
 
-    def webhook_signing_secret(%{secret: secret}, tenant), do: {:ok, secret <> "-" <> to_string(tenant)}
+    def webhook_signing_secret(%{secret: secret}, tenant),
+      do: {:ok, secret <> "-" <> to_string(tenant)}
 
     @impl AshHooks.Provider
     def verify_signature(raw_body, ctx, secret),
-      do: AshHooks.Provider.default_verify_signature(raw_body, ctx.signature, secret, :hmac_sha256)
+      do:
+        AshHooks.Provider.default_verify_signature(raw_body, ctx.signature, secret, :hmac_sha256)
 
     @impl AshHooks.Provider
     def parse_event_type(%{"id" => _}), do: {:ok, :counted}
@@ -211,7 +214,8 @@ defmodule AshHooks.TenancyTest do
 
     @impl AshHooks.Provider
     def verify_signature(raw_body, ctx, secret),
-      do: AshHooks.Provider.default_verify_signature(raw_body, ctx.signature, secret, :hmac_sha256)
+      do:
+        AshHooks.Provider.default_verify_signature(raw_body, ctx.signature, secret, :hmac_sha256)
 
     @impl AshHooks.Provider
     def parse_event_type(%{"id" => _}), do: {:ok, :counted}
@@ -1043,7 +1047,11 @@ defmodule AshHooks.TenancyTest do
 
     assert :ok =
              AshHooks.Delivery.run(
-               %{"endpoint_id" => victim_endpoint.id, "event_uuid" => row.event_uuid, "tenant" => "org_b"},
+               %{
+                 "endpoint_id" => victim_endpoint.id,
+                 "event_uuid" => row.event_uuid,
+                 "tenant" => "org_b"
+               },
                delivery_config()
              )
 
@@ -1081,11 +1089,17 @@ defmodule AshHooks.TenancyTest do
 
     four_oh_four =
       delivery_config()
-      |> Keyword.put(:http, fn _m, _u, _h, _b, _o -> {:ok, %{status: 410, headers: [], body: ""}} end)
+      |> Keyword.put(:http, fn _m, _u, _h, _b, _o ->
+        {:ok, %{status: 410, headers: [], body: ""}}
+      end)
 
     assert :ok =
              AshHooks.Delivery.run(
-               %{"endpoint_id" => victim_endpoint.id, "event_uuid" => "evt-410-ours", "tenant" => "org_a"},
+               %{
+                 "endpoint_id" => victim_endpoint.id,
+                 "event_uuid" => "evt-410-ours",
+                 "tenant" => "org_a"
+               },
                four_oh_four
              )
 
@@ -1130,7 +1144,11 @@ defmodule AshHooks.TenancyTest do
 
     assert {:error, {:disable_failed, :endpoint_vanished}} =
              AshHooks.Delivery.run(
-               %{"endpoint_id" => victim_endpoint.id, "event_uuid" => "evt-410-vanish", "tenant" => "org_a"},
+               %{
+                 "endpoint_id" => victim_endpoint.id,
+                 "event_uuid" => "evt-410-vanish",
+                 "tenant" => "org_a"
+               },
                vanishing
              )
   end
@@ -1138,7 +1156,13 @@ defmodule AshHooks.TenancyTest do
   # ────────────────────────── proof 4: sweeps ──────────────────────────
 
   test "a tenant-less reap over a multitenant ledger is the NAMED error, not a bang crash" do
-    ledger_row!("org_a", "sweep-1", "claimed", DateTime.add(DateTime.utc_now(), -60, :second), nil)
+    ledger_row!(
+      "org_a",
+      "sweep-1",
+      "claimed",
+      DateTime.add(DateTime.utc_now(), -60, :second),
+      nil
+    )
 
     assert {:error, :tenant_required} = Ingress.reap(Ledger)
   end
@@ -1146,25 +1170,46 @@ defmodule AshHooks.TenancyTest do
   test "prune and reap are tenant-scoped — one tenant's sweep never touches the other's rows" do
     # attacker rows FIRST
     ledger_row!("org_b", "old-b", "processed", nil, old())
-    ledger_row!("org_b", "expired-b", "claimed", DateTime.add(DateTime.utc_now(), -60, :second), nil)
+
+    ledger_row!(
+      "org_b",
+      "expired-b",
+      "claimed",
+      DateTime.add(DateTime.utc_now(), -60, :second),
+      nil
+    )
+
     ledger_row!("org_a", "old-a", "processed", nil, old())
-    ledger_row!("org_a", "expired-a", "claimed", DateTime.add(DateTime.utc_now(), -60, :second), nil)
+
+    ledger_row!(
+      "org_a",
+      "expired-a",
+      "claimed",
+      DateTime.add(DateTime.utc_now(), -60, :second),
+      nil
+    )
 
     assert {:ok, 1} = Ingress.prune(Ledger, older_than: old_cutoff(), tenant: "org_a")
 
     assert [%{external_event_id: "old-b"}] =
-             Ledger |> Ash.Query.filter(external_event_id == "old-b") |> Ash.read!(authorize?: false, tenant: "org_b")
+             Ledger
+             |> Ash.Query.filter(external_event_id == "old-b")
+             |> Ash.read!(authorize?: false, tenant: "org_b")
 
     assert {:ok, 1} = Ingress.reap(Ledger, tenant: "org_a")
 
     # org_b's expired row untouched; org_a's was re-driven to processed
     expired_b =
-      Ledger |> Ash.Query.filter(external_event_id == "expired-b") |> Ash.read_one!(authorize?: false, tenant: "org_b")
+      Ledger
+      |> Ash.Query.filter(external_event_id == "expired-b")
+      |> Ash.read_one!(authorize?: false, tenant: "org_b")
 
     assert expired_b.status == :claimed
 
     expired_a =
-      Ledger |> Ash.Query.filter(external_event_id == "expired-a") |> Ash.read_one!(authorize?: false, tenant: "org_a")
+      Ledger
+      |> Ash.Query.filter(external_event_id == "expired-a")
+      |> Ash.read_one!(authorize?: false, tenant: "org_a")
 
     assert expired_a.status == :processed
   end
@@ -1185,9 +1230,32 @@ defmodule AshHooks.TenancyTest do
 
     on_exit(fn -> AshHooks.CountingProvider.cleanup() end)
 
-    ledger_row!("org_a", "poison-throw", "counter", "claimed", DateTime.add(DateTime.utc_now(), -60, :second), nil)
-    ledger_row!("org_a", "poison-exit", "counter", "claimed", DateTime.add(DateTime.utc_now(), -60, :second), nil)
-    ledger_row!("org_a", "healthy-a", "perconn_tenant", "claimed", DateTime.add(DateTime.utc_now(), -60, :second), nil)
+    ledger_row!(
+      "org_a",
+      "poison-throw",
+      "counter",
+      "claimed",
+      DateTime.add(DateTime.utc_now(), -60, :second),
+      nil
+    )
+
+    ledger_row!(
+      "org_a",
+      "poison-exit",
+      "counter",
+      "claimed",
+      DateTime.add(DateTime.utc_now(), -60, :second),
+      nil
+    )
+
+    ledger_row!(
+      "org_a",
+      "healthy-a",
+      "perconn_tenant",
+      "claimed",
+      DateTime.add(DateTime.utc_now(), -60, :second),
+      nil
+    )
 
     assert {:ok, 1} = Ingress.reap(Ledger, tenant: "org_a")
 
@@ -1197,7 +1265,10 @@ defmodule AshHooks.TenancyTest do
     assert_received :handler_ran
 
     for id <- ["poison-throw", "poison-exit"] do
-      row = Ledger |> Ash.Query.filter(external_event_id == ^id) |> Ash.read_one!(authorize?: false, tenant: "org_a")
+      row =
+        Ledger
+        |> Ash.Query.filter(external_event_id == ^id)
+        |> Ash.read_one!(authorize?: false, tenant: "org_a")
 
       # attempts == 1 proves the redrive CLAIMED the row and the handler
       # RAN (claim bumps attempts) — the crash was contained at the
@@ -1207,15 +1278,37 @@ defmodule AshHooks.TenancyTest do
     end
 
     healthy =
-      Ledger |> Ash.Query.filter(external_event_id == "healthy-a") |> Ash.read_one!(authorize?: false, tenant: "org_a")
+      Ledger
+      |> Ash.Query.filter(external_event_id == "healthy-a")
+      |> Ash.read_one!(authorize?: false, tenant: "org_a")
 
     assert healthy.status == :processed
   end
 
   test "reap_all and prune_all sweep per tenant with per-tenant error isolation and a total" do
-    ledger_row!("org_b", "expired-b", "claimed", DateTime.add(DateTime.utc_now(), -60, :second), nil)
-    ledger_row!("org_a", "expired-a", "claimed", DateTime.add(DateTime.utc_now(), -60, :second), nil)
-    ledger_row!("org_a", "expired-a2", "claimed", DateTime.add(DateTime.utc_now(), -60, :second), nil)
+    ledger_row!(
+      "org_b",
+      "expired-b",
+      "claimed",
+      DateTime.add(DateTime.utc_now(), -60, :second),
+      nil
+    )
+
+    ledger_row!(
+      "org_a",
+      "expired-a",
+      "claimed",
+      DateTime.add(DateTime.utc_now(), -60, :second),
+      nil
+    )
+
+    ledger_row!(
+      "org_a",
+      "expired-a2",
+      "claimed",
+      DateTime.add(DateTime.utc_now(), -60, :second),
+      nil
+    )
 
     assert {:ok, %{results: %{"org_a" => {:ok, 2}, "org_b" => {:ok, 1}}, total: 3}} =
              AshHooks.reap_all(Ledger, tenants: ["org_a", "org_b"])
@@ -1228,7 +1321,13 @@ defmodule AshHooks.TenancyTest do
 
     # duplicate tenants are deduplicated — a repeat would overwrite its
     # own earlier result while still counting into the total
-    ledger_row!("org_a", "dup-sweep-a", "claimed", DateTime.add(DateTime.utc_now(), -60, :second), nil)
+    ledger_row!(
+      "org_a",
+      "dup-sweep-a",
+      "claimed",
+      DateTime.add(DateTime.utc_now(), -60, :second),
+      nil
+    )
 
     assert {:ok, %{results: %{"org_a" => {:ok, 1}}, total: 1}} =
              AshHooks.reap_all(Ledger, tenants: ["org_a", "org_a"])
@@ -1236,7 +1335,13 @@ defmodule AshHooks.TenancyTest do
     # error isolation: a tenant value Ash cannot convert crashes THAT
     # tenant's sweep only — the others complete and the crash is carried
     # as the tenant's result, never raised through the sweep
-    ledger_row!("org_a", "expired-a3", "claimed", DateTime.add(DateTime.utc_now(), -60, :second), nil)
+    ledger_row!(
+      "org_a",
+      "expired-a3",
+      "claimed",
+      DateTime.add(DateTime.utc_now(), -60, :second),
+      nil
+    )
 
     assert {:ok, %{results: results, total: 1}} =
              AshHooks.reap_all(Ledger, tenants: [%{bad: :tenant}, "org_a"])
@@ -1269,15 +1374,25 @@ defmodule AshHooks.TenancyTest do
       )
 
       # terminal + backdated past the cutoff (the machine stamps now)
-      Repo.query!("UPDATE #{@deliveries} SET status = 'succeeded', inserted_at = ?, updated_at = ? WHERE org_id = ?", [
-        DateTime.to_iso8601(old()),
-        DateTime.to_iso8601(old()),
-        tenant
-      ])
+      Repo.query!(
+        "UPDATE #{@deliveries} SET status = 'succeeded', inserted_at = ?, updated_at = ? WHERE org_id = ?",
+        [
+          DateTime.to_iso8601(old()),
+          DateTime.to_iso8601(old()),
+          tenant
+        ]
+      )
     end
 
-    assert {:ok, 1} = AshHooks.Delivery.prune(AshHooks.TenancyTest.Delivery, older_than: old_cutoff(), tenant: "org_a")
-    assert [%{org_id: "org_b"}] = Ash.read!(AshHooks.TenancyTest.Delivery, authorize?: false, tenant: "org_b")
+    assert {:ok, 1} =
+             AshHooks.Delivery.prune(AshHooks.TenancyTest.Delivery,
+               older_than: old_cutoff(),
+               tenant: "org_a"
+             )
+
+    assert [%{org_id: "org_b"}] =
+             Ash.read!(AshHooks.TenancyTest.Delivery, authorize?: false, tenant: "org_b")
+
     assert [] == Ash.read!(AshHooks.TenancyTest.Delivery, authorize?: false, tenant: "org_a")
   end
 
@@ -1377,7 +1492,9 @@ defmodule AshHooks.TenancyTest do
              Ingress.mark_processed(Ledger, row_id, token, tenant: "org_b")
 
     untouched =
-      Ledger |> Ash.Query.filter(external_event_id == "lease-1") |> Ash.read_one!(authorize?: false, tenant: "org_a")
+      Ledger
+      |> Ash.Query.filter(external_event_id == "lease-1")
+      |> Ash.read_one!(authorize?: false, tenant: "org_a")
 
     assert untouched.status == :claimed
 
@@ -1389,22 +1506,30 @@ defmodule AshHooks.TenancyTest do
 
   test "any-vs-none (endpoints undeclared beside tenant-scoped subs/deliveries) is :tenancy_mismatch on dispatch" do
     assert {:error, :tenancy_mismatch} =
-             Dispatcher.dispatch(PartialEmitter, :order_paid, event!("mismatch-1"), tenant: "org_a")
+             Dispatcher.dispatch(PartialEmitter, :order_paid, event!("mismatch-1"),
+               tenant: "org_a"
+             )
   end
 
   test "differing multitenancy attributes across the set is :tenancy_mismatch" do
     assert {:error, :tenancy_mismatch} =
-             Dispatcher.dispatch(AttrMismatchEmitter, :order_paid, event!("mismatch-2"), tenant: "org_a")
+             Dispatcher.dispatch(AttrMismatchEmitter, :order_paid, event!("mismatch-2"),
+               tenant: "org_a"
+             )
   end
 
   test "global?: true anywhere in the set is :tenancy_mismatch (fail-closed disabled)" do
     assert {:error, :tenancy_mismatch} =
-             Dispatcher.dispatch(GlobalEmitter, :order_paid, event!("mismatch-3"), tenant: "org_a")
+             Dispatcher.dispatch(GlobalEmitter, :order_paid, event!("mismatch-3"),
+               tenant: "org_a"
+             )
   end
 
   test "a non-:attribute strategy in the set is :tenancy_mismatch" do
     assert {:error, :tenancy_mismatch} =
-             Dispatcher.dispatch(ContextEmitter, :order_paid, event!("mismatch-4"), tenant: "org_a")
+             Dispatcher.dispatch(ContextEmitter, :order_paid, event!("mismatch-4"),
+               tenant: "org_a"
+             )
   end
 
   test "the runtime path checks too: Delivery.run with a mismatched set fails closed before data access" do
@@ -1435,9 +1560,13 @@ defmodule AshHooks.TenancyTest do
 
   test "a tenant threaded through single-tenant resources changes nothing — with or without it, identical dispatches" do
     endpoint =
-      Ash.create!(PlainEndpoint, %{url: "https://plain.test/hook", secret_ref: "ref"}, authorize?: false)
+      Ash.create!(PlainEndpoint, %{url: "https://plain.test/hook", secret_ref: "ref"},
+        authorize?: false
+      )
 
-    Ash.create!(PlainSubscription, %{event_types: ["*"], endpoint_id: endpoint.id}, authorize?: false)
+    Ash.create!(PlainSubscription, %{event_types: ["*"], endpoint_id: endpoint.id},
+      authorize?: false
+    )
 
     assert {:ok, [with_tenant]} =
              Dispatcher.dispatch(PlainEmitter, :order_paid, event!("plain-1"), tenant: "org_z")
@@ -1466,7 +1595,15 @@ defmodule AshHooks.TenancyTest do
     # adopter's table looks BEFORE the backfill migration
     Repo.query!(
       "INSERT INTO #{@deliveries} (id, event_uuid, event_type, payload, endpoint_id, signing_mode, status, attempts, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)",
-      [Ash.UUID.generate(), "evt-legacy", "order_paid", @payload, victim_endpoint.id, "standard", "succeeded"]
+      [
+        Ash.UUID.generate(),
+        "evt-legacy",
+        "order_paid",
+        @payload,
+        victim_endpoint.id,
+        "standard",
+        "succeeded"
+      ]
     )
 
     assert {:ok, [%{status: :deferred}]} =
@@ -1493,10 +1630,15 @@ defmodule AshHooks.TenancyTest do
     # ingest! signs with tenancy-secret-org_a — proof 6 already drove it;
     # here the negative space proves the tenant actually selected the key
     body = Jason.encode!(%{"id" => "sec-1", "type" => "counted", "n" => 1})
-    wrong_key_signature = :crypto.mac(:hmac, :sha256, "tenancy-secret-org_b", body) |> Base.encode16(case: :lower)
+
+    wrong_key_signature =
+      :crypto.mac(:hmac, :sha256, "tenancy-secret-org_b", body) |> Base.encode16(case: :lower)
 
     assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
-             Ingress.ingest(Ledger, :counter, body, %{signature: wrong_key_signature, tenant: "org_a"})
+             Ingress.ingest(Ledger, :counter, body, %{
+               signature: wrong_key_signature,
+               tenant: "org_a"
+             })
   end
 
   test "the provider webhook_signing_secret/2 override resolves Organization × connection custody" do
@@ -1594,7 +1736,11 @@ defmodule AshHooks.TenancyTest do
 
     assert :ok =
              AshHooks.Delivery.run(
-               %{"endpoint_id" => victim_endpoint.id, "event_uuid" => "evt-secrets", "tenant" => "org_a"},
+               %{
+                 "endpoint_id" => victim_endpoint.id,
+                 "event_uuid" => "evt-secrets",
+                 "tenant" => "org_a"
+               },
                config
              )
 
@@ -1628,7 +1774,11 @@ defmodule AshHooks.TenancyTest do
 
     assert {:snooze, _delay} =
              AshHooks.Delivery.run(
-               %{"endpoint_id" => victim_endpoint.id, "event_uuid" => "evt-badarity", "tenant" => "org_a"},
+               %{
+                 "endpoint_id" => victim_endpoint.id,
+                 "event_uuid" => "evt-badarity",
+                 "tenant" => "org_a"
+               },
                config
              )
 
@@ -1785,7 +1935,9 @@ defmodule AshHooks.TenancyTest do
 
   test "a subscriptions resource with no declared endpoint_resource fails closed before any data access" do
     assert {:error, error} =
-             Dispatcher.dispatch(BareSubscriptionEmitter, :order_paid, event!("bare-1"), tenant: "org_a")
+             Dispatcher.dispatch(BareSubscriptionEmitter, :order_paid, event!("bare-1"),
+               tenant: "org_a"
+             )
 
     assert Exception.message(error) =~ "declares no subscription.endpoint_resource"
   end
@@ -1834,7 +1986,11 @@ defmodule AshHooks.TenancyTest do
 
     assert {:snooze, _} =
              AshHooks.Delivery.run(
-               %{"endpoint_id" => victim_endpoint.id, "event_uuid" => "evt-fnshape", "tenant" => "org_a"},
+               %{
+                 "endpoint_id" => victim_endpoint.id,
+                 "event_uuid" => "evt-fnshape",
+                 "tenant" => "org_a"
+               },
                config
              )
   end
@@ -1842,7 +1998,10 @@ defmodule AshHooks.TenancyTest do
   test "a resolver that exits or throws classifies as invalid_resolver — the job keeps its row-owned policy" do
     {_attack_endpoint, _attack_sub, victim_endpoint, _victim_sub} = two_tenant_fixture!()
 
-    for {uuid, bad} <- [{"evt-exit", fn _ref, _t -> exit(:boom) end}, {"evt-throw", fn _ref, _t -> throw(:boom) end}] do
+    for {uuid, bad} <- [
+          {"evt-exit", fn _ref, _t -> exit(:boom) end},
+          {"evt-throw", fn _ref, _t -> throw(:boom) end}
+        ] do
       Ash.create!(
         AshHooks.TenancyTest.Delivery,
         %{
@@ -1864,7 +2023,11 @@ defmodule AshHooks.TenancyTest do
 
       assert {:snooze, _} =
                AshHooks.Delivery.run(
-                 %{"endpoint_id" => victim_endpoint.id, "event_uuid" => uuid, "tenant" => "org_a"},
+                 %{
+                   "endpoint_id" => victim_endpoint.id,
+                   "event_uuid" => uuid,
+                   "tenant" => "org_a"
+                 },
                  config
                )
     end

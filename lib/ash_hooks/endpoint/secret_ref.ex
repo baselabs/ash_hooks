@@ -24,7 +24,7 @@ defmodule AshHooks.Endpoint.SecretRef do
     cond do
       # allow_nil? blocks only nil — the empty string must be refused by the
       # type itself or a required endpoint persists an unusable reference
-      #.
+      # .
       value == "" ->
         {:error,
          "must be a non-empty secret REFERENCE — an empty reference cannot resolve a secret"}
