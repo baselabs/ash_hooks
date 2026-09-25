@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- **CI is Linux-only; the macOS and Windows build legs are removed.**
+  Tri-OS stays a developer-portability requirement (clone, set up, and
+  test must work on every OS) — it was never meant to be a CI topology,
+  and the README no longer claims dedicated per-OS legs. Also hygiene:
+  the workflow's pinned GitHub Actions (checkout, cache, upload-artifact)
+  moved off the Node 20 runtime to their current releases. No library
+  code changed.
+
 ## 1.2.1 — 2026-09-24
 
 ### Fixed

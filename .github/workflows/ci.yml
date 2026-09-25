@@ -34,12 +34,12 @@ jobs:
       MIX_ENV: test
       ASH_HOOKS_NO_OPTIONAL: ${{ matrix.no_optional }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             deps
@@ -66,7 +66,7 @@ jobs:
         if: matrix.no_optional != '1' && matrix.otp == '28'
       - name: Upload coverage HTML on a gate miss
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: cover-html
           path: cover/
@@ -87,12 +87,12 @@ jobs:
     env:
       MIX_ENV: test
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
           elixir-version: "1.20"
           otp-version: "28"
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             deps
@@ -103,52 +103,10 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix test
 
-  # Tri-OS capability (owner rule, 2026-09-16): the package must build
-  # and pass on macOS, Linux, AND Windows — a missing OS is a defect.
-  # Linux is proven by every leg above; these two legs carry the other
-  # OSes on the dev-default toolchain. Docs may claim exactly the OSes
-  # these legs prove.
-  macos:
-    runs-on: macos-latest
-    timeout-minutes: 30
-    env:
-      MIX_ENV: test
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
-        with:
-          elixir-version: "1.20.4"
-          otp-version: "28"
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: |
-            deps
-            _build
-          key: mix-macos-1.20.4-28-${{ hashFiles('mix.lock') }}
-      - run: mix deps.get
-      - run: mix compile --warnings-as-errors
-      - run: mix test
-
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 40
-    env:
-      MIX_ENV: test
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
-        with:
-          elixir-version: "1.20.4"
-          otp-version: "28"
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: |
-            deps
-            _build
-          key: mix-windows-1.20.4-28-v2-${{ hashFiles('mix.lock') }}
-      - run: mix deps.get
-      - run: mix compile --warnings-as-errors
-      - run: mix test
+  # CI is Linux-only (owner direction, 2026-09-25): tri-OS developer
+  # portability — a developer on macOS, Linux, or Windows can clone,
+  # set up, and test — is a code-and-toolchain requirement, not a CI
+  # topology. No macos/windows build legs; do not re-add them.
 
   # Type-check gate on the public API (found the dead IP-SAN matcher on
   # its first run — 2026-08-22).
@@ -157,12 +115,12 @@ jobs:
     env:
       MIX_ENV: test
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
           elixir-version: "1.20.4"
           otp-version: "28"
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             deps
@@ -179,12 +137,12 @@ jobs:
   package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
           elixir-version: "1.20.4"
           otp-version: "28"
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             deps
@@ -221,12 +179,12 @@ jobs:
   livebook:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
           elixir-version: "1.20.4"
           otp-version: "28"
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/.mix
