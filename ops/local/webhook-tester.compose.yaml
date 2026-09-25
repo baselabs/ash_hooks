@@ -1,0 +1,24 @@
+name: local-webhook-tester
+services:
+  receiver:
+    image: ghcr.io/tarampampam/webhook-tester@sha256:85818267b450d3d386cad6510c561e09b974183ed2832c373bc83b125fc1b221
+    container_name: local-webhook-tester
+    restart: always
+    ports:
+      - "127.0.0.1:52871:8080"
+    environment:
+      STORAGE_DRIVER: fs
+      FS_STORAGE_DIR: /data
+      AUTO_CREATE_SESSIONS: "true"
+      SESSION_TTL: 168h
+      MAX_REQUESTS: "1000"
+    volumes:
+      - captures:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+volumes:
+  captures:
+    name: local-webhook-tester-captures
