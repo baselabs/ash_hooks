@@ -12,15 +12,16 @@ delivery, and changes no endpoint registration.
 
 `webhook-tester.compose.yaml` pins the image by digest, binds `127.0.0.1:52871`,
 keeps `restart: always` and the named capture volume `local-webhook-tester-captures`
-(seven-day session TTL, 1,000 requests per session). Where another baselabs
-repository already runs this exact receiver, USE THE RUNNING ONE — check it
-without restarting:
+(seven-day session TTL, 1,000 requests per session). Where a receiver already
+answers on that port (the BaseLabs local cluster runs one shared WebHook Tester on
+`127.0.0.1:52871` for every repository), USE THE RUNNING ONE. Check it without
+restarting anything; it answers with its version:
 
 ```sh
-docker compose -f ops/local/webhook-tester.compose.yaml ps
+curl -fsS http://127.0.0.1:52871/api/version
 ```
 
-Create it only on a fresh machine:
+Create the Compose receiver only when nothing answers there:
 
 ```sh
 docker compose -f ops/local/webhook-tester.compose.yaml up -d
