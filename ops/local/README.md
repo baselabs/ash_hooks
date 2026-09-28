@@ -40,6 +40,13 @@ MIX_ENV=dev elixir ops/local/send-webhook.exs
 MIX_ENV=dev elixir ops/local/send-webhook.exs /path/to/payload.json
 ```
 
+To use a receiver on another loopback port (a private one for a destructive run, say), set
+`LOCAL_WEBHOOK_TESTER_PORT` for that command; the default is 52871:
+
+```sh
+LOCAL_WEBHOOK_TESTER_PORT=37524 MIX_ENV=dev elixir ops/local/send-webhook.exs
+```
+
 Each run opens a FRESH receiver session (auto-created on first POST) and signs
 with an EPHEMERAL key that is never persisted or printed. A passing run ends with
 `PASS: captured payload and signature verified (msg_...)` and prints the session's

@@ -2,6 +2,7 @@
 # Run from the repository root:  MIX_ENV=dev elixir ops/local/send-webhook.exs
 # Or send the exact contents of a local payload file:
 #   MIX_ENV=dev elixir ops/local/send-webhook.exs /path/to/payload.json
+# The receiver is on 127.0.0.1 at LOCAL_WEBHOOK_TESTER_PORT (default 52871, the kit's port).
 Mix.start()
 unless Mix.env() == :dev, do: raise("local webhook inspection requires MIX_ENV=dev")
 
@@ -13,7 +14,13 @@ Mix.Project.in_project(:ash_hooks, root, fn _ ->
 end)
 
 {:ok, _} = Application.ensure_all_started(:crypto)
-base = "http://127.0.0.1:52871"
+port =
+  case Integer.parse(System.get_env("LOCAL_WEBHOOK_TESTER_PORT", "52871")) do
+    {port, ""} when port in 1..65_535 -> port
+    _ -> raise "LOCAL_WEBHOOK_TESTER_PORT must be a TCP port number"
+  end
+
+base = "http://127.0.0.1:#{port}"
 
 # Fresh receiver session per run (AUTO_CREATE_SESSIONS creates it on first POST);
 # no shared inbox state with any other repository's dedicated session. Version-4
@@ -44,7 +51,7 @@ secret = AshHooks.Signing.generate_secret()
 id = "msg_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
 headers = AshHooks.Signing.headers(id, System.system_time(:second), payload, whsec: secret)
 
-# This standalone dev command has one literal loopback destination. It does not
+# This standalone dev command has one loopback destination (only its port is configurable). It does not
 # change application configuration or relax endpoint registration/worker checks.
 {:ok, %{status: 200}} =
   AshHooks.Http.Bounded.request(:post, url, headers, payload, validate_destination: false)
@@ -72,4 +79,4 @@ captured_headers =
 
 {:ok, %{id: ^id}} = AshHooks.Signing.verify(payload, captured_headers, secret)
 IO.puts("PASS: captured payload and signature verified (#{id})")
-IO.puts("Inbox: http://localhost:52871/s/#{session}")
+IO.puts("Inbox: http://localhost:#{port}/s/#{session}")
