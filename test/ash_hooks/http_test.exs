@@ -29,12 +29,9 @@ defmodule AshHooks.HttpTest do
         {:bind_address, ~c"127.0.0.1"},
         {:server_name, ~c"ash_hooks_test"},
         # document_root must be a CHARLIST — a binary root serves only
-        # 500s. And httpd's URL→path translation mangles backslashes
-        # (every request 500s on Windows), so hand it FORWARD slashes —
-        # file: accepts both forms on every OS; unix paths are unchanged
-        # (tri-OS rule, 2026-09-16).
-        {:server_root, String.to_charlist(String.replace(System.tmp_dir!(), "\\", "/"))},
-        {:document_root, String.to_charlist(String.replace(root, "\\", "/"))},
+        # 500s.
+        {:server_root, String.to_charlist(System.tmp_dir!())},
+        {:document_root, String.to_charlist(root)},
         {:mime_types, [{~c"json", ~c"application/json"}]}
       ])
 
