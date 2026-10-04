@@ -368,9 +368,10 @@ deprecations run two minors minimum, safety corrections ship as fixes
 
 Minimum supported versions: Elixir ~> 1.20 (OTP 28+; CI-tested on
 Erlang/OTP 28 and 29), Ash ~> 3.0, Oban ~> 2.20 (optional, outbound only).
-The package stays developer-portable across macOS, Linux, and Windows — a
-standing requirement that clone, set up, and test work on all three, kept by
-OS-agnostic code and tooling; CI runs the full suite on Linux. On Ash 3.33+ your
+The package stays developer-portable across macOS and Linux — a standing
+requirement that clone, set up, and test work on both, kept by OS-agnostic
+code and tooling; Windows developers use WSL2, which is the Linux path; CI
+runs the full suite on Linux. On Ash 3.33+ your
 application must also set Ash's required `default_string_length_count`
 config — an Ash requirement for every app compiling resources, not an
 ash_hooks one ([UPGRADING.md](UPGRADING.md)). One nuance: a fix
