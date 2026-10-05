@@ -33,6 +33,16 @@ Attach to a resource:
 Both halves are independently consumable: inbound-only consumers pull no
 queue infrastructure (ADR-0004).
 
+Multi-tenant? Declare Ash attribute multitenancy on the four resources
+(subscription, endpoint, both ledgers) and pass `:tenant` /
+`ctx[:tenant]` to every entry point — every query, write, dedup
+identity, sweep, and job arg is tenant-scoped, and a tenant-less call
+against a multitenant resource fails closed with
+`{:error, :tenant_required}` before any data access. Single-tenant
+apps change nothing. The
+[adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
+walks the ordered transition (ADR-0011).
+
 
 ## webhooks
 Webhook declarations — inbound sources and outbound events for this
@@ -70,7 +80,7 @@ resource receives, verifies, deduplicates, and handles.
 
 | Name | Type | Default | Docs |
 |------|------|---------|------|
-| [`secret`](#webhooks-inbound-secret){: #webhooks-inbound-secret .spark-required} | `any` |  | The signing-secret source: an `{M, f, a}` callback, `{:app_env, path}`, or a function returning `{:ok, secret} \| {:error, :no_webhook_secret}`. A literal binary is rejected at parse time (ADR-0005). Scope: this net catches the secret passed AS the option value; arguments of an MFA source are the consumer's own code. |
+| [`secret`](#webhooks-inbound-secret){: #webhooks-inbound-secret .spark-required} | `any` |  | The signing-secret source: an `{M, f, a}` callback, `{:app_env, path}`, a 0-arity function (app-global), or a 1-arity function (`tenant -> {:ok, secret} \| {:error, :no_webhook_secret}` — resolves the TENANT's secret on multitenant ledgers; arity dispatch on literal fns is unambiguous). A literal binary is rejected at parse time (ADR-0005). Scope: this net catches the secret passed AS the option value; arguments of an MFA source are the consumer's own code. |
 | [`provider`](#webhooks-inbound-provider){: #webhooks-inbound-provider } | `atom` |  | The provider MODULE implementing `AshHooks.Provider`. When unset, the ingress resolves `AshHooks.Provider.<Camelized(name)>` and fails closed when that module does not exist or does not implement the behaviour. |
 | [`event_id`](#webhooks-inbound-event_id){: #webhooks-inbound-event_id } | `any` |  | Extractor for the provider's external event id from the decoded payload (`payload -> {:ok, id} \| :error`). Providers without a stable id fall back to a deterministic content-hash identity — never a fresh UUID (ADR-0003). |
 | [`replay_window_seconds`](#webhooks-inbound-replay_window_seconds){: #webhooks-inbound-replay_window_seconds } | `pos_integer` |  | Replay-protection window for providers whose scheme carries a trustworthy timestamp (e.g. HubSpot v3). Providers without timestamps (e.g. ComplyCube) MUST leave this unset — the verifier rejects a window whose provider declares no timestamp header (`AshHooks.Provider.timestamp_header/1` returns nil). The window value is passed to the provider's `verify_signature/3` in the context map for scheme-specific enforcement. |

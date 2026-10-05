@@ -65,12 +65,13 @@ defmodule AshHooks.MixProject do
           ~r/^AshHooks\.Webhooks\.Inbound$/,
           ~r/^AshHooks\.Webhooks\.Outbound$/,
           ~r/AshHooks\.Webhooks\.(Inbound|Outbound)\.Options/,
-          ~r/AshHooks\.CountingProvider/,
-          ~r/AshHooks\.TestAstTripwire/,
-          ~r/AshHooks\.TestPerConnectionProvider/,
-          ~r/AshHooks\.Endpoint\.Url/,
-          ~r/AshHooks\.Endpoint\.SecretRef/,
-          ~r/AshHooks\.InboundDelivery\.Payload/,
+          ~r/^AshHooks\.CountingProvider/,
+          ~r/^AshHooks\.TestAstTripwire/,
+          ~r/^AshHooks\.TestPerConnectionProvider/,
+          ~r/^AshHooks\.TestPostgres\.Repo/,
+          ~r/^AshHooks\.Endpoint\.Url/,
+          ~r/^AshHooks\.Endpoint\.SecretRef/,
+          ~r/^AshHooks\.InboundDelivery\.Payload/,
           ~r/Mix\.Tasks\.AshHooks\.Install/
         ]
       ]
@@ -119,7 +120,13 @@ defmodule AshHooks.MixProject do
         # ships in hex metadata, never constrains consumers. ETS was probed
         # and cannot express storage-level uniqueness or conditional-update
         # atomicity (read-then-write on both paths).
-        {:ash_sqlite, "~> 0.2.17", only: [:dev, :test], runtime: false}
+        {:ash_sqlite, "~> 0.2.17", only: [:dev, :test], runtime: false},
+        # The AshPostgres consumer leg (CI's postgres job): exercises the
+        # transformers against a uuid_v7-keyed, sole-store-payload consumer
+        # shape — the gaps sqlite alone could not surface. Dev/test-only;
+        # the :postgres-tagged suite is excluded unless
+        # ASH_HOOKS_POSTGRES=1 starts the repo.
+        {:ash_postgres, "~> 2.0", only: [:dev, :test], runtime: false}
       ]
   end
 

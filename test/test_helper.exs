@@ -24,4 +24,27 @@ Application.put_env(:ash_hooks, AshHooks.Test.Repo,
 
 {:ok, _} = AshHooks.Test.Repo.start_link()
 
-ExUnit.start(after_suite: [fn _stats -> File.rm(db_path) end])
+# The AshPostgres consumer leg: ASH_HOOKS_POSTGRES=1 starts the PG repo
+# and includes the :postgres-tagged suite (CI's postgres job — a Linux
+# runner with a Postgres service; locally, a BaseLabs ephemeral-area
+# Postgres pointed at by the env below). Without the flag the suite is
+# excluded and ordinary dev/test runs need no Postgres at all.
+postgres? = System.get_env("ASH_HOOKS_POSTGRES") == "1"
+
+if postgres? do
+  Application.put_env(:ash_hooks, AshHooks.TestPostgres.Repo,
+    hostname: System.get_env("ASH_HOOKS_TEST_PG_HOST", "localhost"),
+    port: String.to_integer(System.get_env("ASH_HOOKS_TEST_PG_PORT", "5432")),
+    username: System.get_env("ASH_HOOKS_TEST_PG_USER", "postgres"),
+    password: System.get_env("ASH_HOOKS_TEST_PG_PASSWORD", "postgres"),
+    database: System.get_env("ASH_HOOKS_TEST_PG_DATABASE", "ash_hooks_test"),
+    pool_size: 5
+  )
+
+  {:ok, _} = AshHooks.TestPostgres.Repo.start_link()
+end
+
+ExUnit.start(
+  exclude: (postgres? && []) || [:postgres],
+  after_suite: [fn _stats -> File.rm(db_path) end]
+)

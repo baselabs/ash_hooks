@@ -4,7 +4,16 @@ defmodule AshHooks.Dispatcher do
   endpoint → a durable per-endpoint delivery row (+ an enqueue handoff),
   with per-endpoint isolation — the outbound twin of `AshHooks.Ingress`.
 
-      {:ok, event} = AshHooks.Event.new(type: :order_paid, payload: body)
+      {:ok, event} =
+        AshHooks.Event.new(
+          type: :order_paid,
+          payload: body,
+          # DETERMINISTIC: derived from the artifact's stable id, so a
+          # re-fired producer matches the existing delivery row (the
+          # {endpoint_id, event_uuid} dedup) instead of fanning out a
+          # duplicate POST per sweep
+          id: "msg_order-" <> order.id
+        )
 
       AshHooks.dispatch(Order, :order_paid, event, enqueue: {MyRuntime, :enqueue})
 
@@ -204,24 +213,80 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp upsert_row(deliv_mod, event, subscription, endpoint, entity, tenant) do
-    id = Ash.UUID.generate()
+    input =
+      %{
+        event_uuid: event.id,
+        event_type: event.type,
+        endpoint_id: endpoint.id,
+        subscription_id: subscription.id,
+        # the EFFECTIVE mode is frozen onto the row at creation — the
+        # delivery runtime signs from the row, never re-derives it
+        signing_mode: subscription.signing_mode || entity.signing_mode || :standard
+      }
+      # the exact-bytes column's name is consumer-configurable (H1)
+      |> Map.put(AshHooks.Info.payload_attribute(deliv_mod), event.payload)
 
-    input = %{
-      id: id,
-      event_uuid: event.id,
-      event_type: event.type,
-      payload: event.payload,
-      endpoint_id: endpoint.id,
-      subscription_id: subscription.id,
-      # the EFFECTIVE mode is frozen onto the row at creation — the
-      # delivery runtime signs from the row, never re-derives it
-      signing_mode: subscription.signing_mode || entity.signing_mode || :standard
-    }
+    if AshHooks.Info.writable_id?(deliv_mod) do
+      upsert_with_supplied_id(deliv_mod, input, tenant)
+    else
+      # H2: a non-writable PK (uuid_v7_primary_key & friends) cannot
+      # accept :id, so classification pre-reads the identity instead.
+      # Exact in every sequential case (provider redeliveries, producer
+      # re-fires) and whenever the primary read can see the existing row
+      # (a base-filtered read that hides it classifies :created). A
+      # misclassification only widens the enqueue seam: the row itself
+      # stays effect-once (the storage upsert), but the send path is
+      # at-least-once BY DESIGN (mark_sending re-drives stranded :sending
+      # rows — ADR-0008; receivers dedup by webhook-id, the SW
+      # contract), so a duplicate ENQUEUE can duplicate a send. The
+      # enqueue fence belongs to the configured enqueuer: the default
+      # Oban enqueuer's endpoint_id+event_uuid uniqueness, or the
+      # consumer's own dedup for a custom `enqueue:`.
+      upsert_with_pre_read(deliv_mod, input, tenant)
+    end
+  end
+
+  defp upsert_with_supplied_id(deliv_mod, input, tenant) do
+    id = Ash.UUID.generate()
+    input = Map.put(input, :id, id)
 
     case with_transient_retry(fn ->
            Ash.create(deliv_mod, input, action: :dispatch, authorize?: false, tenant: tenant)
          end) do
       {:ok, row} -> {:ok, row, if(row.id == id, do: :created, else: :duplicate)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp upsert_with_pre_read(deliv_mod, input, tenant) do
+    case fetch_delivery(deliv_mod, input.endpoint_id, input.event_uuid, tenant) do
+      {:ok, row} -> {:ok, row, :duplicate}
+      :missing -> create_pre_read_row(deliv_mod, input, tenant)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp create_pre_read_row(deliv_mod, input, tenant) do
+    with_transient_retry(fn ->
+      Ash.create(deliv_mod, input, action: :dispatch, authorize?: false, tenant: tenant)
+    end)
+    |> case do
+      {:ok, row} -> {:ok, row, :created}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_delivery(deliv_mod, endpoint_id, event_uuid, tenant) do
+    result =
+      with_transient_retry(fn ->
+        deliv_mod
+        |> Ash.Query.filter(endpoint_id == ^endpoint_id and event_uuid == ^event_uuid)
+        |> Ash.read_one(authorize?: false, tenant: tenant)
+      end)
+
+    case result do
+      {:ok, nil} -> :missing
+      {:ok, row} -> {:ok, row}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -396,11 +461,10 @@ defmodule AshHooks.Dispatcher do
     case with_transient_retry(fn ->
            Ash.get(endpoint_mod, subscription.endpoint_id, authorize?: false, tenant: tenant)
          end) do
-      {:ok, %{status: :enabled} = endpoint} ->
-        {:match, endpoint}
-
-      {:ok, _disabled} ->
-        :skip
+      # the ONE enabled-check (H4): the injected status attribute or the
+      # consumer-mapped switch — exactly one attribute decides
+      {:ok, endpoint} ->
+        if AshHooks.Endpoint.enabled?(endpoint), do: {:match, endpoint}, else: :skip
 
       {:error, %Ash.Error.Invalid{errors: reasons} = error} ->
         if Enum.all?(reasons, &is_struct(&1, Ash.Error.Query.NotFound)) do
@@ -589,7 +653,11 @@ defmodule AshHooks.Dispatcher do
   # a seam that needs the ORIGINAL dispatch-time metadata must tolerate
   # that (the row never stored it).
   defp row_event(row) do
-    Event.new(type: row.event_type, payload: row.payload, id: row.event_uuid)
+    Event.new(
+      type: row.event_type,
+      payload: Map.get(row, AshHooks.Info.payload_attribute(row.__struct__)),
+      id: row.event_uuid
+    )
   end
 
   defp reconcile_result(row, status, error) do

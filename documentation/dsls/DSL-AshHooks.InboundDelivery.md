@@ -24,7 +24,11 @@ declared scope slots, and the fenced action primitives (`:ingest`,
 
 The uniqueness identity must be backed by a REAL unique index on the
 consumer's data layer — storage-level uniqueness is the idempotency
-primitive, and the fenced machine's crash-safety rests on it. Scope slots
+primitive, and the fenced machine's crash-safety rests on it (PINNED by
+test: 8 simultaneous ingests of one event id converge to exactly one
+row and one `:created`; the same race on a table without the index
+fails closed with a loud storage error —
+`test/ash_hooks/ingress_race_test.exs`). Scope slots
 must be non-nullable attributes: a nullable slot would make `nil` scope
 values distinct on SQL unique indexes and silently break dedup for
 scope-less redeliveries.
@@ -36,6 +40,12 @@ current token under an unexpired lease) live in the query filters that
 (probe 2026-08-21: `error()`-in-expression atomics are inexpressible on
 sqlite, and action-level `change filter(...)` is silently dropped on the
 atomic path).
+
+READ EXPOSURE: this ledger stores RAW provider payloads (third-party
+PII), event ids, and scope keys. The package injects NO read policies —
+read access is governed ENTIRELY by the consumer's own domain policies.
+Mount the ledger behind policies that deny reads by default and open
+them explicitly (README → Security has the recipe).
 
 
 ## inbound_delivery

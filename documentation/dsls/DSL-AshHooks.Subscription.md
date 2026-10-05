@@ -19,14 +19,29 @@ The extension injects: `event_types` (`{:array, :string}`, default
 `signing_mode` (`:legacy | :dual | :standard`, NULLABLE — the outbound
 declaration's mode applies when unset: ADR-0002's per-subscription mode).
 
-Matching is exact strings plus the bare `"*"` entry, evaluated IN
+## Typing contract
+
+Events carry canonical STRING types (`AshHooks.Event` canonicalizes at
+construction). `event_types` rows match by exact string or the bare
+wildcard — `"*"` / `:"*"` — with entries normalized via `to_string/1`,
+so a consumer-typed register (`{:array, :atom}`, e.g. a closed
+`one_of:` enum) matches identically to the injected string array: same
+wildcard posture, same exact-match semantics, either representation.
+A closed-enum register is declared by REDECLARING the attribute — your
+own `attribute(:event_types, {:array, :atom}, constraints: [...])`
+replaces the injection entirely (`add_new_attribute` stands down), so
+your enum, your `min_length`, and your own default apply; the wildcard
+default `["*"]` is NOT forced on you.
+
+Matching is exact strings plus the bare wildcard entry, evaluated IN
 MEMORY by the dispatcher after reading through the consumer's primary
 read action — no array-containment SQL, so the semantics are identical
 on every data layer.
 
-The package injects NO read action: read surfaces are the consumer's to
-open (the default-deny floor, ADR-0005) — the dispatcher's internal
-reads run unauthorized, the inbound reaper's precedent.
+The package injects NO read action and NO read policies: read surfaces
+are the consumer's to open through their own domain policies — the
+dispatcher's internal reads run unauthorized, the inbound reaper's
+precedent (ADR-0005's consumer-governed posture).
 
 
 ## subscription

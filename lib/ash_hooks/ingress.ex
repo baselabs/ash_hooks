@@ -148,11 +148,8 @@ defmodule AshHooks.Ingress do
   end
 
   defp ingest_delivery!(resource, env, tenant) do
-    id = Ash.UUID.generate()
-
     input =
       %{
-        id: id,
         provider: env.name,
         external_event_id: env.external_event_id,
         external_event_type: env.type_string,
@@ -161,23 +158,84 @@ defmodule AshHooks.Ingress do
       }
       |> Map.merge(env.scope)
 
+    if AshHooks.Info.writable_id?(resource) do
+      ingest_with_supplied_id(resource, input, env, tenant)
+    else
+      # H2: a non-writable PK (uuid_v7_primary_key & friends) cannot
+      # accept :id, so classification pre-reads the unique_ingest
+      # identity instead. Exact in every sequential case (provider
+      # redeliveries) and whenever the primary read can see the existing
+      # row (a base-filtered read that hides it classifies :created).
+      # handle_event stays effect-once under any misclassification: the
+      # claim fence (a terminal or leased row refuses the second claim),
+      # beside the storage upsert.
+      ingest_with_pre_read(resource, input, env, tenant)
+    end
+  end
+
+  defp ingest_with_supplied_id(resource, input, env, tenant) do
+    id = Ash.UUID.generate()
+    input = Map.put(input, :id, id)
+
     with_transient_retry(fn ->
       case Ash.create(resource, input, action: :ingest, authorize?: false, tenant: tenant) do
         {:ok, delivery} ->
-          created? = delivery.id == id
-
-          :telemetry.execute(
-            [:ash_hooks, :ingress, :dedup],
-            %{},
-            %{source: env.name, outcome: if(created?, do: :created, else: :duplicate)}
-          )
-
-          {:ok, created?, delivery}
+          classify_and_emit(env, delivery.id == id, delivery)
 
         {:error, error} ->
           {:error, error}
       end
     end)
+  end
+
+  defp ingest_with_pre_read(resource, input, env, tenant) do
+    case fetch_ingested(resource, env, tenant) do
+      {:ok, delivery} -> classify_and_emit(env, false, delivery)
+      :missing -> pre_read_create(resource, input, env, tenant)
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp pre_read_create(resource, input, env, tenant) do
+    with_transient_retry(fn ->
+      Ash.create(resource, input, action: :ingest, authorize?: false, tenant: tenant)
+    end)
+    |> case do
+      {:ok, delivery} -> classify_and_emit(env, true, delivery)
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  # the pre-read matches the FULL unique_ingest identity in SQL (provider
+  # + external_event_id + every scope slot): filtering the scope in
+  # memory would read every sibling scope's row for the same external id
+  # into the process — scope slots exist precisely because external ids
+  # repeat across accounts/connections
+  defp fetch_ingested(resource, env, tenant) do
+    result =
+      with_transient_retry(fn ->
+        resource
+        |> Ash.Query.do_filter(
+          [provider: env.name, external_event_id: env.external_event_id] ++ Map.to_list(env.scope)
+        )
+        |> Ash.read_one(authorize?: false, tenant: tenant)
+      end)
+
+    case result do
+      {:ok, nil} -> :missing
+      {:ok, row} -> {:ok, row}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp classify_and_emit(env, created?, delivery) do
+    :telemetry.execute(
+      [:ash_hooks, :ingress, :dedup],
+      %{},
+      %{source: env.name, outcome: if(created?, do: :created, else: :duplicate)}
+    )
+
+    {:ok, created?, delivery}
   end
 
   @doc """

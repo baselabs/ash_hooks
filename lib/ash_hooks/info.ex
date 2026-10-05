@@ -22,4 +22,24 @@ defmodule AshHooks.Info do
   def outbound(resource, event) do
     webhooks(resource) |> Enum.find(&(is_struct(&1, AshHooks.Outbound) and &1.name == event))
   end
+
+  @doc """
+  The configured exact-bytes payload attribute name on an
+  `AshHooks.OutboundDelivery` resource (default `:payload`).
+  """
+  @spec payload_attribute(module()) :: atom()
+  def payload_attribute(resource),
+    do: Extension.get_opt(resource, [:outbound_delivery], :payload_attribute, :payload)
+
+  @doc """
+  Whether the compiled `:dispatch`/`:ingest` action accepts a
+  caller-supplied `:id` (the runtimes classify created/duplicate by id
+  comparison in that shape; otherwise by an identity pre-read — H2).
+  Reads the accept-list transformer's PERSISTED decision, so the runtime
+  and the compiled action can never disagree (composite and non-`:id`
+  primary keys make a re-derived predicate diverge from the accept list).
+  """
+  @spec writable_id?(module()) :: boolean()
+  def writable_id?(resource),
+    do: Extension.get_persisted(resource, :id_accepted?) == true
 end

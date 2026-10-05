@@ -15,6 +15,15 @@ defmodule AshHooks.Event do
       absent; a caller-supplied id that is non-binary, empty, or carries a
       `.` is rejected (the signing path enforces the same constraint —
       this keeps the rejection at the boundary, before anything persists).
+
+      DERIVE THE ID DETERMINISTICALLY from your artifact's stable id
+      (e.g. `id: "msg_\#{alert.id}"`) whenever a producer can re-fire for
+      the same underlying row — upsert-deduped after-hooks re-firing per
+      sweep is a steady state, not an edge, and a GENERATED id makes every
+      re-fire a NEW event (`{endpoint_id, event_uuid}` dedup never
+      matches): one duplicate POST per sweep, per endpoint. A deterministic
+      id is what makes the dispatcher's `:duplicate` classification (and
+      the receiver's `webhook-id` dedup) hold across re-fires.
     * `type` — atom or binary, canonicalized to a STRING at construction:
       strings are the single representation the subscription filter, the
       delivery ledger, and the outbound DSL name compare on.

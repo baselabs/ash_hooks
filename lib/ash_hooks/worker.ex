@@ -50,7 +50,15 @@ defmodule AshHooks.Worker do
       snoozes extend it, the ROW's ceiling governs dead-letter).
     * `:delivery_max_attempts` (default 10), `:base_backoff_seconds` (2),
       `:max_backoff_seconds` (3600), `:retry_after_cap_seconds` (86_400) —
-      the row-driven retry policy.
+      the row-driven retry policy. The `Retry-After` CAP is
+      receiver-held-state budget: a receiver returning a large
+      `Retry-After` holds its delivery row AND its Oban job for up to the
+      cap per attempt (the 86,400 default = up to 24 hours per attempt on
+      one header; a receiver honoring `Retry-After` deliberately asks for
+      exactly that). Lower the cap when the chosen posture is
+      exhaust-fast (a wedged receiver dead-letters at the ceiling instead
+      of holding state) — the cap clamps ONLY `Retry-After`, never the
+      backoff ladder.
 
   Uniqueness (verified against deps/oban 2.23.1, ADR-0007):
   `fields: [:args], keys: [:endpoint_id, :event_uuid], period: :infinity,

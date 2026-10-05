@@ -6,6 +6,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added (additive options — non-breaking per ADR-0010)
+
+- **`payload_attribute` on the `outbound_delivery` section.** The exact
+  payload-bytes column's name is configurable (default `:payload`):
+  rename it when the consumer's domain reserves `payload` for its own
+  sole payload store. The injected column, the `:dispatch` accept list,
+  and every signing/sending read follow the configured name; a name
+  colliding with another injected field fails closed at compile. From
+  the first-serious-consumer integration (its arch guard reserves
+  `payload` as the sole store's attribute name and the injected column
+  collided).
+- **`prune_action :none` on the `outbound_delivery` section.** Opt out
+  of the retention `destroy :prune` action's injection for append-only
+  audit ledgers (no destroy action exists on the resource at all);
+  `AshHooks.Delivery.prune/2` then fails loud with a named error —
+  deletion is the consumer's own surface. Default `:destroy` is
+  unchanged.
+- **`status_attribute` / `enabled_values` / `disabled_value` on the new
+  `endpoint` section.** Map the durable enable/disable onto the
+  consumer's OWN switch (e.g. an `active` boolean): `status` is then
+  not injected — one switch, so the consumer's off switch and the
+  package's can never silently disagree. The dispatcher's skip and the
+  send path's dead-letter both route through `AshHooks.Endpoint.enabled?/1`;
+  the 410 auto-disable flips the mapped attribute. The mapped attribute
+  must be consumer-declared (fail-closed at compile).
+- **A Linux CI leg with a Postgres service** exercising the transformers
+  against an AshPostgres, uuid_v7-keyed, sole-store-payload consumer
+  shape (`postgres` job; the suite is env-gated by `ASH_HOOKS_POSTGRES=1`
+  and excluded from ordinary dev runs). `ash_postgres` is a dev/test-only
+  dependency — never ships, never constrains consumers.
+
+### Fixed
+
+- **`:dispatch`/`:ingest` no longer accept `:id` on resources whose
+  primary key is a non-writable `:id`** (e.g. `uuid_v7_primary_key`):
+  Ash's `ValidateAccept` raised at compile on exactly that consumer
+  shape, making the extensions unadoptable without replacing the PK.
+  The accept lists carry `:id` only when the PK is a writable `:id`
+  (the package-injected default — byte-identical classification); the
+  transformer's decision is persisted and the runtimes read it back, so
+  the compiled action and the classification path can never disagree
+  (composite and non-`:id` primary keys included). For the non-writable
+  shape, created/duplicate classification pre-reads the unique identity
+  instead: exact in every sequential case (provider redeliveries,
+  producer re-fires) and wherever the primary read can see the existing
+  row (a base-filtered read that hides it classifies `:created`). Under
+  a misclassification the row itself stays effect-once (the storage
+  upsert) and a double send stays impossible (the `mark_sending` CAS /
+  the inbound claim fence); the enqueue seam is the configured
+  enqueuer's own fence — the default Oban enqueuer's
+  endpoint_id+event_uuid job uniqueness, or the consumer's own dedup
+  for a custom `enqueue:`. ADR-0010 note: the injected action accept
+  lists are covered surface — this is a behavior correction (the
+  previous accept list required a writable PK that consumers with
+  generated PKs cannot provide), not a removal; no working consumer can
+  regress (the shape did not compile).
+- **Covered-surface tightening alongside the H4 mapping: the send path
+  dead-letters an endpoint whose status is anything other than
+  `:enabled`** (previously only an exact `:disabled` dead-lettered, so a
+  consumer-redeclared `status` with extra values delivered). The
+  dispatcher's skip and the send path now route through the ONE
+  `AshHooks.Endpoint.enabled?/1` check — fail-closed by design.
+- **`AshHooks.Subscription.matches?/2` normalizes `event_types` entries
+  with `to_string/1`.** An atom-typed register (`{:array, :atom}` — a
+  closed enum) previously matched NOTHING: zero deliveries, no error.
+  Atom and string entries (and the `"*"`/`:"*"` wildcard in either
+  representation) now match identically. Consumers redeclaring
+  `event_types` keep their own constraints — the injected `["*"]`
+  default is not forced on them.
+
 ### Changed
 
 - **CI is Linux-only; the macOS and Windows build legs are removed.**
@@ -15,6 +85,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the workflow's pinned GitHub Actions (checkout, cache, upload-artifact)
   moved off the Node 20 runtime to their current releases. No library
   code changed.
+- **The DSL cheat-sheet drift gate is no longer vacuous.** The package
+  leg's `mix spark.cheat_sheets --check` ran without an extension list
+  and checked nothing; it now passes the five extensions explicitly, so
+  a stale `documentation/dsls/` actually fails the build (the sheets in
+  this release are regenerated under that invocation).
+- **Dev/test `mint` bumped 1.10.1 → 1.11.0** (EEF-CVE-2026-94194 /
+  -91043 / -92103, via the dev-only igniter→req→finch tree; never ships
+  in the package). `ash_postgres` 2.13.1 is added dev/test-only for the
+  Postgres leg above.
+
+### Docs
+
+- **Policy obligation at the extension site** (`OutboundDelivery`,
+  `Endpoint` moduledocs): the injected write actions are named and the
+  consumer-owned policy obligation is stated loudly — the inbound half's
+  "you write your own" posture, mirrored outbound. The seven delivery
+  actions plus the endpoint's `:disable`.
+- **Deterministic `Event.id` guidance** (`Event`, `Dispatcher`
+  moduledocs): derive the id from the artifact's stable id — a generated
+  id turns every producer re-fire into a duplicate POST per sweep.
+- **The adapter-author contract** (`AshHooks.Http` moduledoc): headers
+  must be a LIST of `{name, value}` tuples (a map silently loses
+  `Retry-After`), and the resolve-once/connect-pinned obligation that
+  closes the DNS-rebinding TOCTOU is the adapter's, with the driver's
+  send-time check as the residual.
+- **`retry_after_cap_seconds` semantics** (`Worker` moduledoc): the
+  86,400 default is receiver-held-state budget — up to 24 hours per
+  attempt on one header; lower it for an exhaust-fast posture.
+- **The 410 auto-disable posture** (`Delivery` moduledoc): an
+  unattributed system bulk write by design (no actor in a versioned
+  register), no built-in tenant-facing signal — a receiver that answers
+  410 once goes dark silently unless the app wires the
+  `[:ash_hooks, :delivery, :disable]` telemetry event or accepts the
+  posture in writing.
 
 ## 1.2.1 — 2026-09-24
 

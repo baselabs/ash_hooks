@@ -8,7 +8,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
 
   alias Ash.Resource.Builder
   alias Ash.Resource.Change.Builtins
-  alias Spark.Dsl.Transformer
+  alias Spark.Dsl.{Extension, Transformer}
 
   def before?(Ash.Resource.Transformers.DefaultAccept), do: true
   def before?(Ash.Resource.Transformers.CacheActionInputs), do: true
@@ -16,16 +16,43 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
   def before?(Ash.Resource.Transformers.RequireUniqueActionNames), do: true
   def before?(_), do: false
 
+  # the :dispatch accept list keys off the resource's PK shape (H2) — the
+  # fields transformer must have injected (or the consumer declared) it
+  # first; Spark's topological order does NOT follow the extension's
+  # list order
+  def after?(AshHooks.OutboundDelivery.Transformers.AddDeliveryFields), do: true
+  def after?(_), do: false
+
   def transform(dsl_state) do
-    with {:ok, prune} <- build_prune(),
-         {:ok, dispatch} <- build_dispatch(),
+    payload_attribute =
+      Extension.get_opt(dsl_state, [:outbound_delivery], :payload_attribute, :payload)
+
+    prune_action = Extension.get_opt(dsl_state, [:outbound_delivery], :prune_action, :destroy)
+
+    with {:ok, dispatch} <- build_dispatch(payload_attribute, writable_id_pk?(dsl_state)),
          {:ok, mark_enqueue_failed} <- build_mark_enqueue_failed(),
          {:ok, requeue} <- build_requeue(),
          {:ok, dsl_state} <- add(dsl_state, dispatch),
          {:ok, dsl_state} <- add(dsl_state, mark_enqueue_failed) do
-      with {:ok, dsl_state} <- add(dsl_state, prune) do
-        add(dsl_state, requeue)
-      end
+      # the accept-list decision is PERSISTED for the runtime (H2): the
+      # Dispatcher reads the SAME answer, never a re-derived predicate
+      # that could disagree with the compiled action (composite PKs and
+      # non-:id PKs make naive ":id exists and is writable" diverge)
+      dsl_state = Transformer.persist(dsl_state, :id_accepted?, writable_id_pk?(dsl_state))
+
+      add_rest(dsl_state, prune_action, requeue)
+    end
+  end
+
+  # :none = the append-only ledger opt-out: NO destroy action exists on
+  # the resource (an arch pin refusing :destroy stays green), and the
+  # prune hook fails loud at runtime
+  defp add_rest(dsl_state, :none, requeue), do: add(dsl_state, requeue)
+
+  defp add_rest(dsl_state, _destroy, requeue) do
+    with {:ok, prune} <- build_prune(),
+         {:ok, dsl_state} <- add(dsl_state, prune) do
+      add(dsl_state, requeue)
     end
   end
 
@@ -38,24 +65,41 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
   end
 
   # No-touch upsert: on conflict nothing is updated — the surviving row is
-  # returned, so created/duplicate classification compares ids. Retrying
-  # deliveries mutate rows only through the runtime's gated updates.
-  defp build_dispatch do
+  # returned, so created/duplicate classification compares ids (when the
+  # PK is writable; otherwise the Dispatcher pre-reads the identity — H2).
+  # Retrying deliveries mutate rows only through the runtime's gated
+  # updates.
+  defp build_dispatch(payload_attribute, id_accepted) do
     Builder.build_action(:create, :dispatch,
       upsert?: true,
       upsert_identity: :unique_delivery,
       upsert_fields: [],
-      accept: [
-        :id,
-        :event_uuid,
-        :event_type,
-        :payload,
-        :endpoint_id,
-        :subscription_id,
-        :signing_mode
-      ]
+      accept:
+        maybe_accept_id(id_accepted, [
+          :event_uuid,
+          :event_type,
+          payload_attribute,
+          :endpoint_id,
+          :subscription_id,
+          :signing_mode
+        ])
     )
   end
+
+  # H2: `:id` rides the accept list exactly when the resource HAS a
+  # writable `:id` attribute — the shapes that always worked (the
+  # package-injected PK; a consumer's writable `:id` beside a differently
+  # named PK) keep it, and only the shapes Ash's ValidateAccept rejects
+  # (uuid_v7_primary_key & other non-writable ids) drop it.
+  defp writable_id_pk?(dsl_state) do
+    case dsl_state |> Transformer.get_entities([:attributes]) |> Enum.find(&(&1.name == :id)) do
+      %{writable?: true} -> true
+      _ -> false
+    end
+  end
+
+  defp maybe_accept_id(true, accept), do: [:id | accept]
+  defp maybe_accept_id(false, accept), do: accept
 
   defp build_mark_enqueue_failed do
     Builder.build_action(:update, :mark_enqueue_failed,

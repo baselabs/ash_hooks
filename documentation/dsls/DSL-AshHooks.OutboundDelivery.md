@@ -11,6 +11,12 @@ delivery" (the outbound twin of `AshHooks.InboundDelivery`).
       data_layer: AshSqlite.DataLayer,
       extensions: [AshHooks.OutboundDelivery]
 
+    # optional: rename the exact-bytes column when `payload` is
+    # reserved by the consumer's domain (e.g. a sole payload store)
+    outbound_delivery do
+      payload_attribute :event_bytes
+    end
+
 The extension injects the delivery fields (`event_uuid` — the webhook
 id, immutable across retries; the exact `payload` bytes to sign;
 `endpoint_id`/`subscription_id`; the lifecycle `status`; `attempts`;
@@ -35,6 +41,44 @@ as arguments of the runtime's machine primitives (`:mark_succeeded`,
 response headers are stored on this resource at all: the
 stored-header allowlist floor holds by not persisting headers beyond
 the bounded snippet (ADR-0005).
+
+READ EXPOSURE: rows carry the exact payload bytes you dispatched.
+The package injects NO read policies — read access is governed ENTIRELY
+by the consumer's own domain policies (README → Security).
+
+POLICY OBLIGATION (write side — you write your own policies here too):
+the package injects WRITE actions, not the authorization around them.
+Under a permissive base policy fragment (an authorize-if-active-member
+fallback), every actor could otherwise reach the machine primitives —
+mark a delivery succeeded (suppressing a real send), dead-letter one,
+requeue, or prune the ledger. The injected write actions on THIS
+resource: `:dispatch`, `:mark_enqueue_failed`, `:requeue`, `:prune`
+(the retention destroy — omittable via `prune_action :none`),
+`:mark_sending`, `:mark_succeeded`, `:mark_send_failed`. Cover each
+with an action-specific policy (the runtime's internal calls run
+`authorize?: false` and never consult them), or ensure no actor-facing
+surface (json_api/graphql/code_interface/admin) exposes the resource.
+The runtime writes ONLY through these actions — a policy per action is
+the complete seam.
+
+
+## outbound_delivery
+Configuration of this resource as the outbound delivery ledger.
+
+
+
+
+
+
+
+### Options
+
+| Name | Type | Default | Docs |
+|------|------|---------|------|
+| [`payload_attribute`](#outbound_delivery-payload_attribute){: #outbound_delivery-payload_attribute } | `atom` | `:payload` | The attribute name for the exact payload bytes the dispatcher persists and the delivery runtime signs and sends (default `:payload`). Rename it when the consumer's domain reserves `payload` for its own sole payload store: the injected column, the `:dispatch` accept list, and every signing/sending read follow the configured name. Must not collide with another injected delivery field (fail-closed at compile). |
+| [`prune_action`](#outbound_delivery-prune_action){: #outbound_delivery-prune_action } | `:destroy \| :none` | `:destroy` | Whether the retention `destroy :prune` action is injected (default `:destroy`). Set `:none` on an append-only audit ledger — no destroy action exists on the resource at all, and `AshHooks.Delivery.prune/2` fails loud with a named error: deletion is then the consumer's own surface. |
+
+
 
 
 

@@ -8,6 +8,12 @@ defmodule AshHooks.OutboundDelivery do
         data_layer: AshSqlite.DataLayer,
         extensions: [AshHooks.OutboundDelivery]
 
+      # optional: rename the exact-bytes column when `payload` is
+      # reserved by the consumer's domain (e.g. a sole payload store)
+      outbound_delivery do
+        payload_attribute :event_bytes
+      end
+
   The extension injects the delivery fields (`event_uuid` — the webhook
   id, immutable across retries; the exact `payload` bytes to sign;
   `endpoint_id`/`subscription_id`; the lifecycle `status`; `attempts`;
@@ -36,6 +42,21 @@ defmodule AshHooks.OutboundDelivery do
   READ EXPOSURE: rows carry the exact payload bytes you dispatched.
   The package injects NO read policies — read access is governed ENTIRELY
   by the consumer's own domain policies (README → Security).
+
+  POLICY OBLIGATION (write side — you write your own policies here too):
+  the package injects WRITE actions, not the authorization around them.
+  Under a permissive base policy fragment (an authorize-if-active-member
+  fallback), every actor could otherwise reach the machine primitives —
+  mark a delivery succeeded (suppressing a real send), dead-letter one,
+  requeue, or prune the ledger. The injected write actions on THIS
+  resource: `:dispatch`, `:mark_enqueue_failed`, `:requeue`, `:prune`
+  (the retention destroy — omittable via `prune_action :none`),
+  `:mark_sending`, `:mark_succeeded`, `:mark_send_failed`. Cover each
+  with an action-specific policy (the runtime's internal calls run
+  `authorize?: false` and never consult them), or ensure no actor-facing
+  surface (json_api/graphql/code_interface/admin) exposes the resource.
+  The runtime writes ONLY through these actions — a policy per action is
+  the complete seam.
   """
 
   @statuses [
@@ -53,7 +74,41 @@ defmodule AshHooks.OutboundDelivery do
   @spec statuses() :: list(atom())
   def statuses, do: @statuses
 
+  @payload_attribute %Spark.Dsl.Section{
+    name: :outbound_delivery,
+    describe: """
+    Configuration of this resource as the outbound delivery ledger.
+    """,
+    schema: [
+      payload_attribute: [
+        type: :atom,
+        default: :payload,
+        doc: """
+        The attribute name for the exact payload bytes the dispatcher
+        persists and the delivery runtime signs and sends (default
+        `:payload`). Rename it when the consumer's domain reserves
+        `payload` for its own sole payload store: the injected column,
+        the `:dispatch` accept list, and every signing/sending read
+        follow the configured name. Must not collide with another
+        injected delivery field (fail-closed at compile).
+        """
+      ],
+      prune_action: [
+        type: {:in, [:destroy, :none]},
+        default: :destroy,
+        doc: """
+        Whether the retention `destroy :prune` action is injected
+        (default `:destroy`). Set `:none` on an append-only audit ledger
+        — no destroy action exists on the resource at all, and
+        `AshHooks.Delivery.prune/2` fails loud with a named error:
+        deletion is then the consumer's own surface.
+        """
+      ]
+    ]
+  }
+
   use Spark.Dsl.Extension,
+    sections: [@payload_attribute],
     transformers: [
       AshHooks.OutboundDelivery.Transformers.AddDeliveryFields,
       AshHooks.OutboundDelivery.Transformers.AddDeliveryIdentity,

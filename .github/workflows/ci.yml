@@ -108,6 +108,53 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix test
 
+  # The AshPostgres consumer leg: the transformers exercised against a
+  # uuid_v7-keyed, sole-store-payload consumer shape on real Postgres —
+  # the sqlite substrate could not surface the H1/H2 collisions upstream,
+  # and this leg is the mechanical guarantee they stay fixed. Linux-only
+  # (the CI topology rule); the suite is env-gated
+  # (ASH_HOOKS_POSTGRES=1) so ordinary dev runs need no Postgres.
+  postgres:
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+      ASH_HOOKS_POSTGRES: "1"
+      ASH_HOOKS_TEST_PG_HOST: localhost
+      ASH_HOOKS_TEST_PG_PORT: "5432"
+      ASH_HOOKS_TEST_PG_USER: postgres
+      ASH_HOOKS_TEST_PG_PASSWORD: postgres
+      ASH_HOOKS_TEST_PG_DATABASE: ash_hooks_test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ash_hooks_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          elixir-version: "1.20.4"
+          otp-version: "28"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            deps
+            _build
+          key: mix-pg-1.20.4-28-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      - run: mix hex.audit
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+
   # CI is Linux-only (owner direction, 2026-09-25): developer
   # portability — a developer on macOS or Linux (Windows developers use
   # WSL2, the Linux path) can clone, set up, and test — is a
@@ -156,7 +203,7 @@ jobs:
           key: package-1.20.4-28-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - name: DSL cheat sheets match the DSL (generated files must not drift)
-        run: mix spark.cheat_sheets --check
+        run: mix spark.cheat_sheets --extensions AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery --check
       - name: Tarball carries every publish surface
         run: |
           env -u ASH_HOOKS_NO_OPTIONAL mix hex.build

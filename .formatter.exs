@@ -8,7 +8,18 @@ spark_locals_without_parens = [
   event_id: 1,
   replay_window_seconds: 1,
   signing_mode: 1,
-  endpoints: 1
+  endpoints: 1,
+  inbound_delivery: 1,
+  scope_identity: 1,
+  subscription: 1,
+  endpoint_resource: 1,
+  endpoint: 1,
+  status_attribute: 1,
+  enabled_values: 1,
+  disabled_value: 1,
+  outbound_delivery: 1,
+  payload_attribute: 1,
+  prune_action: 1
 ]
 
 [

@@ -30,6 +30,19 @@ defmodule AshHooks.Delivery do
 
   Backoff: `min(base · 2^min(attempts, 16), max_backoff)` seconds plus
   `:rand.uniform(delay)` jitter, re-clamped — always ≥ 1 second.
+
+  The 410 auto-disable, stated plainly (it is a SYSTEM bulk write): one
+  410 from a receiver durably disables its endpoint by DESIGN (the
+  circuit-breaker rule, ADR-0005) — `authorize?: false`, so it bypasses
+  policies and produces no actor attribution in a versioned register
+  (a nil-actor write, auditable but unattributed), and there is no
+  built-in tenant-facing signal: a receiver that answers 410 once goes
+  dark SILENTLY from the tenant's point of view. The visibility seams
+  that exist today: the `[:ash_hooks, :delivery, :disable]` telemetry
+  event (per disabled endpoint, with tenant and endpoint ids — wire it
+  to your notification surface), the endpoint row's own `status`/
+  mapped switch, and every subsequent dispatch SKIP for that endpoint.
+  Make the dark state loud in YOUR app, or accept it in writing.
   """
 
   require Ash.Query
@@ -102,16 +115,30 @@ defmodule AshHooks.Delivery do
     older_than = DateTime.truncate(Keyword.fetch!(opts, :older_than), :microsecond)
 
     with {:ok, tenant} <- Tenancy.resolve([deliv_mod], opts[:tenant]) do
-      if ResourceInfo.attribute(deliv_mod, :inserted_at) do
-        prune!(deliv_mod, older_than, tenant)
-      else
-        {:error,
-         UnknownError.exception(
-           error:
-             inspect(deliv_mod) <>
-               " has no :inserted_at — add `timestamps()` to its attributes " <>
-               "(and the columns to its migration) to use the retention hooks"
-         )}
+      cond do
+        is_nil(ResourceInfo.action(deliv_mod, :prune)) ->
+          # prune_action :none (the append-only opt-out): the hook must
+          # fail LOUD, never reach for an action the consumer chose not
+          # to carry
+          {:error,
+           UnknownError.exception(
+             error:
+               inspect(deliv_mod) <>
+                 " does not carry the destroy :prune action (prune_action :none) — " <>
+                 "deletion is the consumer's own surface on an append-only ledger"
+           )}
+
+        ResourceInfo.attribute(deliv_mod, :inserted_at) ->
+          prune!(deliv_mod, older_than, tenant)
+
+        true ->
+          {:error,
+           UnknownError.exception(
+             error:
+               inspect(deliv_mod) <>
+                 " has no :inserted_at — add `timestamps()` to its attributes " <>
+                 "(and the columns to its migration) to use the retention hooks"
+           )}
       end
     end
   end
@@ -228,11 +255,14 @@ defmodule AshHooks.Delivery do
 
   defp attempt(row, config, tenant) do
     case Ash.get(config[:endpoints], row.endpoint_id, authorize?: false, tenant: tenant) do
-      {:ok, %{status: :disabled}} ->
-        dead_letter(row, "endpoint_disabled", config, tenant)
-
+      # the ONE enabled-check (H4): the injected status attribute or the
+      # consumer-mapped switch — exactly one attribute dead-letters
       {:ok, endpoint} ->
-        attempt_enabled(row, endpoint, config, tenant)
+        if AshHooks.Endpoint.enabled?(endpoint) do
+          attempt_enabled(row, endpoint, config, tenant)
+        else
+          dead_letter(row, "endpoint_disabled", config, tenant)
+        end
 
       # only a GONE endpoint row is terminal — a transient read error must
       # retry, never permanently dead-letter
@@ -302,10 +332,14 @@ defmodule AshHooks.Delivery do
   # an adapter RAISE must not crash the job out of the row-owned policy —
   # classify it as a retryable transport failure
   defp send_request(request, endpoint, headers, row, adapter_opts) do
-    request.(:post, endpoint.url, headers, row.payload, adapter_opts)
+    request.(:post, endpoint.url, headers, payload_bytes(row), adapter_opts)
   rescue
     reason -> {:error, {:adapter_crash, error_string(reason)}}
   end
+
+  # the exact-bytes column's name is consumer-configurable (`payload_attribute`,
+  # H1) — every runtime read goes through the row's own resource config
+  defp payload_bytes(row), do: Map.get(row, AshHooks.Info.payload_attribute(row.__struct__))
 
   defp record(row, _endpoint, %{status: status} = response, config, tenant)
        when status in 200..299 do
@@ -338,7 +372,7 @@ defmodule AshHooks.Delivery do
         :telemetry.execute(
           [:ash_hooks, :delivery, :disable],
           %{},
-          %{endpoint_id: endpoint.id, reason: :gone_410}
+          %{endpoint_id: endpoint.id, reason: :gone_410, tenant: tenant}
         )
 
         dead_letter(row, "gone_410", config, tenant, failure_summary(response))
@@ -408,7 +442,7 @@ defmodule AshHooks.Delivery do
           mode,
           row.event_uuid,
           System.system_time(:second),
-          row.payload,
+          payload_bytes(row),
           opts
         )
 

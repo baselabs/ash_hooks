@@ -15,16 +15,29 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   def before?(Ash.Resource.Transformers.RequireUniqueActionNames), do: true
   def before?(_), do: false
 
+  # the :ingest accept list keys off the resource's PK shape (H2) — the
+  # fields transformer must have injected (or the consumer declared) it
+  # first; Spark's topological order does NOT follow the extension's
+  # list order
+  def after?(AshHooks.InboundDelivery.Transformers.AddLedgerFields), do: true
+  def after?(_), do: false
+
   def transform(dsl_state) do
     scope = Extension.get_opt(dsl_state, [:inbound_delivery], :scope_identity, [])
 
-    with {:ok, ingest} <- build_ingest(scope),
+    with {:ok, ingest} <- build_ingest(scope, writable_id_pk?(dsl_state)),
          {:ok, claim} <- build_claim(),
          {:ok, mark_processed} <- build_mark_processed(),
          {:ok, mark_failed} <- build_mark_failed(),
          {:ok, renew} <- build_renew(),
          {:ok, redact_payload} <- build_redact_payload(),
          {:ok, prune} <- build_prune() do
+      # the accept-list decision is PERSISTED for the runtime (H2): the
+      # Ingress reads the SAME answer, never a re-derived predicate that
+      # could disagree with the compiled action (composite PKs and
+      # non-:id PKs make naive ":id exists and is writable" diverge)
+      dsl_state = Transformer.persist(dsl_state, :id_accepted?, writable_id_pk?(dsl_state))
+
       {:ok, dsl_state} = add(dsl_state, :create, ingest)
       {:ok, dsl_state} = add(dsl_state, :update, claim)
       {:ok, dsl_state} = add(dsl_state, :update, mark_processed)
@@ -32,6 +45,19 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
       {:ok, dsl_state} = add(dsl_state, :destroy, prune)
       {:ok, dsl_state} = add(dsl_state, :update, mark_failed)
       add(dsl_state, :update, renew)
+    end
+  end
+
+  # H2: `:id` rides the accept list exactly when the resource HAS a
+  # writable `:id` attribute — the shapes that always worked (the
+  # package-injected PK; a consumer's writable `:id` beside a differently
+  # named PK) keep it, and only the shapes Ash's ValidateAccept rejects
+  # (uuid_v7_primary_key & other non-writable ids) drop it. For those the
+  # runtime classifies created/duplicate by an identity pre-read instead.
+  defp writable_id_pk?(dsl_state) do
+    case dsl_state |> Transformer.get_entities([:attributes]) |> Enum.find(&(&1.name == :id)) do
+      %{writable?: true} -> true
+      _ -> false
     end
   end
 
@@ -44,24 +70,28 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   end
 
   # No-touch upsert: on conflict nothing is updated — the surviving row is
-  # returned, so created/duplicate classification compares ids. Touching
-  # observability columns on conflict is the consumer's choice via their own
-  # action; the primitive keeps the fence minimal.
-  defp build_ingest(scope) do
+  # returned, so created/duplicate classification compares ids (when the
+  # PK is writable; otherwise Ingress pre-reads the identity — H2).
+  # Touching observability columns on conflict is the consumer's choice
+  # via their own action; the primitive keeps the fence minimal.
+  defp build_ingest(scope, id_accepted) do
     Builder.build_action(:create, :ingest,
       upsert?: true,
       upsert_identity: :unique_ingest,
       upsert_fields: [],
-      accept: [
-        :id,
-        :provider,
-        :external_event_id,
-        :external_event_type,
-        :payload,
-        :payload_digest | scope
-      ]
+      accept:
+        maybe_accept_id(id_accepted, [
+          :provider,
+          :external_event_id,
+          :external_event_type,
+          :payload,
+          :payload_digest | scope
+        ])
     )
   end
+
+  defp maybe_accept_id(true, accept), do: [:id | accept]
+  defp maybe_accept_id(false, accept), do: accept
 
   defp build_claim do
     import Ash.Expr, only: [expr: 1]

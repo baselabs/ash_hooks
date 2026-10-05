@@ -319,7 +319,7 @@ defmodule AshHooks.TelemetryTest do
       {dead_md, _} = find(received, [:ash_hooks, :delivery, :dead_letter])
       {result_md, _} = find(received, [:ash_hooks, :delivery, :result])
 
-      assert disable_md == %{endpoint_id: ep.id, reason: :gone_410}
+      assert disable_md == %{endpoint_id: ep.id, reason: :gone_410, tenant: nil}
       assert dead_md.reason == "gone_410"
       assert dead_md.response_status == 410
       assert result_md.status == :dead_letter

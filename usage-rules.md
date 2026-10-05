@@ -18,6 +18,18 @@ For AI assistants working in codebases that use ash_hooks.
   `outbound :event` declaration; the subscription/endpoint/delivery
   extensions carry the fanout; `use AshHooks.Worker` in the consuming
   app is the Oban seam; `AshHooks.dispatch/4` is the only entry point.
+- Consumer-fit renames/mappings (when the domain reserves a name or owns
+  the switch): `payload_attribute` on `outbound_delivery` renames the
+  exact-bytes column; `prune_action :none` omits the destroy action
+  (then `Delivery.prune/2` fails loud — deletion is YOUR surface, and no
+  package primitive removes or redacts the outbound bytes: the ledger
+  retains payload rows until you delete them); `status_attribute` +
+  explicit `enabled_values`/`disabled_value` on `endpoint` map the
+  durable enable/disable onto the consumer's own switch — the ONE check
+  is `AshHooks.Endpoint.enabled?/1`. Event ids on the dispatch path must
+  be DERIVED deterministically from the artifact id (a generated id
+  duplicates every producer re-fire); atom-typed `event_types` registers
+  match, but declare the array yourself with your own constraints.
 - Retention: `Ingress.prune/2` / `Delivery.prune/2` delete TERMINAL
   rows only (needs `timestamps()` on the resource); redacting a claimed
   row's payload uses `Ingress.redact_payload/5` — never write the
