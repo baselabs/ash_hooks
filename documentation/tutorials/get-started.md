@@ -19,7 +19,7 @@ examples below refer to your existing `MyApp.Domain` and `MyApp.Repo`
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 1.2"},
+    {:ash_hooks, "~> 1.3"},
     # for outbound delivery only:
     {:oban, "~> 2.20"}
   ]
@@ -346,7 +346,16 @@ Register an endpoint and a subscription, then dispatch:
     event_types: ["order_paid"]
   }, authorize?: false)
 
-{:ok, event} = AshHooks.Event.new(type: :order_paid, payload: Jason.encode!(%{"id" => 1}))
+{:ok, event} =
+  AshHooks.Event.new(
+    type: :order_paid,
+    payload: Jason.encode!(%{"id" => 1}),
+    # DERIVE the id from the artifact's stable id — a producer that
+    # re-fires for the same row then matches the existing delivery row
+    # (the {endpoint_id, event_uuid} dedup) instead of fanning out a
+    # duplicate POST per sweep
+    id: "msg_order-" <> order_id
+  )
 
 {:ok, results} =
   AshHooks.dispatch(MyApp.Order, :order_paid, event,
@@ -366,6 +375,25 @@ Signing modes: `:standard` (default) needs only `secret_ref`. Both
 `signing_failed`) without one; `:dual` additionally emits the legacy
 envelope alongside the Standard Webhooks one during receiver
 migration.
+
+**Fit the extensions to your domain** (1.3, all opt-in per resource):
+rename the exact-bytes column when your domain reserves `payload`
+(`payload_attribute :event_bytes` in the delivery's `outbound_delivery`
+block — the dispatch/signing/send paths follow the configured name),
+omit the retention destroy action on an append-only ledger
+(`prune_action :none` — no destroy action exists, and
+`AshHooks.Delivery.prune/2` fails loud), and map the durable
+enable/disable onto your own switch (the endpoint's `endpoint do
+status_attribute :active; enabled_values [true]; disabled_value false
+end` — the dispatcher, the send path, and the 410 breaker all consult
+YOUR attribute; the package injects no `status`). Generated primary
+keys (`uuid_v7_primary_key`) compile as-is, and a subscription register
+redeclared as a closed `{:array, :atom}` enum matches normally with
+your own constraints. One obligation comes with the injected surface:
+the write actions (`:dispatch`, `:mark_enqueue_failed`, `:requeue`,
+`:prune`, `:mark_sending`, `:mark_succeeded`, `:mark_send_failed` on
+the delivery; `:disable` on the endpoint) are YOURS to cover with
+action-specific policies — see the resource module docs.
 
 Response snippets store NO body bytes by default (a status +
 content-type summary). For a one-row diagnostic capture, re-drive the

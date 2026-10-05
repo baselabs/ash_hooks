@@ -48,7 +48,7 @@ see [Stability](#stability).
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 1.2"},
+    {:ash_hooks, "~> 1.3"},
     # only for outbound delivery:
     {:oban, "~> 2.20"}
   ]
@@ -178,7 +178,15 @@ whole in your secret store, and return them unchanged.
 Dispatch, wiring the worker's generated enqueue function:
 
 ```elixir
-{:ok, event} = AshHooks.Event.new(type: :order_paid, payload: Jason.encode!(order))
+{:ok, event} =
+  AshHooks.Event.new(
+    type: :order_paid,
+    payload: Jason.encode!(order),
+    # DERIVE the id from your artifact's stable id: a re-fired producer
+    # then matches the existing delivery row instead of fanning out a
+    # duplicate POST per sweep
+    id: "msg_order-" <> order.id
+  )
 
 AshHooks.dispatch(Order, :order_paid, event,
   enqueue: {MyApp.WebhookDeliveryWorker, :enqueue}
@@ -240,6 +248,51 @@ uncaptured. See `AshHooks.Worker` for the worker-macro form.
 `legacy_secret_ref` — `:dual` emits both envelopes so receivers can
 migrate, `:legacy` emits only the old one.
 
+## Fitting the extensions to your domain
+
+The injected fields and actions carry opinionated names by default;
+your domain may reserve those names or own the lifecycle itself (1.3).
+Every knob is a per-resource DSL option, fail-closed at compile:
+
+```elixir
+# your domain reserves `payload` for its own sole payload store —
+# rename the ledger's exact-bytes column instead
+outbound_delivery do
+  payload_attribute :event_bytes
+end
+
+# append-only audit ledger: NO destroy action is injected at all, and
+# the retention hook fails loud (deletion is your own surface)
+outbound_delivery do
+  payload_attribute :event_bytes
+  prune_action :none
+end
+
+# your register already has an enable switch — map the durable
+# enable/disable onto IT (the 410 breaker and operators flip your
+# attribute; the package injects no `status` of its own)
+endpoint do
+  status_attribute :active
+  enabled_values [true]
+  disabled_value false
+end
+```
+
+Also in this shape: primary keys may be any generated form
+(`uuid_v7_primary_key` compiles as-is — the dispatch/ingest upserts
+adapt), a subscription register may be a closed `{:array, :atom}` enum
+(your constraints, your default — matching handles atoms and strings
+identically, wildcard included), and injected-PK ledgers still classify
+`:created`/`:duplicate` exactly.
+
+**Policies.** The package injects write actions, not the authorization
+around them: the delivery ledger carries `:dispatch`, `:mark_enqueue_failed`,
+`:requeue`, `:prune`, `:mark_sending`, `:mark_succeeded`, `:mark_send_failed`,
+and the endpoint carries `:disable`. Cover each with an action-specific
+policy of your own (the runtime's internal calls bypass policies by
+design), or keep the resources off every actor-facing surface — the
+obligation is stated at each extension site, in the module docs.
+
 ## Observability
 
 Attach one handler to see the whole lifecycle — inbound
@@ -260,7 +313,10 @@ job):
 - `AshHooks.Ingress.prune/2` and `AshHooks.Delivery.prune/2` delete
   TERMINAL rows older than a cutoff — retryable and in-flight rows are
   never touched. They key off the resource's `inserted_at`, so add
-  Ash's `timestamps()` to the resource and its migration.
+  Ash's `timestamps()` to the resource and its migration. Append-only
+  ledgers may omit the destroy action entirely
+  (`prune_action :none`) — `prune/2` then fails loud with a named
+  error, and deletion is your own surface.
 - `AshHooks.Ingress.redact_payload/5` rewrites a claimed row's payload
   under the claim fence (scrub sensitive fields while keeping the dedup
   identity; the original-bytes digest is preserved for audit).
@@ -371,7 +427,8 @@ Erlang/OTP 28 and 29), Ash ~> 3.0, Oban ~> 2.20 (optional, outbound only).
 The package stays developer-portable across macOS and Linux — a standing
 requirement that clone, set up, and test work on both, kept by OS-agnostic
 code and tooling; Windows developers use WSL2, which is the Linux path; CI
-runs the full suite on Linux. On Ash 3.33+ your
+runs the full suite on Linux, including an AshPostgres leg exercising a
+`uuid_v7`-keyed consumer shape. On Ash 3.33+ your
 application must also set Ash's required `default_string_length_count`
 config — an Ash requirement for every app compiling resources, not an
 ash_hooks one ([UPGRADING.md](UPGRADING.md)). One nuance: a fix

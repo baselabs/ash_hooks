@@ -4,7 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 1.3.0 — 2026-10-05
+
+The first-serious-consumer integration release: additive options that fit
+the extensions to a consumer's own domain naming and lifecycle, a compile
+fix for generated (non-writable) primary keys, typed subscription
+matching, loud documentation of the policy/id/adapter obligations, and a
+Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
 
 ### Added (additive options — non-breaking per ADR-0010)
 

@@ -1,5 +1,31 @@
 # Upgrading
 
+## 1.2.1 → 1.3.0+
+
+**Nothing breaks and nothing is required.** This release is additive:
+new per-resource DSL options (`payload_attribute`, `prune_action`, the
+`endpoint` mapping section), docs, and CI. Two behavior notes worth
+knowing even if you change nothing:
+
+1. **Generated (non-writable) primary keys now compile.** Resources
+   declaring `uuid_v7_primary_key` (or any non-writable `:id`) previously
+   failed Ash's `ValidateAccept` on the injected `:dispatch`/`:ingest`
+   accept lists. Those resources now compile and classify
+   created/duplicate by an identity pre-read (exact sequentially; the
+   storage upsert and the default Oban job uniqueness keep every effect
+   once — see the CHANGELOG's full statement).
+2. **The send path dead-letters an endpoint whose status is anything
+   other than `:enabled`** (previously only an exact `:disabled`
+   dead-lettered). Only affects consumers who redeclared `status` with
+   extra values — the fail-closed direction.
+
+New options, all opt-in: rename the exact-bytes column
+(`payload_attribute`), omit the retention destroy action
+(`prune_action :none`), map the durable enable/disable onto your own
+switch (`endpoint do status_attribute ... end`), and atom-typed
+subscription registers now match. The README's "Fitting the extensions
+to your domain" section shows each.
+
 ## 1.1.1 → 1.2.0+
 
 ### Multi-tenancy is available and opt-in (ADR-0011)
