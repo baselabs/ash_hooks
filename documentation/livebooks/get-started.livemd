@@ -7,12 +7,13 @@
 * Receive an inbound webhook: verify its signature, deduplicate a replay, reject a tamper
 * Send an outbound webhook to a live local server, and watch the delivery machine work
 * Scope a multi-tenant deployment: one tenant's dispatch never reaches another's rows
+* Fit the extensions to a domain that reserves `payload`, owns an `active` switch, and types its registers with atoms (1.3)
 * Observe everything through telemetry
 * Prune old rows with the retention hooks
 
 Everything runs inside this notebook — one in-process sqlite database,
 one local socket server, no external services. Validated against
-ash_hooks **1.2.1**.
+ash_hooks **1.3.0**.
 
 <!-- livebook:{"break_marks":true} -->
 
@@ -21,7 +22,7 @@ ash_hooks **1.2.1**.
 ```elixir
 Mix.install([
   {:ash, "~> 3.0"},
-  {:ash_hooks, "~> 1.2"},
+  {:ash_hooks, "~> 1.3"},
   {:ash_sqlite, "~> 0.2"},
   {:jason, "~> 1.2"}
 ])
@@ -625,6 +626,236 @@ Tour.Repo.query!("UPDATE tour_ledgers SET inserted_at = ? WHERE status = 'proces
 
 {:ok, 1} = AshHooks.Ingress.prune(Tour.Ledger, older_than: DateTime.add(DateTime.utc_now(), -30, :day))
 IO.puts("Pruned the terminal row — non-terminal rows are never touched.")
+```
+
+<!-- livebook:{"break_marks":true} -->
+
+## 1.3: fit the extensions to your domain
+
+```elixir
+# A consumer whose domain reserves `payload` for its own sole store,
+# owns an `active` switch on the endpoint register, types its
+# subscription register as a CLOSED ATOM enum, keys rows with
+# uuid_v7, and keeps the ledger append-only — every 1.3 option at once.
+defmodule Tour.FitEndpoint do
+  use Ash.Resource,
+    domain: Tour.FitDomain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks.Endpoint]
+
+  sqlite do
+    table("tour_fit_endpoints")
+    repo(Tour.Repo)
+  end
+
+  attributes do
+    uuid_v7_primary_key(:id)
+    # the consumer's OWN switch — the package injects no `status`
+    attribute(:active, :boolean, allow_nil?: false, default: true, public?: true)
+  end
+
+  actions do
+    defaults([:read, :create, :update])
+    default_accept(:*)
+  end
+
+  endpoint do
+    status_attribute(:active)
+    enabled_values([true])
+    disabled_value(false)
+  end
+end
+
+defmodule Tour.FitSubscription do
+  use Ash.Resource,
+    domain: Tour.FitDomain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks.Subscription]
+
+  sqlite do
+    table("tour_fit_subscriptions")
+    repo(Tour.Repo)
+  end
+
+  attributes do
+    uuid_v7_primary_key(:id)
+
+    # the consumer's closed atom register replaces the injected
+    # {:array, :string} default ["*"] — matching handles atoms
+    attribute(:event_types, {:array, :atom},
+      allow_nil?: false,
+      public?: true,
+      constraints: [min_length: 1, items: [one_of: [:order_paid, :order_shipped]]]
+    )
+  end
+
+  actions do
+    defaults([:read, :create])
+    default_accept(:*)
+  end
+
+  subscription do
+    endpoint_resource(Tour.FitEndpoint)
+  end
+end
+
+defmodule Tour.FitDelivery do
+  use Ash.Resource,
+    domain: Tour.FitDomain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks.OutboundDelivery]
+
+  sqlite do
+    table("tour_fit_deliveries")
+    repo(Tour.Repo)
+  end
+
+  attributes do
+    uuid_v7_primary_key(:id)
+  end
+
+  actions do
+    defaults([:read])
+  end
+
+  outbound_delivery do
+    # the domain reserves `payload` — the exact-bytes column is renamed
+    payload_attribute(:event_bytes)
+    # append-only ledger: NO destroy action is injected at all
+    prune_action(:none)
+  end
+end
+
+defmodule Tour.FitOrder do
+  use Ash.Resource,
+    domain: Tour.FitDomain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks]
+
+  sqlite do
+    table("tour_fit_orders")
+    repo(Tour.Repo)
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+  end
+
+  actions do
+    defaults([:read, :create])
+  end
+
+  webhooks do
+    outbound :order_paid do
+      subscriptions(Tour.FitSubscription)
+      deliveries(Tour.FitDelivery)
+    end
+  end
+end
+
+defmodule Tour.FitDomain do
+  use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
+
+  resources do
+    resource(Tour.FitEndpoint)
+    resource(Tour.FitSubscription)
+    resource(Tour.FitDelivery)
+    resource(Tour.FitOrder)
+  end
+end
+```
+
+```elixir
+Tour.Repo.query!("""
+CREATE TABLE tour_fit_endpoints (
+  id TEXT PRIMARY KEY, url TEXT NOT NULL, active BOOLEAN NOT NULL DEFAULT 1,
+  secret_ref TEXT NOT NULL, previous_secret_ref TEXT, legacy_secret_ref TEXT,
+  legacy_previous_secret_ref TEXT)
+""")
+
+Tour.Repo.query!("""
+CREATE TABLE tour_fit_subscriptions (
+  id TEXT PRIMARY KEY, event_types TEXT NOT NULL, endpoint_id TEXT NOT NULL, signing_mode TEXT)
+""")
+
+# NO payload column and NO destroy action: the sole-store reservation
+# and the append-only posture, in the schema itself
+Tour.Repo.query!("""
+CREATE TABLE tour_fit_deliveries (
+  id TEXT PRIMARY KEY, event_uuid TEXT NOT NULL, event_type TEXT NOT NULL,
+  event_bytes BLOB NOT NULL, endpoint_id TEXT NOT NULL, subscription_id TEXT,
+  signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
+  response_snippet TEXT, last_error TEXT, next_attempt_at TEXT)
+""")
+
+Tour.Repo.query!(
+  "CREATE UNIQUE INDEX tour_fit_deliveries_unique ON tour_fit_deliveries (endpoint_id, event_uuid)"
+)
+
+Tour.Repo.query!("CREATE TABLE IF NOT EXISTS tour_fit_orders (id TEXT PRIMARY KEY)")
+:ok
+```
+
+```elixir
+fit_endpoint =
+  Ash.create!(
+    Tour.FitEndpoint,
+    %{url: "https://partner.example.test/hook", secret_ref: "fit-ref", active: true},
+    authorize?: false
+  )
+
+# the ATOM-typed register matches the event's canonical string type
+Ash.create!(Tour.FitSubscription, %{endpoint_id: fit_endpoint.id, event_types: [:order_paid]},
+  authorize?: false
+)
+
+# a DETERMINISTIC id: the re-fire below matches the existing row
+{:ok, fit_event} =
+  AshHooks.Event.new(
+    type: :order_paid,
+    payload: Jason.encode!(%{"order" => 9}),
+    id: "msg_fit-order-9"
+  )
+
+# enqueue wired (the Oban-seam shape): the DETERMINISTIC id makes the
+# re-fire classify :duplicate — a generated id would fan out twice
+enqueue_ok = fn _delivery, _event -> :ok end
+
+{:ok, [first]} = AshHooks.dispatch(Tour.FitOrder, :order_paid, fit_event, enqueue: enqueue_ok)
+
+{:ok, [second]} = AshHooks.dispatch(Tour.FitOrder, :order_paid, fit_event, enqueue: enqueue_ok)
+
+IO.inspect({first.status, second.status}, label: "created, then duplicate")
+%{status: :created} = first
+%{status: :duplicate} = second
+
+[fit_row] = Ash.read!(Tour.FitDelivery, authorize?: false)
+
+# uuid_v7 ids (version nibble 7), bytes under the renamed column
+IO.inspect(binary_part(fit_row.id, 14, 1), label: "uuid version nibble")
+IO.inspect(fit_row.event_bytes, label: "exact bytes under event_bytes")
+"7" = binary_part(fit_row.id, 14, 1)
+fit_bytes = Jason.encode!(%{"order" => 9})
+^fit_bytes = fit_row.event_bytes
+
+# the consumer's own off switch suppresses the fanout entirely
+Ash.update!(fit_endpoint, %{active: false}, authorize?: false)
+
+{:ok, results} = AshHooks.dispatch(Tour.FitOrder, :order_paid, fit_event, enqueue: enqueue_ok)
+IO.inspect(results, label: "dispatch against a deactivated endpoint")
+[] = results
+
+# and the retention hook fails LOUD on the append-only ledger
+{:error, prune_error} =
+  AshHooks.Delivery.prune(Tour.FitDelivery, older_than: DateTime.utc_now())
+
+IO.inspect(Exception.message(prune_error), label: "prune on append-only")
+IO.puts("""
+That is the 1.3 surface: renamed columns, uuid_v7 keys, atom registers,
+one owned switch, no destroy action — all opt-in, all fail-closed at
+compile when misconfigured.
+""")
 ```
 
 <!-- livebook:{"break_marks":true} -->
