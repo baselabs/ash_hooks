@@ -34,8 +34,10 @@ defmodule AshHooks.MixProject do
       # :ecto_sql is explicit because `use AshSqlite.Repo` (test/support)
       # macro-emits Ecto.Adapters.SQL delegations — the deps-PLT app
       # enumeration does not reliably include it, and without it dialyzer
-      # reports those delegations as unknown functions.
-      dialyzer: [plt_add_apps: [:mix, :ash_sqlite, :ecto_sql]],
+      # reports those delegations as unknown functions. :ash_postgres
+      # carries the PG repo's behaviour callbacks (callback_info_missing
+      # on a fresh PLT, CI 2026-10-05).
+      dialyzer: [plt_add_apps: [:mix, :ash_sqlite, :ash_postgres, :ecto_sql]],
       # coverage PRINTS, never gates: Elixir's default 90% threshold would
       # make `mix test --cover` exit 3 on a percentage. (One residual
       # exit-3 source remains by design: the code-server fixture purges
