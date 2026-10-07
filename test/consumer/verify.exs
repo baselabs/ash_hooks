@@ -1,5 +1,18 @@
 version = Application.spec(:ash_hooks, :vsn) |> to_string()
-unless version == "2.0.1", do: raise("unexpected consumer build version")
+
+# The expected version is the checkout's own @version — no per-release pin to drift.
+root = Path.expand("../..")
+
+expected =
+  root
+  |> Path.join("mix.exs")
+  |> File.read!()
+  |> then(&Regex.run(~r/@version "([^"]+)"/, &1))
+  |> Enum.at(1)
+
+unless version == expected,
+  do: raise("unexpected consumer build version: #{version} != #{expected}")
+
 applications = Application.started_applications() |> Enum.map(&elem(&1, 0))
 
 for required <- [:crypto, :public_key, :ssl, :inets] do
@@ -38,7 +51,7 @@ unless asymmetric_id == event.id, do: raise("asymmetric signature identity misma
   AshHooks.Http.Bounded.request(
     :get,
     "https://hex.pm/api/packages/ash_hooks",
-    %{"user-agent" => "ash_hooks-consumer-verification/2.0.1"},
+    %{"user-agent" => "ash_hooks-consumer-verification/2.0.2"},
     "",
     max_body_bytes: 1_024,
     timeout: 10_000
@@ -50,7 +63,7 @@ unless byte_size(body) > 0 and byte_size(body) <= 1_024, do: raise("unexpected H
   AshHooks.Http.Httpc.request(
     :get,
     "https://hex.pm/api/packages/ash_hooks",
-    %{"user-agent" => "ash_hooks-consumer-verification/2.0.1"},
+    %{"user-agent" => "ash_hooks-consumer-verification/2.0.2"},
     "",
     max_body_bytes: 1_024,
     timeout: 10_000
