@@ -1,5 +1,5 @@
 version = Application.spec(:ash_hooks, :vsn) |> to_string()
-unless version == "2.0.0", do: raise("unexpected consumer build version")
+unless version == "2.0.1", do: raise("unexpected consumer build version")
 applications = Application.started_applications() |> Enum.map(&elem(&1, 0))
 
 for required <- [:crypto, :public_key, :ssl, :inets] do
@@ -38,7 +38,7 @@ unless asymmetric_id == event.id, do: raise("asymmetric signature identity misma
   AshHooks.Http.Bounded.request(
     :get,
     "https://hex.pm/api/packages/ash_hooks",
-    %{"user-agent" => "ash_hooks-consumer-verification/2.0.0"},
+    %{"user-agent" => "ash_hooks-consumer-verification/2.0.1"},
     "",
     max_body_bytes: 1_024,
     timeout: 10_000
@@ -50,7 +50,7 @@ unless byte_size(body) > 0 and byte_size(body) <= 1_024, do: raise("unexpected H
   AshHooks.Http.Httpc.request(
     :get,
     "https://hex.pm/api/packages/ash_hooks",
-    %{"user-agent" => "ash_hooks-consumer-verification/2.0.0"},
+    %{"user-agent" => "ash_hooks-consumer-verification/2.0.1"},
     "",
     max_body_bytes: 1_024,
     timeout: 10_000

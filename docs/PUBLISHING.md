@@ -38,7 +38,7 @@ operator procedure.
 5. Execute each notebook against that candidate archive before publishing:
 
    ```sh
-   ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive _build/release/ash_hooks-2.0.0.tar
+   ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive _build/release/ash_hooks-2.0.1.tar
    ```
 
    The runner supplies the unpacked archive explicitly inside this checkout.

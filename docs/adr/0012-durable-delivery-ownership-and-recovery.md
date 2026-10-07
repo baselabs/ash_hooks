@@ -1,6 +1,6 @@
 # ADR-0012 — Durable delivery ownership and recovery
 
-- **Status:** Accepted, October 6, 2026; effective in 2.0.0.
+- **Status:** Accepted, October 6, 2026; effective in the published 2.0.1 release.
 - **Deciders:** Maintainer's corrective-release request; independent adversarial
   design review and independent judgment.
 

@@ -1,6 +1,6 @@
 # Upgrading
 
-## 1.x → 2.0.0
+## 1.x → 2.0.1
 
 2.0 changes the durable delivery schema and HubSpot's default event identity.
 Drain old jobs and migrate before activating the new runtime. Mixed 1.x/2.x

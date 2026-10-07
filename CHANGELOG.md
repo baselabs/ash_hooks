@@ -6,7 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.0.1 — October 6, 2026
+
+The first published 2.x release includes the delivery ownership, recovery, and
+migration changes below. The guided tour keeps protocol implementations available
+for resources defined during notebook evaluation.
+
+### Fixed
+
+- Disable protocol consolidation in the Livebook setup so dynamically defined Ash
+  resources use their custom display without consolidation warnings.
+- Update the notebook, release tooling, and production consumer to 2.0.1.
+
 ## 2.0.0 — October 6, 2026
+
+Source candidate; superseded by 2.0.1 before Hex publication. The Git tag is retained.
 
 Delivery rows now retain declaration and queue ownership, fence each send attempt,
 and recover unfinished work after queue exhaustion or an interrupted endpoint disable.

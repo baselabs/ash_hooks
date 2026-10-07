@@ -245,7 +245,7 @@ jobs:
       - run: ./scripts/check-package.sh
       - name: Wait for the real receiver
         run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version
-      - run: ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive _build/release/ash_hooks-2.0.0.tar
+      - run: ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive _build/release/ash_hooks-2.0.1.tar
 
   # The single branch-protection check name: require `all-checks-pass`
   # on main and every leg (test matrix, floor, dialyzer, package,
