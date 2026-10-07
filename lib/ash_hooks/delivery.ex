@@ -28,12 +28,12 @@ defmodule AshHooks.Delivery do
     * 2xx → `:succeeded` (status + allowlisted content-type summary — no
       body bytes by default; a per-call `snippet_capture: true` config
       persists a bounded, redacted body marked `[captured]`)
-    * 408/429 → retryable, `Retry-After` when present (integer seconds or
-      HTTP-date; clamped `[1, retry_after_cap]`), else backoff
+    * 408/429/5xx → retryable, `Retry-After` when present (integer seconds or
+      HTTP-date; clamped `[1, retry_after_cap_seconds]`), else backoff
     * 410 → `:disable_pending`, then conditional endpoint disable and `:dead_letter`
     * other 4xx → `:dead_letter` (client errors do not self-heal)
     * 3xx → `:dead_letter` (`redirect_refused` — never followed)
-    * 5xx / transport error / secret-resolution failure → retryable
+    * transport error / secret-resolution failure → retryable
       backoff
     * send-time SSRF refusal / disabled-or-gone endpoint → `:dead_letter`
 
@@ -693,7 +693,17 @@ defmodule AshHooks.Delivery do
   end
 
   defp record(row, _endpoint, %{status: status} = response, config, tenant) do
-    retry(row, "http_#{status}", config, tenant, nil, failure_summary(response))
+    # The retryable 5xx class: Retry-After is honored here exactly as on 408/429 —
+    # a 503 carrying the header names the receiver's own recovery window, and the
+    # parser/clamp path is shared (absent/malformed header → nil → backoff).
+    retry(
+      row,
+      "http_#{status}",
+      config,
+      tenant,
+      retry_after(response, config),
+      failure_summary(response)
+    )
   end
 
   # failed rows keep the story-1 half of the snippet policy: status + kind,

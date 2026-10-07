@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.0.2 — October 6, 2026
+
+### Fixed
+
+- Outbound `Retry-After` is honored on every retryable status, not only 408/429: a 5xx
+  response carrying the header (the canonical 503 overload signal) now schedules the
+  receiver's own recovery window; an absent or malformed header keeps the backoff
+  fallback (first reported by a sirtify consumer review). Note the bound this moves: a
+  header-bearing 5xx snooze is clamped by `retry_after_cap_seconds` (default 86,400s),
+  not `max_backoff_seconds` (default 3,600s) — an exhaust-fast adopter that lowered the
+  latter but left the cap at its default will hold a 503-with-header attempt up to 24x
+  longer per attempt. Lower `retry_after_cap_seconds` if that posture must hold.
+- Test dependency currency: `ash_postgres` 2.14.2 → 2.14.3.
+
 ## 2.0.1 — October 6, 2026
 
 The first published 2.x release includes the delivery ownership, recovery, and

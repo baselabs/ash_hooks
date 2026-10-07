@@ -76,3 +76,13 @@ SSRF refusal / disabled-or-gone endpoint → dead-letter.
   and it compiles only in hosts with Oban.
 - `:sending` re-drive is at-least-once (documented; receiver-side
   webhook-id dedup is the SW contract).
+
+## Amendment — 2.0.2 (October 6, 2026)
+
+The response classification above is superseded in one respect: retryable **5xx**
+responses now honor `Retry-After` exactly as 408/429 do (shared parser and
+`retry_after_cap_seconds` clamp); the "retryable backoff" wording applies when the
+header is absent or malformed. Adopters who lowered `max_backoff_seconds` for an
+exhaust-fast posture and left the cap at its 86,400s default should note that a
+5xx carrying the header is now bounded by the CAP, not by `max_backoff_seconds`.
+Transport errors and secret-resolution failures are unchanged (backoff-only).

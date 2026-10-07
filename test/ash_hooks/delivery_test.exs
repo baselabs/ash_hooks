@@ -388,7 +388,52 @@ defmodule AshHooks.DeliveryTest do
     end
   end
 
-  describe "408/429 — Retry-After honored (bounded)" do
+  describe "408/429/5xx — Retry-After honored (bounded)" do
+    test "a 503 carrying an integer Retry-After is honored (the sirtify-routed finding)" do
+      # ONE captured timestamp drives both the run and the assertion — a live
+      # clock read twice fails across a second boundary (the release review's
+      # clock-dependency finding; the 429 test below shares the fix).
+      fixed_now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      HttpDouble.set_responses([
+        {:ok, %{status: 503, headers: [{"retry-after", "11"}], body: "overloaded"}}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert {:snooze, 11} = DeliveryRuntime.run(args(row), config(now: fn -> fixed_now end))
+
+      final = row!(row.id)
+      assert final.status == :failed_retryable
+
+      assert DateTime.compare(final.next_attempt_at, DateTime.add(fixed_now, 11, :second)) ==
+               :eq
+    end
+
+    test "a 503 with NO Retry-After still backs off (unchanged)" do
+      fixed_now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      HttpDouble.set_responses([
+        {:ok, %{status: 503, headers: [], body: "overloaded"}}
+      ])
+
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      # First retryable attempt, post-increment attempts=1: base 2s · 2^1 = 4s
+      # plus jitter [0, 4) → the snooze is 4..7, and the persisted schedule
+      # matches fixed_now + that snooze.
+      assert {:snooze, backoff} = DeliveryRuntime.run(args(row), config(now: fn -> fixed_now end))
+      assert backoff in 4..7
+
+      final = row!(row.id)
+      assert final.status == :failed_retryable
+
+      assert DateTime.compare(final.next_attempt_at, DateTime.add(fixed_now, backoff, :second)) ==
+               :eq
+    end
+
     test "an integer Retry-After sets the schedule and snoozes exactly that long" do
       HttpDouble.set_responses([
         {:ok, %{status: 429, headers: [{"retry-after", "7"}], body: "slow"}}
@@ -397,12 +442,14 @@ defmodule AshHooks.DeliveryTest do
       ep = endpoint!()
       row = pending_row!(ep)
 
-      assert {:snooze, 7} = DeliveryRuntime.run(args(row), config())
+      fixed_now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      assert {:snooze, 7} = DeliveryRuntime.run(args(row), config(now: fn -> fixed_now end))
 
       final = row!(row.id)
       assert final.status == :failed_retryable
 
-      assert DateTime.compare(final.next_attempt_at, DateTime.add(config()[:now].(), 7, :second)) ==
+      assert DateTime.compare(final.next_attempt_at, DateTime.add(fixed_now, 7, :second)) ==
                :eq
     end
 
