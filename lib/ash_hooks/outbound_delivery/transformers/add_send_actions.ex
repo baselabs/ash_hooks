@@ -77,13 +77,23 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
     {:ok, clear_lease} =
       Builder.build_action_change(Builtins.set_attribute(:send_lease_expires_at, nil))
 
+    # A terminal outcome RELEASES the enqueue claim: a reconciler whose enqueue
+    # raced this worker's completion must find the token gone and no-op its
+    # release, never clobber the terminal diagnostic (the 2.0.3 review's
+    # stale-replay finding).
+    {:ok, clear_enqueue_token} =
+      Builder.build_action_change(Builtins.set_attribute(:enqueue_token, nil))
+
+    {:ok, clear_enqueue_lease} =
+      Builder.build_action_change(Builtins.set_attribute(:enqueue_lease_expires_at, nil))
+
     Builder.build_action(:update, :mark_succeeded,
       accept: [],
       arguments: [
         argument(:response_status, :integer, allow_nil?: false),
         argument(:response_snippet, :string, allow_nil?: true)
       ],
-      changes: [status, code, snippet, clear_lease]
+      changes: [status, code, snippet, clear_lease, clear_enqueue_token, clear_enqueue_lease]
     )
   end
 
@@ -123,6 +133,13 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
     {:ok, clear_lease} =
       Builder.build_action_change(Builtins.set_attribute(:send_lease_expires_at, nil))
 
+    # A terminal/retry outcome RELEASES the enqueue claim (see mark_succeeded).
+    {:ok, clear_enqueue_token} =
+      Builder.build_action_change(Builtins.set_attribute(:enqueue_token, nil))
+
+    {:ok, clear_enqueue_lease} =
+      Builder.build_action_change(Builtins.set_attribute(:enqueue_lease_expires_at, nil))
+
     Builder.build_action(:update, :mark_send_failed,
       accept: [],
       arguments: [
@@ -132,7 +149,16 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
         argument(:response_status, :integer, allow_nil?: true, default: nil),
         argument(:response_snippet, :string, allow_nil?: true, default: nil)
       ],
-      changes: [status, error, next, code, snippet, clear_lease]
+      changes: [
+        status,
+        error,
+        next,
+        code,
+        snippet,
+        clear_lease,
+        clear_enqueue_token,
+        clear_enqueue_lease
+      ]
     )
   end
 
@@ -151,7 +177,12 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
         change(Builtins.set_attribute(:endpoint_snapshot, arg(:endpoint_snapshot))),
         change(Builtins.set_attribute(:last_error, "gone_410")),
         change(Builtins.set_attribute(:next_attempt_at, nil)),
-        change(Builtins.set_attribute(:send_lease_expires_at, nil))
+        change(Builtins.set_attribute(:send_lease_expires_at, nil)),
+        # The durable obligation releases the enqueue claim with it: a crash
+        # between storage and finalization must leave gone_410 as the standing
+        # diagnostic, never restorable-over by a stale reconciler release.
+        change(Builtins.set_attribute(:enqueue_token, nil)),
+        change(Builtins.set_attribute(:enqueue_lease_expires_at, nil))
       ]
     )
   end
@@ -162,7 +193,9 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
       arguments: [argument(:error, :string, allow_nil?: false)],
       changes: [
         change(Builtins.set_attribute(:status, :dead_letter)),
-        change(Builtins.set_attribute(:last_error, arg(:error)))
+        change(Builtins.set_attribute(:last_error, arg(:error))),
+        change(Builtins.set_attribute(:enqueue_token, nil)),
+        change(Builtins.set_attribute(:enqueue_lease_expires_at, nil))
       ]
     )
   end
