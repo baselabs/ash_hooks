@@ -197,8 +197,9 @@ AshHooks.dispatch(Order, :order_paid, event,
 Every matching enabled endpoint gets a durable delivery row carrying
 the exact bytes to sign. The worker signs per Standard Webhooks (the
 same `webhook-id` on every retry), succeeds only on 2xx, never follows
-redirects, honors `Retry-After` (bounded), backs off with jitter on
-5xx and transport errors, dead-letters other client errors, and
+redirects, honors `Retry-After` (bounded) on 408/429/5xx, backs off
+with jitter when the header is absent (5xx, transport errors), dead-letters other
+client errors, and
 durably disables the endpoint on 410. An endpoint's failure never
 blocks delivery to its siblings.
 

@@ -16,7 +16,7 @@ receiver. The receiver must already answer at `http://127.0.0.1:52871`;
 set `LOCAL_WEBHOOK_TESTER_PORT` to use another existing receiver. See
 the [local receiver guide](https://github.com/baselabs/ash_hooks/blob/main/ops/local/README.md).
 The notebook starts no server.
-Uses ash_hooks **2.0.1**. Its examples exercise the library locally; vendor-origin
+Uses ash_hooks **2.0.2**. Its examples exercise the library locally; vendor-origin
 delivery and a production queue require your own application integration.
 
 <!-- livebook:{"break_marks":true} -->
@@ -26,7 +26,7 @@ delivery and a production queue require your own application integration.
 ```elixir
 package =
   case System.get_env("ASH_HOOKS_NOTEBOOK_SOURCE") do
-    nil -> {:ash_hooks, "== 2.0.1"}
+    nil -> {:ash_hooks, "== 2.0.2"}
     source -> {:ash_hooks, path: Path.expand(source)}
   end
 
@@ -50,7 +50,7 @@ Mix.install(
 # and matches how SQL data layers count.
 Application.put_env(:ash, :default_string_length_count, :codepoints)
 Application.put_env(:ash_hooks, :tour_inbound_secret, :crypto.strong_rand_bytes(32))
-"2.0.1" = Application.spec(:ash_hooks, :vsn) |> to_string()
+"2.0.2" = Application.spec(:ash_hooks, :vsn) |> to_string()
 ```
 
 ```elixir
