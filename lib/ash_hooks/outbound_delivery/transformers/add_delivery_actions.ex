@@ -162,10 +162,22 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
   defp build_release_enqueue do
     Builder.build_action(:update, :release_enqueue,
       accept: [],
-      arguments: [argument(:error, :string, allow_nil?: true, default: nil)],
+      arguments: [
+        argument(:error, :string, allow_nil?: true, default: nil),
+        # An optional PARKED lease: a successful release may keep the row
+        # unclaimable for one lease horizon so a CONCURRENT recovery sweep
+        # cannot re-admit it the instant the token clears (the exactly-once
+        # race the reconciler suite pins). nil releases fully.
+        argument(:enqueue_lease_expires_at, :utc_datetime_usec, allow_nil?: true, default: nil)
+      ],
       changes: [
         change(Builtins.set_attribute(:enqueue_token, nil)),
-        change(Builtins.set_attribute(:enqueue_lease_expires_at, nil)),
+        change(
+          Builtins.set_attribute(
+            :enqueue_lease_expires_at,
+            Ash.Expr.arg(:enqueue_lease_expires_at)
+          )
+        ),
         change(Builtins.set_attribute(:last_error, Ash.Expr.arg(:error)))
       ]
     )

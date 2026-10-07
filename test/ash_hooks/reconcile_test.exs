@@ -394,6 +394,326 @@ defmodule AshHooks.ReconcileTest do
     assert row_state!("rec-state-send-expired", "org_a").attempts == 2
   end
 
+  test "a due failed_retryable row re-admitted by recovery KEEPS its last_error diagnostic" do
+    # The sirtify-routed finding (claude F8, 2026-10-06): recovery re-admission is a
+    # TRANSPORT event, not a delivery outcome — wiping the row's failure diagnostic on
+    # re-admission hides why the retry was scheduled until a new outcome lands.
+    stranded_row!("org_a", "rec-diag-retry")
+
+    past =
+      DateTime.add(DateTime.utc_now() |> DateTime.truncate(:second), -120, :second)
+      |> DateTime.to_iso8601()
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'failed_retryable', attempts = 1, next_attempt_at = ?, last_error = 'http_503' WHERE event_uuid = ?",
+      [past, "rec-diag-retry"]
+    )
+
+    assert {:ok, [result]} =
+             Dispatcher.reconcile_pending(Emitter, :order_paid,
+               tenant: "org_a",
+               older_than: cutoff(),
+               enqueue_key: "reconcile-diag",
+               enqueue: counting_enqueuer(self())
+             )
+
+    assert result.status == :reconciled
+    assert_receive {:enqueued, "rec-diag-retry"}, 1_000
+
+    row = row_state!("rec-diag-retry", "org_a")
+    assert row.status == :failed_retryable
+    assert row.attempts == 1
+    assert row.last_error == "http_503", "re-admission must not wipe the failure diagnostic"
+  end
+
+  test "a terminal outcome releases the enqueue claim — a stale reconciler release no-ops, never clobbers the terminal diagnostic" do
+    # The 2.0.3 review's stale-replay finding, at its root: mark_succeeded and
+    # mark_send_failed used to leave a reconciler's enqueue_token live on terminal
+    # rows, so the token-gated release could still fire AFTER the worker completed
+    # and overwrite the terminal diagnostic (endpoint_disabled) with the stale
+    # pre-admission one (http_503).
+    stranded_row!("org_a", "rec-terminal-claim")
+    token = Ash.UUID.generate()
+    lease = DateTime.add(DateTime.utc_now(), 30, :second) |> DateTime.to_iso8601()
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'failed_retryable', attempts = 1, next_attempt_at = ?, last_error = 'http_503', enqueue_token = ?, enqueue_lease_expires_at = ? WHERE event_uuid = ?",
+      [
+        DateTime.add(DateTime.utc_now(), -120, :second) |> DateTime.to_iso8601(),
+        token,
+        lease,
+        "rec-terminal-claim"
+      ]
+    )
+
+    row = row_state!("rec-terminal-claim", "org_a")
+
+    # The worker's terminal transition (dead_letter) both writes the outcome AND
+    # releases the enqueue claim in the same statement.
+    row
+    |> Ash.Changeset.for_update(
+      :mark_send_failed,
+      %{
+        error: "endpoint_disabled",
+        next_attempt_at: nil,
+        dead_letter?: true,
+        response_status: nil,
+        response_snippet: nil
+      },
+      tenant: "org_a",
+      authorize?: false
+    )
+    |> Ash.update!()
+
+    terminal = row_state!("rec-terminal-claim", "org_a")
+    assert terminal.status == :dead_letter
+    assert terminal.last_error == "endpoint_disabled"
+    assert is_nil(terminal.enqueue_token), "the terminal outcome must release the enqueue claim"
+    assert is_nil(terminal.enqueue_lease_expires_at)
+
+    # mark_succeeded releases the claim the same way.
+    stranded_row!("org_a", "rec-terminal-claim-ok")
+    ok_token = Ash.UUID.generate()
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET enqueue_token = ?, enqueue_lease_expires_at = ? WHERE event_uuid = ?",
+      [ok_token, lease, "rec-terminal-claim-ok"]
+    )
+
+    row_state!("rec-terminal-claim-ok", "org_a")
+    |> Ash.Changeset.for_update(:mark_succeeded, %{response_status: 200, response_snippet: nil},
+      tenant: "org_a",
+      authorize?: false
+    )
+    |> Ash.update!()
+
+    ok = row_state!("rec-terminal-claim-ok", "org_a")
+    assert ok.status == :succeeded
+    assert is_nil(ok.enqueue_token)
+  end
+
+  test "a terminal completion between claim and release reports :reconciled, never :endpoint_error (benign completion)" do
+    # Round-2 finding 2: the terminal outcome clears the enqueue claim, so the
+    # release matches zero rows — that is the worker having ALREADY finished the
+    # row, which is success-shaped, not a release failure.
+    stranded_row!("org_a", "rec-benign-race")
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    past = DateTime.add(now, -120, :second) |> DateTime.to_iso8601()
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'failed_retryable', attempts = 1, next_attempt_at = ?, last_error = 'http_503' WHERE event_uuid = ?",
+      [past, "rec-benign-race"]
+    )
+
+    # The enqueuer SIMULATES the race: the row is terminally completed inside
+    # the enqueue callback, before the dispatcher's release fires.
+    row = row_state!("rec-benign-race", "org_a")
+
+    completing_enqueuer = fn _delivery, _event ->
+      row
+      |> Ash.Changeset.for_update(:mark_succeeded, %{response_status: 200, response_snippet: nil},
+        tenant: "org_a",
+        authorize?: false
+      )
+      |> Ash.update!()
+
+      :ok
+    end
+
+    assert {:ok, [result]} =
+             Dispatcher.reconcile_pending(Emitter, :order_paid,
+               tenant: "org_a",
+               older_than: cutoff(),
+               enqueue_key: "reconcile-benign",
+               enqueue: completing_enqueuer
+             )
+
+    assert result.status == :reconciled, "outcome-driven claim invalidation is benign completion"
+
+    final = row_state!("rec-benign-race", "org_a")
+    assert final.status == :succeeded
+    assert is_nil(final.enqueue_token)
+  end
+
+  test "a stored 410 obligation keeps gone_410 through a stale release (round-2 finding 1)" do
+    stranded_row!("org_a", "rec-410-claim")
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET last_error = 'http_503', enqueue_token = ?, enqueue_lease_expires_at = ? WHERE event_uuid = ?",
+      [
+        Ash.UUID.generate(),
+        DateTime.add(DateTime.utc_now(), 30, :second) |> DateTime.to_iso8601(),
+        "rec-410-claim"
+      ]
+    )
+
+    row_state!("rec-410-claim", "org_a")
+    |> Ash.Changeset.for_update(
+      :mark_disable_pending,
+      %{
+        response_status: 410,
+        response_snippet: nil,
+        endpoint_snapshot: %{"endpoint_pk" => %{}}
+      },
+      tenant: "org_a",
+      authorize?: false
+    )
+    |> Ash.update!()
+
+    stored = row_state!("rec-410-claim", "org_a")
+    assert stored.status == :disable_pending
+    assert stored.last_error == "gone_410"
+    assert is_nil(stored.enqueue_token), "the obligation releases the claim at storage"
+  end
+
+  test "a genuinely foreign live claim at release still reports :stale_enqueue_claim (:endpoint_error)" do
+    # The benign-completion classification must NOT swallow a real contention:
+    # if a THIRD claimant re-claimed the row between our claim and our release,
+    # the reload finds a live foreign token — a genuine stale claim, surfaced as
+    # :endpoint_error (the reconcile caller's failure vocabulary).
+    stranded_row!("org_a", "rec-foreign-claim")
+
+    past =
+      DateTime.add(DateTime.utc_now() |> DateTime.truncate(:second), -120, :second)
+      |> DateTime.to_iso8601()
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'failed_retryable', attempts = 1, next_attempt_at = ?, last_error = 'http_503' WHERE event_uuid = ?",
+      [past, "rec-foreign-claim"]
+    )
+
+    row = row_state!("rec-foreign-claim", "org_a")
+
+    # The enqueuer simulates a racing re-claimant: it stamps a FRESH foreign
+    # claim on the row inside the callback, before our release fires.
+    foreign_enqueuer = fn delivery, _event ->
+      foreign_token = Ash.UUID.generate()
+      foreign_lease = DateTime.add(DateTime.utc_now(), 30, :second) |> DateTime.to_iso8601()
+
+      Repo.query!(
+        "UPDATE #{@deliveries} SET enqueue_token = ?, enqueue_lease_expires_at = ? WHERE event_uuid = ?",
+        [foreign_token, foreign_lease, delivery.event_uuid]
+      )
+
+      :ok
+    end
+
+    assert {:ok, [result]} =
+             Dispatcher.reconcile_pending(Emitter, :order_paid,
+               tenant: "org_a",
+               older_than: cutoff(),
+               enqueue_key: "reconcile-foreign",
+               enqueue: foreign_enqueuer
+             )
+
+    assert result.status == :endpoint_error
+  end
+
+  test "a parked lease fences immediate re-admission — the forced interleaving, not scheduling luck (round-3)" do
+    # Round-3 finding 1: the parked lease must actually GATE the next claim
+    # (the claim gate is the lease alone now) — admitted once, then fenced
+    # until the horizon passes, then claimable again.
+    stranded_row!("org_a", "rec-park-fence")
+
+    past =
+      DateTime.add(DateTime.utc_now() |> DateTime.truncate(:second), -120, :second)
+      |> DateTime.to_iso8601()
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'failed_retryable', attempts = 1, next_attempt_at = ?, last_error = 'http_503' WHERE event_uuid = ?",
+      [past, "rec-park-fence"]
+    )
+
+    parent = self()
+
+    assert {:ok, [%{status: :reconciled}]} =
+             Dispatcher.reconcile_pending(Emitter, :order_paid,
+               tenant: "org_a",
+               older_than: cutoff(),
+               enqueue_key: "reconcile-park",
+               enqueue: fn delivery, _event ->
+                 send(parent, {:parked, delivery.event_uuid})
+                 :ok
+               end
+             )
+
+    assert_receive {:parked, "rec-park-fence"}
+
+    row = row_state!("rec-park-fence", "org_a")
+    assert row.last_error == "http_503", "the diagnostic survives the admitted re-enqueue"
+    assert is_nil(row.enqueue_token), "the claim is released"
+    assert not is_nil(row.enqueue_lease_expires_at), "the lease is PARKED"
+    assert DateTime.compare(row.enqueue_lease_expires_at, DateTime.utc_now()) == :gt
+
+    # The immediate second sweep finds the row fenced: the lease gate blocks
+    # the claim, the row surfaces as a contended :duplicate (the concurrent
+    # race outcome vocabulary), and the seam is NEVER called again.
+    assert {:ok, [%{status: :duplicate}]} =
+             Dispatcher.reconcile_pending(Emitter, :order_paid,
+               tenant: "org_a",
+               older_than: cutoff(),
+               enqueue_key: "reconcile-park",
+               enqueue: fn delivery, _event ->
+                 send(parent, {:again, delivery.event_uuid})
+                 :ok
+               end
+             )
+
+    refute_receive {:again, _}, 200
+
+    # Once the horizon passes, the row is claimable again (crashed-claim and
+    # parked-release recovery share the one gate).
+    Repo.query!(
+      "UPDATE #{@deliveries} SET enqueue_lease_expires_at = ? WHERE event_uuid = ?",
+      [DateTime.add(DateTime.utc_now(), -60, :second) |> DateTime.to_iso8601(), "rec-park-fence"]
+    )
+
+    assert {:ok, [%{status: :reconciled}]} =
+             Dispatcher.reconcile_pending(Emitter, :order_paid,
+               tenant: "org_a",
+               older_than: cutoff(),
+               enqueue_key: "reconcile-park",
+               enqueue: fn delivery, _event ->
+                 send(parent, {:unfenced, delivery.event_uuid})
+                 :ok
+               end
+             )
+
+    assert_receive {:unfenced, "rec-park-fence"}
+  end
+
+  test "a row deleted between claim and release reports :enqueue_reload_failed (its own label, never a stale claim)" do
+    # The classification split: a vanished/unreadable row is distinguishable
+    # from genuine contention in the result vocabulary.
+    stranded_row!("org_a", "rec-vanished")
+
+    past =
+      DateTime.add(DateTime.utc_now() |> DateTime.truncate(:second), -120, :second)
+      |> DateTime.to_iso8601()
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'failed_retryable', attempts = 1, next_attempt_at = ?, last_error = 'http_503' WHERE event_uuid = ?",
+      [past, "rec-vanished"]
+    )
+
+    vanishing_enqueuer = fn delivery, _event ->
+      Repo.query!("DELETE FROM #{@deliveries} WHERE event_uuid = ?", [delivery.event_uuid])
+      :ok
+    end
+
+    assert {:ok, [result]} =
+             Dispatcher.reconcile_pending(Emitter, :order_paid,
+               tenant: "org_a",
+               older_than: cutoff(),
+               enqueue_key: "reconcile-vanished",
+               enqueue: vanishing_enqueuer
+             )
+
+    assert result.status == :endpoint_error
+    assert inspect(result.error) =~ "enqueue_reload_failed"
+  end
+
   test "the cutoff gates the claim: fresh rows are left alone" do
     stranded_row!("org_a", "rec-fresh")
     # ...but backdate only 1 second — inside the default 5-minute cutoff

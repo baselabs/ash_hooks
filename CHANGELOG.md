@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.0.3 — October 7, 2026
+
+### Fixed
+
+- Delivery diagnostics survive recovery races, end to end. Re-admission no longer
+  wipes `last_error`: a successful release after a durable enqueue replays the row's
+  admission-time diagnostic (the story of the failure that scheduled the retry —
+  `http_503` stays visible through the retry; only a fresh enqueue failure writes a
+  new error). Every outcome that resolves the row's immediate fate — `mark_succeeded`,
+  `mark_send_failed` (both the terminal and the retryable form), `finalize_disable`,
+  and the stored 410 obligation itself (`mark_disable_pending`) — now RELEASES the
+  enqueue claim in the same statement, so a reconciler whose enqueue raced the
+  outcome finds the token gone. A release that then matches zero rows on a
+  cleared claim classifies as BENIGN COMPLETION (`:reconciled`, never
+  `:endpoint_error`); only a still-live foreign claim is a genuine
+  `:stale_enqueue_claim`. And a successful release now PARKS the enqueue lease for
+  one horizon (30s): a concurrent recovery sweep can no longer re-admit the row in
+  the instant between the token clearing and the sweep ending — admission is
+  exactly-once per recovery window at the seam itself (the concurrent-reconciler
+  contract the suite pins, previously upheld only by SQLite's statement
+  serialization; the final coverage gate caught the true-concurrency gap). The
+  `:release_enqueue` machine primitive gains an optional `enqueue_lease_expires_at`
+  argument (default nil — direct callers see no change). Consumer-observable
+  consequence: a recovery sweep that runs inside a freshly admitted row's
+  30-second parked-lease horizon now reports that row as a contended
+  `:duplicate` where 2.0.2 re-admitted it — sub-30s recovery cadences and
+  `:duplicate`-count alerting will see the new shape. A row whose release
+  reload finds it deleted or unreadable now reports `:enqueue_reload_failed`
+  instead of a stale-claim error. First reported by a sirtify consumer review,
+  with the race family caught by the 2.0.3 release reviews reproducing it on
+  real SQLite and real PostgreSQL.
+- Test: the 5xx backoff bound is asserted exactly (4..7) — the legacy `<= 8` accepted an
+  unreachable value.
+
 ## 2.0.2 — October 6, 2026
 
 ### Fixed

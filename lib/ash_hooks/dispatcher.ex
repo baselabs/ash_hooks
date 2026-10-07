@@ -599,8 +599,12 @@ defmodule AshHooks.Dispatcher do
 
   Each row is claimed with a separate enqueue token and a 30-second lease in the
   same atomic update that checks its state and due time. Successful durable
-  admission clears that token without rewriting delivery state, attempts,
-  retry time, or send lease. A crash leaves a reclaimable lease. The enqueue
+  admission releases the token and PARKS the enqueue lease for one 30-second
+  horizon (the row stays unclaimable while concurrent sweeps from the same
+  recovery window are in flight — a sweep inside that horizon sees the row as a
+  contended `:duplicate`); the row's delivery state, attempts, retry time, send
+  lease, and `last_error` diagnostic are preserved. A failed enqueue releases
+  the claim fully and records its bounded error. A crash leaves a reclaimable lease. The enqueue
   seam must remain idempotent because an external effect can occur before a
   crashed claimant clears its lease.
 
@@ -746,7 +750,11 @@ defmodule AshHooks.Dispatcher do
   defp reconcile_enqueue_result(deliv_mod, claimed, result, tenant) do
     case result do
       :ok ->
-        release_reconcile_claim(deliv_mod, claimed, nil, :reconciled, nil, tenant)
+        # A successful release PRESERVES the row's failure diagnostic by replaying
+        # its current value — re-admission is a transport event, not a delivery
+        # outcome; only the {:error, _} branch (a fresh enqueue failure) writes a
+        # new story. (The sirtify-routed last_error-wipe finding.)
+        release_reconcile_claim(deliv_mod, claimed, claimed.last_error, :reconciled, nil, tenant)
 
       {:error, reason} ->
         release_reconcile_claim(
@@ -761,7 +769,12 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp release_reconcile_claim(deliv_mod, claimed, error, status, reason, tenant) do
-    case release_enqueue(deliv_mod, claimed, error, tenant) do
+    # The park decision is the explicit enqueue outcome (:reconciled admitted
+    # durably) — never the error string, which on success carries the
+    # PRESERVED diagnostic.
+    enqueue_succeeded? = match?(:reconciled, status)
+
+    case release_enqueue(deliv_mod, claimed, error, tenant, enqueue_succeeded?) do
       :ok -> reconcile_result(claimed, status, reason)
       {:error, release_reason} -> reconcile_result(claimed, :endpoint_error, release_reason)
     end
@@ -812,8 +825,7 @@ defmodule AshHooks.Dispatcher do
       |> Ash.Query.do_filter(PrimaryKey.filter(row))
       |> Ash.Query.filter(
         dispatch_source == ^row.dispatch_source and dispatch_route == ^row.dispatch_route and
-          (is_nil(enqueue_token) or is_nil(enqueue_lease_expires_at) or
-             enqueue_lease_expires_at <= ^now)
+          (is_nil(enqueue_lease_expires_at) or enqueue_lease_expires_at <= ^now)
       )
       |> recovery_state_filter(row.status, cutoff, now)
       |> Ash.bulk_update(
@@ -854,14 +866,31 @@ defmodule AshHooks.Dispatcher do
   defp recovery_state_filter(query, :disable_pending, _cutoff, _now),
     do: Ash.Query.filter(query, status == :disable_pending)
 
-  defp release_enqueue(deliv_mod, row, error, tenant) do
+  defp release_enqueue(deliv_mod, row, error, tenant, enqueue_succeeded?) do
+    # A SUCCESSFUL enqueue parks the lease for one horizon: the row stays
+    # unclaimable while CONCURRENT sweeps from the same recovery window are
+    # still in flight, so admission is exactly-once per recovery window at the
+    # seam. The park decision is the explicit enqueue outcome — never the
+    # error string, which on success carries the PRESERVED diagnostic. A
+    # failed enqueue releases fully (the next sweep must re-claim it).
+    parked =
+      if enqueue_succeeded? do
+        DateTime.add(
+          DateTime.utc_now() |> DateTime.truncate(:microsecond),
+          @enqueue_lease_seconds,
+          :second
+        )
+      else
+        nil
+      end
+
     result =
       deliv_mod
       |> Ash.Query.do_filter(PrimaryKey.filter(row))
       |> Ash.Query.filter(
         dispatch_source == ^row.dispatch_source and enqueue_token == ^row.enqueue_token
       )
-      |> Ash.bulk_update(:release_enqueue, %{error: error},
+      |> Ash.bulk_update(:release_enqueue, %{error: error, enqueue_lease_expires_at: parked},
         authorize?: false,
         return_records?: true,
         return_errors?: true,
@@ -870,8 +899,31 @@ defmodule AshHooks.Dispatcher do
       )
 
     case bulk_one(result, :stale_enqueue_claim) do
-      {:ok, _row} -> :ok
-      {:error, reason} -> {:error, reason}
+      {:ok, _row} ->
+        :ok
+
+      {:error, :stale_enqueue_claim} ->
+        # A terminal/retryable outcome between claim and release CLEARS the
+        # enqueue claim in the same statement, so the release matching zero
+        # rows here means the worker already finished the row — benign
+        # completion, never a release failure. Only a row that is STILL
+        # live-claimed is a genuine stale claim.
+        classify_stale_claim(deliv_mod, row, tenant)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp classify_stale_claim(deliv_mod, row, tenant) do
+    case reload(deliv_mod, row, tenant) do
+      # The claim was released by an outcome (terminal, retryable, or the stored
+      # 410 obligation) — benign completion. A live token is genuine contention;
+      # a row that vanished or could not be reloaded is its own (distinguishable)
+      # failure, never silently one of the other two.
+      %{enqueue_token: nil} -> :ok
+      %{} -> {:error, :stale_enqueue_claim}
+      nil -> {:error, :enqueue_reload_failed}
     end
   end
 

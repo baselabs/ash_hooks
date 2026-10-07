@@ -654,8 +654,9 @@ defmodule AshHooks.DeliveryTest do
 
       assert {:snooze, delay} = DeliveryRuntime.run(args(row), config())
 
-      # attempts == 1 after the mark: base 2 * 2^1 = 4; jitter adds [0, delay)
-      assert delay >= 4 and delay <= 8
+      # attempts == 1 after the mark: base 2 * 2^1 = 4; jitter adds [0, 4) — the
+      # bound is exactly 4..7 (8 was unreachable; tightened at the 2.0.3 release).
+      assert delay in 4..7
       assert row!(row.id).status == :failed_retryable
     end
 
