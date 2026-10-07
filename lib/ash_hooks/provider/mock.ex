@@ -52,6 +52,7 @@ defmodule AshHooks.Provider.Mock do
   def parse_event_type(_payload), do: {:error, :malformed_payload}
 
   @impl Provider
+  @doc "Builds the reference provider's typed event from a verified payload."
   def handle_event(event_type, payload) do
     {:ok, %Event{type: event_type, payload: payload}}
   end

@@ -22,8 +22,10 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
 
   def transform(dsl_state) do
     with {:ok, payload_attribute} <- check_payload_attribute(dsl_state),
-         {:ok, dsl_state} <- add_primary_key(dsl_state) do
-      add_attributes(dsl_state, payload_attribute)
+         {:ok, dsl_state} <- add_primary_key(dsl_state),
+         {:ok, dsl_state} <- add_attributes(dsl_state, payload_attribute),
+         :ok <- validate_primary_key_sources(dsl_state, payload_attribute) do
+      {:ok, dsl_state}
     end
   end
 
@@ -75,6 +77,54 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
     end)
   end
 
+  defp validate_primary_key_sources(dsl_state, payload_attribute) do
+    resource = Transformer.get_persisted(dsl_state, :resource)
+
+    primary_key =
+      dsl_state
+      |> Transformer.get_entities([:attributes])
+      |> Enum.filter(& &1.primary_key?)
+
+    primary_key_names = Enum.map(primary_key, & &1.name)
+
+    supplied =
+      MapSet.new([
+        :event_uuid,
+        :event_type,
+        payload_attribute,
+        :endpoint_id,
+        :subscription_id,
+        :signing_mode,
+        :dispatch_source,
+        :dispatch_route
+      ])
+
+    unobtainable =
+      primary_key
+      |> Enum.reject(fn attribute ->
+        attribute.generated? or not is_nil(attribute.default) or
+          (attribute.writable? and MapSet.member?(supplied, attribute.name)) or
+          (primary_key_names == [:id] and attribute.writable?)
+      end)
+
+    case unobtainable do
+      [] ->
+        :ok
+
+      attributes ->
+        names = Enum.map(attributes, & &1.name)
+
+        {:error,
+         DslError.exception(
+           module: resource,
+           path: [:outbound_delivery],
+           message:
+             "primary key components #{inspect(names)} are unobtainable during dispatch — " <>
+               "give each component a default/data-layer generator or use a writable field supplied by the :dispatch action"
+         )}
+    end
+  end
+
   defp attributes_spec(payload_attribute) do
     [
       {:event_uuid, :string, [allow_nil?: false, constraints: [max_length: 255]]},
@@ -83,6 +133,10 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
       {:endpoint_id, :uuid, [allow_nil?: false]},
       {:subscription_id, :uuid, []},
       {:signing_mode, :atom, [constraints: [one_of: [:legacy, :dual, :standard]]]},
+      {:dispatch_source, :string,
+       [allow_nil?: false, default: "v1:direct:unbound", constraints: [max_length: 1024]]},
+      {:dispatch_route, :string,
+       [allow_nil?: false, default: "v1:route:unbound", constraints: [max_length: 1024]]},
       {:status, :atom,
        [
          allow_nil?: false,
@@ -90,6 +144,11 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
          constraints: [one_of: AshHooks.OutboundDelivery.statuses()]
        ]},
       {:attempts, :integer, [allow_nil?: false, default: 0]},
+      {:attempt_token, :uuid, [writable?: false]},
+      {:send_lease_expires_at, :utc_datetime_usec, [writable?: false]},
+      {:enqueue_token, :uuid, [writable?: false]},
+      {:enqueue_lease_expires_at, :utc_datetime_usec, [writable?: false]},
+      {:endpoint_snapshot, :map, [writable?: false]},
       {:response_status, :integer, [writable?: false]},
       {:response_snippet, :string, [writable?: false, constraints: [max_length: 2048]]},
       {:last_error, :string, [constraints: [max_length: 255]]},

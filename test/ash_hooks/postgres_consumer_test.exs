@@ -233,6 +233,11 @@ defmodule AshHooks.PostgresConsumerTest do
       response_snippet TEXT,
       last_error TEXT,
       next_attempt_at TIMESTAMP,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token UUID, send_lease_expires_at TIMESTAMP,
+      enqueue_token UUID, enqueue_lease_expires_at TIMESTAMP,
+      endpoint_snapshot JSONB,
       inserted_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL
     )

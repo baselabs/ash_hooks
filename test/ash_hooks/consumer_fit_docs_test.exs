@@ -1,26 +1,8 @@
 defmodule AshHooks.ConsumerFitDocsTest do
   @moduledoc """
-  Doc tripwires for the first-serious-consumer integration's
-  documentation asks — each assertion names the consumer scenario its
-  finding came from, and each can go RED by deleting the doc line it
-  guards (silently dropping an obligation from the extension site is the
-  failure mode these catch).
-
-    * H5 — the seven injected write actions arrive unpoliced on the
-      consumer side; the obligation to cover them must live AT the
-      extension site (the inbound half's "you write your own" precedent).
-    * H7 — a generated `Event.id` turns every producer re-fire into a
-      duplicate POST per sweep; the derive-from-artifact-id contract must
-      live in the Event and Dispatcher docs.
-    * M1 — a map-headers adapter (Req 0.7) silently loses `Retry-After`;
-      the list-shaped header contract and the resolve-and-pin obligation
-      must live in the adapter behaviour's doc.
-    * M2 — `retry_after_cap_seconds` defaults to 86,400 (receiver-held
-      state for up to 24h per attempt); the implication must be stated at
-      the option.
-    * M6 — the 410 auto-disable is an unattributed system bulk write with
-      no tenant visibility story; the silent-dark posture and the
-      telemetry seam must be stated at the classification table.
+  Guards documented caller responsibilities: generated action policies,
+  stable event identity, adapter response shape and connection pinning,
+  retry timing, and endpoint-disable visibility.
   """
 
   use ExUnit.Case, async: true
@@ -37,50 +19,56 @@ defmodule AshHooks.ConsumerFitDocsTest do
       for action <- [
             :dispatch,
             :mark_enqueue_failed,
+            :bind_dispatch_source,
+            :bind_dispatch_route,
+            :claim_enqueue,
+            :release_enqueue,
             :requeue,
             :prune,
             :mark_sending,
             :mark_succeeded,
-            :mark_send_failed
+            :mark_send_failed,
+            :mark_disable_pending,
+            :finalize_disable
           ] do
         assert doc =~ ":#{action}", "the policy obligation must name #{action}"
       end
 
-      assert doc =~ "POLICY OBLIGATION"
+      assert String.downcase(doc) =~ "policy obligation"
     end
 
     test "Endpoint names the injected :disable" do
       doc = moduledoc(AshHooks.Endpoint)
       assert doc =~ ":disable"
-      assert doc =~ "POLICY OBLIGATION"
+      assert String.downcase(doc) =~ "policy obligation"
     end
   end
 
   describe "H7: deterministic Event.id guidance" do
     test "Event states the derive-from-artifact contract" do
       doc = moduledoc(AshHooks.Event)
-      assert doc =~ "DETERMINISTIC"
+      assert String.downcase(doc) =~ "deterministic"
       assert doc =~ "duplicate POST"
     end
 
     test "Dispatcher's example derives the id from the artifact" do
       doc = moduledoc(AshHooks.Dispatcher)
       assert doc =~ "msg_order-"
-      assert doc =~ "DETERMINISTIC"
+      assert String.downcase(doc) =~ "deterministic"
     end
   end
 
   describe "M1: the adapter-author contract" do
     test "Http names the list-shaped header contract" do
       doc = moduledoc(AshHooks.Http)
-      assert doc =~ "LIST of `{name, value}`"
+      assert String.downcase(doc) =~ "list of `{name, value}`"
       assert doc =~ "Retry-After"
     end
 
     test "Http names the resolve-and-pin obligation" do
       doc = moduledoc(AshHooks.Http)
       assert doc =~ "Resolve-and-pin"
-      assert doc =~ "Target.resolve"
+      assert doc =~ "AshHooks.Ssrf.resolve_public/1"
     end
   end
 
@@ -96,7 +84,7 @@ defmodule AshHooks.ConsumerFitDocsTest do
     test "Delivery states the unattributed/silent-dark posture and the telemetry seam" do
       doc = moduledoc(AshHooks.Delivery)
       assert doc =~ "unattributed"
-      assert doc =~ "SILENTLY"
+      assert String.downcase(doc) =~ "silently"
       assert doc =~ "[:ash_hooks, :delivery, :disable]"
     end
   end

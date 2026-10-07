@@ -41,16 +41,34 @@ defmodule AshHooks.Http.BoundedTlsTest do
 
     spawn(fn ->
       {:ok, socket} = :ssl.transport_accept(listen, 10_000)
-      {:ok, socket} = :ssl.handshake(socket, 10_000)
-      {:ok, _request} = :ssl.recv(socket, 0, 5_000)
-      :ssl.send(socket, "HTTP/1.1 200 OK\r\ncontent-length: 13\r\n\r\n" <> ~s({"tls": true}))
-      :timer.sleep(100)
-      :ssl.close(socket)
+
+      result =
+        case :ssl.handshake(socket, 10_000) do
+          {:ok, connected} ->
+            outcome = tls_response(connected)
+
+            :ssl.close(connected)
+            outcome
+
+          {:error, reason} ->
+            {:handshake_error, reason}
+        end
+
       :ssl.close(listen)
-      send(parent, :served)
+      send(parent, {:tls_server_result, result})
     end)
 
     {listen, port}
+  end
+
+  defp tls_response(socket) do
+    case :ssl.recv(socket, 0, 5_000) do
+      {:ok, _request} ->
+        :ssl.send(socket, "HTTP/1.1 200 OK\r\ncontent-length: 13\r\n\r\n" <> ~s({"tls": true}))
+
+      {:error, reason} ->
+        {:receive_error, reason}
+    end
   end
 
   defp opts, do: [validate_destination: false, cacerts: [ca_der()], timeout: 5_000]
@@ -62,6 +80,7 @@ defmodule AshHooks.Http.BoundedTlsTest do
              Bounded.request(:get, "https://localhost:#{port}/hook", %{}, nil, opts())
 
     assert body == ~s({"tls": true})
+    assert_receive {:tls_server_result, :ok}, 1_000
   end
 
   test "a literal-IP https roundtrip completes via the iPAddress SAN" do
@@ -71,6 +90,7 @@ defmodule AshHooks.Http.BoundedTlsTest do
              Bounded.request(:get, "https://127.0.0.1:#{port}/hook", %{}, nil, opts())
 
     assert body == ~s({"tls": true})
+    assert_receive {:tls_server_result, :ok}, 1_000
   end
 
   test "a chain-valid cert WITHOUT the IP SAN fails closed on a literal destination" do
@@ -78,6 +98,8 @@ defmodule AshHooks.Http.BoundedTlsTest do
 
     assert {:error, :cert_ip_mismatch} =
              Bounded.request(:get, "https://127.0.0.1:#{port}/hook", %{}, nil, opts())
+
+    assert_receive {:tls_server_result, {:receive_error, :closed}}, 1_000
   end
 
   test "a TLS peer that dies under an in-flight send is an error tuple, never a raise" do
@@ -133,5 +155,8 @@ defmodule AshHooks.Http.BoundedTlsTest do
                validate_destination: false,
                timeout: 5_000
              )
+
+    assert_receive {:tls_server_result, {:handshake_error, {:tls_alert, {:unknown_ca, _}}}},
+                   1_000
   end
 end

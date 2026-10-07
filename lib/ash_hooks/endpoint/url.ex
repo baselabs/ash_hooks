@@ -1,14 +1,15 @@
 defmodule AshHooks.Endpoint.Url do
   @moduledoc """
-  An outbound webhook destination URL, validated at EVERY write path by
-  living in the type: http(s) scheme, host not a known metadata name, and
-  a literal-IP host (v4, v6, mapped/compatible v6) never in a
-  private/loopback/link-local/reserved range (ADR-0005's registration-time
-  floor — deterministic and offline-safe).
+  An outbound webhook destination URL with registration-time validation.
 
-  DNS resolution of HOSTNAME urls is deliberately NOT done here: the
-  ADR assigns send-time DNS re-resolution to the delivery runtime, and
-  cast-time resolution would make every changeset network-dependent.
+  Input casting requires an HTTP or HTTPS scheme and a host, rejects known
+  metadata hostnames, and rejects non-global literal IPv4 and IPv6 addresses,
+  including mapped and compatible IPv6 forms. Consumer actions using this type
+  apply the same validation as the package's endpoint actions.
+
+  Hostname registration does not resolve DNS. The delivery runtime resolves
+  and validates the destination at send time, so casting remains independent
+  of network availability.
   """
   use Ash.Type
 

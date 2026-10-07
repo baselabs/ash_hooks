@@ -1,6 +1,149 @@
 # Upgrading
 
-## 1.2.1 → 1.3.0+
+## 1.x → 2.0.0
+
+2.0 changes the durable delivery schema and HubSpot's default event identity.
+Drain old jobs and migrate before activating the new runtime. Mixed 1.x/2.x
+workers against one ledger are unsupported.
+
+### Ordered deployment
+
+1. Quiesce outbound producers, ingress, workers, inbound reapers, and recovery
+   schedulers. Drain in-flight 1.x Oban jobs. Record pending rows, retry times,
+   tenant partitions, declaration ownership, and the current queue binding.
+2. Upgrade to `{:ash_hooks, "~> 2.0"}` with Ash >= 3.34.3 and < 4.0. Generate
+   and inspect the AshPostgres migration for every resource carrying either
+   delivery extension. Preserve existing endpoint/event and inbound dedup indexes.
+3. Add the outbound columns below and extend any database status constraint to
+   admit `disable_pending`. Add `superseded` to the inbound status constraint.
+   New generated actions are machine primitives: keep application write actions
+   narrow and update any explicit action policies before activation.
+4. Backfill each existing outbound row's `dispatch_source` and `dispatch_route`
+   from its actual emitting declaration, endpoint resource, and enqueue binding.
+   Keep attempts and `next_attempt_at`; expired sends need recovery, rather than
+   counter resets. Unresolved declaration or route mappings block activation.
+5. If a HubSpot declaration uses the former digest default, adopt retained
+   identities as described below while ingress and reapers remain quiesced.
+   Declarations with an explicit `event_id` extractor keep that extractor.
+6. Deploy all 2.0 application nodes/workers together. Enable the periodic
+   recovery call for each declaration and tenant, then resume ingress and producers.
+   Observe row transitions, persisted runnable jobs, endpoint-disable events, and
+   a signed delivery through the actual receiver.
+
+### Outbound columns and ownership
+
+| Attribute | Ash type | Migration requirements |
+| --- | --- | --- |
+| `dispatch_source` | `:string` | Non-null; max length 1,024; explicit legacy backfill |
+| `dispatch_route` | `:string` | Non-null; max length 1,024; explicit legacy backfill |
+| `attempt_token` | `:uuid` | Nullable; non-writable |
+| `send_lease_expires_at` | `:utc_datetime_usec` | Nullable; non-writable |
+| `enqueue_token` | `:uuid` | Nullable; non-writable |
+| `enqueue_lease_expires_at` | `:utc_datetime_usec` | Nullable; non-writable |
+| `endpoint_snapshot` | `:map` | Nullable; non-writable; JSON storage |
+
+For a declaration and named worker, derive backfill values through
+`AshHooks.OutboundBinding.source/3` and `named_route/2`:
+
+```elixir
+source = AshHooks.OutboundBinding.source(MyApp.Order, :order_paid, MyApp.WebhookEndpoint)
+route = AshHooks.OutboundBinding.named_route(MyApp.WebhookDeliveryWorker, :enqueue)
+```
+
+Apply those values only to the reviewed declaration/tenant partition. The
+declaration and endpoint module names are part of the versioned identity; renames
+require an explicit mapping. Do not infer ownership from current subscriptions.
+The default `"v1:direct:unbound"` / `"v1:route:unbound"` markers preserve direct
+`:dispatch` action compatibility; they do not identify a legacy declaration.
+
+Named MFA enqueue callbacks and equivalent external captures share a route.
+Anonymous callbacks still dispatch; use a stable `enqueue_key` to enable automatic
+recovery. An unkeyed anonymous route requires an explicit host mapping. A deferred
+declaration dispatched with `enqueue: nil` can bind its route once during recovery.
+Keep any keyed callback bound to the same implementation in the host application.
+
+Send claims and result writes use a UUID token, separate from the writable
+accounting counter `attempts`. A live send lease blocks competing claims; stale
+results cannot mark success, retry, or disable an endpoint. Delivery over the
+network remains **at-least-once**: a peer may accept a request before a process
+dies or its lease expires. Receivers and inbound handlers need idempotency.
+
+Lease timestamps use application UTC time. Synchronize clocks across application
+nodes; expiry and due-time decisions require that deployment prerequisite. The
+default attempt budget is 25 seconds plus a 5-second finalization allowance;
+the generated Oban timeout is 35 seconds and must exceed their sum. Configure
+`attempt_timeout`, `finalization_allowance`, and `timeout` together.
+
+`reconcile_pending/3` now also recovers due retryable failures, expired sends,
+enqueue failures, and pending-disable obligations. It preserves attempts and
+retry timestamps. Call it periodically per declaration/tenant using the matching
+durable route. A 410 stores `disable_pending` before the endpoint write; it is
+not terminal until the matching old endpoint configuration is disabled, gone,
+or replaced. A storage error keeps that obligation recoverable without resending.
+
+### HubSpot identity adoption
+
+The new HubSpot identity hashes a canonical whole batch. It ignores only outer
+`attemptNumber` values, sorts object keys and outer events, preserves batch
+multiplicity, and preserves order inside nested lists. Other changed event
+content remains a distinct event. The precedence is explicit declaration
+`event_id` extractor → provider `event_identity/1` → raw-body digest when the
+provider does not implement the callback. A callback error never becomes a digest.
+
+Plan each provider/scope/tenant partition and retain its audit before applying:
+
+```elixir
+opts = [tenant: tenant, scope: %{account_id: account_id}]
+{:ok, plan} = AshHooks.Ingress.plan_legacy_identity_adoption(MyApp.InboundLedger, :hubspot, opts)
+# Review plan.audit; resolve every item in plan.unresolved and plan.conflicts.
+{:ok, applied} =
+  AshHooks.Ingress.adopt_legacy_identity(MyApp.InboundLedger, :hubspot, Keyword.put(opts, :quiesced?, true))
+```
+
+Within a canonical group the representative is processed first, then recoverable,
+then permanently failed, with deterministic insertion/key tie-breaking. The
+representative receives the canonical identity; siblings become terminal
+`:superseded`. Every original payload and digest stays stored. The returned audit
+contains before/after keys, identities, statuses, digests, and representative
+mapping; persist it in your own upgrade records. Adoption never invokes a handler.
+Redacted/unavailable payloads require explicit `canonical_ids` mappings, keyed by
+the old external event ID. Unresolved rows and canonical-identity conflicts block
+the transaction. The data layer must support transactions; otherwise adoption returns
+`{:error, :transactions_not_supported}` without changing rows. Re-plan after applying
+to verify stable state. Run each
+partition with ingress/reapers stopped; `quiesced?: true` is an assertion by the
+operator, not an application-wide lock.
+
+A domain provider wrapping the built-in HubSpot provider must delegate
+`event_identity/1` along with its signature/type callbacks:
+
+```elixir
+defdelegate event_identity(payload), to: AshHooks.Provider.HubSpotV3
+```
+
+Return a successful provider acknowledgment for `:processed`,
+`:failed_permanent`, and `:superseded`. Send permanent errors to your operator
+surface; repeated provider retries cannot repair a terminal row.
+
+### Resource and security compatibility
+
+- Ledger operations support complete custom primary-key maps. Endpoint and
+  subscription references require a single UUID-storage-compatible key, including
+  a renamed UUID/UUIDv7 key. Incompatible/composite reference keys fail at compile.
+  Every ledger key component must be generated, defaulted, or supplied by its
+  injected create action; unavailable key inputs fail at compile.
+- Endpoint mapped enabled/disabled values are cast using the attribute's real
+  type/constraints. Empty enabled values, semantic overlap, invalid values, and
+  mapping any primary-key attribute fail at compile.
+- Event IDs and HTTP headers reject control bytes and invalid UTF-8. Dispatch
+  validates IDs on manually constructed event structs too. Event types remain
+  nonempty atom/string values bounded to 255 bytes. Arbitrary telemetry reason text becomes
+  `unclassified`; use the documented reason vocabulary.
+- The default HTTP adapter shares one deadline across DNS, connect, send, and reads.
+  Its body cap ends reading immediately; interim 1xx responses precede the final
+  response. Special-purpose IP ranges are rejected and IPv6 Host values are bracketed.
+
+## 1.2.1 → 1.3.x
 
 **Nothing breaks and nothing is required.** This release is additive:
 new per-resource DSL options (`payload_attribute`, `prune_action`, the
@@ -11,9 +154,9 @@ knowing even if you change nothing:
    declaring `uuid_v7_primary_key` (or any non-writable `:id`) previously
    failed Ash's `ValidateAccept` on the injected `:dispatch`/`:ingest`
    accept lists. Those resources now compile and classify
-   created/duplicate by an identity pre-read (exact sequentially; the
-   storage upsert and the default Oban job uniqueness keep every effect
-   once — see the CHANGELOG's full statement).
+   created/duplicate by an identity pre-read. Storage uniqueness preserves the
+   row; it does not guarantee one network side effect. Version 2.0 adds durable
+   attempt and enqueue ownership. Receivers still need webhook-ID deduplication.
 2. **The send path dead-letters an endpoint whose status is anything
    other than `:enabled`** (previously only an exact `:disabled`
    dead-lettered). Only affects consumers who redeclared `status` with
@@ -26,7 +169,7 @@ switch (`endpoint do status_attribute ... end`), and atom-typed
 subscription registers now match. The README's "Fitting the extensions
 to your domain" section shows each.
 
-## 1.1.1 → 1.2.0+
+## 1.1.1 → 1.2.x
 
 ### Multi-tenancy is available and opt-in (ADR-0011)
 
@@ -36,7 +179,8 @@ checklist (`documentation/tutorials/tenancy-adoption-checklist.md`) —
 the ordered transition for populated tables is **backfill the tenant
 attribute → regenerate identity indexes → enable multitenant
 dispatch**. A NULL-tenant legacy row forms a shadow partition: new
-tenant-bearing upserts create parallel rows and strand effect-once.
+tenant-bearing upserts create parallel rows and allow repeated processing of
+the same logical event.
 
 Two obligations for multi-tenant adopters:
 
@@ -57,7 +201,7 @@ The `%{endpoint_id, subscription_id, status, error}` dispatch result
 container is now a typespec'd public contract with one NEW status:
 `:reconciled`.
 
-## 1.0.4 → 1.1.0+
+## 1.0.4 → 1.1.x
 
 ### Elixir 1.20+ required (previously 1.17+)
 
@@ -72,7 +216,7 @@ Elixir 1.20 yet, pin the floor release instead:
 {:ash_hooks, "~> 1.0.4"}
 ```
 
-## 1.0.3 → 1.0.4+
+## 1.0.3 → 1.0.4
 
 Behavior corrections (all also under "Fixed" in the CHANGELOG; no API change):
 
@@ -137,7 +281,7 @@ Ash's
 [backwards-compatibility config guide](https://hexdocs.pm/ash/backwards-compatibility-config.html#default_string_length_count)
 for per-attribute overrides.
 
-## 1.0.1 → 1.0.2+
+## 1.0.1 → 1.0.2
 
 Two behavior corrections to know about (both security-posture fixes; no API change):
 

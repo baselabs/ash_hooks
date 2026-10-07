@@ -1,37 +1,26 @@
 defmodule AshHooks.Provider.ComplyCube do
   @moduledoc """
-  ComplyCube webhook verifier: lowercase-hex HMAC-SHA256 of the RAW request
-  body under the webhook endpoint's secret, carried in the
-  `ComplyCube-Signature` header — no timestamp, no replay window (verified
-  against the vendor docs and all three official SDKs; the acceptance vector
-  is the PHP SDK's own test fixture, quoted in
-  `test/ash_hooks/provider/comply_cube_test.exs`).
+  Verifies ComplyCube signatures and parses webhook events.
 
-  The scheme is exactly "lowercase-hex HMAC over the raw body", so
-  `verify_signature/3` delegates to `Provider.default_verify_signature/4`:
-  constant-time compare behind a byte-size guard, case-sensitive on the hex
-  (the strict Python/PHP SDKs compare case-sensitively — Node's uppercase
-  acceptance is hex-decode leniency, not evidence of uppercase emission), and
-  an empty secret fails closed as `{:error, :no_webhook_secret}`. Sign the raw
-  body bytes exactly as received — re-serialized JSON with different
-  whitespace fails verification.
+  Configure the webhook endpoint's secret as the inbound declaration's
+  `secret`. `ComplyCube-Signature` carries a lowercase hexadecimal HMAC-SHA256
+  of the raw request body. Verification compares the exact bytes and is
+  case-sensitive. Re-encoding JSON, even with only whitespace changes,
+  changes the signature. An empty secret returns `{:error, :no_webhook_secret}`.
 
-  `parse_event_type/1` maps the vendor's documented event types to pre-existing
-  atoms via an allowlist — unknown type strings fail closed as
-  `{:error, :unknown_event_type}` (no atom-table growth from webhook input).
-  The consequence is deliberate: a NEW vendor event type the map does not know
-  lands in the ledger as `failed_permanent` with `error_class`
-  `"unknown_event_type"` — recorded and auditable, but not re-processed
-  automatically. Extend `@event_types` (one module attribute) when ComplyCube
-  publishes new types, or write a permissive provider module against
-  `AshHooks.Provider` if your consumer wants different semantics.
+  The signature has no authenticated timestamp. A ComplyCube declaration
+  cannot use `replay_window_seconds`; that combination is rejected at compile
+  time. Durable event identity and idempotent business actions remain necessary
+  for repeated deliveries.
 
-  The optional secret callbacks are deliberately NOT implemented: ComplyCube
-  issues one secret per configured webhook endpoint, and an `inbound`
-  declaration IS one endpoint — supply it through the DSL `secret` source.
-  `timestamp_header/0` is likewise not implemented: a `replay_window_seconds`
-  on a ComplyCube inbound is rejected at compile time (the scheme has no
-  trustworthy timestamp to window over).
+  `parse_event_type/1` maps known type strings to pre-existing atoms. Unknown
+  types return `{:error, :unknown_event_type}` and ingress records a permanent
+  failure with `error_class: "unknown_event_type"`. A new type requires an
+  updated provider type map or your own `AshHooks.Provider` implementation.
+
+  `handle_event/2` returns an `AshHooks.Provider.ComplyCube.Event`. To execute
+  application actions during ingress, delegate signature verification and type
+  parsing to this module and implement an idempotent handler in your provider.
   """
 
   alias AshHooks.Provider
@@ -46,8 +35,7 @@ defmodule AshHooks.Provider.ComplyCube do
 
   @behaviour Provider
 
-  # Vendor-documented taxonomy (API reference, verified first-hand 2026-08-21;
-  # identical to the reference platform adapter's production set).
+  # Known webhook event types from the ComplyCube API reference.
   @event_types %{
     "client.created" => :client_created,
     "client.updated" => :client_updated,
@@ -92,6 +80,7 @@ defmodule AshHooks.Provider.ComplyCube do
   def parse_event_type(_payload), do: {:error, :malformed_payload}
 
   @impl Provider
+  @doc "Builds a typed ComplyCube event from a verified payload."
   def handle_event(event_type, payload) do
     {:ok, %Event{type: event_type, payload: payload}}
   end

@@ -1,8 +1,8 @@
 defmodule AshHooks.Worker do
   @moduledoc """
-  The host-injected Oban worker (ADR-0004): the consuming app defines ONE
-  module, and the Oban beam compiles only where Oban exists — this macro
-  expands `use Oban.Worker` inside the HOST's compilation, so the package
+  The host-injected Oban worker (ADR-0004): the consuming app defines one
+  module, and the Oban beam compiles only where Oban exists. This macro
+  expands `use Oban.Worker` inside the host's compilation, so the package
   itself never references a loaded Oban module and compiles Oban-free
   (the CI no-optional leg's proof).
 
@@ -16,7 +16,7 @@ defmodule AshHooks.Worker do
       end
 
   Consumers pass `enqueue: {MyApp.WebhookDeliveryWorker, :enqueue}` to
-  `AshHooks.dispatch/4` — the generated `enqueue/2` IS that seam.
+  `AshHooks.dispatch/4`; the generated `enqueue/2` is that seam.
 
   Options:
 
@@ -24,8 +24,8 @@ defmodule AshHooks.Worker do
       modules carrying the `AshHooks.OutboundDelivery` / `AshHooks.Endpoint`
       extensions.
     * `:secret_resolver` (required, `{m, f}`) — resolves an endpoint's
-      secret REFERENCE: `f(ref) :: {:ok, secret_binary} | {:error, term}`.
-      The returned value ALWAYS signs the Standard Webhooks envelope
+      secret reference: `f(ref) :: {:ok, secret_binary} | {:error, term}`.
+      The returned value signs the Standard Webhooks envelope
       (its `whsk_`/`whsec_` prefix only selects the key slot for
       rotation); legacy envelopes, when the signing mode uses them, are
       signed from the endpoint's `legacy_secret_ref` /
@@ -36,61 +36,133 @@ defmodule AshHooks.Worker do
       enqueue). Explicit, no arity magic: the default 1-arity contract is
       unchanged.
     * `:snippet_redactor` (`{m, f}`, optional) — a consumer callback run
-      on the RAW captured body ahead of the package's snippet floor
+      on the raw captured body ahead of the package's snippet floor
       (domain-specific tokens need raw input). Only consulted on per-call
       `snippet_capture: true` diagnostic runs; a crash or invalid return
       degrades to the sanitized summary, never raw bytes. The capture
-      flag itself is deliberately NOT a macro option (ADR-0005's snippet
+      flag itself is deliberately not a macro option (ADR-0005's snippet
       amendment: compile-time knobs are broad and quiet) — pass it in the
       `AshHooks.Delivery.run/2` config for a one-row diagnostic re-drive.
     * `:http` — the `AshHooks.Http` adapter (default `AshHooks.Http.Bounded`).
+    * `:http_opts` — adapter options as a literal keyword list or a
+      `{module, function, args}` callback resolved inside each job's monitored
+      delivery deadline.
     * `:oban` — the Oban instance name (default the unnamed instance).
-    * `:queue`, `:timeout`, `:max_attempts` — Oban Worker options (the
-      job's timeout defaults to 30s; its max_attempts is advisory only —
-      snoozes extend it, the ROW's ceiling governs dead-letter).
+    * `:queue` (default `:ash_hooks`), `:timeout` (35,000 ms), and
+      `:max_attempts` (20) — Oban Worker options. The job timeout must be
+      greater than `:attempt_timeout + :finalization_allowance`.
+    * `:attempt_timeout` (25,000 ms) and `:finalization_allowance` (5,000 ms)
+      — the driver deadline and extra send-lease interval. The attempt budget
+      includes endpoint lookup, secret resolution, signing, destination and
+      DNS checks, HTTP, and result persistence. Keep application clocks
+      synchronized because lease comparisons use the application clock.
     * `:delivery_max_attempts` (default 10), `:base_backoff_seconds` (2),
       `:max_backoff_seconds` (3600), `:retry_after_cap_seconds` (86_400) —
-      the row-driven retry policy. The `Retry-After` CAP is
+      the row-driven retry policy. For direct `AshHooks.Delivery.run/2` calls,
+      `:delivery_max_attempts` becomes `:max_attempts`; the other retry option
+      names and defaults are unchanged. Omitted or `nil` retry options use
+      these defaults. The `Retry-After` cap is
       receiver-held-state budget: a receiver returning a large
-      `Retry-After` holds its delivery row AND its Oban job for up to the
+      `Retry-After` holds its delivery row and its Oban job for up to the
       cap per attempt (the 86,400 default = up to 24 hours per attempt on
       one header; a receiver honoring `Retry-After` deliberately asks for
       exactly that). Lower the cap when the chosen posture is
       exhaust-fast (a wedged receiver dead-letters at the ceiling instead
-      of holding state) — the cap clamps ONLY `Retry-After`, never the
+      of holding state). The cap clamps `Retry-After`; it does not alter the
       backoff ladder.
 
-  Uniqueness (verified against deps/oban 2.23.1, ADR-0007):
-  `fields: [:args], keys: [:endpoint_id, :event_uuid], period: :infinity,
-  states: :all` — the defaults (60s / :successful) would re-admit a
-  duplicate trigger after success or window expiry; both are overridden.
-  A uniqueness conflict is `{:ok, %Oban.Job{conflict?: true}}` — the
-  generated `enqueue/2` maps it to `:ok` (a conflict IS dedup success).
+  The generated enqueue uses `fields: [:args]` with the complete delivery
+  key, delivery and endpoint resource names, source, route, endpoint/event,
+  and tenant keys. Uniqueness has an infinite period over runnable states
+  (`available`, `scheduled`, `executing`, and `retryable`). Completed,
+  canceled, and discarded jobs therefore permit a later recovery trigger.
+  Enqueue succeeds only after Oban returns a persisted runnable job whose
+  identity args match the request. Oban.Basic may briefly report a uniqueness
+  conflict without the winning job's ID while its advisory-lock peer commits;
+  the generated path retries that result for at most twenty 5 ms waits, then
+  returns `{:error, :job_not_persisted}`. Before insertion it binds a deferred
+  route once with a compare-and-set update; a different stored route returns
+  `{:error, :dispatch_route_conflict}`.
   On multitenant deliveries the enqueue also serializes the row's tenant
-  into job args (the attribute value INVERTED through the resource's
+  into job args (the attribute value inverted through the resource's
   `tenant_from_attribute`, so `Delivery.run/2`'s forward
   `parse_attribute` round-trips for non-identity parsers too); the
-  uniqueness keys stay the pair (endpoint PKs are globally unique, and
-  Oban's `keys:` containment is indifferent to the extra arg). The
+  uniqueness identity includes the serialized tenant. The
   tenant must round-trip Oban's JSON encoding — string tenants (uuids,
   slugs) are the supported shape; adopters with a custom `parse_attribute`
   pair it with `tenant_from_attribute` (the default inverse is identity).
   """
+
+  require Ash.Query
 
   defp maybe_expand(nil, _expand), do: nil
   defp maybe_expand(value, expand), do: expand.(value)
 
   defp validate_redactor(m, f) when is_atom(m) and is_atom(f), do: {m, f}
 
-  defp validate_redactor(m, f),
-    do:
-      raise(ArgumentError,
-        message:
-          "AshHooks.Worker :snippet_redactor must be {module, function} " <>
-            "(a 1-arity fn is accepted in the delivery config) — got {#{inspect(m)}, #{inspect(f)}}"
-      )
+  defp validate_redactor(m, f), do: raise(ArgumentError, redactor_error(m, f))
+
+  defp redactor_error(m, f) do
+    "AshHooks.Worker :snippet_redactor must be {module, function} " <>
+      "(a 1-arity fn is accepted in the delivery config) — got {#{inspect(m)}, #{inspect(f)}}"
+  end
 
   alias Ash.Resource.Info, as: ResourceInfo
+
+  @doc false
+  def bind_route(delivery, route, tenant) do
+    unbound_route = AshHooks.OutboundBinding.unbound_route()
+
+    case delivery.dispatch_route do
+      ^route ->
+        {:ok, delivery}
+
+      ^unbound_route ->
+        bind_unbound_route(delivery, route, tenant, unbound_route)
+
+      _other ->
+        {:error, :dispatch_route_conflict}
+    end
+  end
+
+  defp bind_unbound_route(delivery, route, tenant, unbound_route) do
+    delivery.__struct__
+    |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(delivery))
+    |> Ash.Query.filter(dispatch_route == ^unbound_route)
+    |> Ash.bulk_update(:bind_dispatch_route, %{dispatch_route: route},
+      authorize?: false,
+      return_records?: true,
+      return_errors?: true,
+      strategy: [:atomic],
+      tenant: tenant
+    )
+    |> bind_route_result(delivery, route, tenant)
+  end
+
+  defp bind_route_result(%Ash.BulkResult{} = result, delivery, route, tenant) do
+    cond do
+      result.status == :success and match?([_], result.records) ->
+        {:ok, hd(result.records)}
+
+      result.status == :success and result.records == [] ->
+        reload_bound_route(delivery, route, tenant)
+
+      true ->
+        {:error, List.first(result.errors || []) || result}
+    end
+  end
+
+  defp reload_bound_route(delivery, route, tenant) do
+    with {:ok, updated} <-
+           delivery.__struct__
+           |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(delivery))
+           |> Ash.read_one(authorize?: false, tenant: tenant) do
+      case updated do
+        %{dispatch_route: ^route} -> {:ok, updated}
+        _ -> {:error, :dispatch_route_conflict}
+      end
+    end
+  end
 
   defmacro __using__(opts) do
     # resolved at macro time — `use Oban.Worker` needs literal options,
@@ -109,9 +181,25 @@ defmodule AshHooks.Worker do
       max_attempts: Keyword.get(opts, :max_attempts, 20)
     ]
 
-    job_timeout = Keyword.get(opts, :timeout, 30_000)
+    job_timeout = Keyword.get(opts, :timeout, 35_000)
+    attempt_timeout = Keyword.get(opts, :attempt_timeout, 25_000)
+    finalization_allowance = Keyword.get(opts, :finalization_allowance, 5_000)
+
+    if job_timeout <= attempt_timeout + finalization_allowance do
+      raise ArgumentError,
+            "AshHooks.Worker :timeout must exceed :attempt_timeout plus :finalization_allowance"
+    end
 
     {resolver_m, resolver_f} = Keyword.fetch!(opts, :secret_resolver)
+
+    http_opts =
+      case Keyword.get(opts, :http_opts) do
+        {:{}, _, [m, f, a]} when is_atom(f) and is_list(a) -> {expand.(m), f, a}
+        other -> other
+      end
+
+    worker_module = caller.module
+    dispatch_route = AshHooks.OutboundBinding.named_route(worker_module, :enqueue)
 
     snippet_redactor =
       case Keyword.get(opts, :snippet_redactor) do
@@ -141,7 +229,10 @@ defmodule AshHooks.Worker do
         # bundles). Compile-time LITERALS bake as-is; anything computed
         # must arrive as {m, f, a} and is applied per-perform (a macro-time
         # function call would otherwise bake as unevaluated AST)
-        http_opts: Keyword.get(opts, :http_opts),
+        http_opts: http_opts,
+        attempt_timeout: attempt_timeout,
+        finalization_allowance: finalization_allowance,
+        dispatch_route: dispatch_route,
         max_attempts: Keyword.get(opts, :delivery_max_attempts, 10),
         base_backoff_seconds: Keyword.get(opts, :base_backoff_seconds, 2),
         max_backoff_seconds: Keyword.get(opts, :max_backoff_seconds, 3600),
@@ -171,47 +262,82 @@ defmodule AshHooks.Worker do
 
       @impl Oban.Worker
       def perform(%Oban.Job{args: args}) do
-        AshHooks.Delivery.run(args, resolve_http_opts(@ash_hooks_delivery_config))
+        AshHooks.Delivery.run(args, @ash_hooks_delivery_config)
       end
 
-      # an {m, f, a} http_opts resolves at run time; literal lists pass as-is
-      defp resolve_http_opts(config) do
-        case config[:http_opts] do
-          {m, f, a} when is_atom(m) and is_atom(f) and is_list(a) ->
-            Keyword.put(config, :http_opts, apply(m, f, a))
-
-          _literal_or_nil ->
-            config
-        end
-      end
-
-      # The #6 enqueue seam (`enqueue: {__MODULE__, :enqueue}`): inserts
-      # the trigger with effect-once uniqueness; a uniqueness conflict is
-      # dedup success, not an error. Multitenant deliveries carry their
-      # row tenant in the args (read off the multitenancy attribute — Ash
-      # itself set it from the dispatch tenant at create); single-tenant
+      # The enqueue seam (`enqueue: {__MODULE__, :enqueue}`) suppresses a
+      # duplicate runnable job for the same delivery identity. Terminal jobs
+      # do not block a later recovery enqueue. Multitenant deliveries carry
+      # their row tenant in the args (read off the multitenancy attribute —
+      # Ash itself set it from the dispatch tenant at create); single-tenant
       # rows serialize no tenant key at all.
       def enqueue(delivery, _event) do
-        args =
-          %{endpoint_id: to_string(delivery.endpoint_id), event_uuid: delivery.event_uuid}
-          |> maybe_put_tenant(delivery)
-          |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+        expected_route = unquote(dispatch_route)
+        tenant = delivery_tenant(delivery)
 
-        changeset =
-          __MODULE__.new(args,
-            unique: [
-              fields: [:args],
-              keys: [:endpoint_id, :event_uuid],
-              period: :infinity,
-              states: :all
-            ]
-          )
+        with {:ok, delivery} <- AshHooks.Worker.bind_route(delivery, expected_route, tenant) do
+          args =
+            %{
+              delivery_pk: AshHooks.PrimaryKey.encode(delivery),
+              delivery_resource: Atom.to_string(delivery.__struct__),
+              endpoint_resource: Atom.to_string(@ash_hooks_delivery_config[:endpoints]),
+              endpoint_id: to_string(delivery.endpoint_id),
+              event_uuid: delivery.event_uuid,
+              dispatch_source: delivery.dispatch_source,
+              dispatch_route: delivery.dispatch_route,
+              tenant: tenant
+            }
+            |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+            |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
 
-        case Oban.insert(@ash_hooks_oban, changeset) do
-          {:ok, %Oban.Job{}} -> :ok
-          {:error, reason} -> {:error, reason}
+          changeset =
+            __MODULE__.new(args,
+              unique: [
+                fields: [:args],
+                keys: [
+                  :delivery_pk,
+                  :delivery_resource,
+                  :endpoint_resource,
+                  :endpoint_id,
+                  :event_uuid,
+                  :dispatch_source,
+                  :dispatch_route,
+                  :tenant
+                ],
+                period: :infinity,
+                states: [:available, :scheduled, :executing, :retryable]
+              ]
+            )
+
+          insert_durably(changeset, args, 20)
         end
       end
+
+      defp insert_durably(changeset, expected, retries_left) do
+        case Oban.insert(@ash_hooks_oban, changeset) do
+          {:ok, %Oban.Job{id: nil, conflict?: true}} when retries_left > 0 ->
+            Process.sleep(5)
+            insert_durably(changeset, expected, retries_left - 1)
+
+          {:ok, %Oban.Job{} = job} ->
+            durable_admission(job, expected)
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      end
+
+      defp durable_admission(%Oban.Job{id: id, state: state, args: args}, expected)
+           when not is_nil(id) and state in ["available", "scheduled", "executing", "retryable"] do
+        if Map.take(args, Map.keys(expected)) == expected do
+          :ok
+        else
+          {:error, :job_identity_mismatch}
+        end
+      end
+
+      defp durable_admission(%Oban.Job{id: nil}, _expected), do: {:error, :job_not_persisted}
+      defp durable_admission(_job, _expected), do: {:error, :job_not_runnable}
 
       # the tenant rides the args only when the ledger carries a
       # multitenancy attribute (undeclared → nil → no key)
@@ -220,16 +346,16 @@ defmodule AshHooks.Worker do
       # Delivery.run's forward parse_attribute round-trips for
       # NON-identity parsers too (serializing the attribute value itself
       # would be double-parsed there)
-      defp maybe_put_tenant(args, delivery) do
+      defp delivery_tenant(delivery) do
         resource = delivery.__struct__
 
         case ResourceInfo.multitenancy_attribute(resource) do
           nil ->
-            args
+            nil
 
           attribute ->
             {m, f, a} = ResourceInfo.multitenancy_tenant_from_attribute(resource)
-            Map.put(args, :tenant, apply(m, f, [Map.get(delivery, attribute) | a]))
+            apply(m, f, [Map.get(delivery, attribute) | a])
         end
       end
     end

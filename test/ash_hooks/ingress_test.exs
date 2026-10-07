@@ -777,6 +777,32 @@ defmodule AshHooks.IngressTest do
       assert [%{status: :claimed}] = rows()
     end
 
+    test "a row deleted after its successful mark returns not_found instead of crashing" do
+      Repo.query!("""
+      CREATE TRIGGER ing_delete_after_processed
+      AFTER UPDATE ON #{@table}
+      WHEN NEW.status = 'processed'
+      BEGIN
+        DELETE FROM #{@table} WHERE id = NEW.id;
+      END
+      """)
+
+      on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS ing_delete_after_processed") end)
+
+      raw = body("evt_deleted_after_mark")
+      assert {:error, :not_found} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+      assert rows() == []
+    end
+
+    test "claim accepts a complete record key and rejects an unencodable map key" do
+      row = stranded_received_row("evt_record_key")
+      assert {:ok, 1, claimed} = Ingress.claim_delivery(Ledger, row)
+      assert claimed.id == row.id
+
+      assert {:error, :invalid_primary_key} =
+               Ingress.claim_delivery(Ledger, %{1 => Ash.UUID.generate()})
+    end
+
     test "a stale token at mark time returns the reloaded row, not an error" do
       raw = body("evt_staletok")
 

@@ -1,100 +1,134 @@
-# ash_hooks usage rules
+# AshHooks usage rules
 
-For AI assistants working in codebases that use ash_hooks.
+Guidance for maintainers and coding assistants working in applications that use
+AshHooks 2.0.
 
-## When to use what
+## Build events from exact bytes
 
-- Receiving webhooks: put `AshHooks` + `AshHooks.InboundDelivery` on a
-  ledger resource, declare `inbound :provider` sources, and drive
-  `AshHooks.Ingress.ingest/4` — it verifies, persists, dedups, claims,
-  invokes the provider handler, and marks the outcome in one call. The
-  low-level lease primitives (`claim_delivery/3`, `mark_processed/4`,
-  `mark_failed/6`, `renew/4`, `reap/2`) are public for custom async
-  pipelines; ingest/4 itself drives the row to a terminal or
-  re-driveable state in one call (`:failed_retryable` rows are
-  non-terminal — the lease machine re-drives them). The ledger's unique
-  index IS the dedup — never build your own seen-table.
-- Sending webhooks: put `AshHooks` on the emitting resource with an
-  `outbound :event` declaration; the subscription/endpoint/delivery
-  extensions carry the fanout; `use AshHooks.Worker` in the consuming
-  app is the Oban seam; `AshHooks.dispatch/4` is the only entry point.
-- Consumer-fit renames/mappings (when the domain reserves a name or owns
-  the switch): `payload_attribute` on `outbound_delivery` renames the
-  exact-bytes column; `prune_action :none` omits the destroy action
-  (then `Delivery.prune/2` fails loud — deletion is YOUR surface, and no
-  package primitive removes or redacts the outbound bytes: the ledger
-  retains payload rows until you delete them); `status_attribute` +
-  explicit `enabled_values`/`disabled_value` on `endpoint` map the
-  durable enable/disable onto the consumer's own switch — the ONE check
-  is `AshHooks.Endpoint.enabled?/1`. Event ids on the dispatch path must
-  be DERIVED deterministically from the artifact id (a generated id
-  duplicates every producer re-fire); atom-typed `event_types` registers
-  match, but declare the array yourself with your own constraints.
-- Retention: `Ingress.prune/2` / `Delivery.prune/2` delete TERMINAL
-  rows only (needs `timestamps()` on the resource); redacting a claimed
-  row's payload uses `Ingress.redact_payload/5` — never write the
-  payload column directly.
-- Never call `AshHooks.Delivery.run/2` in normal flow — it is the
-  runtime the worker drives. The exception: a one-row diagnostic
-  re-drive with `snippet_capture: true`.
-- Multi-tenant apps: declare the SAME attribute multitenancy
-  (`strategy :attribute, attribute: <attr>` — `global?: true` is
-  rejected) on all four resources and pass `:tenant` /
-  `ctx[:tenant]` to every entry point. Never bypass the threading with
-  raw queries against the ledgers; a tenant-less call against a
-  multitenant resource fails closed (`{:error, :tenant_required}`) by
-  design. Sweeps are per-tenant (`reap_all`/`prune_all` for a tenant
-  list); stranded `:pending` rows go through
-  `AshHooks.reconcile_pending/3`, never hand-rolled updates.
+- Construct outbound events with `AshHooks.Event.new/1`. Pass the exact binary that will
+  be signed and sent; do not pass a map and re-encode it later.
+- Derive the event ID from the logical event's stable identity whenever the producer can
+  run again. Include a revision or change ID when one source record emits several events.
+  Reusing the event ID lets the ledger and receiver deduplicate repeated delivery.
+- Do not construct `%AshHooks.Event{}` directly. Dispatch revalidates raw structs, but the
+  constructor gives the caller the validation error before any row is written.
+- Event IDs cannot contain dots, spaces, invalid UTF-8, or control characters because the
+  ID is also serialized as the `webhook-id` header.
 
-## Hard rules (package floors — do not work around)
+## Receive webhooks through the ledger
 
-- Secrets are SOURCES, never literals: `{m, f, a}`, `{:app_env, path}`,
-  a 0-arity function, or a 1-arity function receiving the tenant
-  (multi-tenant ledgers). A literal binary secret is rejected at DSL
-  parse time (ADR-0005).
-- The endpoint `url` accepts only public http(s) destinations —
-  private/loopback/link-local/metadata literals are rejected at
-  registration and re-checked at send time (with DNS re-resolution).
-- Response snippets store NO body bytes by default. Body capture is a
-  per-call `snippet_capture: true` in the `AshHooks.Delivery.run/2`
-  config (deliberately not a worker-macro option); captured bodies pass
-  the in-package redaction floor. Do not copy response bodies into your
-  own columns — reuse `AshHooks.Delivery.redact/1` if you must persist
-  response-derived text.
-- A `snippet_redactor` callback ({m,f} in the worker macro, or a 1-arity
-  fn in the run/2 config) sees the RAW captured body and must return
-  `binary | nil`; a crash or invalid return degrades to the sanitized
-  summary, never raw bytes.
-- Telemetry events carry ids/integers/fixed atoms/classified reasons
-  only. If you need secret identity in an event, use
-  `AshHooks.Telemetry.fingerprint/1` (8-hex) — never the material.
+- Add `AshHooks` and `AshHooks.InboundDelivery` to the inbound ledger, declare the
+  provider, and pass the raw request body to `AshHooks.Ingress.ingest/4`. Signature
+  verification is over those exact bytes.
+- Include every provider scope needed for uniqueness in `scope_identity`, and create the
+  generated unique index in the database. The ledger is the deduplication boundary; do
+  not add a separate seen-events table.
+- A provider's `parse_event_type/1` classifies the verified payload; `handle_event/2`
+  handles it. Built-in handlers return typed events. Implement application effects and
+  their idempotency inside your own provider's `handle_event/2` callback.
+- Provider identity resolution is ordered: an explicit declaration `event_id` extractor,
+  then the provider's optional `event_identity/1`, then the raw-body digest when the
+  provider has no identity callback. An implemented provider callback that rejects a
+  malformed payload fails the ingest; it does not fall back silently.
+- The low-level claim, renew, mark, and reap functions are for custom asynchronous
+  pipelines. Preserve their token and lease values exactly; a stale owner must never
+  write around a fence.
 
-## Patterns
+## Dispatch and drive outbound deliveries
 
-- Inbound controller: read the RAW body before any JSON decode (the
-  signature is over the exact bytes), pass `signature` + `headers` +
-  `scope` in the ctx map.
-- Oban worker: always `use AshHooks.Worker` (the Oban beam compiles only
-  where Oban exists); pass the generated `enqueue/2` as the dispatch
-  `enqueue:` seam — it carries the effect-once job uniqueness.
-- Retries are ROW-owned: don't add Oban-level retry logic around
-  deliveries; the row's attempts/backoff/ceiling + `Retry-After`
-  handling are the machine.
-- Observability: attach telemetry handlers with `attach_many` over the
-  exact event names (see `AshHooks.Telemetry` for the full list —
-  prefix attaches never fire).
+- Add `AshHooks` to the emitting resource, declare `outbound`, and use
+  `AshHooks.dispatch/4` for fanout. It creates one durable delivery obligation per
+  matching enabled endpoint.
+- `use AshHooks.Worker` is the supported Oban integration. Pass its `enqueue/2` callback
+  to dispatch so each row receives a durable, uniquely identified trigger.
+- `AshHooks.Delivery.run/2` is also a supported execution path. It drives an existing
+  delivery row directly for queue-free hosts, custom schedulers, and one-row diagnostics.
+  It does not create the row: dispatch first, then call `run/2` with the delivery identity
+  and a complete configuration for the delivery resource, endpoint resource, secret
+  resolver, retry limits, and backoff limits. Honor `{:snooze, seconds}` by scheduling the
+  row again after that delay.
+- A direct runner must impose the same outer scheduling discipline as the worker. Keep
+  the attempt deadline finite and allow the result-write finalization window to complete.
+- The row owns retries, attempt counts, send leases, and terminal state. Oban or a custom
+  scheduler is a trigger only; do not add a second retry policy around the row.
+- Delivery is at least once across a crash during transport. Receivers must deduplicate
+  the stable `webhook-id`.
+
+## Preserve durable ownership and recovery
+
+- Do not edit `dispatch_source`, `dispatch_route`, attempt tokens, enqueue tokens, leases,
+  or endpoint snapshots. Dispatch, direct execution, workers, and reconciliation use
+  these fields to reject the wrong declaration, route, or stale owner.
+- Run `AshHooks.reconcile_pending/3` periodically for every outbound declaration and
+  tenant that uses queued delivery. It recovers stale pending rows, enqueue failures, due
+  retries, expired sends, and interrupted endpoint disables. Future retries and live
+  leases remain untouched.
+- Keep the reconciliation cutoff beyond normal enqueue latency. The default is five
+  minutes.
+- Named worker callbacks carry a stable route automatically. An anonymous enqueue
+  callback that must survive reconciliation needs a stable `enqueue_key`. An unkeyed
+  anonymous callback cannot be reconstructed and is reported as `:unresolved_route`.
+- Custom enqueue callbacks must be idempotent. The enqueue effect may succeed before a
+  claimant crashes and releases its lease.
+- A 410 response first records `:disable_pending` with an endpoint snapshot. Recovery may
+  complete that disable only if the endpoint still matches the snapshot; an old response
+  cannot disable replacement configuration.
+
+## Treat identity upgrades as data migrations
+
+- When adopting a provider-defined identity for rows created with the former raw-body
+  digest, first call `AshHooks.Ingress.plan_legacy_identity_adoption/3` and review its
+  unresolved rows, conflicts, representative choices, and before/after keys.
+- Quiesce ingress and reapers before calling
+  `AshHooks.Ingress.adopt_legacy_identity/3` with `quiesced?: true`. Use the same scope,
+  tenant, and canonical-ID overrides that were reviewed in the plan.
+- Adoption keeps one representative for each canonical identity. Sibling audit rows stay
+  stored with their original payload and digest and become terminal `:superseded`; they
+  are never reaped into handler execution.
+- Never rewrite provider identities or mark rows superseded with ad hoc updates.
+
+## Keep resource references and tenancy consistent
+
+- Endpoint and subscription resources each need one UUID-storage-compatible primary key;
+  the attribute may have any name and may use `:uuid_v7`. The DSL rejects composite or
+  non-UUID keys where scalar delivery references cannot represent them.
+- Delivery and inbound ledgers may use consumer-defined or composite primary keys. Use
+  the package's primary-key helpers and full key maps rather than assuming a field named
+  `id`.
+- In a multitenant application, use the same attribute-tenancy contract on every resource
+  touched by an operation and pass the tenant to every entry point. Global tenancy is
+  rejected. Missing or mismatched tenancy fails before data access.
+- Queue arguments serialize the row tenant and full delivery key so a restart can recover
+  the same scope. Do not replace them with ambient process context.
+
+## Keep secrets, responses, and retention bounded
+
+- Secrets are resolvers, never literals: use `{module, function, args}`, `{:app_env,
+  path}`, a zero-arity function, or a tenant-aware one-arity function. Persist only secret
+  references.
+- The default HTTP adapter validates destinations at send time, pins the validated
+  address, never follows redirects, rejects unsafe headers, and applies one finite deadline across
+  DNS, connect, send, and reads. Keep these guarantees when supplying a custom adapter.
+- Response snippets store no body bytes by default. Enable `snippet_capture: true` only
+  for an explicit diagnostic run. A custom snippet redactor receives the raw captured
+  bytes and must return a binary or `nil`; a crash or invalid return falls back to the
+  package's sanitized summary.
+- Use `AshHooks.Ingress.prune/2` and `AshHooks.Delivery.prune/2` for bounded retention.
+  Only terminal rows are deleted. Inbound `:superseded` rows are terminal and remain
+  available for audit until the configured retention pass removes them.
+- The package injects no read policy. Define narrow consumer actions and Ash policies for
+  ledger, endpoint, and subscription access. Avoid broad `accept` lists on internal state
+  fields.
 
 ## Common mistakes
 
-- Declaring `replay_window_seconds` for a provider without a timestamp
-  header — the DSL verifier rejects it.
-- Reading the delivery row's fields through consumer actions —
-  `response_status`/`response_snippet`/`next_attempt_at` are
-  `writable?: false` (no consumer action accepts them anywhere);
-  `attempts`/`last_error` are excluded from the INJECTED actions' accept
-  lists only — a consumer-defined action with a broad accept list could
-  write them, so keep consumer actions narrow; build read views
-  instead.
-- Expecting `:telemetry` prefix handlers to fire: `execute/3` matches
-  exact names — subscribe to the full event name, not a prefix.
+- Decoding JSON before capturing the raw request body used by the provider signature.
+- Generating a new event ID each time the same source record is dispatched.
+- Calling `Delivery.run/2` without handling `{:snooze, seconds}`.
+- Running queued delivery without scheduling `reconcile_pending/3`.
+- Using an anonymous enqueue callback without a stable `enqueue_key` when recovery is
+  required.
+- Treating a built-in provider parser as the application's domain handler.
+- Reading or updating a row through an assumed `.id` instead of its declared primary key.
+- Registering a telemetry prefix instead of the complete event name expected by
+  `:telemetry.attach_many/4`.

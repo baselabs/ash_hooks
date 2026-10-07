@@ -19,15 +19,19 @@ defmodule AshHooks.Http.Target do
   def resolve(url, opts) do
     resolver =
       if opts[:validate_destination] == false,
-        do: &bypass/1,
-        else: &AshHooks.Ssrf.resolve_public/1
+        do: &bypass(&1, opts),
+        else: &AshHooks.Ssrf.resolve_public(&1, opts)
 
     case resolver.(url) do
       {:ok, %{uri: uri, addresses: [address | _]}} ->
-        host = String.downcase(uri.host)
+        if deadline_expired?(opts) do
+          {:error, :timeout}
+        else
+          host = String.downcase(uri.host)
 
-        {:ok,
-         %{uri: uri, address: address, host: host, port: uri.port || default_port(uri.scheme)}}
+          {:ok,
+           %{uri: uri, address: address, host: host, port: uri.port || default_port(uri.scheme)}}
+        end
 
       {:error, :unsafe} ->
         {:error, :unsafe_destination}
@@ -39,11 +43,11 @@ defmodule AshHooks.Http.Target do
 
   # Test seam ONLY (loopback listeners): the SSRF obligation lives in the
   # driver's send-time check; adapter resolution is defense-in-depth.
-  defp bypass(url) do
+  defp bypass(url, opts) do
     case URI.new(url) do
       {:ok, %URI{scheme: scheme, host: host} = uri}
       when scheme in ["http", "https"] and is_binary(host) and host != "" ->
-        case lookup(host) do
+        case lookup(host, opts) do
           {:ok, address} -> {:ok, %{uri: uri, addresses: [address]}}
           {:error, _} -> {:error, :unresolvable}
         end
@@ -53,12 +57,25 @@ defmodule AshHooks.Http.Target do
     end
   end
 
-  defp lookup(host) do
+  defp lookup(host, opts) do
     # uri.host arrives bracketless — URI.new strips IPv6 brackets — so no
     # unwrapping happens here
     case :inet.parse_address(String.to_charlist(host)) do
       {:ok, literal} -> {:ok, literal}
-      {:error, _} -> :inet.getaddr(String.to_charlist(host), :inet)
+      {:error, _} -> bounded_lookup(host, opts)
+    end
+  end
+
+  defp bounded_lookup(host, opts) do
+    :inet.getaddr(String.to_charlist(host), :inet, remaining_timeout(opts))
+  end
+
+  defp deadline_expired?(opts), do: remaining_timeout(opts) == 0
+
+  defp remaining_timeout(opts) do
+    case opts[:deadline] do
+      nil -> 2_000
+      deadline -> max(deadline - System.monotonic_time(:millisecond), 0)
     end
   end
 
@@ -67,11 +84,15 @@ defmodule AshHooks.Http.Target do
   def default_port(_http), do: 80
 
   @spec host_header(String.t(), :inet.port_number(), String.t()) :: String.t()
-  def host_header(host, 443, "https"), do: host
-  def host_header(host, 80, "http"), do: host
+  def host_header(host, 443, "https"), do: authority_host(host)
+  def host_header(host, 80, "http"), do: authority_host(host)
 
   def host_header(host, port, _) do
-    if String.contains?(host, ":"), do: "[#{host}]:#{port}", else: "#{host}:#{port}"
+    "#{authority_host(host)}:#{port}"
+  end
+
+  defp authority_host(host) do
+    if String.contains?(host, ":"), do: "[#{host}]", else: host
   end
 
   # TLS names the ORIGINAL host; a literal-IP destination has no name to

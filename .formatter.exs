@@ -24,7 +24,9 @@ spark_locals_without_parens = [
 
 [
   import_deps: [:ash, :spark],
-  inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"],
+  # Keep globs declarative: Igniter reads this config during initialization.
+  inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}", "scripts/*.exs"],
+  excludes: ["test/consumer/{deps,_build}/**/*.{ex,exs}"],
   locals_without_parens: spark_locals_without_parens,
   export: [locals_without_parens: spark_locals_without_parens]
 ]

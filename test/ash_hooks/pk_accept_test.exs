@@ -76,6 +76,31 @@ defmodule AshHooks.PkAcceptTest do
     end
   end
 
+  defmodule WritableIdSqliteDelivery do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.PkAcceptTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.OutboundDelivery]
+
+    sqlite do
+      table("pk_accept_test_writable_id_deliveries")
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      attribute(:id, :uuid,
+        primary_key?: true,
+        writable?: true,
+        allow_nil?: false
+      )
+    end
+
+    actions do
+      defaults([:read])
+    end
+  end
+
   defmodule V7SqliteLedger do
     @moduledoc false
     use Ash.Resource,
@@ -134,6 +159,35 @@ defmodule AshHooks.PkAcceptTest do
     end
   end
 
+  defmodule WritableIdEmitter do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.PkAcceptTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks]
+
+    sqlite do
+      table("pk_accept_test_emitters")
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+    end
+
+    actions do
+      defaults([:read, :create])
+      default_accept(:*)
+    end
+
+    webhooks do
+      outbound :order_paid do
+        subscriptions(AshHooks.PkAcceptTest.Subscription)
+        deliveries(AshHooks.PkAcceptTest.WritableIdSqliteDelivery)
+      end
+    end
+  end
+
   defmodule Domain do
     @moduledoc false
     use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
@@ -142,21 +196,24 @@ defmodule AshHooks.PkAcceptTest do
       resource(AshHooks.PkAcceptTest.Endpoint)
       resource(AshHooks.PkAcceptTest.Subscription)
       resource(AshHooks.PkAcceptTest.V7SqliteDelivery)
+      resource(AshHooks.PkAcceptTest.WritableIdSqliteDelivery)
       resource(AshHooks.PkAcceptTest.V7SqliteLedger)
       resource(AshHooks.PkAcceptTest.Emitter)
+      resource(AshHooks.PkAcceptTest.WritableIdEmitter)
     end
   end
 
   use ExUnit.Case, async: false
 
   alias Ash.Resource.Info, as: ResourceInfo
+  alias Ash.Type.UUID, as: UUIDType
   alias AshHooks.{Dispatcher, Event, Ingress}
   alias AshHooks.Test.Repo
 
   @deliveries "pk_accept_test_deliveries"
+  @writable_id_deliveries "pk_accept_test_writable_id_deliveries"
   @endpoints "pk_accept_test_endpoints"
   @subscriptions "pk_accept_test_subscriptions"
-  @emitters "pk_accept_test_emitters"
   @ledgers "pk_accept_test_ledgers"
   @payload Jason.encode!(%{"order" => 1})
 
@@ -251,6 +308,7 @@ defmodule AshHooks.PkAcceptTest do
 
     on_exit(fn ->
       Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
+      Repo.query!("DROP TABLE IF EXISTS #{@writable_id_deliveries}")
       Repo.query!("DROP TABLE IF EXISTS #{@subscriptions}")
       Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
       Repo.query!("DROP TABLE IF EXISTS #{@ledgers}")
@@ -271,6 +329,7 @@ defmodule AshHooks.PkAcceptTest do
 
   setup do
     Repo.query!("DELETE FROM #{@deliveries}")
+    Repo.query!("DELETE FROM #{@writable_id_deliveries}")
     Repo.query!("DELETE FROM #{@subscriptions}")
     Repo.query!("DELETE FROM #{@endpoints}")
     Repo.query!("DELETE FROM #{@ledgers}")
@@ -313,12 +372,44 @@ defmodule AshHooks.PkAcceptTest do
       response_status INTEGER,
       response_snippet TEXT,
       last_error TEXT,
-      next_attempt_at TEXT
+      next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot TEXT
     )
     """)
 
     Repo.query!(
       "CREATE UNIQUE INDEX IF NOT EXISTS #{@deliveries}_unique_delivery_index ON #{@deliveries} (endpoint_id, event_uuid)"
+    )
+
+    Repo.query!("""
+    CREATE TABLE IF NOT EXISTS #{@writable_id_deliveries} (
+      id TEXT PRIMARY KEY,
+      event_uuid TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload BLOB NOT NULL,
+      endpoint_id TEXT NOT NULL,
+      subscription_id TEXT,
+      signing_mode TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      response_status INTEGER,
+      response_snippet TEXT,
+      last_error TEXT,
+      next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot TEXT
+    )
+    """)
+
+    Repo.query!(
+      "CREATE UNIQUE INDEX IF NOT EXISTS #{@writable_id_deliveries}_unique_delivery_index ON #{@writable_id_deliveries} (endpoint_id, event_uuid)"
     )
 
     Repo.query!("""
@@ -474,6 +565,27 @@ defmodule AshHooks.PkAcceptTest do
         Ingress.ingest_delivery(V7SqliteLedger, Map.put(base, :scope, %{account_id: "acct-a"}))
 
       assert length(Ash.read!(V7SqliteLedger, authorize?: false)) == 2
+    end
+  end
+
+  describe "legacy sole writable :id without a default" do
+    test "dispatch supplies the UUID required by the consumer resource" do
+      ep =
+        Ash.create!(Endpoint, %{url: "https://example.test/hook", secret_ref: "ref-1"},
+          authorize?: false
+        )
+
+      Ash.create!(Subscription, %{endpoint_id: ep.id, event_types: ["order_paid"]},
+        authorize?: false
+      )
+
+      {:ok, event} = Event.new(type: :order_paid, payload: @payload)
+
+      assert {:ok, [%{status: :deferred}]} =
+               Dispatcher.dispatch(WritableIdEmitter, :order_paid, event)
+
+      assert [%{id: id}] = Ash.read!(WritableIdSqliteDelivery, authorize?: false)
+      assert {:ok, _uuid} = UUIDType.cast_input(id, [])
     end
   end
 end

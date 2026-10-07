@@ -1,15 +1,13 @@
 defmodule AshHooks.Telemetry do
   @moduledoc """
-  The package's telemetry surface (ADR-0005's telemetry floor): events
-  carry ids, integers, fixed-vocabulary atoms, and classified reason
-  strings ONLY — never secrets, bodies, or payloads. Where a consumer
-  wants secret IDENTITY in an event, `fingerprint/1` is the sanctioned
-  8-hex form; no package event needs it today.
+  Lifecycle events for ingress, queue admission, and outbound delivery.
 
-  Events (`:telemetry.execute/3`, best-effort; consumers opt in by
-  attaching handlers — the telemetry ~> 1.3 floor is a currency floor;
-  execute/3's exact-name matching and detach-on-crash behavior were
-  verified first-hand against the vendored source):
+  Events carry identifiers, measurements, fixed atoms, and classified reasons.
+  The package omits bodies, payloads, and resolved signing secrets. For a
+  secret fingerprint in your own event, `AshHooks.Telemetry.fingerprint/1`
+  returns an eight-character hexadecimal value; package events do not use it.
+
+  Attach handlers to consume these best-effort `:telemetry.execute/3` events:
 
     * `[:ash_hooks, :ingress, :verify]` — `%{duration_ms}`; `%{source,
       outcome: :ok | :invalid, reason: atom | nil}` (the five
@@ -33,8 +31,7 @@ defmodule AshHooks.Telemetry do
     * `[:ash_hooks, :delivery, :disable]` — `%{endpoint_id, reason:
       :gone_410}`
 
-  `:telemetry.execute/3` matches EXACT event names (verified against
-  telemetry 1.4's source — prefix attaches never fire), so consume the
+  `:telemetry.execute/3` matches exact event names, so consume the
   whole surface with one `attach_many`:
 
       :telemetry.attach_many("my-ash-hooks", [
@@ -48,14 +45,14 @@ defmodule AshHooks.Telemetry do
         [:ash_hooks, :delivery, :dead_letter],
         [:ash_hooks, :delivery, :disable]
       ], fn event, measurements, metadata, _ ->
-        # metrics/APM ship — the floor guarantees no secret/body material
+        # Forward these measurements and identifiers to your metrics system.
       end, nil)
   """
 
   @doc """
-  The sanctioned secret identity for telemetry consumers: SHA-256,
-  first 8 hex chars — a non-reversible correlation identity (ADR-0005's
-  chosen form; not an authz credential).
+  Returns the first eight hexadecimal characters of a secret's SHA-256 hash
+  for correlation. Collisions are possible; do not use this fingerprint as a
+  unique identifier or authentication credential.
   """
   @spec fingerprint(binary()) :: String.t()
   def fingerprint(secret) when is_binary(secret) do
@@ -65,21 +62,41 @@ defmodule AshHooks.Telemetry do
   end
 
   @doc """
-  The shared contents-free error classifier (the delivery and dispatcher
-  error strings route through this): atoms are the package's own
-  vocabulary; a binary survives only if it is a single fixed-grammar
-  token (`\A[a-z][a-z0-9_]*\z`); anything else — consumer resolver,
-  adapter, or enqueuer terms that can carry secret or body material —
-  collapses to "unclassified".
+  The shared contents-free error classifier. Only the fixed internal
+  vocabulary and HTTP status classifications survive. Caller-selected
+  strings and atoms collapse to "unclassified", including strings that
+  happen to have the same spelling pattern as an internal token.
   """
   @spec classify_token(term()) :: binary()
-  def classify_token(term) when is_atom(term), do: Atom.to_string(term)
+  @reason_tokens ~w(adapter_crash closed connect_timeout deadline_exceeded
+    eacces econnrefused econnreset ehostunreach einval enetunreach enoent
+    etimedout endpoint_disabled endpoint_gone endpoint_replaced gone_410
+    invalid_destination invalid_event invalid_enqueue_result invalid_enqueuer
+    invalid_headers invalid_method invalid_response invalid_route invalid_url
+    max_attempts no_secret nxdomain reconcile_pending secret_resolution
+    signing_failed source_conflict stale_row timeout tls_alert
+    truncated_body unsafe_destination unresolved_route worker_route_mismatch)
+
+  def classify_token(term) when is_atom(term), do: classify_token(Atom.to_string(term))
 
   def classify_token(term) when is_binary(term) do
-    if Regex.match?(~r/\A[a-z][a-z0-9_]*\z/, term),
-      do: String.slice(term, 0, 255),
+    if term in @reason_tokens or http_reason?(term),
+      do: term,
       else: "unclassified"
   end
 
   def classify_token(_other), do: "unclassified"
+
+  defp http_reason?("http_" <> status), do: status_code?(status, 100..599)
+  defp http_reason?("redirect_refused_" <> status), do: status_code?(status, 300..399)
+  defp http_reason?(_other), do: false
+
+  defp status_code?(<<_a, _b, _c>> = status, range) do
+    case Integer.parse(status) do
+      {code, ""} -> code in range
+      _invalid -> false
+    end
+  end
+
+  defp status_code?(_other, _range), do: false
 end

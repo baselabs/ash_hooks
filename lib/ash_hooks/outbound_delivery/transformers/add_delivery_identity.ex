@@ -1,6 +1,6 @@
 defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryIdentity do
   @moduledoc false
-  # Injects the effect-once delivery identity: one row per endpoint per
+  # Injects the deduplicated delivery identity: one row per endpoint per
   # event — the same (endpoint_id, event_uuid) pair the Oban job
   # uniqueness keys use. Storage-level uniqueness on this identity is the
   # idempotency primitive; the consumer's migration must carry the

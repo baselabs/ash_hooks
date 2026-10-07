@@ -14,6 +14,11 @@ substrate verification (Oban uniqueness, ADR-0004's long-open debt).
 
 ## Decision (record of as-built, each with its reason)
 
+This section records the August 21 implementation and probes.
+[ADR-0012](0012-durable-delivery-ownership-and-recovery.md) updates row-key
+handling, durable ownership, queue uniqueness, and recovery in 2.0; historical
+probe results below do not establish those newer runtime properties.
+
 - **G1 — ash_sqlite is a dev/test-only substrate.** The fenced-ledger
   concurrency tests need storage-level uniqueness + conditional-update
   atomicity; sqlite provides them on a zero-infra leg (`deps` marked
@@ -52,7 +57,8 @@ Verified first-hand against local `deps/oban` **2.23.1** (resolved by
 - Match semantics: jsonb containment `args @> taken_subset` within `states`
   for `period` seconds of `timestamp` (defaults `period: 60`,
   `states: :successful`, `timestamp: :inserted_at` — all three must be
-  overridden for effect-once delivery).
+  overridden for durable trigger deduplication). This historical uniqueness
+  configuration does not establish effect-once network delivery.
 - EDGE: `keys` declared but absent from a job's args → taken subset `%{}` →
   matches only empty-args jobs (`args <@ '{}'` on Postgres) — uniqueness
   silently degrades. The delivery args must ALWAYS carry both keys.
@@ -69,6 +75,6 @@ Verified first-hand against local `deps/oban` **2.23.1** (resolved by
 
 - The five inbound mechanisms are now repo-durable; future sessions read
   reasons, not session archaeology.
-- The outbound delivery identity `{endpoint_id, event_uuid}` deliberately
-  coincides with the Oban uniqueness key pair — row identity and job
-  identity are one concept.
+- In the August 21 implementation, the outbound row identity and Oban uniqueness
+  keys both used `{endpoint_id, event_uuid}`. Version 2.0 retains the receiver
+  identity but adds row key, source, route, and tenant to queue admission.

@@ -1,48 +1,45 @@
 defmodule AshHooks.Provider.HubSpotV3 do
   @moduledoc """
-  HubSpot v3 webhook verifier: HMAC-SHA256 over the concatenated canonical
-  string `requestMethod + requestUri + requestBody + timestamp` (no
-  separators), keyed with the app's client secret, base64-encoded — carried
-  in the `X-HubSpot-Signature-v3` header, with the millisecond timestamp in
-  a SEPARATE `X-HubSpot-Request-Timestamp` header (verified against the
-  vendor docs first-hand 2026-08-21; the acceptance vector is the docs
-  page's own Java example, quoted in
-  `test/ash_hooks/provider/hub_spot_v3_test.exs`). Sign the raw body bytes
-  exactly as received and reconstruct the signed URI caller-side — Plug's
-  `conn.query_string` excludes the `?`, and `conn.host` excludes a
-  non-default port, so join explicitly:
+  Verifies HubSpot v3 webhook signatures and parses event batches.
 
+  Configure the app's client secret as the inbound declaration's `secret`.
+  The signature is a base64 HMAC-SHA256 over
+  `requestMethod + requestUri + requestBody + timestamp`, with no separators.
+  The signature and millisecond timestamp arrive in
+  `X-HubSpot-Signature-v3` and `X-HubSpot-Request-Timestamp`.
+
+  Pass the raw body, HTTP method, and complete public request URI to ingress.
+  A configured public base URL preserves the external scheme, host, and port
+  when your app sits behind a proxy:
+
+      public_base_url = Application.fetch_env!(:my_app, :public_webhook_base_url)
       query = if conn.query_string == "", do: "", else: "?" <> conn.query_string
-      "https://" <> conn.host <> conn.request_path <> query
+      request_uri = public_base_url <> conn.request_path <> query
 
-  The provider then decodes the vendor's documented percent-encodings via
-  `decode_request_uri/1`. Behind a TLS-terminating proxy the host (and any
-  non-default port) must be the public values HubSpot called.
+  Configure the base URL without a trailing slash. The provider applies the
+  percent-decoding rules in `decode_request_uri/1` before verifying. Preserve
+  the URI supplied to your HTTP endpoint; rebuilding it from decoded query
+  parameters can change the signed value. See HubSpot's
+  [request validation guide](https://developers.hubspot.com/docs/apps/legacy-apps/authentication/validating-requests).
 
-  Replay window: the vendor's validation step 1 — reject a timestamp older
-  than five minutes — is enforced BY DEFAULT (300 seconds, TWO-SIDED:
-  `|now - ts| <= window`, so a far-future timestamp fails closed too,
-  symmetric with `AshHooks.Signing.verify`'s tolerance; the vendor's
-  "reject if older" wording is a floor, and stricter is conformant). An
-  inbound's `replay_window_seconds` overrides the default in either
-  direction. Setting it ABOVE 300 weakens replay protection; the vendor
-  default means a bare declaration is already safe.
+  The default replay window is 300 seconds in either direction: timestamps
+  too far in the past or future are rejected. `replay_window_seconds` on the
+  inbound declaration overrides this value. Keep application clocks synchronized.
 
-  `parse_event_type/1`: HubSpot delivers a top-level ARRAY of event objects
-  (under 100, `eventId` explicitly not guaranteed unique, duplicates
-  possible per event — the ledger's default content-digest identity dedupes
-  byte-identical redeliveries). A homogeneous batch maps to its
-  subscriptionType's atom via the 41-entry vendor-documented allowlist; a
-  mixed batch of known types maps to `:mixed` (fan out per event
-  consumer-side); an unknown type string anywhere in the batch fails closed
-  as `{:error, :unknown_event_type}` and lands `failed_permanent` in the
-  ledger — recorded and auditable. Extend `@subscription_types` (one module
-  attribute) when HubSpot publishes new types.
+  The decoded payload must be a nonempty list of events. Known homogeneous
+  batches map to one event-type atom; mixed batches map to `:mixed`. An unknown
+  `subscriptionType` returns `{:error, :unknown_event_type}` and ingress records
+  a permanent failure. The finite type map avoids creating atoms from input.
 
-  The optional secret callbacks are deliberately NOT implemented: HubSpot
-  signs with the app-wide client secret — supply it through the DSL
-  `secret` source. `timestamp_header/0` IS implemented (the replay window
-  hangs off it).
+  `event_identity/1` hashes the complete batch. It ignores each outer event's
+  retry-varying `attemptNumber`, canonicalizes object keys and outer event
+  order, and preserves nested list order and repeated events. The identity
+  therefore represents the batch rather than any one `eventId`.
+
+  `handle_event/2` returns an `AshHooks.Provider.HubSpotV3.Event`; it does not
+  perform your application's business actions. To process events during ingress,
+  write a provider that delegates verification, parsing, and `event_identity/1`
+  to this module and implements an idempotent `handle_event/2`.
   """
 
   alias AshHooks.Provider
@@ -60,9 +57,7 @@ defmodule AshHooks.Provider.HubSpotV3 do
   @timestamp_header "x-hubspot-request-timestamp"
   @vendor_default_window_seconds 300
 
-  # The vendor's documented requestUri decode map (validation guide,
-  # 2026-08-21). Lower-case percent-hex decodes the same — RFC 3986
-  # percent-encoding is case-insensitive.
+  # Percent encodings listed in HubSpot's request validation guide.
   @uri_decode %{
     "%3A" => ":",
     "%2F" => "/",
@@ -78,12 +73,7 @@ defmodule AshHooks.Provider.HubSpotV3 do
     "%3B" => ";"
   }
 
-  # Vendor-documented taxonomy (webhooks guide, verified first-hand
-  # 2026-08-21; a strict superset of the reference platform adapter's
-  # production set — 9/9). The guide's field table notes some example
-  # payloads name the field `eventType`; the signed vector on the
-  # validation page and the incumbent's production wire both carry
-  # `subscriptionType`, which is what this map keys on.
+  # Known subscription types, keyed by the batch's subscriptionType field.
   @subscription_types %{
     "contact.creation" => :contact_creation,
     "contact.deletion" => :contact_deletion,
@@ -125,8 +115,16 @@ defmodule AshHooks.Provider.HubSpotV3 do
     "conversation.deletion" => :conversation_deletion,
     "conversation.privacyDeletion" => :conversation_privacy_deletion,
     "conversation.propertyChange" => :conversation_property_change,
-    "conversation.newMessage" => :conversation_new_message
+    "conversation.newMessage" => :conversation_new_message,
+    "object.creation" => :object_creation,
+    "object.deletion" => :object_deletion,
+    "object.propertyChange" => :object_property_change,
+    "object.associationChange" => :object_association_change,
+    "object.restore" => :object_restore,
+    "object.merge" => :object_merge
   }
+
+  @identity_namespace "ash_hooks:hubspot:v1:"
 
   @impl Provider
   def verify_signature(_raw_body, _ctx, secret)
@@ -169,9 +167,35 @@ defmodule AshHooks.Provider.HubSpotV3 do
   def parse_event_type(_payload), do: {:error, :malformed_payload}
 
   @impl Provider
+  @doc "Builds a typed HubSpot v3 event from a verified batch payload."
   def handle_event(event_type, payload) do
     {:ok, %Event{type: event_type, payload: payload}}
   end
+
+  @impl Provider
+  def event_identity(events) when is_list(events) and events != [] do
+    if Enum.all?(events, &identity_event?/1) do
+      canonical_events =
+        events
+        |> Enum.map(fn event ->
+          event
+          |> Map.delete("attemptNumber")
+          |> canonical_value()
+          |> Jason.encode!()
+        end)
+        |> Enum.sort()
+
+      identity =
+        :crypto.hash(:sha256, @identity_namespace <> Jason.encode!(canonical_events))
+        |> Base.encode16(case: :lower)
+
+      {:ok, identity}
+    else
+      {:error, :malformed_payload}
+    end
+  end
+
+  def event_identity(_payload), do: {:error, :malformed_payload}
 
   @impl Provider
   def timestamp_header, do: @timestamp_header
@@ -275,4 +299,17 @@ defmodule AshHooks.Provider.HubSpotV3 do
   end
 
   defp batch_types([_non_event | _rest], _types), do: {:error, :malformed_payload}
+
+  defp canonical_value(value) when is_map(value) do
+    value
+    |> Enum.map(fn {key, nested} -> {key, canonical_value(nested)} end)
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Jason.OrderedObject.new()
+  end
+
+  defp canonical_value(value) when is_list(value), do: Enum.map(value, &canonical_value/1)
+  defp canonical_value(value), do: value
+
+  defp identity_event?(%{"subscriptionType" => type}) when is_binary(type), do: true
+  defp identity_event?(_event), do: false
 end

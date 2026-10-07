@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE*', '.github/ISSUE_TEMPLATE/**']
+    tags: ['v*']
+    paths-ignore: ['LICENSE*', '.github/ISSUE_TEMPLATE/**']
+  workflow_dispatch:
   pull_request:
 
 concurrency:
@@ -60,33 +62,14 @@ jobs:
       - run: mix format --check-formatted
       - run: mix credo --strict
       - run: mix test
-      # the 100% line-coverage GATE (D1/D2, wayfinder #20-#22): every
-      # runtime-reachable lib/ line is covered; the ignore list in mix.exs
-      # carries only :cover-invisible lines (Spark's generated DSL
-      # sections, test-support, four compile-window module-body lines).
-      # The code-server purge test reloads its fixture, so :cover.stop
-      # collects everything and this step FAILS on a real miss
-      - name: Coverage gate (100% of lib/ runtime lines)
-        run: mix test --cover
-        if: matrix.no_optional != '1' && matrix.otp == '28'
-      - name: Upload coverage HTML on a gate miss
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: cover-html
-          path: cover/
       - name: Assert optional deps never loaded (no-optional leg)
         if: matrix.no_optional == '1'
         run: |
           mix run --no-start -e 'if :code.which(Oban) != :non_existing or :code.which(Plug) != :non_existing, do: (IO.puts("optional dep loaded"); System.halt(1))'
 
-  # The declared Elixir ~> 1.20 minimum, resolved AT THE FLOORS: the lock
-  # is dropped so the resolver picks the newest versions whose own floors
-  # still admit the minimum — the combination a fresh consumer on the
-  # floor actually gets. (History: a 1.15 floor was DISPROVEN here once —
-  # modern ash needs the Duration struct from 1.17; 1.17–1.19 support was
-  # later retired by owner decision. Never keep a floor this leg
-  # disproves.)
+  # A minimal production consumer pins the actual Ash floor, 3.34.3,
+  # on Elixir 1.20. Dev/test and optional dependencies cannot mask OTP
+  # startup requirements or unavailable APIs in this consumer graph.
   floor:
     runs-on: ubuntu-latest
     env:
@@ -95,7 +78,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.20"
+          elixir-version: "1.20.0"
           otp-version: "28"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
@@ -107,6 +90,12 @@ jobs:
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
       - run: mix test
+      - run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix deps.get
+        working-directory: test/consumer
+      - run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix compile --warnings-as-errors
+        working-directory: test/consumer
+      - run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix run verify.exs
+        working-directory: test/consumer
 
   # The AshPostgres consumer leg: the transformers exercised against a
   # uuid_v7-keyed, sole-store-payload consumer shape on real Postgres —
@@ -124,6 +113,7 @@ jobs:
       ASH_HOOKS_TEST_PG_USER: postgres
       ASH_HOOKS_TEST_PG_PASSWORD: postgres
       ASH_HOOKS_TEST_PG_DATABASE: ash_hooks_test
+      ASH_HOOKS_REAL_RECEIVER_PORT: "52871"
     services:
       postgres:
         image: postgres:16-alpine
@@ -138,6 +128,14 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      receiver:
+        image: ghcr.io/tarampampam/webhook-tester@sha256:85818267b450d3d386cad6510c561e09b974183ed2832c373bc83b125fc1b221
+        env:
+          STORAGE_DRIVER: memory
+          AUTO_CREATE_SESSIONS: "true"
+          MAX_REQUESTS: "1000"
+        ports:
+          - 52871:8080
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
@@ -153,7 +151,16 @@ jobs:
       - run: mix deps.get
       - run: mix hex.audit
       - run: mix compile --warnings-as-errors
-      - run: mix test
+      - name: Wait for the real receiver
+        run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version
+      - name: Coverage gate (100% of the declared Mix surface)
+        run: mix test --cover
+      - name: Upload coverage HTML on a gate miss
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cover-html
+          path: cover/
 
   # CI is Linux-only (owner direction, 2026-09-25): developer
   # portability — a developer on macOS or Linux (Windows developers use
@@ -205,32 +212,23 @@ jobs:
       - name: DSL cheat sheets match the DSL (generated files must not drift)
         run: mix spark.cheat_sheets --extensions AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery --check
       - name: Tarball carries every publish surface
-        run: |
-          env -u ASH_HOOKS_NO_OPTIONAL mix hex.build
-          mkdir -p /tmp/tarcheck && tar -xf ash_hooks-*.tar -C /tmp/tarcheck contents.tar.gz
-          tar -tzf /tmp/tarcheck/contents.tar.gz | tee /tmp/tar-list.txt
-          grep -qx "README.md" /tmp/tar-list.txt
-          grep -qx "CHANGELOG.md" /tmp/tar-list.txt
-          grep -qx "usage-rules.md" /tmp/tar-list.txt
-          grep -qx "UPGRADING.md" /tmp/tar-list.txt
-          grep -qx "SECURITY.md" /tmp/tar-list.txt
-          grep -qx "LICENSE" /tmp/tar-list.txt
-          # documentation/ ships because shipped docs reference it by
-          # repo-relative path (UPGRADING.md → tenancy adoption checklist);
-          # 1.2.0 published without it and the references went dead in
-          # every installed package.
-          grep -qx "documentation/tutorials/get-started.md" /tmp/tar-list.txt
-          grep -qx "documentation/tutorials/tenancy-adoption-checklist.md" /tmp/tar-list.txt
-          grep -qx "documentation/livebooks/get-started.livemd" /tmp/tar-list.txt
-          grep -qx "documentation/dsls/DSL-AshHooks.md" /tmp/tar-list.txt
-          ! grep -q "DS_Store" /tmp/tar-list.txt
-      - run: mix docs
+        run: ./scripts/check-package.sh
+      - run: mix docs --warnings-as-errors
 
   # The get-started Livebook, verified headless on one leg: the elixir
   # cells are extracted in order and run outside any mix project
   # (Mix.install requires it) — the same evaluation Livebook performs.
   livebook:
     runs-on: ubuntu-latest
+    services:
+      receiver:
+        image: ghcr.io/tarampampam/webhook-tester@sha256:85818267b450d3d386cad6510c561e09b974183ed2832c373bc83b125fc1b221
+        env:
+          STORAGE_DRIVER: memory
+          AUTO_CREATE_SESSIONS: "true"
+          MAX_REQUESTS: "1000"
+        ports:
+          - 52871:8080
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
@@ -243,7 +241,11 @@ jobs:
             ~/.mix
             ~/.cache
           key: livebook-mix-${{ hashFiles('mix.lock') }}
-      - run: ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd
+      - run: mix deps.get
+      - run: ./scripts/check-package.sh
+      - name: Wait for the real receiver
+        run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version
+      - run: ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive _build/release/ash_hooks-2.0.0.tar
 
   # The single branch-protection check name: require `all-checks-pass`
   # on main and every leg (test matrix, floor, dialyzer, package,

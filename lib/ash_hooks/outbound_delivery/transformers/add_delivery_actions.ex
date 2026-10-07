@@ -32,8 +32,16 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
     with {:ok, dispatch} <- build_dispatch(payload_attribute, writable_id_pk?(dsl_state)),
          {:ok, mark_enqueue_failed} <- build_mark_enqueue_failed(),
          {:ok, requeue} <- build_requeue(),
+         {:ok, bind_dispatch_source} <- build_bind_dispatch_source(),
+         {:ok, bind_dispatch_route} <- build_bind_dispatch_route(),
+         {:ok, claim_enqueue} <- build_claim_enqueue(),
+         {:ok, release_enqueue} <- build_release_enqueue(),
          {:ok, dsl_state} <- add(dsl_state, dispatch),
-         {:ok, dsl_state} <- add(dsl_state, mark_enqueue_failed) do
+         {:ok, dsl_state} <- add(dsl_state, mark_enqueue_failed),
+         {:ok, dsl_state} <- add(dsl_state, bind_dispatch_source),
+         {:ok, dsl_state} <- add(dsl_state, bind_dispatch_route),
+         {:ok, dsl_state} <- add(dsl_state, claim_enqueue),
+         {:ok, dsl_state} <- add(dsl_state, release_enqueue) do
       # the accept-list decision is PERSISTED for the runtime (H2): the
       # Dispatcher reads the SAME answer, never a re-derived predicate
       # that could disagree with the compiled action (composite PKs and
@@ -81,7 +89,9 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
           payload_attribute,
           :endpoint_id,
           :subscription_id,
-          :signing_mode
+          :signing_mode,
+          :dispatch_source,
+          :dispatch_route
         ])
     )
   end
@@ -107,6 +117,55 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
       arguments: [argument(:error, :string, allow_nil?: false)],
       changes: [
         change(Builtins.set_attribute(:status, :enqueue_failed)),
+        change(Builtins.set_attribute(:last_error, Ash.Expr.arg(:error))),
+        change(Builtins.set_attribute(:enqueue_token, nil)),
+        change(Builtins.set_attribute(:enqueue_lease_expires_at, nil))
+      ]
+    )
+  end
+
+  defp build_bind_dispatch_route do
+    Builder.build_action(:update, :bind_dispatch_route,
+      accept: [],
+      arguments: [argument(:dispatch_route, :string, allow_nil?: false)],
+      changes: [change(Builtins.set_attribute(:dispatch_route, Ash.Expr.arg(:dispatch_route)))]
+    )
+  end
+
+  defp build_bind_dispatch_source do
+    Builder.build_action(:update, :bind_dispatch_source,
+      accept: [],
+      arguments: [argument(:dispatch_source, :string, allow_nil?: false)],
+      changes: [change(Builtins.set_attribute(:dispatch_source, Ash.Expr.arg(:dispatch_source)))]
+    )
+  end
+
+  defp build_claim_enqueue do
+    Builder.build_action(:update, :claim_enqueue,
+      accept: [],
+      arguments: [
+        argument(:enqueue_token, :uuid, allow_nil?: false),
+        argument(:enqueue_lease_expires_at, :utc_datetime_usec, allow_nil?: false)
+      ],
+      changes: [
+        change(Builtins.set_attribute(:enqueue_token, Ash.Expr.arg(:enqueue_token))),
+        change(
+          Builtins.set_attribute(
+            :enqueue_lease_expires_at,
+            Ash.Expr.arg(:enqueue_lease_expires_at)
+          )
+        )
+      ]
+    )
+  end
+
+  defp build_release_enqueue do
+    Builder.build_action(:update, :release_enqueue,
+      accept: [],
+      arguments: [argument(:error, :string, allow_nil?: true, default: nil)],
+      changes: [
+        change(Builtins.set_attribute(:enqueue_token, nil)),
+        change(Builtins.set_attribute(:enqueue_lease_expires_at, nil)),
         change(Builtins.set_attribute(:last_error, Ash.Expr.arg(:error)))
       ]
     )

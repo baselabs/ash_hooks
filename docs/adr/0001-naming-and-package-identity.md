@@ -11,10 +11,12 @@ Ash-team extensions stay free to claim them. A package name must also be free on
 
 ## Decision
 
-The package is **`ash_hooks`** (hex: `baselabs/ash_hooks`, module root `AshHooks`), carrying
+The package is **`ash_hooks`** (Hex package `ash_hooks`, repository `baselabs/ash_hooks`,
+module root `AshHooks`), carrying
 "webhooks" in description/keywords. Never rename to `ash_webhooks`. No version or phase
 suffixes in durable names. Availability verified 2026-08-20 (`ash_hooks`, `ash_webhooks`,
-`ash_webhook` all free on hex); re-verify immediately before `mix hex.publish`.
+`ash_webhook` all free on Hex). Subsequent releases verify ownership of the
+existing package before publication.
 
 ## Consequences
 

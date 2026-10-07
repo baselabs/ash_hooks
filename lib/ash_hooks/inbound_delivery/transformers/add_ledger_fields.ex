@@ -24,8 +24,10 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
 
   def transform(dsl_state) do
     with :ok <- check_scope_slots(dsl_state),
-         {:ok, dsl_state} <- add_primary_key(dsl_state) do
-      add_attributes(dsl_state)
+         {:ok, dsl_state} <- add_primary_key(dsl_state),
+         {:ok, dsl_state} <- add_attributes(dsl_state),
+         :ok <- validate_primary_key_sources(dsl_state) do
+      {:ok, dsl_state}
     end
   end
 
@@ -105,6 +107,55 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
   end
 
   defp reserved_fields, do: Enum.map(attributes_spec(), &elem(&1, 0))
+
+  defp validate_primary_key_sources(dsl_state) do
+    resource = Transformer.get_persisted(dsl_state, :resource)
+    scope = Extension.get_opt(dsl_state, [:inbound_delivery], :scope_identity, [])
+
+    primary_key =
+      dsl_state
+      |> Transformer.get_entities([:attributes])
+      |> Enum.filter(& &1.primary_key?)
+
+    supplied =
+      [
+        :provider,
+        :external_event_id,
+        :external_event_type,
+        :payload,
+        :payload_digest
+        | scope
+      ]
+      |> MapSet.new()
+      |> maybe_put_supplied_id(primary_key)
+
+    unobtainable =
+      primary_key
+      |> Enum.reject(fn attribute ->
+        attribute.generated? or not is_nil(attribute.default) or
+          (attribute.writable? and MapSet.member?(supplied, attribute.name))
+      end)
+
+    case unobtainable do
+      [] ->
+        :ok
+
+      attributes ->
+        names = Enum.map(attributes, & &1.name)
+
+        {:error,
+         DslError.exception(
+           module: resource,
+           path: [:inbound_delivery],
+           message:
+             "primary key components #{inspect(names)} are unobtainable during ingest — " <>
+               "give each component a default/data-layer generator or declare it as a non-null scope_identity input"
+         )}
+    end
+  end
+
+  defp maybe_put_supplied_id(supplied, [%{name: :id}]), do: MapSet.put(supplied, :id)
+  defp maybe_put_supplied_id(supplied, _primary_key), do: supplied
 
   defp attributes_spec do
     [

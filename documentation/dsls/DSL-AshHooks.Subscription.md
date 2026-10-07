@@ -15,9 +15,14 @@ events go to which endpoint, and with which signature envelope.
     end
 
 The extension injects: `event_types` (`{:array, :string}`, default
-`["*"]`), `endpoint_id` (uuid — the pk of the `endpoint_resource`), and
-`signing_mode` (`:legacy | :dual | :standard`, NULLABLE — the outbound
-declaration's mode applies when unset: ADR-0002's per-subscription mode).
+`["*"]`), `endpoint_id` (uuid — the sole UUID-storage-compatible primary
+key of the `endpoint_resource`, under any attribute name), and `signing_mode`
+(`:legacy | :dual | :standard`, NULLABLE — the outbound declaration's mode
+applies when unset: ADR-0002's per-subscription mode). A subscription's own
+primary key follows the same single UUID-storage-compatible contract because
+outbound delivery rows store it in `subscription_id`. UUIDv7 keys satisfy
+this contract. Composite and non-UUID keys fail at DSL compilation with the
+reference column named in the error.
 
 ## Typing contract
 

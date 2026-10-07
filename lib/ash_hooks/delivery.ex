@@ -1,27 +1,36 @@
 defmodule AshHooks.Delivery do
   @moduledoc """
-  The delivery runtime driver: one pending delivery row → signed HTTP
-  send → reconciled ledger row. Pure functions over the consumer's
-  resource modules and an injected HTTP adapter — Oban-free by
-  construction; `use AshHooks.Worker` wraps this as an Oban worker inside
-  the consuming app (ADR-0004's host-injection boundary).
+  Drives one durable outbound delivery through signing, HTTP, and result
+  persistence. It uses your resource modules and configured HTTP adapter.
+  `AshHooks.Worker` adds an Oban trigger; this driver also works without Oban.
 
-  The delivery ROW is the single retry-policy source (ADR-0008): the
+  The delivery row owns retry policy: the
   driver refuses to re-send `:succeeded`/`:dead_letter` rows, waits on
   `next_attempt_at`, counts `attempts` against the ceiling, and honors
-  `Retry-After` (bounded). Oban is the durable TRIGGER — `{:snooze, s}`
+  `Retry-After` (bounded). Oban is the durable trigger — `{:snooze, s}`
   re-drives later without exhausting the job (snooze extends
   max_attempts; only this module's ceiling decides dead-letter).
 
-  Classification (the design note's table, one source):
+  Every attempt runs in an owned monitored process under one finite deadline.
+  The budget includes endpoint reads, secret resolution, signing, destination
+  validation, DNS/connect/HTTP work, response handling, and the result write.
+  The durable send lease is derived from that deadline plus a bounded
+  finalization allowance, and every result write is fenced by the row's full
+  primary key, source, attempt token, sending state, and live lease.
 
-    * 2xx → `:succeeded` (status + allowlisted content-type summary — NO
+  Lease construction and comparisons use the configured application clock
+  (`:now`) or `DateTime.utc_now/0`. Deploy executors with synchronized clocks;
+  clock skew can shorten or extend admission windows, so this module does not
+  claim a database-clock distributed timing guarantee.
+
+  Response classification:
+
+    * 2xx → `:succeeded` (status + allowlisted content-type summary — no
       body bytes by default; a per-call `snippet_capture: true` config
-      persists the floor-redacted body marked `[captured]`, ADR-0005's
-      snippet amendment)
+      persists a bounded, redacted body marked `[captured]`)
     * 408/429 → retryable, `Retry-After` when present (integer seconds or
       HTTP-date; clamped `[1, retry_after_cap]`), else backoff
-    * 410 → endpoint durably `:disable`d + row `:dead_letter`
+    * 410 → `:disable_pending`, then conditional endpoint disable and `:dead_letter`
     * other 4xx → `:dead_letter` (client errors do not self-heal)
     * 3xx → `:dead_letter` (`redirect_refused` — never followed)
     * 5xx / transport error / secret-resolution failure → retryable
@@ -31,25 +40,24 @@ defmodule AshHooks.Delivery do
   Backoff: `min(base · 2^min(attempts, 16), max_backoff)` seconds plus
   `:rand.uniform(delay)` jitter, re-clamped — always ≥ 1 second.
 
-  The 410 auto-disable, stated plainly (it is a SYSTEM bulk write): one
-  410 from a receiver durably disables its endpoint by DESIGN (the
-  circuit-breaker rule, ADR-0005) — `authorize?: false`, so it bypasses
-  policies and produces no actor attribution in a versioned register
-  (a nil-actor write, auditable but unattributed), and there is no
-  built-in tenant-facing signal: a receiver that answers 410 once goes
-  dark SILENTLY from the tenant's point of view. The visibility seams
-  that exist today: the `[:ash_hooks, :delivery, :disable]` telemetry
-  event (per disabled endpoint, with tenant and endpoint ids — wire it
-  to your notification surface), the endpoint row's own `status`/
-  mapped switch, and every subsequent dispatch SKIP for that endpoint.
-  Make the dark state loud in YOUR app, or accept it in writing.
+  The 410 auto-disable is a durable two-step system write. A live attempt
+  first stores `:disable_pending` with the endpoint configuration snapshot;
+  recovery then conditionally disables that same configuration and finalizes
+  the row. A changed endpoint is never disabled by an older 410. One
+  410 disables the matching endpoint as a system action (`authorize?: false`).
+  The write has no application actor and is unattributed in a versioned register.
+  Without application notifications, delivery stops silently from the tenant's
+  perspective. Attach `[:ash_hooks, :delivery, :disable]` to your operator or
+  notification surface; it carries the tenant and endpoint IDs. The endpoint's
+  status or mapped switch also exposes the durable disabled state.
   """
 
   require Ash.Query
 
   alias Ash.Resource.Info, as: ResourceInfo
   alias AshHooks.Errors.Unknown.UnknownError
-  alias AshHooks.{Signing, Tenancy}
+  alias AshHooks.{OutboundBinding, PrimaryKey, Signing, Tenancy}
+  alias Spark.Dsl.Extension
 
   # The ADR-0005 snippet floor (amended 2026-08-22): markers are
   # case-blind (NFKC folds homoglyphs, never case) and tolerate ≤3
@@ -109,6 +117,8 @@ defmodule AshHooks.Delivery do
   `:tenant` scopes the sweep (required on multitenant resources — a
   tenant-less global sweep over them is the named
   `{:error, :tenant_required}` before any data access).
+  `:batch_size` defaults to 500 and accepts integers from 1 through 5,000;
+  invalid values return `{:error, :invalid_batch_size}`.
   """
   @spec prune(module(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def prune(deliv_mod, opts) do
@@ -129,7 +139,7 @@ defmodule AshHooks.Delivery do
            )}
 
         ResourceInfo.attribute(deliv_mod, :inserted_at) ->
-          prune!(deliv_mod, older_than, tenant)
+          prune!(deliv_mod, older_than, tenant, Keyword.get(opts, :batch_size, 500))
 
         true ->
           {:error,
@@ -143,12 +153,21 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  defp prune!(deliv_mod, older_than, tenant) do
+  defp prune!(deliv_mod, older_than, tenant, batch_size)
+       when is_integer(batch_size) and batch_size > 0 and batch_size <= 5_000 do
+    prune_batch(deliv_mod, older_than, tenant, batch_size, 0)
+  end
+
+  defp prune!(_deliv_mod, _older_than, _tenant, _batch_size),
+    do: {:error, :invalid_batch_size}
+
+  defp prune_batch(deliv_mod, older_than, tenant, batch_size, total) do
     require Ash.Query
 
     result =
       deliv_mod
       |> Ash.Query.filter(status in [:succeeded, :dead_letter] and inserted_at < ^older_than)
+      |> Ash.Query.limit(batch_size)
       |> Ash.bulk_destroy(:prune, %{},
         authorize?: false,
         return_records?: true,
@@ -158,15 +177,27 @@ defmodule AshHooks.Delivery do
       )
 
     case result do
-      %Ash.BulkResult{status: :success, records: rows} -> {:ok, length(rows)}
-      %Ash.BulkResult{errors: [error | _]} -> {:error, error}
+      %Ash.BulkResult{status: :success, records: []} ->
+        {:ok, total}
+
+      %Ash.BulkResult{status: :success, records: rows} when length(rows) < batch_size ->
+        {:ok, total + length(rows)}
+
+      %Ash.BulkResult{status: :success, records: rows} ->
+        prune_batch(deliv_mod, older_than, tenant, batch_size, total + length(rows))
+
+      %Ash.BulkResult{} = result ->
+        bulk_failure(result)
     end
   end
 
   @doc """
-  Drives one delivery (args: `%{"endpoint_id" => ..., "event_uuid" => ...,
-  "tenant" => ...}`, string keys — Oban's JSON round-trip shape; atom keys
-  tolerated). The tenant arg is the enqueue seam's serialized row tenant
+  Drives one delivery from the worker's JSON-safe args. Current jobs carry
+  `delivery_pk`, `delivery_resource`, `endpoint_resource`, `endpoint_id`,
+  `event_uuid`, `dispatch_source`, `dispatch_route`, and an optional `tenant`.
+  String keys are Oban's JSON round-trip shape; atom keys are tolerated.
+  Legacy jobs carrying only `endpoint_id` and `event_uuid` remain readable.
+  The tenant arg is the enqueue seam's serialized row tenant
   (the worker reads it off the multitenancy attribute at enqueue time);
   `run/2` re-parses it through the resource's tenancy pipeline by passing
   it as the tenant on every data call — a worker restart or replica
@@ -177,46 +208,188 @@ defmodule AshHooks.Delivery do
   `:ok`; the durable row is the record — a missing row is a completed or
   reaped delivery, not a failure). A tenant-less trigger against
   multitenant resources is `{:error, :tenant_required}` before any data
-  access (pre-tenancy jobs drained before the cutover fail closed here —
-  correct, and loud).
+  access. A trigger whose resource, source, route, or complete primary key does
+  not match the fetched row fails explicitly.
+
+  Required config keys are `:deliveries`, `:endpoints`, and
+  `:secret_resolver`. `:attempt_timeout` defaults to 25,000 ms and
+  `:finalization_allowance` to 5,000 ms. Retry defaults are 10 attempts,
+  2-second base backoff, 3,600-second maximum backoff, and an 86,400-second
+  `Retry-After` cap. Omitted or `nil` retry options use these defaults.
+  `:http`, `:http_opts`, `:tenant_aware_secrets`,
+  `:snippet_capture`, `:snippet_redactor`, and `:now` customize the documented
+  seams.
+
+  Set `:max_attempts` here to configure the delivery row's ceiling. The worker
+  macro calls this option `:delivery_max_attempts`; its own `:max_attempts`
+  configures Oban's job attempts. Other retry option names are the same.
   """
   @spec run(map(), keyword()) :: :ok | {:snooze, pos_integer()} | {:error, term()}
   def run(args, config) when is_map(args) do
-    endpoint_id = key(args, :endpoint_id)
-    event_uuid = key(args, :event_uuid)
+    config =
+      Enum.reduce(
+        [
+          max_attempts: 10,
+          base_backoff_seconds: 2,
+          max_backoff_seconds: 3600,
+          retry_after_cap_seconds: 86_400
+        ],
+        config,
+        fn {key, default}, normalized ->
+          Keyword.update(normalized, key, default, fn
+            nil -> default
+            value -> value
+          end)
+        end
+      )
+
+    timeout = config[:attempt_timeout] || 25_000
+    allowance = config[:finalization_allowance] || 5_000
+    owner = self()
+    started = System.monotonic_time(:millisecond)
+    attempt_deadline = started + timeout
+    final_deadline = attempt_deadline + allowance
+
+    config =
+      config
+      |> Keyword.put(:claim_owner, owner)
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        config =
+          Keyword.put(
+            config,
+            :driver_deadline,
+            DateTime.add(now(config), timeout + allowance, :millisecond)
+          )
+
+        send(owner, {:delivery_result, self(), execute(args, config)})
+      end)
+
+    await_driver(pid, monitor, attempt_deadline, final_deadline, nil, config)
+  end
+
+  defp execute(args, config) do
+    config = resolve_http_opts(config)
 
     with {:ok, tenant} <-
            Tenancy.resolve([config[:deliveries], config[:endpoints]], value(args, :tenant)),
-         {:ok, row} <- fetch_row_result(config[:deliveries], endpoint_id, event_uuid, tenant) do
-      drive_row(row, config, tenant)
+         {:ok, row} <- fetch_row_result(config[:deliveries], args, tenant),
+         {:ok, row} <- validate_or_bind_execution(row, args, config, tenant) do
+      if row, do: drive_row(row, config, tenant), else: :ok
     end
   end
 
-  # a missing row is a completed or reaped delivery — the record says done
-  defp drive_row(nil, _config, _tenant), do: :ok
+  defp resolve_http_opts(config) do
+    case config[:http_opts] do
+      {module, function, args}
+      when is_atom(module) and is_atom(function) and is_list(args) ->
+        Keyword.put(config, :http_opts, apply(module, function, args))
+
+      _literal_or_nil ->
+        config
+    end
+  end
+
+  defp await_driver(pid, monitor, deadline, final_deadline, claimed, config) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {:delivery_claimed, ^pid, row, tenant} ->
+        await_driver(pid, monitor, deadline, final_deadline, {row, tenant}, config)
+
+      {:delivery_result, ^pid, result} ->
+        Process.demonitor(monitor, [:flush])
+        result
+
+      {:DOWN, ^monitor, :process, ^pid, reason} ->
+        case claimed do
+          nil ->
+            {:error, {:driver_crash, AshHooks.Telemetry.classify_token(reason)}}
+
+          {row, tenant} ->
+            finalize_driver_failure(row, "driver_crash", config, tenant, final_deadline)
+        end
+    after
+      remaining ->
+        Process.exit(pid, :kill)
+
+        case await_termination(pid, monitor, final_deadline) do
+          :ok ->
+            case claimed do
+              nil ->
+                {:error, :attempt_timeout}
+
+              {row, tenant} ->
+                finalize_driver_failure(row, "attempt_timeout", config, tenant, final_deadline)
+            end
+
+          :timeout ->
+            {:error, :finalization_timeout}
+        end
+    end
+  end
+
+  defp await_termination(pid, monitor, deadline) do
+    receive do
+      {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+    after
+      max(deadline - System.monotonic_time(:millisecond), 0) -> :timeout
+    end
+  end
+
+  defp finalize_driver_failure(row, reason, config, tenant, deadline) do
+    owner = self()
+    result_ref = make_ref()
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        result = retry(row, reason, config, tenant, nil)
+        send(owner, {:delivery_finalization, result_ref, self(), result})
+      end)
+
+    receive do
+      {:delivery_finalization, ^result_ref, ^pid, result} ->
+        Process.demonitor(monitor, [:flush])
+        result
+
+      {:DOWN, ^monitor, :process, ^pid, crash_reason} ->
+        {:error, {:finalization_crash, AshHooks.Telemetry.classify_token(crash_reason)}}
+    after
+      max(deadline - System.monotonic_time(:millisecond), 0) ->
+        Process.exit(pid, :kill)
+        Process.demonitor(monitor, [:flush])
+        {:error, :finalization_timeout}
+    end
+  end
 
   defp drive_row(row, config, tenant) do
     case row.status do
       status when status in [:succeeded, :dead_letter] -> :ok
+      :disable_pending -> complete_disable(row, config, tenant)
       :failed_retryable -> maybe_wait(row, config, tenant)
+      :sending -> maybe_reclaim_sending(row, config, tenant)
       _attemptable -> attempt(row, config, tenant)
+    end
+  end
+
+  defp maybe_reclaim_sending(row, config, tenant) do
+    now = now(config)
+
+    if row.send_lease_expires_at && DateTime.compare(row.send_lease_expires_at, now) == :gt do
+      {:snooze, clamp_snooze(DateTime.diff(row.send_lease_expires_at, now, :second))}
+    else
+      attempt(row, config, tenant)
     end
   end
 
   # :missing is a COMPLETED delivery (the durable row is the record), not a
   # failure — normalized to :ok so the with-chain stays flat
-  defp fetch_row_result(deliv_mod, endpoint_id, event_uuid, tenant) do
-    case fetch_row(deliv_mod, endpoint_id, event_uuid, tenant) do
+  defp fetch_row_result(deliv_mod, args, tenant) do
+    case fetch_row(deliv_mod, args, tenant) do
       {:ok, row} -> {:ok, row}
       :missing -> {:ok, nil}
       {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp key(args, name) do
-    case value(args, name) do
-      nil -> nil
-      value -> to_string(value)
     end
   end
 
@@ -227,19 +400,117 @@ defmodule AshHooks.Delivery do
     Map.get(args, Atom.to_string(name)) || Map.get(args, name)
   end
 
-  defp fetch_row(deliv_mod, endpoint_id, event_uuid, tenant)
-       when is_binary(endpoint_id) and is_binary(event_uuid) do
-    deliv_mod
-    |> Ash.Query.filter(endpoint_id == ^endpoint_id and event_uuid == ^event_uuid)
-    |> Ash.read_one(authorize?: false, tenant: tenant)
-    |> case do
-      {:ok, nil} -> :missing
-      {:ok, row} -> {:ok, row}
+  defp fetch_row(deliv_mod, args, tenant) do
+    case delivery_query(deliv_mod, args) do
+      :missing ->
+        :missing
+
+      {:ok, query} ->
+        query
+        |> Ash.read_one(authorize?: false, tenant: tenant)
+        |> case do
+          {:ok, nil} -> :missing
+          {:ok, row} -> {:ok, row}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp delivery_query(deliv_mod, args) do
+    case value(args, :delivery_pk) do
+      encoded when is_map(encoded) -> primary_key_delivery_query(deliv_mod, encoded)
+      _legacy -> legacy_delivery_query(deliv_mod, args)
+    end
+  end
+
+  defp primary_key_delivery_query(deliv_mod, encoded) do
+    case PrimaryKey.decode(deliv_mod, encoded) do
+      {:ok, key} -> {:ok, Ash.Query.do_filter(deliv_mod, key)}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp fetch_row(_deliv_mod, _nil_id, _uuid, _tenant), do: :missing
+  defp legacy_delivery_query(deliv_mod, args) do
+    case {value(args, :endpoint_id), value(args, :event_uuid)} do
+      {endpoint_id, event_uuid} when is_binary(endpoint_id) and is_binary(event_uuid) ->
+        {:ok,
+         Ash.Query.filter(deliv_mod, endpoint_id == ^endpoint_id and event_uuid == ^event_uuid)}
+
+      {nil, nil} ->
+        :missing
+
+      _invalid ->
+        {:error, :invalid_delivery_identity}
+    end
+  end
+
+  defp validate_or_bind_execution(nil, _args, _config, _tenant), do: {:ok, nil}
+
+  defp validate_or_bind_execution(row, args, config, tenant) do
+    with :ok <- validate_resource_arg(args, :delivery_resource, config[:deliveries]),
+         :ok <- validate_resource_arg(args, :endpoint_resource, config[:endpoints]),
+         :ok <- validate_expected(value(args, :dispatch_source), row.dispatch_source, :source),
+         :ok <- validate_expected(value(args, :dispatch_route), row.dispatch_route, :route),
+         :ok <- validate_config_route(row, config),
+         {:ok, row} <- bind_direct_source(row, config, tenant),
+         true <- OutboundBinding.endpoint_resource?(row.dispatch_source, config[:endpoints]) do
+      {:ok, row}
+    else
+      false -> {:error, :endpoint_resource_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_resource_arg(args, key, expected) do
+    expected = Atom.to_string(expected)
+
+    case value(args, key) do
+      nil -> :ok
+      ^expected -> :ok
+      _ -> {:error, :worker_resource_mismatch}
+    end
+  end
+
+  defp validate_expected(nil, _stored, _kind), do: :ok
+  defp validate_expected(value, value, _kind), do: :ok
+  defp validate_expected(_value, _stored, :source), do: {:error, :dispatch_source_conflict}
+  defp validate_expected(_value, _stored, :route), do: {:error, :dispatch_route_conflict}
+
+  defp validate_config_route(row, config) do
+    case config[:dispatch_route] do
+      nil -> :ok
+      route when route == row.dispatch_route -> :ok
+      _ -> {:error, :dispatch_route_conflict}
+    end
+  end
+
+  defp bind_direct_source(%{dispatch_source: source} = row, config, tenant)
+       when source == "v1:direct:unbound" do
+    bound = OutboundBinding.direct_source(config[:deliveries], config[:endpoints])
+
+    result =
+      config[:deliveries]
+      |> Ash.Query.do_filter(PrimaryKey.filter(row))
+      |> Ash.Query.filter(dispatch_source == ^OutboundBinding.direct_unbound_source())
+      |> Ash.bulk_update(:bind_dispatch_source, %{dispatch_source: bound},
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
+
+    case result do
+      %Ash.BulkResult{status: :success, records: [updated]} -> {:ok, updated}
+      %Ash.BulkResult{status: :success, records: []} -> {:error, :dispatch_source_conflict}
+      %Ash.BulkResult{} = result -> bulk_failure(result)
+    end
+  end
+
+  defp bind_direct_source(row, _config, _tenant), do: {:ok, row}
 
   # ────────────────────────── gating ──────────────────────────
 
@@ -254,6 +525,30 @@ defmodule AshHooks.Delivery do
   end
 
   defp attempt(row, config, tenant) do
+    if row.attempts >= config[:max_attempts] do
+      terminalize_exhausted(row, config, tenant)
+    else
+      claim_then_attempt(row, config, tenant)
+    end
+  end
+
+  defp claim_then_attempt(row, config, tenant) do
+    case mark_sending(row, config, tenant) do
+      {:ok, sending} ->
+        if owner = config[:claim_owner],
+          do: send(owner, {:delivery_claimed, self(), sending, tenant})
+
+        attempt_claimed(sending, config, tenant)
+
+      :contended ->
+        {:snooze, 1}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp attempt_claimed(row, config, tenant) do
     case Ash.get(config[:endpoints], row.endpoint_id, authorize?: false, tenant: tenant) do
       # the ONE enabled-check (H4): the injected status attribute or the
       # consumer-mapped switch — exactly one attribute dead-letters
@@ -285,10 +580,7 @@ defmodule AshHooks.Delivery do
     check = config[:ssrf_check] || (&AshHooks.Ssrf.safe_url?/1)
 
     if check.(endpoint.url) do
-      case mark_sending(row, config, tenant) do
-        {:ok, sending} -> send(sending, endpoint, config, tenant)
-        :contended -> {:snooze, 1}
-      end
+      send(row, endpoint, config, tenant)
     else
       dead_letter(row, "unsafe_destination", config, tenant)
     end
@@ -300,7 +592,11 @@ defmodule AshHooks.Delivery do
     :telemetry.execute(
       [:ash_hooks, :delivery, :attempt],
       %{},
-      %{endpoint_id: endpoint.id, event_uuid: row.event_uuid, attempts: row.attempts}
+      %{
+        endpoint_id: PrimaryKey.scalar!(endpoint),
+        event_uuid: row.event_uuid,
+        attempts: row.attempts
+      }
     )
 
     adapter = config[:http] || AshHooks.Http.Bounded
@@ -354,34 +650,23 @@ defmodule AshHooks.Delivery do
   # between fetch and write) is surfaced, never counted as a completed
   # circuit-break.
   defp record(row, endpoint, %{status: 410} = response, config, tenant) do
-    # the durable disable is the circuit breaker — a failed write must NOT
-    # be swallowed behind the row's dead-letter:
-    # surface the error so the job retries and the 410 is re-processed
-    result =
-      config[:endpoints]
-      |> Ash.Query.filter(id == ^endpoint.id)
-      |> Ash.bulk_update(:disable, %{},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        tenant: tenant
-      )
+    {status, snippet} = failure_summary(response)
 
-    case result do
-      %Ash.BulkResult{status: :success, records: [_]} ->
-        :telemetry.execute(
-          [:ash_hooks, :delivery, :disable],
-          %{},
-          %{endpoint_id: endpoint.id, reason: :gone_410, tenant: tenant}
-        )
-
-        dead_letter(row, "gone_410", config, tenant, failure_summary(response))
-
-      %Ash.BulkResult{status: :success, records: []} ->
-        {:error, {:disable_failed, :endpoint_vanished}}
-
-      other ->
-        {:error, {:disable_failed, other}}
+    case fenced_update(
+           row,
+           config,
+           :mark_disable_pending,
+           %{
+             response_status: status,
+             response_snippet: snippet,
+             endpoint_snapshot: endpoint_snapshot(endpoint)
+           },
+           [:sending],
+           tenant
+         ) do
+      {:ok, [pending]} -> complete_disable(pending, config, tenant)
+      {:ok, []} -> {:snooze, 1}
+      {:error, reason} -> {:error, {:reconcile_failed, reason}}
     end
   end
 
@@ -523,31 +808,380 @@ defmodule AshHooks.Delivery do
   defp legacy_secret(legacy, previous),
     do: [legacy_secret: legacy, legacy_previous_secret: previous]
 
-  # ────────────────────────── transitions ──────────────────────────
+  # ────────────────────────── durable disable recovery ──────────────────────────
 
-  defp mark_sending(row, config, tenant) do
+  defp complete_disable(row, config, tenant) do
+    snapshot = row.endpoint_snapshot || %{}
+
     result =
-      gated_update(
-        row,
-        config,
-        :mark_sending,
-        %{},
-        [:pending, :sending, :failed_retryable, :enqueue_failed],
-        tenant
-      )
+      case PrimaryKey.decode(config[:endpoints], snapshot["endpoint_pk"] || %{}) do
+        {:ok, key} ->
+          with_endpoint(
+            config[:endpoints],
+            key,
+            tenant,
+            fn -> finalize_disable(row, "gone_410_endpoint_gone", config, tenant) end,
+            fn endpoint ->
+              apply_disable_obligation(row, endpoint, snapshot, config, tenant)
+            end
+          )
+
+        {:error, reason} ->
+          {:error, reason}
+      end
 
     case result do
-      {:ok, [updated]} -> {:ok, updated}
-      _none_matched -> :contended
+      :ok -> :ok
+      {:error, reason} -> {:error, {:disable_failed, reason}}
     end
   end
 
-  # Reconcile writes are NEVER swallowed: with job
-  # uniqueness at states: :all / period: :infinity, a lost terminal write
-  # strands the row in :sending with no possible re-trigger — surface the
-  # error so the job error-retries and the reconcile re-runs.
+  defp read_endpoint(resource, key, tenant) do
+    resource
+    |> Ash.Query.do_filter(key)
+    |> Ash.read_one(authorize?: false, tenant: tenant)
+    |> case do
+      {:ok, nil} -> :missing
+      {:ok, endpoint} -> {:ok, endpoint}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp with_endpoint(resource, key, tenant, missing, found) do
+    case read_endpoint(resource, key, tenant) do
+      :missing -> missing.()
+      {:ok, endpoint} -> found.(endpoint)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp apply_disable_obligation(row, endpoint, snapshot, config, tenant) do
+    switch = endpoint_switch(config[:endpoints])
+
+    cond do
+      snapshot["status_attribute"] != Atom.to_string(switch) ->
+        finalize_disable(row, "gone_410_endpoint_reconfigured", config, tenant)
+
+      not endpoint_configuration_matches?(endpoint, snapshot, switch) ->
+        finalize_disable(row, "gone_410_endpoint_reconfigured", config, tenant)
+
+      not AshHooks.Endpoint.enabled?(endpoint) ->
+        finalize_disable(row, "gone_410_endpoint_already_disabled", config, tenant)
+
+      true ->
+        disable_matching_endpoint(row, endpoint, snapshot, switch, config, tenant)
+    end
+  end
+
+  defp endpoint_configuration_matches?(endpoint, snapshot, switch) do
+    fields = [
+      :url,
+      :secret_ref,
+      :previous_secret_ref,
+      :legacy_secret_ref,
+      :legacy_previous_secret_ref
+    ]
+
+    Enum.all?(fields, fn field -> Map.get(endpoint, field) == snapshot[Atom.to_string(field)] end) and
+      snapshot_status_matches?(endpoint, snapshot, switch)
+  end
+
+  defp snapshot_status_matches?(endpoint, snapshot, switch) do
+    definition = ResourceInfo.attribute(endpoint.__struct__, switch)
+
+    with {:ok, cast} <-
+           Ash.Type.cast_input(definition.type, snapshot["status_value"], definition.constraints),
+         {:ok, value} <- Ash.Type.apply_constraints(definition.type, cast, definition.constraints) do
+      Ash.Type.equal?(definition.type, Map.get(endpoint, switch), value, definition.constraints)
+    else
+      _ -> false
+    end
+  end
+
+  defp disable_matching_endpoint(row, endpoint, snapshot, switch, config, tenant) do
+    result =
+      config[:endpoints]
+      |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+      |> Ash.Query.filter(url == ^snapshot["url"] and secret_ref == ^snapshot["secret_ref"])
+      |> optional_snapshot_filter(:previous_secret_ref, snapshot["previous_secret_ref"])
+      |> optional_snapshot_filter(:legacy_secret_ref, snapshot["legacy_secret_ref"])
+      |> optional_snapshot_filter(
+        :legacy_previous_secret_ref,
+        snapshot["legacy_previous_secret_ref"]
+      )
+      |> Ash.Query.do_filter(%{switch => Map.get(endpoint, switch)})
+      |> Ash.bulk_update(:disable, %{},
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
+
+    case result do
+      %Ash.BulkResult{status: :success, records: [_]} ->
+        :telemetry.execute(
+          [:ash_hooks, :delivery, :disable],
+          %{},
+          %{endpoint_id: row.endpoint_id, reason: :gone_410, tenant: tenant}
+        )
+
+        finalize_disable(row, "gone_410", config, tenant)
+
+      %Ash.BulkResult{status: :success, records: []} ->
+        resolve_disable_endpoint(
+          row,
+          PrimaryKey.filter(endpoint),
+          snapshot,
+          switch,
+          config,
+          tenant
+        )
+
+      %Ash.BulkResult{} = result ->
+        bulk_failure(result)
+    end
+  end
+
+  defp optional_snapshot_filter(query, :previous_secret_ref, nil),
+    do: Ash.Query.filter(query, is_nil(previous_secret_ref))
+
+  defp optional_snapshot_filter(query, :previous_secret_ref, value),
+    do: Ash.Query.filter(query, previous_secret_ref == ^value)
+
+  defp optional_snapshot_filter(query, :legacy_secret_ref, nil),
+    do: Ash.Query.filter(query, is_nil(legacy_secret_ref))
+
+  defp optional_snapshot_filter(query, :legacy_secret_ref, value),
+    do: Ash.Query.filter(query, legacy_secret_ref == ^value)
+
+  defp optional_snapshot_filter(query, :legacy_previous_secret_ref, nil),
+    do: Ash.Query.filter(query, is_nil(legacy_previous_secret_ref))
+
+  defp optional_snapshot_filter(query, :legacy_previous_secret_ref, value),
+    do: Ash.Query.filter(query, legacy_previous_secret_ref == ^value)
+
+  defp resolve_disable_endpoint(row, key, snapshot, switch, config, tenant) do
+    with_endpoint(
+      config[:endpoints],
+      key,
+      tenant,
+      fn -> finalize_disable(row, "gone_410_endpoint_gone", config, tenant) end,
+      fn endpoint ->
+        resolve_disable_endpoint_state(row, endpoint, snapshot, switch, config, tenant)
+      end
+    )
+  end
+
+  defp resolve_disable_endpoint_state(row, endpoint, snapshot, switch, config, tenant) do
+    cond do
+      not AshHooks.Endpoint.enabled?(endpoint) ->
+        finalize_disable(row, "gone_410_endpoint_already_disabled", config, tenant)
+
+      not endpoint_configuration_matches?(endpoint, snapshot, switch) ->
+        finalize_disable(row, "gone_410_endpoint_reconfigured", config, tenant)
+
+      true ->
+        {:error, :endpoint_changed}
+    end
+  end
+
+  defp finalize_disable(row, error, config, tenant) do
+    case fenced_update(
+           row,
+           config,
+           :finalize_disable,
+           %{error: error},
+           [:disable_pending],
+           tenant
+         ) do
+      {:ok, [final]} ->
+        summary = {final.response_status, final.response_snippet}
+        emit_result(final, summary, :dead_letter, error)
+
+        :telemetry.execute(
+          [:ash_hooks, :delivery, :dead_letter],
+          %{},
+          %{
+            endpoint_id: final.endpoint_id,
+            event_uuid: final.event_uuid,
+            reason: error,
+            response_status: final.response_status
+          }
+        )
+
+        :ok
+
+      {:ok, []} ->
+        {:error, :stale_disable_obligation}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp endpoint_snapshot(endpoint) do
+    switch = endpoint_switch(endpoint.__struct__)
+
+    %{
+      "endpoint_pk" => PrimaryKey.encode(endpoint),
+      "url" => endpoint.url,
+      "secret_ref" => endpoint.secret_ref,
+      "previous_secret_ref" => endpoint.previous_secret_ref,
+      "legacy_secret_ref" => endpoint.legacy_secret_ref,
+      "legacy_previous_secret_ref" => endpoint.legacy_previous_secret_ref,
+      "status_attribute" => Atom.to_string(switch),
+      "status_value" => Map.get(endpoint, switch)
+    }
+    |> Jason.encode!()
+    |> Jason.decode!()
+  end
+
+  defp endpoint_switch(resource),
+    do: Extension.get_opt(resource, [:endpoint], :status_attribute, nil) || :status
+
+  defp terminalize_exhausted(row, config, tenant) do
+    now = now(config)
+
+    query =
+      config[:deliveries]
+      |> Ash.Query.do_filter(PrimaryKey.filter(row))
+      |> Ash.Query.filter(
+        dispatch_source == ^row.dispatch_source and attempts >= ^config[:max_attempts]
+      )
+      |> eligible_exhausted_query(row.status, now)
+
+    result =
+      Ash.bulk_update(
+        query,
+        :mark_send_failed,
+        %{
+          error: "attempt_ceiling",
+          next_attempt_at: nil,
+          dead_letter?: true,
+          response_status: nil,
+          response_snippet: nil
+        },
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
+
+    case result do
+      %Ash.BulkResult{status: :success, records: [final]} ->
+        emit_result(final, nil, :dead_letter, "attempt_ceiling")
+
+        :telemetry.execute(
+          [:ash_hooks, :delivery, :dead_letter],
+          %{},
+          %{
+            endpoint_id: final.endpoint_id,
+            event_uuid: final.event_uuid,
+            reason: "attempt_ceiling",
+            response_status: nil
+          }
+        )
+
+        :ok
+
+      %Ash.BulkResult{status: :success, records: []} ->
+        {:snooze, 1}
+
+      %Ash.BulkResult{} = result ->
+        bulk_failure(result)
+    end
+  end
+
+  defp eligible_exhausted_query(query, :sending, now),
+    do:
+      Ash.Query.filter(
+        query,
+        status == :sending and
+          (is_nil(send_lease_expires_at) or send_lease_expires_at <= ^now)
+      )
+
+  defp eligible_exhausted_query(query, :failed_retryable, now),
+    do:
+      Ash.Query.filter(
+        query,
+        status == :failed_retryable and
+          (is_nil(next_attempt_at) or next_attempt_at <= ^now)
+      )
+
+  defp eligible_exhausted_query(query, status, _now)
+       when status in [:pending, :enqueue_failed],
+       do: Ash.Query.filter(query, status == ^status)
+
+  # ────────────────────────── transitions ──────────────────────────
+
+  defp mark_sending(row, config, tenant) do
+    now = now(config)
+    token = Ash.UUID.generate()
+
+    lease = config[:driver_deadline]
+
+    query =
+      config[:deliveries]
+      |> Ash.Query.do_filter(PrimaryKey.filter(row))
+      |> Ash.Query.filter(
+        dispatch_source == ^row.dispatch_source and attempts < ^config[:max_attempts]
+      )
+      |> claimable_state_query(row.status, row.attempt_token, now)
+
+    result =
+      Ash.bulk_update(
+        query,
+        :mark_sending,
+        %{attempt_token: token, send_lease_expires_at: lease},
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
+
+    case result do
+      %Ash.BulkResult{status: :success, records: [updated]} -> {:ok, updated}
+      %Ash.BulkResult{status: :success, records: []} -> :contended
+      %Ash.BulkResult{} = result -> bulk_failure(result)
+    end
+  end
+
+  defp claimable_state_query(query, status, previous_token, now) do
+    query
+    |> prior_token_filter(previous_token)
+    |> case do
+      query when status in [:pending, :enqueue_failed] ->
+        Ash.Query.filter(query, status == ^status)
+
+      query when status == :failed_retryable ->
+        Ash.Query.filter(
+          query,
+          status == :failed_retryable and
+            (is_nil(next_attempt_at) or next_attempt_at <= ^now)
+        )
+
+      query when status == :sending ->
+        Ash.Query.filter(
+          query,
+          status == :sending and
+            (is_nil(send_lease_expires_at) or send_lease_expires_at <= ^now)
+        )
+    end
+  end
+
+  defp prior_token_filter(query, nil), do: Ash.Query.filter(query, is_nil(attempt_token))
+
+  defp prior_token_filter(query, token),
+    do: Ash.Query.filter(query, attempt_token == ^token)
+
+  # Reconcile writes are NEVER swallowed. A lost terminal write leaves the
+  # row recoverable as an expired :sending lease, and the worker must surface
+  # the error so Oban can re-drive it.
   defp mark_succeeded(row, response, config, tenant) do
-    case gated_update(
+    case fenced_update(
            row,
            config,
            :mark_succeeded,
@@ -558,7 +1192,7 @@ defmodule AshHooks.Delivery do
            [:sending],
            tenant
          ) do
-      {:ok, _} ->
+      {:ok, [_]} ->
         :telemetry.execute(
           [:ash_hooks, :delivery, :result],
           %{},
@@ -573,6 +1207,9 @@ defmodule AshHooks.Delivery do
 
         :ok
 
+      {:ok, []} ->
+        {:snooze, 1}
+
       {:error, reason} ->
         {:error, {:reconcile_failed, reason}}
     end
@@ -585,7 +1222,7 @@ defmodule AshHooks.Delivery do
       delay = delay_seconds(row, config, retry_after)
       next_at = DateTime.add(now(config), delay, :second)
 
-      case gated_update(
+      case fenced_update(
              row,
              config,
              :mark_send_failed,
@@ -597,7 +1234,7 @@ defmodule AshHooks.Delivery do
              [:sending],
              tenant
            ) do
-        {:ok, _} ->
+        {:ok, [_]} ->
           emit_result(row, summary, :failed_retryable, error)
 
           :telemetry.execute(
@@ -613,6 +1250,9 @@ defmodule AshHooks.Delivery do
 
           {:snooze, delay}
 
+        {:ok, []} ->
+          {:snooze, 1}
+
         {:error, reason} ->
           {:error, {:reconcile_failed, reason}}
       end
@@ -620,18 +1260,15 @@ defmodule AshHooks.Delivery do
   end
 
   defp dead_letter(row, error, config, tenant, summary \\ nil) do
-    case gated_update(
+    case fenced_update(
            row,
            config,
            :mark_send_failed,
            summary_input(summary, %{error: error, next_attempt_at: nil, dead_letter?: true}),
-           # dead-letter can land from any pre-send or mid-send state —
-           # including :enqueue_failed rows the runtime re-drove — never
-           # from a terminal row
-           [:pending, :sending, :failed_retryable, :enqueue_failed],
+           [:sending],
            tenant
          ) do
-      {:ok, _} ->
+      {:ok, [_]} ->
         emit_result(row, summary, :dead_letter, error)
 
         :telemetry.execute(
@@ -646,6 +1283,9 @@ defmodule AshHooks.Delivery do
         )
 
         :ok
+
+      {:ok, []} ->
+        {:snooze, 1}
 
       {:error, reason} ->
         {:error, {:reconcile_failed, reason}}
@@ -682,11 +1322,16 @@ defmodule AshHooks.Delivery do
   # transition legitimately starts from. :mark_sending re-drives :sending
   # (crash recovery — at-least-once, receivers dedup by webhook-id); the
   # reconcile marks are owned by the attempt that flipped to :sending.
-  defp gated_update(row, config, action, input, statuses, tenant) do
-    result = config[:deliveries]
+  defp fenced_update(row, config, action, input, statuses, tenant) do
+    now = now(config)
 
-    result
-    |> Ash.Query.filter(id == ^row.id and status in ^statuses)
+    query =
+      config[:deliveries]
+      |> Ash.Query.do_filter(PrimaryKey.filter(row))
+      |> Ash.Query.filter(dispatch_source == ^row.dispatch_source and status in ^statuses)
+      |> maybe_attempt_fence(row, statuses, now)
+
+    query
     |> Ash.bulk_update(action, input,
       authorize?: false,
       return_records?: true,
@@ -696,8 +1341,20 @@ defmodule AshHooks.Delivery do
     )
     |> case do
       %Ash.BulkResult{status: :success, records: records} -> {:ok, records}
-      %Ash.BulkResult{errors: [error | _]} -> {:error, error}
+      %Ash.BulkResult{} = result -> bulk_failure(result)
     end
+  end
+
+  defp bulk_failure(%Ash.BulkResult{} = result),
+    do: {:error, List.first(result.errors || []) || result}
+
+  defp maybe_attempt_fence(query, _row, [:disable_pending], _now), do: query
+
+  defp maybe_attempt_fence(query, row, _statuses, now) do
+    Ash.Query.filter(
+      query,
+      attempt_token == ^row.attempt_token and send_lease_expires_at >= ^now
+    )
   end
 
   # ────────────────────────── scheduling math ──────────────────────────
@@ -799,7 +1456,7 @@ defmodule AshHooks.Delivery do
   defp clamp_snooze(seconds) when is_integer(seconds), do: max(seconds, 1)
 
   defp now(config) do
-    (config[:now] || fn -> DateTime.utc_now() end).() |> DateTime.truncate(:second)
+    (config[:now] || fn -> DateTime.utc_now() end).() |> DateTime.truncate(:microsecond)
   end
 
   # ────────────────────────── snippets + redaction ──────────────────────────

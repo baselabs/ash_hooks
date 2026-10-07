@@ -178,6 +178,38 @@ defmodule AshHooks.BoundedHttpTest do
   end
 
   describe "the header-block bound" do
+    test "body bytes arriving with a bounded header do not count toward the header cap" do
+      head = "HTTP/1.1 200 OK\r\ncontent-length: 40000\r\n\r\n"
+      body = String.duplicate("b", 40_000)
+      {base, opts} = raw_server(head <> body)
+
+      assert {:ok, %{status: 200, body: "bbbbbbbb"}} =
+               Bounded.request(
+                 :get,
+                 base <> "/same-pull-body",
+                 %{},
+                 nil,
+                 Keyword.merge(opts,
+                   max_header_bytes: byte_size(head),
+                   max_body_bytes: 8
+                 )
+               )
+    end
+
+    test "a complete header whose terminator crosses the cap is refused" do
+      head = "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n"
+      {base, opts} = raw_server(head)
+
+      assert {:error, :header_block_too_large} =
+               Bounded.request(
+                 :get,
+                 base <> "/terminator-over-cap",
+                 %{},
+                 nil,
+                 Keyword.put(opts, :max_header_bytes, byte_size(head) - 1)
+               )
+    end
+
     test "an oversized header block is refused, not buffered" do
       huge_header = String.duplicate("h", 40_000)
 
@@ -235,32 +267,40 @@ defmodule AshHooks.BoundedHttpTest do
 
     {:ok, port} = :inet.port(listen)
 
-    spawn(fn ->
-      {:ok, socket} = :gen_tcp.accept(listen, 10_000)
-      {:ok, request} = :gen_tcp.recv(socket, 0, 5_000)
-      send(parent, {:request, request})
-
-      Enum.each(script, fn
-        {:send, bytes} ->
-          :gen_tcp.send(socket, bytes)
-
-        {:pause, ms} ->
-          :timer.sleep(ms)
-
-        {:stall, ms} ->
-          # hold the connection OPEN without sending — a recv-timeout fault
-          :timer.sleep(ms)
-          :gen_tcp.close(socket)
-
-        {:close, _} ->
-          :gen_tcp.close(socket)
-      end)
-
-      :gen_tcp.close(listen)
-    end)
+    spawn(fn -> serve_script(listen, parent, script) end)
 
     {"http://127.0.0.1:#{port}", [validate_destination: false]}
   end
+
+  defp serve_script(listen, parent, script) do
+    case :gen_tcp.accept(listen, 10_000) do
+      {:ok, socket} ->
+        serve_socket(socket, parent, script)
+        :gen_tcp.close(listen)
+
+      {:error, reason} when reason in [:closed, :einval] ->
+        # Immediate validation failures never connect. ExUnit then closes the
+        # test-owned listener as the test process exits.
+        :ok
+    end
+  end
+
+  defp serve_socket(socket, parent, script) do
+    {:ok, request} = :gen_tcp.recv(socket, 0, 5_000)
+    send(parent, {:request, request})
+    Enum.each(script, &run_script_step(socket, &1))
+  end
+
+  defp run_script_step(socket, {:send, bytes}), do: :gen_tcp.send(socket, bytes)
+  defp run_script_step(_socket, {:pause, ms}), do: :timer.sleep(ms)
+
+  defp run_script_step(socket, {:stall, ms}) do
+    # Hold the connection open without sending to produce a recv timeout.
+    :timer.sleep(ms)
+    :gen_tcp.close(socket)
+  end
+
+  defp run_script_step(socket, {:close, _}), do: :gen_tcp.close(socket)
 
   describe "request-line shapes" do
     test "a URL with no path requests /" do
@@ -426,6 +466,91 @@ defmodule AshHooks.BoundedHttpTest do
     end
   end
 
+  describe "informational responses" do
+    test "consumes bounded 103 responses before returning the final response" do
+      {base, opts} =
+        scripted_server(
+          send:
+            "HTTP/1.1 103 Early Hints\r\nlink: </style.css>; rel=preload\r\n\r\n" <>
+              "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+          close: true
+        )
+
+      assert {:ok, %{status: 200, body: "ok", headers: headers}} =
+               Bounded.request(:get, base <> "/early-hints", %{}, nil, opts)
+
+      assert {"content-length", "2"} in headers
+      refute List.keymember?(headers, "link", 0)
+    end
+
+    test "refuses a protocol switch and too many interim responses" do
+      {switch_base, switch_opts} =
+        scripted_server(send: "HTTP/1.1 101 Switching Protocols\r\n\r\n", close: true)
+
+      assert {:error, :unsupported_protocol_switch} =
+               Bounded.request(:get, switch_base <> "/switch", %{}, nil, switch_opts)
+
+      {many_base, many_opts} =
+        scripted_server(
+          send:
+            "HTTP/1.1 103 Early Hints\r\n\r\n" <>
+              "HTTP/1.1 103 Early Hints\r\n\r\n" <>
+              "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n",
+          close: true
+        )
+
+      assert {:error, :too_many_interim_responses} =
+               Bounded.request(
+                 :get,
+                 many_base <> "/many",
+                 %{},
+                 nil,
+                 Keyword.put(many_opts, :max_interim_responses, 1)
+               )
+    end
+
+    test "interim and final headers share one total byte bound" do
+      {base, opts} =
+        scripted_server(
+          send:
+            "HTTP/1.1 103 Early Hints\r\nx-first: 1234567890\r\n\r\n" <>
+              "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n",
+          close: true
+        )
+
+      assert {:error, :header_block_too_large} =
+               Bounded.request(
+                 :get,
+                 base <> "/bounded-interim-headers",
+                 %{},
+                 nil,
+                 Keyword.put(opts, :max_header_bytes, 70)
+               )
+    end
+  end
+
+  describe "total operation deadline" do
+    test "successful reads do not restart the operation clock" do
+      {base, opts} =
+        scripted_server(
+          pause: 100,
+          send: "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\no",
+          pause: 100,
+          send: "k",
+          close: true
+        )
+
+      assert {:error, :timeout} =
+               Bounded.request(
+                 :get,
+                 base <> "/total-deadline",
+                 %{},
+                 nil,
+                 Keyword.put(opts, :timeout, 150)
+               )
+    end
+  end
+
   describe "body framing faults" do
     test "a sized body straddling pulls reassembles" do
       {base, opts} =
@@ -523,8 +648,8 @@ defmodule AshHooks.BoundedHttpTest do
     end
   end
 
-  describe "the discard path (declared chunk beyond the allowance)" do
-    test "an excess split across pulls is discarded slice-wise and framing completes" do
+  describe "a declared chunk beyond the allowance" do
+    test "returns at the body cap without waiting for the remaining chunk" do
       {base, opts} =
         scripted_server(
           send:
@@ -547,7 +672,7 @@ defmodule AshHooks.BoundedHttpTest do
       assert body == "AAAAAAAA"
     end
 
-    test "a close during the discard is :truncated_body" do
+    test "returns the capped body even when the peer closes before its declared excess" do
       {base, opts} =
         scripted_server(
           send:
@@ -556,7 +681,7 @@ defmodule AshHooks.BoundedHttpTest do
           close: true
         )
 
-      assert {:error, :truncated_body} =
+      assert {:ok, %{status: 200, body: "AAAAAAAA"}} =
                Bounded.request(
                  :get,
                  base <> "/discard-cut",
@@ -566,7 +691,7 @@ defmodule AshHooks.BoundedHttpTest do
                )
     end
 
-    test "a stall during the discard is a recv timeout" do
+    test "returns the capped body without waiting on a stalled excess" do
       {base, opts} =
         scripted_server(
           send:
@@ -575,7 +700,7 @@ defmodule AshHooks.BoundedHttpTest do
           stall: 2_000
         )
 
-      assert {:error, :timeout} =
+      assert {:ok, %{status: 200, body: "AAAAAAAA"}} =
                Bounded.request(
                  :get,
                  base <> "/discard-stall",

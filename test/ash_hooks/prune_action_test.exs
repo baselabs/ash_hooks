@@ -103,6 +103,11 @@ defmodule AshHooks.PruneActionTest do
       response_snippet TEXT,
       last_error TEXT,
       next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot JSONB,
       inserted_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )

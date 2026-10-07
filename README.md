@@ -7,17 +7,17 @@ Webhooks for [Ash Framework](https://ash-hq.org), in both directions:
 
 - **Inbound** — receive provider webhooks, verify their signatures,
   deduplicate them on a ledger (a table recording every delivery — the
-  dedup record itself), and run your handler at least once per delivery:
-  durable deduplication, never a lost event, never a silent duplicate.
+  dedup record itself), and run your handler with durable deduplication
+  and at-least-once processing.
 - **Outbound** — sign and deliver your own webhooks with retries,
-  backoff, and dead-lettering, on any queue backed by Oban.
+  backoff, and dead-lettering through Oban or your own scheduler.
 
 The two halves work independently: if you only receive webhooks, you
 need no queue infrastructure at all.
 
 - Verify signatures for [ComplyCube](https://docs.complycube.com/) and
   [HubSpot v3](https://developers.hubspot.com/) out of the box; bring
-  your own scheme with a one-module provider behaviour.
+  your own scheme with a one-module provider behavior.
 - Duplicate and replayed deliveries are deduplicated on the ledger —
   exactly one row per delivery; crashes mid-flight resume on
   redelivery instead of losing events (handlers run at-least-once).
@@ -26,20 +26,21 @@ need no queue infrastructure at all.
   and a legacy-envelope mode for receivers mid-migration are built in.
 - Retries honor `Retry-After`, back off with jitter, dead-letter at a
   ceiling, and durably disable endpoints that return 410.
-- Safe defaults: secrets are only ever resolved through your callbacks
-  (literal secrets are rejected at compile time), endpoint URLs are
-  checked against server-side request forgery (SSRF — a registered
-  webhook URL can't be made to hit your internal network) at
+- Safe defaults: inbound declarations use secret resolvers rather than literal
+  binaries, and endpoint rows store secret references. Endpoint URLs are
+  checked against server-side request forgery (SSRF) at
   registration and again at send time, and response
   bodies are never stored unless you explicitly opt in for a diagnostic
-  run. The ledgers store raw payloads, and read access to them is yours
+  run. Inbound ledgers retain decoded payloads and a digest of the signed
+  bytes; outbound ledgers retain the exact bytes to send. Read access is yours
   to govern — the package injects no read policies (see
   [Security](#security)).
-- Telemetry events for the whole send/receive lifecycle — structured so
-  they can never leak secrets or payloads into your metrics backend.
+- Telemetry events for the whole send/receive lifecycle, with classified
+  reasons and identifiers rather than bodies or signing secrets.
 
-Requires Elixir ~> 1.20 (OTP 28+) and Ash ~> 3.0. Oban (~> 2.20) is needed only
-for outbound delivery; Phoenix or Plug only for receiving. From 1.0
+Requires Elixir ~> 1.20 (OTP 28+) and Ash >= 3.34.3, < 4.0. Add Oban (~> 2.20)
+for the generated delivery worker, and Phoenix or Plug for the HTTP ingress.
+Direct delivery and signature verification work without either dependency. From 1.0
 the package follows semantic versioning with a named public surface —
 see [Stability](#stability).
 
@@ -48,12 +49,15 @@ see [Stability](#stability).
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 1.3"},
+    {:ash_hooks, "~> 2.0"},
     # only for outbound delivery:
     {:oban, "~> 2.20"}
   ]
 end
 ```
+
+Upgrading from 1.x? Follow [UPGRADING.md](UPGRADING.md) before starting 2.0
+workers. The delivery schema and HubSpot's default dedup identity have changed.
 
 Or `mix igniter.install ash_hooks`, which also tries to patch your
 endpoint's `Plug.Parsers` with a raw-body reader. Signature schemes
@@ -126,25 +130,24 @@ case AshHooks.Ingress.ingest(Ledger, :comply_cube, conn.private[:ash_hooks_raw_b
        headers: Map.new(conn.req_headers),
        scope: %{"account_id" => conn.params["account_id"]}
      }) do
-  # judge the row's STATUS, not just the tag: a :duplicate is re-drove
-  # on redelivery, and its handler may have failed again — answer 200
-  # only when the row actually finished
-  {:ok, _tag, %{status: :processed}} -> send_resp(conn, 200, "")
+  # Acknowledge terminal rows, including permanent failures.
+  # A duplicate may have retried its handler: inspect its current status.
+  {:ok, _tag, %{status: status}} when status in [:processed, :failed_permanent, :superseded] ->
+    send_resp(conn, 200, "")
   {:ok, _tag, _row} -> send_resp(conn, 500, "")    # handler failed
   {:error, _} -> send_resp(conn, 400, "")          # bad signature/payload
 end
 ```
 
-**Delivery semantics.** A delivery that finished (`:processed` or
-`:failed_permanent`) is never processed again. A crash after your
+**Delivery semantics.** A terminal delivery (`:processed`,
+`:failed_permanent`, or `:superseded`) is never processed again. A crash after your
 handler ran but before the ledger recorded it will re-run the handler
-on redelivery — so write handlers idempotent, keyed on the provider's
-event id (for action-level idempotency elsewhere in your app, our
+on redelivery — so write handlers idempotent, keyed on the logical event
+or batch identity (for action-level idempotency elsewhere in your app, our
 sibling package
 [`ash_onetime`](https://hex.pm/packages/ash_onetime) is an optional
-companion — deliberately NOT a dependency here, because it would force
-ash_postgres on every consumer). In short: durable deduplication,
-at-least-once handler invocation.
+companion). Permanent failures belong on your operator surface; the successful
+acknowledgment prevents a provider from retrying a row that cannot run again.
 
 HubSpot's v3 scheme also signs the HTTP method and the full request
 URI, so its controller passes both — build the *public* URI from a base
@@ -181,11 +184,9 @@ Dispatch, wiring the worker's generated enqueue function:
 {:ok, event} =
   AshHooks.Event.new(
     type: :order_paid,
-    payload: Jason.encode!(order),
-    # DERIVE the id from your artifact's stable id: a re-fired producer
-    # then matches the existing delivery row instead of fanning out a
-    # duplicate POST per sweep
-    id: "msg_order-" <> order.id
+    payload: Jason.encode!(%{order_id: order.id}),
+    # Reuse this ID when retrying the same logical event.
+    id: "msg_order-" <> to_string(order.id)
   )
 
 AshHooks.dispatch(Order, :order_paid, event,
@@ -207,32 +208,47 @@ the worker (or call `AshHooks.Delivery.run/2` yourself): the delivery
 row owns the retry policy, and the queue is only its trigger
 ([ADR-0008](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0008-delivery-row-owns-retry-policy-oban-is-the-trigger.md)).
 
-The default HTTP adapter is a small native client with every read
-capped, so a hostile response can't balloon worker memory; OTP's
-`:httpc` is available as an alternative, and you can inject your own
-adapter for tests or proxies.
+The default HTTP adapter bounds response headers, retained body bytes, and
+the complete operation time. OTP's `:httpc` is an alternative with additional
+buffering limits described in its module docs. You can also provide an adapter
+for your application's transport requirements.
 
-**Response bodies are never stored** — each delivery row keeps the
-status and a content-type summary. When debugging a misbehaving
-endpoint, re-drive its row with body capture enabled and the captured
-body is stored only after passing the package's built-in redaction
-(homoglyph folding, decode-chain analysis, entropy checks — encoded
-secrets don't survive it), marked `[captured]` in the snippet:
+Schedule `AshHooks.reconcile_pending/3` for each declaration and tenant using
+the same named worker callback. It repairs enqueue gaps, due retries, expired
+send leases, and pending endpoint disables while preserving retry times and
+attempt counts. Delivery rows retain their declaration and route, so one
+declaration cannot recover another's work. Anonymous enqueue callbacks can use
+a stable `enqueue_key` for recovery. Application nodes must keep UTC clocks
+synchronized for lease decisions.
+
+Each result belongs to a live, fenced attempt. Network delivery remains
+at-least-once: a receiver may accept a request before its sender dies. Receivers
+deduplicate by the stable `webhook-id`.
+
+**Response bodies are never stored by default** — each delivery row keeps the
+status and a content-type summary. For a diagnostic run, enable capture on one
+row. The captured body is bounded, passes built-in redaction, and is marked
+`[captured]` in the snippet:
 
 ```elixir
-# diagnostic: one row, one capture, floor-redacted — run/2 takes the
-# same config the worker bakes (it does not recover the worker's
-# settings on its own), plus the per-call capture flag:
+# Diagnostic capture for one row. Supply the resource and resolver config;
+# retry overrides are independent of the worker's configured settings.
 AshHooks.Delivery.run(
   %{"endpoint_id" => row.endpoint_id, "event_uuid" => row.event_uuid},
   snippet_capture: true,
-  deliveries: MyApp.Delivery,
-  endpoints: MyApp.Endpoint,
+  deliveries: MyApp.OutboundDelivery,
+  endpoints: MyApp.WebhookEndpoint,
   secret_resolver: {MyApp.Secrets, :webhook_secret},
   max_attempts: 10, base_backoff_seconds: 2,
   max_backoff_seconds: 3600, retry_after_cap_seconds: 86_400
 )
 ```
+
+The driver defaults to the retry values shown. Its `max_attempts` option
+controls the delivery row; the worker calls that option `delivery_max_attempts`
+because the worker's `max_attempts` controls Oban jobs. Copy the worker's
+retry policy for a diagnostic run: a lower delivery ceiling can dead-letter a
+row the worker would still retry.
 
 Only non-terminal rows are driven — a row that already finished will
 not re-send; re-drive a failed one, or wait for its retry.
@@ -251,7 +267,7 @@ migrate, `:legacy` emits only the old one.
 ## Fitting the extensions to your domain
 
 The injected fields and actions carry opinionated names by default;
-your domain may reserve those names or own the lifecycle itself (1.3).
+your domain may reserve those names or own the lifecycle itself.
 Every knob is a per-resource DSL option, fail-closed at compile:
 
 ```elixir
@@ -261,7 +277,7 @@ outbound_delivery do
   payload_attribute :event_bytes
 end
 
-# append-only audit ledger: NO destroy action is injected at all, and
+# append-only audit ledger: no destroy action is injected, and
 # the retention hook fails loud (deletion is your own surface)
 outbound_delivery do
   payload_attribute :event_bytes
@@ -269,7 +285,7 @@ outbound_delivery do
 end
 
 # your register already has an enable switch — map the durable
-# enable/disable onto IT (the 410 breaker and operators flip your
+# enable/disable onto it (the 410 breaker and operators flip your
 # attribute; the package injects no `status` of its own)
 endpoint do
   status_attribute :active
@@ -278,20 +294,21 @@ endpoint do
 end
 ```
 
-Also in this shape: primary keys may be any generated form
-(`uuid_v7_primary_key` compiles as-is — the dispatch/ingest upserts
-adapt), a subscription register may be a closed `{:array, :atom}` enum
+Ledger operations use the complete resource primary key, including custom and
+composite keys. Every component needs a default, a data-layer generator, or a
+supported create input; inbound scope fields can supply key components.
+Endpoint and subscription references require a single UUID-compatible
+key, which may be renamed or generated with `uuid_v7_primary_key`.
+A subscription register may be a closed `{:array, :atom}` enum
 (your constraints, your default — matching handles atoms and strings
 identically, wildcard included), and injected-PK ledgers still classify
 `:created`/`:duplicate` exactly.
 
 **Policies.** The package injects write actions, not the authorization
-around them: the delivery ledger carries `:dispatch`, `:mark_enqueue_failed`,
-`:requeue`, `:prune`, `:mark_sending`, `:mark_succeeded`, `:mark_send_failed`,
-and the endpoint carries `:disable`. Cover each with an action-specific
+around them. Cover the generated machine actions with an action-specific
 policy of your own (the runtime's internal calls bypass policies by
 design), or keep the resources off every actor-facing surface — the
-obligation is stated at each extension site, in the module docs.
+full action set and obligation are stated at each extension site in the module docs.
 
 ## Observability
 
@@ -305,13 +322,13 @@ are in the `AshHooks.Telemetry` docs and the
 
 ## Retention
 
-Ledger and delivery rows accumulate by default (they ARE the dedup and
+Ledger and delivery rows accumulate by default (they are the dedup and
 audit record). When you want them bounded, drive the retention hooks on
 a schedule of your choosing (an Oban cron job, a mix task, a nightly
 job):
 
 - `AshHooks.Ingress.prune/2` and `AshHooks.Delivery.prune/2` delete
-  TERMINAL rows older than a cutoff — retryable and in-flight rows are
+  terminal rows older than a cutoff — retryable and in-flight rows are
   never touched. They key off the resource's `inserted_at`, so add
   Ash's `timestamps()` to the resource and its migration. Append-only
   ledgers may omit the destroy action entirely
@@ -380,22 +397,20 @@ threaded — behavior is identical.
 Adopting tenancy on tables that already have rows is an ordered
 transition (backfill, then regenerate indexes, then enable) — the
 [adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
-walks it; ADR-0011 records the floor.
+walks it.
 
 ## Security
 
-The package enforces the guarantees it owns: constant-time signature
-compares, compile-time rejection of literal secrets, SSRF (server-side
-request forgery) checks at registration and send time (DNS-rebinding closed by connecting to the
-validated address), memory-capped HTTP reads, and redaction-gated
-response capture.
+Signatures are compared in constant time. Secret values come from your
+configured sources. Endpoint URLs are checked at registration and send time;
+the supplied adapters connect to a validated address to prevent DNS rebinding.
+The default adapter bounds HTTP reads, and diagnostic response capture runs
+through redaction before storage.
 
-Read access is the one floor the package deliberately does **not**
-enforce, because it cannot know your actors: the ledger and delivery
-resources are YOUR resources in YOUR domain, and the package injects no
-policies — reads are governed entirely by the policies you write.
-These rows carry raw provider payloads (third-party PII), event ids,
-and scope keys. Mount them behind policies that deny reads by default:
+Your resource policies govern access to the ledgers. Inbound rows contain
+decoded provider payloads, signed-body digests, event IDs, and scope keys;
+outbound rows contain exact event bytes. Those payloads can contain personal
+information. Define read policies that deny access by default:
 
 ```elixir
 policies do
@@ -406,7 +421,7 @@ policies do
 end
 ```
 
-(This assumes `Ash.Policy.Authorizer` in the resource's `authorizers`;
+This assumes `Ash.Policy.Authorizer` in the resource's `authorizers`;
 match the snippet to your actual actors. The `policies` block lives
 inside the ledger/delivery resource module (with
 `authorizers: [Ash.Policy.Authorizer]` in the `use Ash.Resource`
@@ -416,18 +431,16 @@ covers the full model). Vulnerability reports:
 
 ## Stability
 
-From 1.0.0, ash_hooks follows semantic versioning over a named public
+ash_hooks follows semantic versioning over a named public
 surface (the DSL, the public modules, injected attributes/actions,
-telemetry events, error classes) — breaking changes only in 2.0,
+telemetry events, error classes) — the current major is 2; breaking changes next ship in 3.0,
 deprecations run two minors minimum, safety corrections ship as fixes
 ([ADR-0010](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0010-semver-and-support-policy.md)).
 
 Minimum supported versions: Elixir ~> 1.20 (OTP 28+; CI-tested on
-Erlang/OTP 28 and 29), Ash ~> 3.0, Oban ~> 2.20 (optional, outbound only).
-The package stays developer-portable across macOS and Linux — a standing
-requirement that clone, set up, and test work on both, kept by OS-agnostic
-code and tooling; Windows developers use WSL2, which is the Linux path; CI
-runs the full suite on Linux, including an AshPostgres leg exercising a
+Erlang/OTP 28 and 29), Ash >= 3.34.3 and < 4.0, Oban ~> 2.20 (optional, outbound only).
+Development is supported on macOS and Linux; Windows developers use WSL2.
+CI runs on Linux, including an AshPostgres leg exercising a
 `uuid_v7`-keyed consumer shape. On Ash 3.33+ your
 application must also set Ash's required `default_string_length_count`
 config — an Ash requirement for every app compiling resources, not an

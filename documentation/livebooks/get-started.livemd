@@ -5,24 +5,36 @@
 ## You will learn
 
 * Receive an inbound webhook: verify its signature, deduplicate a replay, reject a tamper
-* Send an outbound webhook to a live local server, and watch the delivery machine work
+* Send an outbound webhook to an existing WebHook Tester inbox and verify its captured bytes
 * Scope a multi-tenant deployment: one tenant's dispatch never reaches another's rows
-* Fit the extensions to a domain that reserves `payload`, owns an `active` switch, and types its registers with atoms (1.3)
+* Fit the extensions to a domain that reserves `payload`, owns an `active` switch, and types its registers with atoms
 * Observe everything through telemetry
 * Prune old rows with the retention hooks
 
-Everything runs inside this notebook — one in-process sqlite database,
-one local socket server, no external services. Validated against
-ash_hooks **1.3.0**.
+This notebook uses a real SQLite database and an existing WebHook Tester
+receiver. The receiver must already answer at `http://127.0.0.1:52871`;
+set `LOCAL_WEBHOOK_TESTER_PORT` to use another existing receiver. See
+the [local receiver guide](https://github.com/baselabs/ash_hooks/blob/main/ops/local/README.md).
+The notebook starts no server.
+Uses ash_hooks **2.0.0**. Its examples exercise the library locally; vendor-origin
+delivery and a production queue require your own application integration.
 
 <!-- livebook:{"break_marks":true} -->
 
 ## Setup
 
 ```elixir
+package =
+  case System.get_env("ASH_HOOKS_NOTEBOOK_SOURCE") do
+    nil -> {:ash_hooks, "== 2.0.0"}
+    source -> {:ash_hooks, path: Path.expand(source)}
+  end
+
+# Release verification supplies the unpacked candidate archive explicitly.
+# Normal notebook execution resolves the exact published version above.
 Mix.install([
-  {:ash, "~> 3.0"},
-  {:ash_hooks, "~> 1.3"},
+  {:ash, ">= 3.34.3 and < 4.0.0-0"},
+  package,
   {:ash_sqlite, "~> 0.2"},
   {:jason, "~> 1.2"}
 ])
@@ -34,6 +46,8 @@ Mix.install([
 # :codepoints is Ash's recommended value: max_length bounds value size
 # and matches how SQL data layers count.
 Application.put_env(:ash, :default_string_length_count, :codepoints)
+Application.put_env(:ash_hooks, :tour_inbound_secret, :crypto.strong_rand_bytes(32))
+"2.0.0" = Application.spec(:ash_hooks, :vsn) |> to_string()
 ```
 
 ```elixir
@@ -43,6 +57,10 @@ end
 ```
 
 ```elixir
+defmodule Tour.VerifiedEvent do
+  defstruct [:type, :payload]
+end
+
 # A minimal inbound provider — your integration point for any vendor.
 # The scheme here is the common one: lowercase-hex HMAC-SHA256 over the
 # raw body, so verify delegates to the package's default.
@@ -53,7 +71,7 @@ defmodule Tour.Provider do
   def verify_signature(raw_body, %{signature: signature}, secret),
     do: AshHooks.Provider.default_verify_signature(raw_body, signature, secret, :hmac_sha256)
 
-  # Map the vendor's type strings to YOUR event atoms — an explicit
+  # Map the vendor's type strings to your event atoms — an explicit
   # table, never String.to_atom on provider input (that would let a
   # hostile sender grow your atom table). Unknown types fail closed.
   @impl true
@@ -62,7 +80,7 @@ defmodule Tour.Provider do
   def parse_event_type(_), do: {:error, :unknown_event_type}
 
   @impl true
-  def handle_event(type, payload), do: {:ok, %{type: type, payload: payload}}
+  def handle_event(type, payload), do: {:ok, %Tour.VerifiedEvent{type: type, payload: payload}}
 end
 
 defmodule Tour.Ledger do
@@ -92,8 +110,8 @@ defmodule Tour.Ledger do
   webhooks do
     inbound :tour do
       provider(Tour.Provider)
-      # a secret SOURCE — never a literal
-      secret fn -> {:ok, "tour-signing-secret"} end
+      # a secret source — never a literal
+      secret fn -> {:ok, Application.fetch_env!(:ash_hooks, :tour_inbound_secret)} end
       event_id(&__MODULE__.event_id/1)
     end
   end
@@ -206,7 +224,7 @@ end
 
 ```elixir
 Application.put_env(:ash_hooks, Tour.Repo,
-  database: Path.join(System.tmp_dir!(), "ash_hooks_tour_#{System.unique_integer()}.sqlite3"),
+  database: Path.join(System.tmp_dir!(), "ash_hooks_tour_#{Ash.UUID.generate()}.sqlite3"),
   pool_size: 1
 )
 
@@ -248,6 +266,11 @@ CREATE TABLE tour_deliveries (
   signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
   attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
   response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
+  dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+  dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+  attempt_token TEXT, send_lease_expires_at TEXT,
+  enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+  endpoint_snapshot JSONB,
   inserted_at TEXT, updated_at TEXT)
 """)
 
@@ -295,9 +318,10 @@ Tour.Repo.query!("CREATE TABLE IF NOT EXISTS tour_orders (id TEXT PRIMARY KEY)")
 ```elixir
 body = Jason.encode!(%{"id" => "evt-tour-1", "type" => "order.paid"})
 
-# our provider signs the RAW bytes: lowercase-hex HMAC-SHA256
+# our provider signs the raw bytes: lowercase-hex HMAC-SHA256
 signature =
-  :crypto.mac(:hmac, :sha256, "tour-signing-secret", body) |> Base.encode16(case: :lower)
+  :crypto.mac(:hmac, :sha256, Application.fetch_env!(:ash_hooks, :tour_inbound_secret), body)
+  |> Base.encode16(case: :lower)
 
 ctx = %{signature: signature, headers: %{}, scope: %{"account_id" => "acct-42"}}
 
@@ -310,57 +334,29 @@ IO.inspect(first.status, label: "first delivery status")
 {:ok, :duplicate, _} = AshHooks.Ingress.ingest(Tour.Ledger, :tour, body, ctx)
 
 # A tampered signature: rejected before anything is trusted
-tampered = %{ctx | signature: String.replace(signature, "a", "b", global: false)}
+<<first, rest::binary>> = signature
+tampered = %{ctx | signature: <<Bitwise.bxor(first, 1), rest::binary>>}
 {:error, error} = AshHooks.Ingress.ingest(Tour.Ledger, :tour, body, tampered)
 IO.inspect(error.__struct__, label: "tamper rejected with")
 ```
 
 <!-- livebook:{"break_marks":true} -->
 
-## Outbound: deliver to a live local server
+## Outbound: deliver to the real receiver
 
 ```elixir
-# A real HTTP server on a local socket — our delivery target. It always
-# answers 200 with a JSON body.
-parent = self()
-
-listener =
-  spawn(fn ->
-    {:ok, listen} = :gen_tcp.listen(0, [:binary, {:active, false}, {:ip, {127, 0, 0, 1}}])
-    {:ok, port} = :inet.port(listen)
-    send(parent, {:port, port})
-
-    serve = fn serve ->
-      case :gen_tcp.accept(listen, 30_000) do
-        {:ok, socket} ->
-          {:ok, _request} = :gen_tcp.recv(socket, 0, 5_000)
-          body = Jason.encode!(%{"received" => true})
-          :gen_tcp.send(socket, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: #{byte_size(body)}\r\nconnection: close\r\n\r\n#{body}")
-          :timer.sleep(50)
-          :gen_tcp.close(socket)
-          serve.(serve)
-
-        _ ->
-          :ok
-      end
-    end
-
-    serve.(serve)
-  end)
-
-port =
-  receive do
-    {:port, port} -> port
-  after
-    5_000 -> raise "listener did not start"
-  end
-
-IO.puts("local server listening on #{port}")
+port = String.to_integer(System.get_env("LOCAL_WEBHOOK_TESTER_PORT", "52871"))
+receiver_base = "http://127.0.0.1:#{port}"
+receiver_session = Ash.UUID.generate()
+{:ok, %{status: 200}} = AshHooks.Http.Bounded.request(
+  :get, receiver_base <> "/api/version", %{}, "", validate_destination: false
+)
+IO.puts("using the existing receiver on #{port}")
 
 # Registration rejects private/loopback URLs by design — ash_hooks
 # treats webhook destinations as untrusted input. This demo needs a
-# loopback listener, so we register the endpoint with a public URL and
-# repoint the stored row at the local server purely for the demo; real
+# trusted local receiver, so we register the endpoint with a public URL and
+# repoint the stored row for this local inspection; production
 # endpoints keep their public URLs.
 endpoint =
   Ash.create!(Tour.Endpoint, %{url: "https://partner.example.test/hook", secret_ref: "tour-endpoint"},
@@ -368,7 +364,7 @@ endpoint =
   )
 
 Tour.Repo.query!("UPDATE tour_endpoints SET url = ? WHERE id = ?", [
-  "http://127.0.0.1:#{port}/hook",
+  receiver_base <> "/" <> receiver_session,
   endpoint.id
 ])
 
@@ -386,21 +382,22 @@ IO.inspect(Enum.map(results, & &1.status), label: "dispatch results")
 
 ```elixir
 # Drive the delivery machine directly (the shape an Oban worker uses).
-# Two options let the local listener work: `ssrf_check` replaces the
+# Two options permit this trusted loopback receiver: `ssrf_check` replaces the
 # send-time destination re-check, and http_opts' `validate_destination:
 # false` relaxes the HTTP adapter's own pin — both exist for tests and
 # diagnostics; production configs keep both guards on.
+outbound_secret = AshHooks.Signing.generate_secret()
 config = [
   deliveries: Tour.Delivery,
   endpoints: Tour.Endpoint,
   secret_resolver: fn "tour-endpoint" ->
-    {:ok, "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))}
+    {:ok, outbound_secret}
   end,
   max_attempts: 3,
   base_backoff_seconds: 1,
   max_backoff_seconds: 60,
   retry_after_cap_seconds: 100,
-  ssrf_check: fn _url -> true end,
+  ssrf_check: fn url -> url == receiver_base <> "/" <> receiver_session end,
   http_opts: [validate_destination: false],
   now: fn -> DateTime.utc_now() |> DateTime.truncate(:second) end
 ]
@@ -411,12 +408,37 @@ config = [
   AshHooks.Delivery.run(%{"endpoint_id" => row.endpoint_id, "event_uuid" => row.event_uuid}, config)
 
 final = Ash.reload!(row, authorize?: false)
+{:succeeded, 200} = {final.status, final.response_status}
 IO.inspect({final.status, final.response_status, final.response_snippet}, label: "delivered")
+
+{:ok, %{status: 200, body: captures}} = AshHooks.Http.Bounded.request(
+  :get, receiver_base <> "/api/session/" <> receiver_session <> "/requests", %{}, "",
+  validate_destination: false, max_body_bytes: 1_048_576
+)
+matching_captures = Enum.filter(Jason.decode!(captures), fn request ->
+  Enum.any?(request["headers"], &(&1["name"] |> String.downcase() == "webhook-id" and &1["value"] == event.id))
+end)
+[capture] = matching_captures
+captured_bytes = Base.decode64!(capture["request_payload_base64"])
+true = captured_bytes == event.payload
+captured_headers = Map.new(capture["headers"], &{String.downcase(&1["name"]), &1["value"]})
+{:ok, %{id: verified_id}} = AshHooks.Signing.verify(captured_bytes, captured_headers, outbound_secret)
+true = verified_id == event.id
+IO.puts("receiver retained exact bytes and a valid signature")
+
+# A completed row is harmless to drive again: no second network request.
+:ok = AshHooks.Delivery.run(%{"endpoint_id" => row.endpoint_id, "event_uuid" => row.event_uuid}, config)
+{:ok, %{status: 200, body: captures_after}} = AshHooks.Http.Bounded.request(
+  :get, receiver_base <> "/api/session/" <> receiver_session <> "/requests", %{}, "",
+  validate_destination: false, max_body_bytes: 1_048_576
+)
+1 = length(Jason.decode!(captures_after))
+IO.puts("terminal redrive retained exactly one receiver request")
 
 IO.puts("""
 Note the response_snippet: a status + content-type summary — response
 bodies are never stored by default (opt-in diagnostic capture exists
-under the package's redaction floor).
+under the package's redaction pipeline).
 """)
 ```
 
@@ -429,7 +451,7 @@ under the package's redaction floor).
 # multitenancy on the touched resources (in your app: the subscription,
 # the endpoint, and both ledgers) and pass :tenant to every call. Ash
 # scopes every query and write to the tenant; the package additionally
-# fails closed with a NAMED error when a multitenant resource is touched
+# fails closed with a named error when a multitenant resource is touched
 # without one.
 defmodule Tour.TenantEndpoint do
   use Ash.Resource,
@@ -564,6 +586,11 @@ CREATE TABLE tour_tenant_deliveries (
   signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
   attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
   response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
+  dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+  dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+  attempt_token TEXT, send_lease_expires_at TEXT,
+  enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+  endpoint_snapshot JSONB,
   org_id TEXT NOT NULL, inserted_at TEXT, updated_at TEXT)
 """)
 
@@ -592,7 +619,7 @@ end
 
 {:ok, event} = AshHooks.Event.new(type: :order_paid, payload: Jason.encode!(%{"order" => 7}))
 
-# org_a dispatches: the fanout READ itself is tenant-scoped — org_b's
+# org_a dispatches: the fanout read itself is tenant-scoped — org_b's
 # subscription is invisible, so no row, no signature, no bytes for org_b
 {:ok, [result]} = AshHooks.dispatch(Tour.TenantOrder, :order_paid, event, tenant: "org_a")
 IO.inspect(result.status, label: "org_a dispatch result")
@@ -603,7 +630,7 @@ IO.inspect({a_row.org_id, a_row.status}, label: "org_a's row")
 [] = Ash.read!(Tour.TenantDelivery, authorize?: false, tenant: "org_b")
 IO.puts("org_b's partition: empty — the event never existed for org_b")
 
-# A tenant-less call against a multitenant set fails closed BEFORE any
+# A tenant-less call against a multitenant set fails closed before any
 # data access — the named error, not a crash:
 {:error, :tenant_required} = AshHooks.dispatch(Tour.TenantOrder, :order_paid, event)
 IO.puts("tenant-less dispatch: {:error, :tenant_required}")
@@ -630,13 +657,13 @@ IO.puts("Pruned the terminal row — non-terminal rows are never touched.")
 
 <!-- livebook:{"break_marks":true} -->
 
-## 1.3: fit the extensions to your domain
+## Fit the extensions to your domain
 
 ```elixir
 # A consumer whose domain reserves `payload` for its own sole store,
 # owns an `active` switch on the endpoint register, types its
-# subscription register as a CLOSED ATOM enum, keys rows with
-# uuid_v7, and keeps the ledger append-only — every 1.3 option at once.
+# subscription register as a closed atom enum, keys rows with
+# uuid_v7, and keeps the ledger append-only.
 defmodule Tour.FitEndpoint do
   use Ash.Resource,
     domain: Tour.FitDomain,
@@ -650,7 +677,7 @@ defmodule Tour.FitEndpoint do
 
   attributes do
     uuid_v7_primary_key(:id)
-    # the consumer's OWN switch — the package injects no `status`
+    # the consumer's own switch — the package injects no `status`
     attribute(:active, :boolean, allow_nil?: false, default: true, public?: true)
   end
 
@@ -721,7 +748,7 @@ defmodule Tour.FitDelivery do
   outbound_delivery do
     # the domain reserves `payload` — the exact-bytes column is renamed
     payload_attribute(:event_bytes)
-    # append-only ledger: NO destroy action is injected at all
+    # append-only ledger: no destroy action is injected at all
     prune_action(:none)
   end
 end
@@ -778,7 +805,7 @@ CREATE TABLE tour_fit_subscriptions (
   id TEXT PRIMARY KEY, event_types TEXT NOT NULL, endpoint_id TEXT NOT NULL, signing_mode TEXT)
 """)
 
-# NO payload column and NO destroy action: the sole-store reservation
+# NO payload column and no destroy action: the sole-store reservation
 # and the append-only posture, in the schema itself
 Tour.Repo.query!("""
 CREATE TABLE tour_fit_deliveries (
@@ -786,7 +813,12 @@ CREATE TABLE tour_fit_deliveries (
   event_bytes BLOB NOT NULL, endpoint_id TEXT NOT NULL, subscription_id TEXT,
   signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
   attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
-  response_snippet TEXT, last_error TEXT, next_attempt_at TEXT)
+  response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
+  dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+  dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+  attempt_token TEXT, send_lease_expires_at TEXT,
+  enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+  endpoint_snapshot JSONB)
 """)
 
 Tour.Repo.query!(
@@ -805,12 +837,12 @@ fit_endpoint =
     authorize?: false
   )
 
-# the ATOM-typed register matches the event's canonical string type
+# the atom-typed register matches the event's canonical string type
 Ash.create!(Tour.FitSubscription, %{endpoint_id: fit_endpoint.id, event_types: [:order_paid]},
   authorize?: false
 )
 
-# a DETERMINISTIC id: the re-fire below matches the existing row
+# a deterministic ID: the re-fire below matches the existing row
 {:ok, fit_event} =
   AshHooks.Event.new(
     type: :order_paid,
@@ -818,16 +850,12 @@ Ash.create!(Tour.FitSubscription, %{endpoint_id: fit_endpoint.id, event_types: [
     id: "msg_fit-order-9"
   )
 
-# enqueue wired (the Oban-seam shape): the DETERMINISTIC id makes the
-# re-fire classify :duplicate — a generated id would fan out twice
-enqueue_ok = fn _delivery, _event -> :ok end
+# Persist a deferred row; repeating the stable event ID returns its duplicate.
+{:ok, [first]} = AshHooks.dispatch(Tour.FitOrder, :order_paid, fit_event)
+{:ok, [second]} = AshHooks.dispatch(Tour.FitOrder, :order_paid, fit_event)
 
-{:ok, [first]} = AshHooks.dispatch(Tour.FitOrder, :order_paid, fit_event, enqueue: enqueue_ok)
-
-{:ok, [second]} = AshHooks.dispatch(Tour.FitOrder, :order_paid, fit_event, enqueue: enqueue_ok)
-
-IO.inspect({first.status, second.status}, label: "created, then duplicate")
-%{status: :created} = first
+IO.inspect({first.status, second.status}, label: "deferred, then duplicate")
+%{status: :deferred} = first
 %{status: :duplicate} = second
 
 [fit_row] = Ash.read!(Tour.FitDelivery, authorize?: false)
@@ -842,20 +870,34 @@ fit_bytes = Jason.encode!(%{"order" => 9})
 # the consumer's own off switch suppresses the fanout entirely
 Ash.update!(fit_endpoint, %{active: false}, authorize?: false)
 
-{:ok, results} = AshHooks.dispatch(Tour.FitOrder, :order_paid, fit_event, enqueue: enqueue_ok)
+{:ok, results} = AshHooks.dispatch(Tour.FitOrder, :order_paid, fit_event)
 IO.inspect(results, label: "dispatch against a deactivated endpoint")
 [] = results
 
-# and the retention hook fails LOUD on the append-only ledger
+# and the retention hook returns an error on the append-only ledger
 {:error, prune_error} =
   AshHooks.Delivery.prune(Tour.FitDelivery, older_than: DateTime.utc_now())
 
 IO.inspect(Exception.message(prune_error), label: "prune on append-only")
 IO.puts("""
-That is the 1.3 surface: renamed columns, uuid_v7 keys, atom registers,
-one owned switch, no destroy action — all opt-in, all fail-closed at
-compile when misconfigured.
+The resource keeps its own column names, generated keys, typed subscriptions,
+enable switch, and append-only retention policy.
 """)
+```
+
+## Clean up
+
+The tour created one disposable SQLite file. Close its repository and remove
+only that file and its SQLite sidecars when you finish:
+
+```elixir
+database_path = Application.fetch_env!(:ash_hooks, Tour.Repo)[:database]
+:ok = Supervisor.stop(Process.whereis(Tour.Repo))
+for suffix <- ["", "-shm", "-wal"], do: File.rm(database_path <> suffix)
+Application.delete_env(:ash_hooks, :tour_inbound_secret)
+Application.delete_env(:ash_hooks, Tour.Repo)
+:ok = :telemetry.detach("tour")
+IO.puts("Tour database removed; captured receiver requests follow the receiver's retention policy.")
 ```
 
 <!-- livebook:{"break_marks":true} -->

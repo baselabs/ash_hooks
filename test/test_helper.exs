@@ -4,7 +4,7 @@
 # concurrent writers serialize instead of erroring; per-test-file tables are
 # created by each file's setup.
 
-db_path = Path.join(System.tmp_dir!(), "ash_hooks_test_#{System.unique_integer()}.sqlite3")
+db_path = Path.join(System.tmp_dir!(), "ash_hooks_test_#{Ash.UUID.generate()}.sqlite3")
 
 # WAL + busy timeout via repo config — applied per connection at open
 # (post-start PRAGMA queries race the pool's connection init and surface
@@ -30,6 +30,7 @@ Application.put_env(:ash_hooks, AshHooks.Test.Repo,
 # Postgres pointed at by the env below). Without the flag the suite is
 # excluded and ordinary dev/test runs need no Postgres at all.
 postgres? = System.get_env("ASH_HOOKS_POSTGRES") == "1"
+httpbun? = System.get_env("ASH_HOOKS_HTTPBUN") == "1"
 
 if postgres? do
   Application.put_env(:ash_hooks, AshHooks.TestPostgres.Repo,
@@ -45,6 +46,11 @@ if postgres? do
 end
 
 ExUnit.start(
-  exclude: (postgres? && []) || [:postgres],
-  after_suite: [fn _stats -> File.rm(db_path) end]
+  exclude: if(postgres?, do: [], else: [:postgres]) ++ if(httpbun?, do: [], else: [:httpbun]),
+  after_suite: [
+    fn _stats ->
+      if repo_pid = Process.whereis(AshHooks.Test.Repo), do: Supervisor.stop(repo_pid)
+      for suffix <- ["", "-shm", "-wal"], do: File.rm(db_path <> suffix)
+    end
+  ]
 )

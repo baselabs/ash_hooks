@@ -214,6 +214,21 @@ defmodule AshHooks.ProviderTest do
     end
   end
 
+  describe "event_identity/2" do
+    test "returns :not_supported when the optional callback is absent" do
+      assert :not_supported = Provider.event_identity(AshHooks.Provider.Mock, %{})
+    end
+
+    test "loads the provider and returns its callback result unchanged" do
+      assert {:ok, identity} =
+               Provider.event_identity(AshHooks.Provider.HubSpotV3, [
+                 %{"subscriptionType" => "contact.creation", "objectId" => 1}
+               ])
+
+      assert is_binary(identity)
+    end
+  end
+
   defp flip_first_char(<<first, rest::binary>>) do
     replacement = if first == ?a, do: ?b, else: ?a
     <<replacement, rest::binary>>

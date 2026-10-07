@@ -685,7 +685,7 @@ defmodule AshHooks.TenancyTest do
   require Ash.Query
   require Spark.Test
 
-  alias AshHooks.{Delivery, Dispatcher, Event, Ingress}
+  alias AshHooks.{Dispatcher, Event, Ingress}
   alias AshHooks.Test.Repo
 
   @endpoints "tenancy_test_endpoints"
@@ -754,6 +754,11 @@ defmodule AshHooks.TenancyTest do
       response_snippet TEXT,
       last_error TEXT,
       next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot JSONB,
       org_id TEXT,
       inserted_at TEXT,
       updated_at TEXT
@@ -815,6 +820,11 @@ defmodule AshHooks.TenancyTest do
       response_snippet TEXT,
       last_error TEXT,
       next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot JSONB,
       inserted_at TEXT,
       updated_at TEXT
     )
@@ -835,6 +845,11 @@ defmodule AshHooks.TenancyTest do
       response_snippet TEXT,
       last_error TEXT,
       next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot JSONB,
       org_id TEXT,
       tenant_id TEXT
     )
@@ -1116,8 +1131,14 @@ defmodule AshHooks.TenancyTest do
     assert dead.last_error == "gone_410"
   end
 
-  test "a 410 whose endpoint vanishes before the disable write surfaces the error — never a silent no-op circuit-break" do
+  test "a 410 whose endpoint is authoritatively gone completes the pending obligation" do
     {_attack_endpoint, _attack_sub, victim_endpoint, _victim_sub} = two_tenant_fixture!()
+
+    assert [[1]] =
+             Repo.query!("SELECT COUNT(*) FROM #{@endpoints} WHERE id = ? AND org_id = ?", [
+               victim_endpoint.id,
+               "org_a"
+             ]).rows
 
     Ash.create!(
       AshHooks.TenancyTest.Delivery,
@@ -1142,7 +1163,7 @@ defmodule AshHooks.TenancyTest do
         {:ok, %{status: 410, headers: [], body: ""}}
       end)
 
-    assert {:error, {:disable_failed, :endpoint_vanished}} =
+    assert :ok =
              AshHooks.Delivery.run(
                %{
                  "endpoint_id" => victim_endpoint.id,
@@ -1151,6 +1172,21 @@ defmodule AshHooks.TenancyTest do
                },
                vanishing
              )
+
+    assert [[0]] =
+             Repo.query!("SELECT COUNT(*) FROM #{@endpoints} WHERE id = ? AND org_id = ?", [
+               victim_endpoint.id,
+               "org_a"
+             ]).rows
+
+    row =
+      AshHooks.TenancyTest.Delivery
+      |> Ash.Query.filter(event_uuid == "evt-410-vanish")
+      |> Ash.read_one!(authorize?: false, tenant: "org_a")
+
+    assert row.status == :dead_letter
+    assert row.last_error == "gone_410_endpoint_gone"
+    assert row.attempts == 1
   end
 
   # ────────────────────────── proof 4: sweeps ──────────────────────────

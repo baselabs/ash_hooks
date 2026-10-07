@@ -30,12 +30,105 @@ defmodule AshHooks.InboundDeliveryTest do
     end
   end
 
+  defmodule GeneratedCompositeKeyLedger do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.InboundDeliveryTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.InboundDelivery]
+
+    sqlite do
+      table("inbound_delivery_generated_composite_key_ledgers")
+      repo(AshHooks.Test.Repo)
+    end
+
+    inbound_delivery do
+      scope_identity([:account_id])
+    end
+
+    attributes do
+      attribute :account_id, :string do
+        primary_key?(true)
+        allow_nil?(false)
+      end
+
+      uuid_v7_primary_key(:receipt_id)
+      attribute(:id, :uuid, allow_nil?: false, default: &Ash.UUID.generate/0)
+    end
+
+    actions do
+      defaults([:read])
+    end
+  end
+
+  defmodule DefaultedCompositeKeyLedger do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.InboundDeliveryTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.InboundDelivery]
+
+    sqlite do
+      table("inbound_delivery_defaulted_composite_key_ledgers")
+      repo(AshHooks.Test.Repo)
+    end
+
+    inbound_delivery do
+      scope_identity([:account_id])
+    end
+
+    attributes do
+      attribute :account_id, :string do
+        primary_key?(true)
+        allow_nil?(false)
+      end
+
+      attribute :id, :uuid do
+        primary_key?(true)
+        allow_nil?(false)
+        default(&Ash.UUID.generate/0)
+      end
+    end
+
+    actions do
+      defaults([:read])
+    end
+  end
+
+  defmodule SoleWritableIdKeyLedger do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.InboundDeliveryTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.InboundDelivery]
+
+    sqlite do
+      table("inbound_delivery_sole_writable_id_key_ledgers")
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      attribute :id, :uuid do
+        primary_key?(true)
+        allow_nil?(false)
+        writable?(true)
+      end
+    end
+
+    actions do
+      defaults([:read])
+    end
+  end
+
   defmodule Domain do
     @moduledoc false
     use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
 
     resources do
       resource(AshHooks.InboundDeliveryTest.Ledger)
+      resource(AshHooks.InboundDeliveryTest.GeneratedCompositeKeyLedger)
+      resource(AshHooks.InboundDeliveryTest.DefaultedCompositeKeyLedger)
+      resource(AshHooks.InboundDeliveryTest.SoleWritableIdKeyLedger)
     end
   end
 
@@ -76,6 +169,7 @@ defmodule AshHooks.InboundDeliveryTest do
       assert :processed in states
       assert :failed_retryable in states
       assert :failed_permanent in states
+      assert :superseded in states
 
       assert attrs.fencing_token.type == Ash.Type.Integer
       assert attrs.fencing_token.allow_nil? == false
@@ -232,6 +326,122 @@ defmodule AshHooks.InboundDeliveryTest do
           end
         end
       end
+    end
+  end
+
+  describe "primary-key creation contract" do
+    test "rejects a primary-key component ingress can never supply or generate" do
+      assert_raise Spark.Error.DslError, ~r/primary key.*unobtainable/i, fn ->
+        defmodule UnobtainablePrimaryKeyLedger do
+          @moduledoc false
+          use Ash.Resource,
+            domain: AshHooks.InboundDeliveryTest.Domain,
+            data_layer: Ash.DataLayer.Ets,
+            extensions: [AshHooks.InboundDelivery]
+
+          attributes do
+            attribute :host_key, :string do
+              primary_key?(true)
+              allow_nil?(false)
+            end
+          end
+
+          actions do
+            defaults([:read])
+          end
+        end
+      end
+    end
+
+    test "accepts composite keys supplied by scope plus a generated component" do
+      assert Info.primary_key(GeneratedCompositeKeyLedger) == [:account_id, :receipt_id]
+      assert :id in Info.action(GeneratedCompositeKeyLedger, :ingest).accept
+    end
+
+    test "accepts defaulted composite components and a sole writable id key" do
+      assert Info.primary_key(DefaultedCompositeKeyLedger) == [:account_id, :id]
+      assert Info.primary_key(SoleWritableIdKeyLedger) == [:id]
+      assert :id in Info.action(SoleWritableIdKeyLedger, :ingest).accept
+    end
+
+    test "a scalar cannot address a composite-key delivery" do
+      assert {:error, :primary_key_mismatch} =
+               AshHooks.Ingress.claim_delivery(GeneratedCompositeKeyLedger, "one-component")
+    end
+
+    test "rejects a writable id in a composite key when ingest cannot supply it" do
+      module = AshHooks.InboundDeliveryTest.UnsuppliedCompositeIdLedger
+      domain = AshHooks.InboundDeliveryTest.UnsuppliedCompositeIdDomain
+
+      source = """
+      defmodule #{inspect(module)} do
+        use Ash.Resource,
+          domain: #{inspect(domain)},
+          data_layer: Ash.DataLayer.Ets,
+          extensions: [AshHooks.InboundDelivery],
+          validate_domain_inclusion?: false
+
+        inbound_delivery do
+          scope_identity([:account_id])
+        end
+
+        attributes do
+          attribute :account_id, :string do
+            primary_key?(true)
+            allow_nil?(false)
+          end
+
+          attribute :id, :uuid do
+            primary_key?(true)
+            allow_nil?(false)
+            writable?(true)
+          end
+        end
+
+        actions do
+          defaults([:read])
+        end
+      end
+
+      defmodule #{inspect(domain)} do
+        use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
+
+        resources do
+          resource(#{inspect(module)})
+        end
+      end
+      """
+
+      error =
+        try do
+          Code.compile_string(source)
+
+          create_result =
+            Ash.create(
+              module,
+              %{
+                account_id: "acct-a",
+                provider: :hub_spot_v3,
+                external_event_id: "evt-composite-id",
+                external_event_type: "contact.creation",
+                payload: %{"objectId" => 1},
+                payload_digest: String.duplicate("a", 64)
+              },
+              action: :ingest,
+              authorize?: false
+            )
+
+          flunk("resource compiled although ingest cannot create it: #{inspect(create_result)}")
+        rescue
+          error in Spark.Error.DslError -> error
+        after
+          :code.purge(module)
+          :code.delete(module)
+          :code.purge(domain)
+          :code.delete(domain)
+        end
+
+      assert Exception.message(error) =~ ~r/primary key.*:id.*unobtainable/is
     end
   end
 end

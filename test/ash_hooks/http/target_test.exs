@@ -24,6 +24,19 @@ defmodule AshHooks.Http.TargetTest do
       assert {:ok, %{address: {127, 0, 0, 1}}} =
                Target.resolve("http://localhost:9/x", validate_destination: false)
     end
+
+    test "an expired deadline bounds a real hostname lookup" do
+      assert {:error, :timeout} =
+               Target.resolve("http://localhost:9/x",
+                 validate_destination: false,
+                 deadline: System.monotonic_time(:millisecond) - 1
+               )
+    end
+
+    test "an invalid URL remains unsafe in the diagnostic bypass" do
+      assert {:error, :unsafe_destination} =
+               Target.resolve("not a URL", validate_destination: false)
+    end
   end
 
   describe "default_port/1" do

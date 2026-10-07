@@ -1,15 +1,15 @@
 # ADR-0006 — SW v1 and v1a (ed25519) signing, day one
 
-- **Status:** Accepted (2026-08-20) — v1a rotation landed 2026-08-21 (`Signing.headers/4` `:previous_whsk`, #6 slice): "old+new rotation signing for both" is now true as written, no phase
-- **Deciders:** operator directive ("compatible if not canon") re-derived under adversarial Category-10 audit
+- **Status:** Accepted August 20, 2026; rotation support clarified August 21, 2026.
+  `Signing.headers/4` accepts `:previous_whsk` for overlapping Ed25519 keys.
+- **Deciders:** Maintainer; independent design review.
 
 ## Context
 
 The Standard Webhooks spec defines two signature schemes: `v1` (HMAC-SHA256, symmetric) and
-`v1a` (ed25519, asymmetric). Deferring `v1a` on "no adopter needs it today" is consumer-
-demand framing — banned; and Erlang/OTP's `:crypto` implements ed25519 natively (no
-dependency cost), while asymmetric verification (publish a public key, keep the private
-one) removes secret-distribution from public receivers.
+`v1a` (ed25519, asymmetric). The runtime provides the necessary cryptographic
+operations. Asymmetric verification lets receivers use a public key while
+the sender retains its private key, avoiding shared-secret distribution.
 
 ## Decision
 

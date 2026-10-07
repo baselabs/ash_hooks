@@ -30,6 +30,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
          {:ok, mark_processed} <- build_mark_processed(),
          {:ok, mark_failed} <- build_mark_failed(),
          {:ok, renew} <- build_renew(),
+         {:ok, adopt_legacy_identity} <- build_adopt_legacy_identity(),
          {:ok, redact_payload} <- build_redact_payload(),
          {:ok, prune} <- build_prune() do
       # the accept-list decision is PERSISTED for the runtime (H2): the
@@ -44,7 +45,8 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
       {:ok, dsl_state} = add(dsl_state, :update, redact_payload)
       {:ok, dsl_state} = add(dsl_state, :destroy, prune)
       {:ok, dsl_state} = add(dsl_state, :update, mark_failed)
-      add(dsl_state, :update, renew)
+      {:ok, dsl_state} = add(dsl_state, :update, renew)
+      add(dsl_state, :update, adopt_legacy_identity)
     end
   end
 
@@ -170,6 +172,30 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
       arguments: [argument(:lease_expires_at, :utc_datetime_usec, allow_nil?: false)],
       changes: [
         change(Builtins.set_attribute(:lease_expires_at, Ash.Expr.arg(:lease_expires_at)))
+      ]
+    )
+  end
+
+  defp build_adopt_legacy_identity do
+    import Ash.Expr, only: [arg: 1]
+
+    Builder.build_action(:update, :adopt_legacy_identity,
+      accept: [],
+      arguments: [
+        argument(:external_event_id, :string,
+          allow_nil?: false,
+          constraints: [max_length: 255]
+        ),
+        argument(:status, :atom,
+          allow_nil?: false,
+          constraints: [one_of: AshHooks.InboundDelivery.statuses()]
+        ),
+        argument(:error_class, :string, [])
+      ],
+      changes: [
+        change(Builtins.set_attribute(:external_event_id, arg(:external_event_id))),
+        change(Builtins.set_attribute(:status, arg(:status))),
+        change(Builtins.set_attribute(:error_class, arg(:error_class)))
       ]
     )
   end

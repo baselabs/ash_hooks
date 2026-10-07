@@ -1,33 +1,35 @@
 defmodule AshHooks.Http.Bounded do
   @moduledoc """
-  A minimal, memory-bounded HTTP/1.1 client over `:gen_tcp`/`:ssl` — the
-  DEFAULT adapter (derisk-2): EVERY read is capped, under all framings,
-  so no response — 2xx or not — can balloon a delivery worker's memory.
+  The default `AshHooks.Http` adapter: HTTP/1.1 over `:gen_tcp` and `:ssl`,
+  with bounded response collection and one operation deadline.
 
-  What it speaks: exactly what the delivery runtime sends — `POST` (or
-  the standard verbs), our own headers, `Connection: close`, no redirects,
-  no keep-alive, no 100-continue. The connection goes to the PINNED,
-  validated address (`AshHooks.Http.Target`); TLS names the original host.
+  Each connection carries one request with `Connection: close`. The adapter
+  returns redirects without following them and consumes informational responses
+  before the final response, with a default limit of eight interim responses.
+  It connects to a validated, pinned IP address while retaining the original
+  host for the HTTP authority, TLS SNI, and certificate verification.
 
-  Bounds (all opt-overridable): header block ≤ `:max_header_bytes`
-  (32 KiB), body ≤ `:max_body_bytes` (64 KiB) — Content-Length, chunked,
-  and read-to-close framings alike; a chunked body is CUT at the bound
-  (the remainder is simply not read; the connection closes). A body that
-  ends EARLY — the server closes before the framing completes — is
-  `{:error, :truncated_body}` under Content-Length and chunked framings
-  alike (read-to-close has no early end by definition). Timeouts:
-  connect 5s, receive 15s (the Oban job timeout is the outer bound).
+  Defaults are 32 KiB for cumulative response headers, 64 KiB for the retained
+  body, five seconds for connection setup, and 15 seconds for the complete
+  operation. The operation deadline includes DNS, connection, send, and reads.
+  Options may override those limits.
 
-  `AshHooks.Http.Httpc` remains available as an alternative adapter
-  (swap via the worker's `:http` opt) — its non-2xx streaming limitation
-  is why this module exists as the default. TLS trusts the OTP CA store
-  by default; a private-CA bundle can be pinned through the adapter opts
-  (`[cacerts: der_list]`, threaded from the worker's `:http_opts`).
+  Body limits apply to Content-Length, chunked, and read-to-close responses.
+  Collection stops at the cap and closes the connection without draining the
+  remainder. Before the cap is reached, an early close in a Content-Length or
+  chunked response returns `{:error, :truncated_body}`. Read-to-close framing
+  ends normally when the peer closes.
+
+  TLS uses the OTP CA store unless `cacerts: der_list` supplies a private CA
+  bundle through the adapter options or worker's `http_opts`. Literal HTTPS IP
+  addresses must also match the certificate's IP subject alternative name.
+  See `AshHooks.Http.Httpc` for the alternative adapter's buffering limitations.
   """
 
   @behaviour AshHooks.Http
 
   alias AshHooks.Http.CertSan
+  alias AshHooks.Http.Headers
   alias AshHooks.Http.Target
 
   @recv_slice 8 * 1024
@@ -35,20 +37,53 @@ defmodule AshHooks.Http.Bounded do
   @default_max_body_bytes 65_536
   @default_connect_timeout 5_000
   @default_timeout 15_000
+  @default_max_interim_responses 8
+
+  @methods %{
+    "connect" => :connect,
+    "delete" => :delete,
+    "get" => :get,
+    "head" => :head,
+    "options" => :options,
+    "patch" => :patch,
+    "post" => :post,
+    "put" => :put,
+    "trace" => :trace
+  }
 
   @impl true
   @spec request(atom(), String.t(), map(), binary() | nil, keyword()) ::
           {:ok, %{status: integer(), headers: list(), body: binary() | nil}}
           | {:error, term()}
   def request(method, url, headers, body, opts \\ []) do
-    method = if is_binary(method), do: String.to_atom(method), else: method
+    deadline = System.monotonic_time(:millisecond) + (opts[:timeout] || @default_timeout)
 
-    with {:ok, target} <- Target.resolve(url, opts) do
-      send_request(method, target, Map.new(headers), body || "", opts)
+    with {:ok, method} <- normalize_method(method),
+         {:ok, headers} <- Headers.validate(headers),
+         {:ok, target} <- Target.resolve(url, Keyword.put(opts, :deadline, deadline)) do
+      send_request(method, target, headers, body || "", opts, deadline)
     end
   end
 
-  defp send_request(method, target, headers, body, opts) do
+  defp normalize_method(method) when is_atom(method) do
+    if method in Map.values(@methods), do: {:ok, method}, else: {:error, :unsupported_method}
+  end
+
+  defp normalize_method(method) when is_binary(method) do
+    if String.valid?(method) do
+      Map.fetch(@methods, String.downcase(method))
+      |> case do
+        {:ok, normalized} -> {:ok, normalized}
+        :error -> {:error, :unsupported_method}
+      end
+    else
+      {:error, :unsupported_method}
+    end
+  end
+
+  defp normalize_method(_method), do: {:error, :unsupported_method}
+
+  defp send_request(method, target, headers, body, opts, deadline) do
     request_line =
       "#{method |> Atom.to_string() |> String.upcase()} " <>
         "#{request_path(target.uri)} HTTP/1.1\r\n"
@@ -64,7 +99,7 @@ defmodule AshHooks.Http.Bounded do
 
     request = [request_line, header_lines, "\r\n", body]
 
-    with {:ok, transport} <- connect(target, opts) do
+    with {:ok, transport} <- connect(target, opts, deadline) do
       try do
         # A send failure needs no arm of its own: the Erlang inet/ssl
         # drivers QUEUE sends and surface peer-death errors on the NEXT
@@ -73,8 +108,9 @@ defmodule AshHooks.Http.Bounded do
         # and the error arrives at the read). A socket that errors a send
         # errors the read faster, and the read's existing error arms carry
         # the same retry/terminal classification the caller needs.
-        _ = send_all(transport, IO.iodata_to_binary(request))
-        read_response(transport, opts)
+        with :ok <- send_all(transport, IO.iodata_to_binary(request)) do
+          read_response(transport, opts, deadline)
+        end
       after
         close(transport)
       end
@@ -109,7 +145,9 @@ defmodule AshHooks.Http.Bounded do
   defp request_path(%{path: p, query: nil}), do: p
   defp request_path(%{path: p, query: q}), do: p <> "?" <> q
 
-  defp connect(%{uri: %URI{scheme: "https"}} = target, opts) do
+  defp connect(%{uri: %URI{scheme: "https"}} = target, opts, deadline) do
+    timeout = remaining_timeout(deadline, opts[:connect_timeout] || @default_connect_timeout)
+
     case :ssl.connect(
            target.address,
            target.port,
@@ -119,15 +157,18 @@ defmodule AshHooks.Http.Bounded do
              packet: :raw,
              # ONE passive recv must not pull a hostile body whole — this caps
              # the pull; the read loops stop at their bounds
-             buffer: @recv_slice
+             buffer: @recv_slice,
+             send_timeout: remaining_timeout(deadline),
+             send_timeout_close: true
            ] ++ Target.ssl_options(target.host, opts[:cacerts]),
-           opts[:connect_timeout] || @default_connect_timeout
+           timeout
          ) do
       {:ok, socket} ->
         # IP-SAN verification runs HERE — the ssl socket must reach
         # :ssl.peercert/1 as a direct opaque binding (see verify_ip_san)
         case verify_ip_san(socket, target) do
           :ok ->
+            :ok = :ssl.setopts(socket, send_timeout: remaining_timeout(deadline))
             {:ok, {:ssl, socket}}
 
           {:error, _reason} = error ->
@@ -140,7 +181,9 @@ defmodule AshHooks.Http.Bounded do
     end
   end
 
-  defp connect(target, opts) do
+  defp connect(target, opts, deadline) do
+    timeout = remaining_timeout(deadline, opts[:connect_timeout] || @default_connect_timeout)
+
     case :gen_tcp.connect(
            target.address,
            target.port,
@@ -150,12 +193,18 @@ defmodule AshHooks.Http.Bounded do
              packet: :raw,
              # ONE passive recv must not pull a hostile body whole — this caps
              # the pull; the read loops stop at their bounds
-             buffer: @recv_slice
+             buffer: @recv_slice,
+             send_timeout: remaining_timeout(deadline),
+             send_timeout_close: true
            ],
-           opts[:connect_timeout] || @default_connect_timeout
+           timeout
          ) do
-      {:ok, socket} -> {:ok, {:tcp, socket}}
-      {:error, reason} -> {:error, reason}
+      {:ok, socket} ->
+        :ok = :inet.setopts(socket, send_timeout: remaining_timeout(deadline))
+        {:ok, {:tcp, socket}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -167,46 +216,75 @@ defmodule AshHooks.Http.Bounded do
   defp close({:tcp, socket}), do: :gen_tcp.close(socket)
   defp close({:ssl, socket}), do: :ssl.close(socket)
 
-  defp recv({:tcp, socket}, timeout), do: :gen_tcp.recv(socket, 0, timeout)
-  defp recv({:ssl, socket}, timeout), do: :ssl.recv(socket, 0, timeout)
+  defp recv({:tcp, socket}, deadline),
+    do: :gen_tcp.recv(socket, 0, remaining_timeout(deadline))
+
+  defp recv({:ssl, socket}, deadline), do: :ssl.recv(socket, 0, remaining_timeout(deadline))
+
+  defp remaining_timeout(deadline, cap \\ :infinity) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    if cap == :infinity, do: remaining, else: min(remaining, cap)
+  end
 
   # ── response reading: header block, then body by framing ──────────
 
-  defp read_response(socket, opts) do
-    timeout = opts[:timeout] || @default_timeout
+  defp read_response(socket, opts, deadline) do
+    read_final_response(
+      socket,
+      "",
+      opts[:max_header_bytes] || @default_max_header_bytes,
+      opts[:max_body_bytes] || @default_max_body_bytes,
+      opts[:max_interim_responses] || @default_max_interim_responses,
+      0,
+      deadline
+    )
+  end
 
-    with {:ok, head, rest} <-
-           read_head(socket, "", 0, opts[:max_header_bytes] || @default_max_header_bytes, timeout),
+  defp read_final_response(socket, acc, header_bytes_left, max_body, max_interim, count, deadline) do
+    with {:ok, head, rest} <- read_head(socket, acc, 0, header_bytes_left, deadline),
          {:ok, {status, headers}} <- parse_head(head) do
-      read_body(
-        socket,
-        status,
-        headers,
-        rest,
-        opts[:max_body_bytes] || @default_max_body_bytes,
-        timeout
-      )
+      cond do
+        status == 101 ->
+          {:error, :unsupported_protocol_switch}
+
+        status in 100..199 and count >= max_interim ->
+          {:error, :too_many_interim_responses}
+
+        status in 100..199 ->
+          read_final_response(
+            socket,
+            rest,
+            header_bytes_left - byte_size(head),
+            max_body,
+            max_interim,
+            count + 1,
+            deadline
+          )
+
+        true ->
+          read_body(socket, status, headers, rest, max_body, deadline)
+      end
     end
   end
 
-  defp read_head(_socket, acc, _size, max, _timeout) when byte_size(acc) > max,
-    do: {:error, :header_block_too_large}
+  defp read_head(socket, acc, _size, max, deadline) do
+    case head_step(acc, max) do
+      {:more, acc} ->
+        case recv(socket, deadline) do
+          {:ok, chunk} ->
+            read_head(socket, acc <> chunk, byte_size(acc), max, deadline)
 
-  defp read_head(socket, acc, _size, max, timeout) do
-    case recv(socket, timeout) do
-      {:ok, chunk} ->
-        case head_step(acc <> chunk, max) do
-          {:more, acc} -> read_head(socket, acc, byte_size(acc), max, timeout)
-          done -> done
+          {:error, :closed} ->
+            # acc cannot hold a terminator here: head_step splits any complete
+            # one on arrival, so a close means the head never finished
+            {:error, :truncated_response}
+
+          {:error, reason} ->
+            {:error, reason}
         end
 
-      {:error, :closed} ->
-        # acc cannot hold a terminator here: head_step splits any complete
-        # one on arrival, so a close means the head never finished
-        {:error, :truncated_response}
-
-      {:error, reason} ->
-        {:error, reason}
+      done ->
+        done
     end
   end
 
@@ -398,47 +476,30 @@ defmodule AshHooks.Http.Bounded do
   end
 
   # The declared chunk size is ATTACKER-CONTROLLED — NEVER buffer toward
-  # it. The chunk's bytes are consumed as bounded phases: KEEP at most
-  # the remaining allowance (bounded by :max_body_bytes), DISCARD the
-  # excess slice-wise (holding at most one recv slice at a time), then
-  # VERIFY the two terminator bytes are CRLF — anything else is
-  # malformed. (The security lens caught the original loop accumulating
-  # the whole declared chunk before trimming: an 8MB declaration held
-  # 16.8MB in the worker against a 16-byte bound.)
+  # it. Keep only the remaining allowance. Once that reaches the body cap,
+  # return immediately; do not drain attacker-controlled excess bytes or
+  # wait for their terminator.
   defp take_chunk(socket, buffer, acc, size, max, timeout) do
     allowance = max(max - byte_size(acc), 0)
     keep = min(size, allowance)
 
-    with {:ok, kept, buffer} <- take_bytes(socket, buffer, keep, timeout),
-         {:ok, buffer} <- discard_bytes(socket, buffer, size - keep, timeout),
-         {:ok, term, buffer} <- take_bytes(socket, buffer, 2, timeout) do
-      if term == "\r\n" do
-        {:ok, {buffer, acc <> kept}}
-      else
-        {:error, :malformed_chunked}
-      end
+    with {:ok, kept, buffer} <- take_bytes(socket, buffer, keep, timeout) do
+      finish_chunk(socket, buffer, acc <> kept, max, timeout)
     end
   end
 
-  # discards exactly n bytes WITHOUT accumulating — n here can be the
-  # attacker's declared excess (gigabytes), so bytes are dropped slice by
-  # slice and the process never holds more than one recv slice of the
-  # discarded run
-  defp discard_bytes(_socket, buffer, 0, _timeout), do: {:ok, buffer}
+  defp finish_chunk(_socket, buffer, body, max, _timeout) when byte_size(body) >= max,
+    do: {:ok, {buffer, body}}
 
-  defp discard_bytes(_socket, buffer, n, _timeout) when byte_size(buffer) >= n,
-    do: {:ok, binary_part(buffer, n, byte_size(buffer) - n)}
-
-  defp discard_bytes(socket, buffer, n, timeout) when byte_size(buffer) > 0,
-    do: discard_bytes(socket, "", n - byte_size(buffer), timeout)
-
-  defp discard_bytes(socket, <<>>, n, timeout) do
-    case recv(socket, timeout) do
-      {:ok, chunk} -> discard_bytes(socket, chunk, n, timeout)
-      {:error, :closed} -> {:error, :truncated_body}
-      {:error, reason} -> {:error, reason}
+  defp finish_chunk(socket, buffer, body, _max, timeout) do
+    with {:ok, term, buffer} <- take_bytes(socket, buffer, 2, timeout),
+         :ok <- validate_chunk_terminator(term) do
+      {:ok, {buffer, body}}
     end
   end
+
+  defp validate_chunk_terminator("\r\n"), do: :ok
+  defp validate_chunk_terminator(_other), do: {:error, :malformed_chunked}
 
   # takes exactly n bytes out of (buffer ++ socket) — bounded by n plus
   # one recv slice; used only where n is attacker-INdependent (the

@@ -96,6 +96,96 @@ defmodule AshHooks.DispatcherTest do
     end
   end
 
+  defmodule SharedLedgerEmitter do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.DispatcherTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks]
+
+    sqlite do
+      table("dispatcher_test_emitters")
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+    end
+
+    actions do
+      defaults([:read, :create])
+      default_accept(:*)
+    end
+
+    webhooks do
+      outbound :order_paid do
+        subscriptions(AshHooks.DispatcherTest.Subscription)
+        deliveries(AshHooks.DispatcherTest.Delivery)
+      end
+    end
+  end
+
+  defmodule PagedSubscription do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.DispatcherTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.Subscription]
+
+    sqlite do
+      table("dispatcher_test_subscriptions")
+      repo(AshHooks.Test.Repo)
+    end
+
+    actions do
+      defaults([:create])
+      default_accept(:*)
+
+      read :read do
+        primary?(true)
+
+        pagination do
+          required?(true)
+          offset?(true)
+          default_limit(2)
+        end
+      end
+    end
+
+    subscription do
+      endpoint_resource(AshHooks.DispatcherTest.Endpoint)
+    end
+  end
+
+  defmodule PagedEmitter do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.DispatcherTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks]
+
+    sqlite do
+      table("dispatcher_test_emitters")
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+    end
+
+    actions do
+      defaults([:read, :create])
+      default_accept(:*)
+    end
+
+    webhooks do
+      outbound :order_paid do
+        subscriptions(AshHooks.DispatcherTest.PagedSubscription)
+        deliveries(AshHooks.DispatcherTest.Delivery)
+      end
+    end
+  end
+
   defmodule Domain do
     @moduledoc false
     use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
@@ -105,6 +195,9 @@ defmodule AshHooks.DispatcherTest do
       resource(AshHooks.DispatcherTest.Subscription)
       resource(AshHooks.DispatcherTest.Delivery)
       resource(AshHooks.DispatcherTest.Emitter)
+      resource(AshHooks.DispatcherTest.SharedLedgerEmitter)
+      resource(AshHooks.DispatcherTest.PagedSubscription)
+      resource(AshHooks.DispatcherTest.PagedEmitter)
       resource(AshHooks.DispatcherTest.BareEmitter)
       resource(AshHooks.DispatcherTest.NonResourceDeliveriesEmitter)
       resource(AshHooks.DispatcherTest.ThrowingDeliveryEmitter)
@@ -172,7 +265,12 @@ defmodule AshHooks.DispatcherTest do
       response_status INTEGER,
       response_snippet TEXT,
       last_error TEXT,
-      next_attempt_at TEXT
+      next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot TEXT
     )
     """)
 
@@ -242,7 +340,7 @@ defmodule AshHooks.DispatcherTest do
 
       assert good_row.status == :pending
       assert bad_row.status == :enqueue_failed
-      assert bad_row.last_error =~ "queue_down"
+      assert bad_row.last_error == "unclassified"
     end
 
     test "one endpoint's enqueue RAISE does not stop the others" do
@@ -266,7 +364,7 @@ defmodule AshHooks.DispatcherTest do
       by_endpoint = Map.new(results, &{&1.endpoint_id, &1})
       assert by_endpoint[good.id].status == :created
       assert by_endpoint[bad.id].status == :enqueue_failed
-      assert Enum.find(delivery_rows(), &(&1.endpoint_id == bad.id)).last_error =~ "boom"
+      assert Enum.find(delivery_rows(), &(&1.endpoint_id == bad.id)).last_error == "unclassified"
     end
 
     # Delta-review regression: classify_token can return a full 255-char
@@ -322,6 +420,38 @@ defmodule AshHooks.DispatcherTest do
       assert length(delivery_rows()) == 1
     end
 
+    test "a shared ledger row cannot be adopted by another outbound declaration" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+      event = event!()
+
+      assert {:ok, [%{status: :deferred}]} =
+               Dispatcher.dispatch(Emitter, :order_paid, event)
+
+      assert {:ok, [%{status: :endpoint_error, error: :dispatch_source_conflict}]} =
+               Dispatcher.dispatch(SharedLedgerEmitter, :order_paid, event)
+
+      assert length(delivery_rows()) == 1
+    end
+
+    test "a duplicate row cannot be repaired through a different named route" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+      event = event!()
+
+      assert {:ok, [%{status: :created}]} =
+               Dispatcher.dispatch(Emitter, :order_paid, event,
+                 enqueue: {AshHooks.DispatcherTest.Enqueuer, :ok}
+               )
+
+      assert {:ok, [%{status: :endpoint_error, error: :dispatch_route_conflict}]} =
+               Dispatcher.dispatch(Emitter, :order_paid, event,
+                 enqueue: {AshHooks.DispatcherTest.Enqueuer, :other}
+               )
+
+      assert length(delivery_rows()) == 1
+    end
+
     test "distinct events to one endpoint → distinct rows" do
       ep = endpoint!()
       subscription!(ep.id)
@@ -334,6 +464,19 @@ defmodule AshHooks.DispatcherTest do
   end
 
   describe "subscription matching" do
+    test "required pagination visits every subscription page" do
+      for _ <- 1..5 do
+        endpoint = endpoint!()
+        subscription!(endpoint.id)
+      end
+
+      event = event!()
+      assert {:ok, results} = Dispatcher.dispatch(PagedEmitter, :order_paid, event)
+      assert length(results) == 5
+      assert Enum.all?(results, &(&1.status == :deferred))
+      assert length(delivery_rows()) == 5
+    end
+
     test "\"*\" default receives every event type" do
       ep = endpoint!()
       subscription!(ep.id)
@@ -545,7 +688,7 @@ defmodule AshHooks.DispatcherTest do
 
       bad_row = Enum.find(delivery_rows(), &(&1.endpoint_id == bad.id))
       assert bad_row.status == :enqueue_failed
-      assert bad_row.last_error =~ "exit"
+      assert bad_row.last_error == "exit: unclassified"
 
       # the enqueue_failed telemetry event fires with the classified,
       # contents-free reason (the #11 floor)
@@ -630,6 +773,20 @@ defmodule AshHooks.DispatcherTest do
       assert delivery_rows() == []
     end
 
+    test "a forged %Event{} rejects every header-unsafe id before any row" do
+      ep = endpoint!()
+      subscription!(ep.id)
+
+      for id <- ["evil id", "evil\nid", <<"evil", 0xFF, "id">>] do
+        forged = %AshHooks.Event{id: id, type: "order_paid", payload: "{}", metadata: %{}}
+
+        assert {:error, _} =
+                 Dispatcher.dispatch(Emitter, :order_paid, forged, enqueue: &enqueue_ok/2)
+
+        assert delivery_rows() == []
+      end
+    end
+
     test "an event whose type diverges from the declaration errors before any row" do
       ep = endpoint!()
       subscription!(ep.id, event_types: ["*"])
@@ -699,6 +856,7 @@ defmodule AshHooks.DispatcherTest do
   defmodule Enqueuer do
     @moduledoc false
     def ok(_delivery, _event), do: :ok
+    def other(_delivery, _event), do: :ok
   end
 
   defmodule BareEmitter do
@@ -850,7 +1008,7 @@ defmodule AshHooks.DispatcherTest do
                )
 
       assert entry.status == :mark_failed
-      assert entry.error == {:enqueue, "queue_down", :mark, :stale_row}
+      assert entry.error == {:enqueue, "unclassified", :mark, :stale_row}
       assert [%{status: :sending}] = delivery_rows()
     end
   end
@@ -864,15 +1022,14 @@ defmodule AshHooks.DispatcherTest do
                Dispatcher.dispatch(Emitter, :order_paid, event!(), enqueue: {Enqueuer, :ok})
     end
 
-    test "an invalid enqueuer value fails the enqueue (isolated)" do
+    test "an invalid enqueuer is rejected before a delivery row is written" do
       ep = endpoint!()
       subscription!(ep.id, event_types: ["order_paid"])
 
-      assert {:ok, [entry]} =
+      assert {:error, :invalid_enqueuer} =
                Dispatcher.dispatch(Emitter, :order_paid, event!(), enqueue: :bogus)
 
-      assert entry.status == :enqueue_failed
-      assert entry.error == :invalid_enqueuer
+      assert [] = delivery_rows()
     end
 
     test "an enqueuer returning a non-result shape is an invalid enqueue result" do
@@ -909,7 +1066,7 @@ defmodule AshHooks.DispatcherTest do
                  enqueue: fn _, _ -> throw("boom") end
                )
 
-      assert throw_entry.error == "throw: boom"
+      assert throw_entry.error == "throw: unclassified"
     end
   end
 

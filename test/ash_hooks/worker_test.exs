@@ -48,6 +48,42 @@ if Code.ensure_loaded?(Oban) do
       end
     end
 
+    defmodule FailingReadPrep do
+      @moduledoc false
+      use Ash.Resource.Preparation
+
+      alias Ash.Error.Query.InvalidQuery
+
+      @impl true
+      def prepare(query, _ctx, _opts) do
+        Ash.Query.add_error(
+          query,
+          InvalidQuery.exception(message: "forced worker reload failure")
+        )
+      end
+    end
+
+    defmodule UnreadableDelivery do
+      @moduledoc false
+      use Ash.Resource,
+        domain: AshHooks.WorkerTest.Domain,
+        data_layer: AshSqlite.DataLayer,
+        extensions: [AshHooks.OutboundDelivery]
+
+      sqlite do
+        table("worker_test_deliveries")
+        repo(AshHooks.Test.Repo)
+      end
+
+      preparations do
+        prepare({AshHooks.WorkerTest.FailingReadPrep, []})
+      end
+
+      actions do
+        defaults([:read])
+      end
+    end
+
     defmodule TenancyDelivery do
       @moduledoc false
       use Ash.Resource,
@@ -114,6 +150,7 @@ if Code.ensure_loaded?(Oban) do
       resources do
         resource(AshHooks.WorkerTest.Endpoint)
         resource(AshHooks.WorkerTest.Delivery)
+        resource(AshHooks.WorkerTest.UnreadableDelivery)
         resource(AshHooks.WorkerTest.TenancyDelivery)
         resource(AshHooks.WorkerTest.ParsedTenancyDelivery)
       end
@@ -127,6 +164,17 @@ if Code.ensure_loaded?(Oban) do
       def webhook_secret(_other), do: {:error, :unknown_ref}
     end
 
+    defmodule HttpOptions do
+      @moduledoc false
+
+      def slow do
+        Process.sleep(500)
+        [timeout: 5_000]
+      end
+
+      def crash, do: raise("http options failed")
+    end
+
     defmodule Worker do
       @moduledoc false
       use AshHooks.Worker,
@@ -136,7 +184,35 @@ if Code.ensure_loaded?(Oban) do
         snippet_redactor: {AshHooks.WorkerTest.Redactor, :call},
         queue: :ash_hooks_test,
         oban: AshHooks.WorkerTest.Oban,
-        timeout: 5_000
+        timeout: 35_000
+    end
+
+    defmodule SlowOptionsWorker do
+      @moduledoc false
+      use AshHooks.Worker,
+        deliveries: AshHooks.WorkerTest.Delivery,
+        endpoints: AshHooks.WorkerTest.Endpoint,
+        secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+        http_opts: {AshHooks.WorkerTest.HttpOptions, :slow, []},
+        queue: :ash_hooks_test,
+        oban: AshHooks.WorkerTest.Oban,
+        timeout: 200,
+        attempt_timeout: 50,
+        finalization_allowance: 50
+    end
+
+    defmodule CrashingOptionsWorker do
+      @moduledoc false
+      use AshHooks.Worker,
+        deliveries: AshHooks.WorkerTest.Delivery,
+        endpoints: AshHooks.WorkerTest.Endpoint,
+        secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+        http_opts: {AshHooks.WorkerTest.HttpOptions, :crash, []},
+        queue: :ash_hooks_test,
+        oban: AshHooks.WorkerTest.Oban,
+        timeout: 200,
+        attempt_timeout: 50,
+        finalization_allowance: 50
     end
 
     def http_opts, do: [timeout: 5_000]
@@ -169,7 +245,12 @@ if Code.ensure_loaded?(Oban) do
         payload BLOB NOT NULL, endpoint_id TEXT NOT NULL, subscription_id TEXT,
         signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
         attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
-        response_snippet TEXT, last_error TEXT, next_attempt_at TEXT
+        response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
+        dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+        dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+        attempt_token TEXT, send_lease_expires_at TEXT,
+        enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+        endpoint_snapshot TEXT
       )
       """)
 
@@ -192,6 +273,11 @@ if Code.ensure_loaded?(Oban) do
         response_snippet TEXT,
         last_error TEXT,
         next_attempt_at TEXT,
+        dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+        dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+        attempt_token TEXT, send_lease_expires_at TEXT,
+        enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+        endpoint_snapshot TEXT,
         org_id TEXT NOT NULL
       )
       """)
@@ -202,23 +288,15 @@ if Code.ensure_loaded?(Oban) do
 
       # a REAL Oban instance on the sqlite repo (Lite engine — the Oban
       # uniqueness facts ADR-0007 recorded from this same dep version)
-      Application.put_env(:oban, AshHooks.WorkerTest.Oban,
-        engine: Oban.Engines.Lite,
-        repo: AshHooks.Test.Repo,
-        queues: false,
-        plugins: [],
-        testing: :disabled
+      start_supervised!(
+        {Oban,
+         engine: Oban.Engines.Lite,
+         repo: Repo,
+         queues: false,
+         plugins: [],
+         name: AshHooks.WorkerTest.Oban,
+         testing: :disabled}
       )
-
-      {:ok, _} =
-        Oban.start_link(
-          engine: Oban.Engines.Lite,
-          repo: Repo,
-          queues: false,
-          plugins: [],
-          name: AshHooks.WorkerTest.Oban,
-          testing: :disabled
-        )
 
       # oban_jobs on raw DDL (Oban's own sqlite v12 schema, transcribed
       # from deps/oban/lib/oban/migrations/sqlite.ex — Ecto.Migrator
@@ -251,9 +329,9 @@ if Code.ensure_loaded?(Oban) do
       )
 
       on_exit(fn ->
-        pid = Process.whereis(AshHooks.WorkerTest.Oban)
-        if pid, do: Process.exit(pid, :kill)
-        Application.stop(:oban)
+        assert is_pid(Process.whereis(Oban.Registry)),
+               "fixture teardown must preserve the shared Oban registry"
+
         Repo.query!("DROP TABLE IF EXISTS oban_jobs")
         Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
         Repo.query!("DROP TABLE IF EXISTS tenancy_worker_deliveries")
@@ -333,6 +411,74 @@ if Code.ensure_loaded?(Oban) do
       [args] = job_args()
       assert args["endpoint_id"] == ep.id
       assert args["event_uuid"] == "msg_worker_uniqueness_probe_1"
+      assert args["delivery_pk"] == %{"id" => row.id}
+      assert args["delivery_resource"] == Atom.to_string(Delivery)
+      assert args["endpoint_resource"] == Atom.to_string(Endpoint)
+      assert args["dispatch_source"] == row.dispatch_source
+      assert is_binary(args["dispatch_route"])
+    end
+
+    test "route binding is idempotent and rejects a different persisted route" do
+      ep = endpoint!()
+      row = delivery_row!(ep, "msg_worker_route_binding")
+      route = AshHooks.OutboundBinding.named_route(Worker, :enqueue)
+      other_route = AshHooks.OutboundBinding.named_route(SlowOptionsWorker, :enqueue)
+
+      assert {:ok, bound} = AshHooks.Worker.bind_route(row, route, nil)
+      assert {:ok, ^bound} = AshHooks.Worker.bind_route(bound, route, nil)
+
+      assert {:error, :dispatch_route_conflict} =
+               AshHooks.Worker.bind_route(bound, other_route, nil)
+
+      assert {:error, :dispatch_route_conflict} =
+               AshHooks.Worker.bind_route(row, other_route, nil)
+    end
+
+    test "route binding surfaces a real storage rejection" do
+      ep = endpoint!()
+      row = delivery_row!(ep, "msg_worker_route_storage_error")
+      route = AshHooks.OutboundBinding.named_route(Worker, :enqueue)
+
+      Repo.query!("""
+      CREATE TRIGGER worker_route_abort
+      BEFORE UPDATE OF dispatch_route ON #{@deliveries}
+      BEGIN
+        SELECT RAISE(ABORT, 'forced route storage rejection');
+      END
+      """)
+
+      on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS worker_route_abort") end)
+
+      assert {:error, %Ash.Error.Unknown{}} = AshHooks.Worker.bind_route(row, route, nil)
+    end
+
+    test "route binding surfaces a real Ash read failure after a lost CAS" do
+      ep = endpoint!()
+      row = delivery_row!(ep, "msg_worker_route_read_error")
+      route = AshHooks.OutboundBinding.named_route(Worker, :enqueue)
+      other_route = AshHooks.OutboundBinding.named_route(SlowOptionsWorker, :enqueue)
+
+      assert {:ok, _bound} = AshHooks.Worker.bind_route(row, route, nil)
+
+      unreadable = struct(UnreadableDelivery, Map.from_struct(row))
+
+      assert {:error, %Ash.Error.Invalid{}} =
+               AshHooks.Worker.bind_route(unreadable, other_route, nil)
+    end
+
+    test "a canceled trigger does not suppress a fresh runnable trigger" do
+      ep = endpoint!()
+      row = delivery_row!(ep, "msg_worker_cancel_recovery")
+
+      assert :ok = Worker.enqueue(row, nil)
+      %{rows: [[job_id]]} = Repo.query!("SELECT id FROM oban_jobs")
+      assert :ok = Oban.cancel_job(AshHooks.WorkerTest.Oban, job_id)
+
+      assert %{rows: [["cancelled"]]} =
+               Repo.query!("SELECT state FROM oban_jobs WHERE id = ?", [job_id])
+
+      assert :ok = Worker.enqueue(row, nil)
+      assert job_count() == 2
     end
 
     test "a DIFFERENT event to the same endpoint inserts a second trigger" do
@@ -353,8 +499,36 @@ if Code.ensure_loaded?(Oban) do
       # pre-terminate the row through the driver's own surface
       Repo.query!("UPDATE #{@deliveries} SET status = 'dead_letter' WHERE id = ?", [row.id])
 
-      job = %Oban.Job{args: %{"endpoint_id" => row.endpoint_id, "event_uuid" => row.event_uuid}}
+      assert :ok = Worker.enqueue(row, nil)
+      [args] = job_args()
+      job = %Oban.Job{args: args}
       assert :ok = Worker.perform(job)
+    end
+
+    test "perform resolves a slow http_opts MFA inside the driver deadline" do
+      ep = endpoint!()
+      row = delivery_row!(ep, "msg_worker_slow_http_opts")
+
+      assert :ok = SlowOptionsWorker.enqueue(row, nil)
+      [args] = job_args()
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, :attempt_timeout} = SlowOptionsWorker.perform(%Oban.Job{args: args})
+      assert System.monotonic_time(:millisecond) - started < 250
+      assert Ash.get!(Delivery, row.id, authorize?: false).status == :pending
+    end
+
+    test "perform contains a crashing http_opts MFA before ledger ownership" do
+      ep = endpoint!()
+      row = delivery_row!(ep, "msg_worker_crashing_http_opts")
+
+      assert :ok = CrashingOptionsWorker.enqueue(row, nil)
+      [args] = job_args()
+
+      assert {:error, {:driver_crash, "unclassified"}} =
+               CrashingOptionsWorker.perform(%Oban.Job{args: args})
+
+      assert Ash.get!(Delivery, row.id, authorize?: false).status == :pending
     end
 
     test "perform/1 drives a pending row through a full send (injected adapter)" do
@@ -364,7 +538,9 @@ if Code.ensure_loaded?(Oban) do
       # the worker's adapter defaults to Bounded — drive through the
       # driver directly with a double to prove perform's delegation is
       # the same machine (macro-level send coverage lives in delivery_test)
-      job = %Oban.Job{args: %{"endpoint_id" => row.endpoint_id, "event_uuid" => row.event_uuid}}
+      assert :ok = Worker.enqueue(row, nil)
+      [args] = job_args()
+      job = %Oban.Job{args: args}
 
       # a pending row against an unresolvable-but-registered url would
       # send; here the row dead-letters at the send-time DNS check
@@ -386,11 +562,13 @@ if Code.ensure_loaded?(Oban) do
         path = Path.expand("../../lib/ash_hooks/worker.ex", __DIR__)
         source = File.read!(path)
 
-        bake_at = offset(source, "http_opts: Keyword.get(opts, :http_opts)")
+        calculation_at = offset(source, "http_opts =")
+        bake_at = offset(source, "http_opts: http_opts")
         config_at = offset(source, "delivery_config =")
 
-        assert bake_at && config_at && bake_at > config_at,
-               "use AshHooks.Worker must bake :http_opts (exactly the Keyword.get/2 form) inside the delivery_config block, or the option is silently dropped"
+        assert calculation_at && config_at && bake_at &&
+                 calculation_at < config_at && bake_at > config_at,
+               "use AshHooks.Worker must normalize :http_opts before baking it into delivery_config"
       end
     end
 
@@ -484,7 +662,7 @@ if Code.ensure_loaded?(Oban) do
         assert found.id == row.id
       end
 
-      test "mixed-args uniqueness: a pre-tenancy tenant-less job still conflicts with the tenant-bearing job on the same pair" do
+      test "full identity admits a tenant-bound job beside a legacy tenant-less trigger" do
         endpoint = endpoint!()
 
         # a pre-tenancy enqueued job: the 1.1.x args shape, same pair
@@ -503,14 +681,12 @@ if Code.ensure_loaded?(Oban) do
 
         assert job_count() == 1
 
-        # the post-tenancy enqueue of the SAME pair (args now carrying the
-        # tenant) must still conflict — Oban's keys: containment is
-        # indifferent to the extra arg key (the design's verified claim,
-        # proven on the real engine)
+        # The durable identity now includes the complete PK, source, route,
+        # and tenant, so the old partial trigger cannot suppress admission.
         row = tenancy_row!(endpoint, "evt_tenancy_cutover", "org_a")
 
         assert :ok = TenantWorker.enqueue(row, nil)
-        assert job_count() == 1
+        assert job_count() == 2
       end
     end
 
@@ -551,6 +727,22 @@ if Code.ensure_loaded?(Oban) do
         end
       after
         :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "the Oban timeout must exceed the complete delivery deadline" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        timeout: 100,\n        attempt_timeout: 50,\n        finalization_allowance: 50"
+          )
+
+        assert_raise ArgumentError,
+                     ~r/:timeout must exceed :attempt_timeout plus :finalization_allowance/,
+                     fn -> Code.compile_string(source) end
+      after
+        _ = :code.purge(RuntimeWorker)
         _ = :code.delete(RuntimeWorker)
       end
 

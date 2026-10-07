@@ -8,7 +8,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     signature verification.
 
     Configure it on the endpoint's `Plug.Parsers` (the installer patches
-    this; a router plug CANNOT recover pre-parse bytes):
+    this; a router plug cannot recover pre-parse bytes):
 
         plug Plug.Parsers,
           ...,
@@ -40,7 +40,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     positional argument, so the arity-3 clause is the one the parser calls;
     `opts` and `extra` merge.
     """
-    @spec read_body(Plug.Conn.t(), keyword(), keyword()) ::
+    @spec read_body(Plug.Conn.t(), keyword(), keyword() | {atom(), term()}) ::
             {:ok, binary(), Plug.Conn.t()}
             | {:more, binary(), Plug.Conn.t()}
             | {:error, term()}

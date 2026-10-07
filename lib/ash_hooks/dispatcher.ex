@@ -8,7 +8,7 @@ defmodule AshHooks.Dispatcher do
         AshHooks.Event.new(
           type: :order_paid,
           payload: body,
-          # DETERMINISTIC: derived from the artifact's stable id, so a
+          # Deterministic: derived from the artifact's stable id, so a
           # re-fired producer matches the existing delivery row (the
           # {endpoint_id, event_uuid} dedup) instead of fanning out a
           # duplicate POST per sweep
@@ -17,43 +17,50 @@ defmodule AshHooks.Dispatcher do
 
       AshHooks.dispatch(Order, :order_paid, event, enqueue: {MyRuntime, :enqueue})
 
-  The machine's contract:
+  Each row stores two ownership identifiers. `dispatch_source` binds the row
+  to this outbound declaration and endpoint resource. `dispatch_route` binds
+  it to the enqueue callback. A duplicate with a different source or route
+  fails explicitly; it cannot silently adopt another declaration or queue.
+  Named callbacks and external captures normalize to one route. Anonymous
+  callbacks need a stable `:enqueue_key` for periodic recovery. Without one,
+  dispatch can enqueue immediately, but recovery reports `:unresolved_route`.
 
-    * every matching ENABLED endpoint gets a delivery row unique on
-      `{endpoint_id, event_uuid}` — the same pair the Oban job
-      uniqueness keys use (ADR-0004, verified against deps/oban 2.23.1:
-      `fields: [:args], keys: [...]` matches on a jsonb CONTAINMENT of
-      exactly these top-level arg keys, so the enqueue seam's args must
-      always carry both);
-    * the row persists BEFORE anything else — payload bytes included —
+  The runtime contract:
+
+    * every matching enabled endpoint gets a delivery row unique on
+      `{endpoint_id, event_uuid}`. The worker's queue identity adds the
+      complete delivery key, resource modules, source, route, and tenant;
+    * the row persists before enqueue — payload bytes included —
       so a later runtime can sign and send from the ledger of record
       alone;
     * one endpoint's enqueue failure or raise records `:enqueue_failed`
-      on ITS row and NEVER stops the others (the fanout-isolation
+      on its row and never stops the others (the fanout-isolation
       guarantee);
-    * re-dispatching an `:enqueue_failed` event CLAIMS the row via a
-      WHERE-gated `:enqueue_failed → :pending` CAS first — only the
-      dispatcher that wins the flip calls the enqueuer, so concurrent
-      repairs cannot double-enqueue;
+    * re-dispatching an `:enqueue_failed` event conditionally moves that row
+      back to `:pending`; only the dispatcher that wins the update calls the
+      enqueuer. Scheduled reconciliation uses a separate enqueue token and
+      30-second lease, so a crashed claimant becomes recoverable without
+      borrowing the send lease or retry schedule;
     * with no `:enqueue` configured the rows persist `:pending` and the
       results say `:deferred` — the durable ledger IS the source of
       truth; the delivery runtime (`AshHooks.Delivery`) drives pending
       rows from there.
 
-  Global failures (unknown outbound declaration, an invalid event,
-  missing DSL module opts, an unreadable subscription set, divergent
-  effective signing modes for one endpoint) return `{:error, reason}`
-  BEFORE any row is written. Subscriptions are read through the
+  Global failures (unknown outbound declaration, an invalid event or enqueue
+  route, missing DSL module options, an unreadable subscription set, or
+  divergent effective signing modes for one endpoint) return
+  `{:error, reason}` before any row is written. Subscriptions are read through the
   consumer's primary read action and endpoints through their resource's
   `get` — both unauthorized, the signature of the inbound machine: the
   dispatch call is the trust boundary for writes, read surfaces stay
   governed by consumer policies (ADR-0005).
   """
 
+  require Ash.Expr
   require Ash.Query
 
   alias AshHooks.Errors.Unknown.UnknownError
-  alias AshHooks.{Event, Info, Subscription, Tenancy}
+  alias AshHooks.{Event, Info, OutboundBinding, PrimaryKey, Subscription, Tenancy}
   alias Spark.Dsl.Extension
 
   @typedoc """
@@ -88,6 +95,9 @@ defmodule AshHooks.Dispatcher do
       delivery runtime `AshHooks.Delivery.run/2` via the worker macro is its
       canonical implementation; `nil` (the default) persists `:pending` rows
       and returns `:deferred` results.
+    * `:enqueue_key` — stable, nonempty binary (up to 512 bytes) or atom
+      identity for an anonymous enqueue callback. Supply it when periodic
+      recovery must reconstruct that route.
     * `:tenant` — the dispatch tenant. On multitenant resources (the
       tenancy contract: every touched resource declares attribute
       multitenancy over the same attribute) this scopes the fanout, the
@@ -104,15 +114,21 @@ defmodule AshHooks.Dispatcher do
          {:ok, subs_mod} <- resolve_module(entity, :subscriptions),
          {:ok, deliv_mod} <- resolve_module(entity, :deliveries),
          {:ok, endpoint_mod} <- resolve_endpoint_resource(subs_mod),
+         {:ok, route} <- OutboundBinding.route(opts[:enqueue], opts),
          {:ok, tenant} <- Tenancy.resolve([subs_mod, endpoint_mod, deliv_mod], opts[:tenant]),
          {:ok, matches, error_entries} <-
            match_subscriptions(subs_mod, endpoint_mod, event, tenant),
          :ok <- check_conflicts(matches, entity) do
+      binding = %{
+        source: OutboundBinding.source(resource, name, endpoint_mod),
+        route: route
+      }
+
       {:ok,
        error_entries ++
          (matches
           |> dedupe_by_endpoint()
-          |> Enum.map(&dispatch_one(deliv_mod, event, &1, opts, entity, tenant)))}
+          |> Enum.map(&dispatch_one(deliv_mod, event, &1, opts, entity, binding, tenant)))}
     end
   end
 
@@ -134,13 +150,25 @@ defmodule AshHooks.Dispatcher do
 
   # ────────────────────────── per-endpoint machine ──────────────────────────
 
-  defp dispatch_one(deliv_mod, event, {subscription, endpoint}, opts, entity, tenant) do
-    case upsert_row(deliv_mod, event, subscription, endpoint, entity, tenant) do
-      {:ok, row, :created} ->
-        merge_result(endpoint, subscription, enqueue(deliv_mod, row, event, opts, tenant))
+  defp dispatch_one(deliv_mod, event, {subscription, endpoint}, opts, entity, binding, tenant) do
+    case upsert_row(deliv_mod, event, subscription, endpoint, entity, binding, tenant) do
+      {:ok, row, disposition} ->
+        case validate_binding(row, binding) do
+          :ok ->
+            dispatch_bound_result(
+              disposition,
+              deliv_mod,
+              row,
+              event,
+              subscription,
+              endpoint,
+              opts,
+              tenant
+            )
 
-      {:ok, row, :duplicate} ->
-        repair(deliv_mod, event, subscription, endpoint, row, opts, tenant)
+          {:error, reason} ->
+            result(endpoint, subscription, :endpoint_error, reason)
+        end
 
       {:error, reason} ->
         result(endpoint, subscription, :endpoint_error, reason)
@@ -154,6 +182,32 @@ defmodule AshHooks.Dispatcher do
     kind, reason -> result(endpoint, subscription, :endpoint_error, error_string({kind, reason}))
   end
 
+  defp dispatch_bound_result(
+         :created,
+         deliv_mod,
+         row,
+         event,
+         subscription,
+         endpoint,
+         opts,
+         tenant
+       ) do
+    merge_result(endpoint, subscription, enqueue(deliv_mod, row, event, opts, tenant))
+  end
+
+  defp dispatch_bound_result(
+         :duplicate,
+         deliv_mod,
+         row,
+         event,
+         subscription,
+         endpoint,
+         opts,
+         tenant
+       ) do
+    repair(deliv_mod, event, subscription, endpoint, row, opts, tenant)
+  end
+
   # The enqueue-repair path: a duplicate row that died at enqueue gets ONE
   # more attempt per re-dispatch, guarded by the claim-then-enqueue CAS.
   # Outcomes: CAS won → reload + enqueue; CAS LOST (another dispatcher
@@ -165,8 +219,8 @@ defmodule AshHooks.Dispatcher do
       result(endpoint, subscription, :duplicate)
     else
       deliv_mod
-      |> claim_for_enqueue_result(row.id, tenant)
-      |> claimed_row(deliv_mod, row.id, tenant)
+      |> claim_for_enqueue_result(row, tenant)
+      |> claimed_row(deliv_mod, row, tenant)
       |> case do
         {:won, reloaded} ->
           merge_result(endpoint, subscription, enqueue(deliv_mod, reloaded, event, opts, tenant))
@@ -182,14 +236,14 @@ defmodule AshHooks.Dispatcher do
 
   # {:won, row} | {:lost, :race} (another dispatcher flipped it first) |
   # {:lost, reason} (claim errored, or the reload after a won claim failed)
-  defp claimed_row(%Ash.BulkResult{status: :success, records: [_]}, deliv_mod, row_id, tenant) do
-    case reload(deliv_mod, row_id, tenant) do
+  defp claimed_row(%Ash.BulkResult{status: :success, records: [_]}, deliv_mod, row, tenant) do
+    case reload(deliv_mod, row, tenant) do
       nil -> {:lost, :claim_lost_on_reload}
       reloaded -> {:won, reloaded}
     end
   end
 
-  defp claimed_row(%Ash.BulkResult{status: :success, records: []}, _deliv_mod, _row_id, _tenant),
+  defp claimed_row(%Ash.BulkResult{status: :success, records: []}, _deliv_mod, _row, _tenant),
     do: {:lost, :race}
 
   defp claimed_row(other, _deliv_mod, _row_id, _tenant), do: {:lost, other}
@@ -198,10 +252,11 @@ defmodule AshHooks.Dispatcher do
   # re-dispatchers exactly one wins the :pending flip (bulk_update's
   # matched-records count is the win signal — the stale loser re-reads and
   # sees the row someone else already claimed).
-  defp claim_for_enqueue_result(deliv_mod, row_id, tenant) do
+  defp claim_for_enqueue_result(deliv_mod, row, tenant) do
     with_transient_retry(fn ->
       deliv_mod
-      |> Ash.Query.filter(id == ^row_id and status == :enqueue_failed)
+      |> Ash.Query.do_filter(PrimaryKey.filter(row))
+      |> Ash.Query.filter(status == :enqueue_failed)
       |> Ash.bulk_update(:requeue, %{},
         authorize?: false,
         return_records?: true,
@@ -212,46 +267,38 @@ defmodule AshHooks.Dispatcher do
     end)
   end
 
-  defp upsert_row(deliv_mod, event, subscription, endpoint, entity, tenant) do
+  defp upsert_row(deliv_mod, event, subscription, endpoint, entity, binding, tenant) do
     input =
       %{
         event_uuid: event.id,
         event_type: event.type,
-        endpoint_id: endpoint.id,
-        subscription_id: subscription.id,
+        endpoint_id: PrimaryKey.scalar!(endpoint),
+        subscription_id: PrimaryKey.scalar!(subscription),
         # the EFFECTIVE mode is frozen onto the row at creation — the
         # delivery runtime signs from the row, never re-derives it
-        signing_mode: subscription.signing_mode || entity.signing_mode || :standard
+        signing_mode: subscription.signing_mode || entity.signing_mode || :standard,
+        dispatch_source: binding.source,
+        dispatch_route: binding.route
       }
       # the exact-bytes column's name is consumer-configurable (H1)
       |> Map.put(AshHooks.Info.payload_attribute(deliv_mod), event.payload)
 
-    if AshHooks.Info.writable_id?(deliv_mod) do
-      upsert_with_supplied_id(deliv_mod, input, tenant)
+    if Info.writable_id?(deliv_mod) and Ash.Resource.Info.primary_key(deliv_mod) == [:id] do
+      dispatch_with_supplied_id(deliv_mod, input, tenant)
     else
-      # H2: a non-writable PK (uuid_v7_primary_key & friends) cannot
-      # accept :id, so classification pre-reads the identity instead.
-      # Exact in every sequential case (provider redeliveries, producer
-      # re-fires) and whenever the primary read can see the existing row
-      # (a base-filtered read that hides it classifies :created). A
-      # misclassification only widens the enqueue seam: the row itself
-      # stays effect-once (the storage upsert), but the send path is
-      # at-least-once BY DESIGN (mark_sending re-drives stranded :sending
-      # rows — ADR-0008; receivers dedup by webhook-id, the SW
-      # contract), so a duplicate ENQUEUE can duplicate a send. The
-      # enqueue fence belongs to the configured enqueuer: the default
-      # Oban enqueuer's endpoint_id+event_uuid uniqueness, or the
-      # consumer's own dedup for a custom `enqueue:`.
       upsert_with_pre_read(deliv_mod, input, tenant)
     end
   end
 
-  defp upsert_with_supplied_id(deliv_mod, input, tenant) do
+  defp dispatch_with_supplied_id(deliv_mod, input, tenant) do
     id = Ash.UUID.generate()
-    input = Map.put(input, :id, id)
 
     case with_transient_retry(fn ->
-           Ash.create(deliv_mod, input, action: :dispatch, authorize?: false, tenant: tenant)
+           Ash.create(deliv_mod, Map.put(input, :id, id),
+             action: :dispatch,
+             authorize?: false,
+             tenant: tenant
+           )
          end) do
       {:ok, row} -> {:ok, row, if(row.id == id, do: :created, else: :duplicate)}
       {:error, reason} -> {:error, reason}
@@ -300,7 +347,7 @@ defmodule AshHooks.Dispatcher do
         %{status: :deferred, error: nil}
 
       {:error, reason} ->
-        case mark_enqueue_failed(deliv_mod, row.id, reason, tenant) do
+        case mark_enqueue_failed(deliv_mod, row, reason, tenant) do
           :ok ->
             :telemetry.execute(
               [:ash_hooks, :dispatch, :enqueue_failed],
@@ -318,8 +365,8 @@ defmodule AshHooks.Dispatcher do
 
   defp result(endpoint, subscription, status, error \\ nil) do
     %{
-      endpoint_id: endpoint.id,
-      subscription_id: subscription.id,
+      endpoint_id: PrimaryKey.scalar!(endpoint),
+      subscription_id: PrimaryKey.scalar!(subscription),
       status: status,
       error: error
     }
@@ -346,8 +393,6 @@ defmodule AshHooks.Dispatcher do
     enqueue_result(&apply(m, f, [&1, &2]), row, event)
   end
 
-  defp enqueue_result(_invalid, _row, _event), do: {:error, :invalid_enqueuer}
-
   defp safe_enqueuer(enqueuer, row, event) do
     enqueuer.(row, event)
   rescue
@@ -362,13 +407,14 @@ defmodule AshHooks.Dispatcher do
   # Gated on :pending — the state an enqueue attempt owns: a late failure
   # can never overwrite a row a successful enqueue (or the send runtime)
   # already moved on.
-  defp mark_enqueue_failed(deliv_mod, row_id, reason, tenant) do
+  defp mark_enqueue_failed(deliv_mod, row, reason, tenant) do
     result =
       with_transient_retry(fn ->
         # the reason arrives ALREADY classified (enqueue_result applied
         # error_string) — re-classifying would mangle the prefixed forms
         deliv_mod
-        |> Ash.Query.filter(id == ^row_id and status == :pending)
+        |> Ash.Query.do_filter(PrimaryKey.filter(row))
+        |> Ash.Query.filter(status == :pending)
         |> Ash.bulk_update(:mark_enqueue_failed, %{error: reason},
           authorize?: false,
           return_records?: true,
@@ -378,19 +424,28 @@ defmodule AshHooks.Dispatcher do
         )
       end)
 
-    case result do
-      %Ash.BulkResult{status: :success, records: [_]} -> :ok
-      %Ash.BulkResult{status: :success, records: []} -> {:error, :stale_row}
-      %Ash.BulkResult{errors: [error | _]} -> {:error, error}
+    case bulk_one(result, :stale_row) do
+      {:ok, _row} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp reload(deliv_mod, row_id, tenant) do
+  defp reload(deliv_mod, row, tenant) do
     case with_transient_retry(fn ->
-           Ash.get(deliv_mod, row_id, authorize?: false, tenant: tenant)
+           deliv_mod
+           |> Ash.Query.do_filter(PrimaryKey.filter(row))
+           |> Ash.read_one(authorize?: false, tenant: tenant)
          end) do
-      {:ok, row} -> row
-      {:error, _reason} -> nil
+      {:ok, row} when not is_nil(row) -> row
+      _missing_or_error -> nil
+    end
+  end
+
+  defp validate_binding(row, binding) do
+    cond do
+      row.dispatch_source != binding.source -> {:error, :dispatch_source_conflict}
+      row.dispatch_route != binding.route -> {:error, :dispatch_route_conflict}
+      true -> :ok
     end
   end
 
@@ -428,10 +483,21 @@ defmodule AshHooks.Dispatcher do
     case with_transient_retry(fn ->
            Ash.read(subs_mod, authorize?: false, tenant: tenant)
          end) do
-      {:ok, subscriptions} -> {:ok, subscriptions}
+      {:ok, subscriptions} -> collect_pages(subscriptions, [])
       {:error, error} -> {:error, error}
     end
   end
+
+  defp collect_pages(%{results: results, more?: true} = page, acc) do
+    with {:ok, next} <- with_transient_retry(fn -> Ash.page(page, :next) end) do
+      collect_pages(next, [results | acc])
+    end
+  end
+
+  defp collect_pages(%{results: results}, acc),
+    do: {:ok, acc |> Enum.reverse() |> Enum.concat() |> Kernel.++(results)}
+
+  defp collect_pages(subscriptions, []) when is_list(subscriptions), do: {:ok, subscriptions}
 
   # Endpoint resolution distinguishes three outcomes per subscription
   # : an ENABLED endpoint matches; a gone or disabled
@@ -483,7 +549,7 @@ defmodule AshHooks.Dispatcher do
   defp entry(subscription, error) do
     %{
       endpoint_id: subscription.endpoint_id,
-      subscription_id: subscription.id,
+      subscription_id: PrimaryKey.scalar!(subscription),
       status: :endpoint_error,
       error: error
     }
@@ -511,7 +577,7 @@ defmodule AshHooks.Dispatcher do
   defp dedupe_by_endpoint(matches) do
     matches
     |> Enum.sort_by(fn {subscription, _endpoint} ->
-      {subscription.endpoint_id, subscription.id}
+      {subscription.endpoint_id, PrimaryKey.scalar!(subscription)}
     end)
     |> Enum.uniq_by(fn {subscription, _endpoint} -> subscription.endpoint_id end)
   end
@@ -524,47 +590,32 @@ defmodule AshHooks.Dispatcher do
   # claim rows whose enqueue is merely slow; the CAS discipline itself is
   # the residual protection there).
   @reconcile_default_cutoff_seconds 300
+  @enqueue_lease_seconds 30
 
   @doc """
-  Reconciles delivery rows stranded at `:pending` by a crash between the
-  row write and the enqueue: a WHERE-gated bulk CAS flips
-  `status == :pending and inserted_at < cutoff` to `:enqueue_failed` on
-  the already-injected `:mark_enqueue_failed` action — a REAL state flip,
-  so of N concurrent reconcilers exactly one wins each row (the
-  matched-records count is the win signal, the dispatcher's
-  claim-then-enqueue discipline). Winners are then enqueued through
-  `:enqueue` (the same seam dispatch takes); `nil` leaves them CAS-flipped
-  for the existing re-dispatch repair path — the state that path already
-  owns, no new stranded state.
+  Recovers source-owned delivery rows: stale `:pending`, `:enqueue_failed`,
+  due `:failed_retryable`, expired `:sending`, and `:disable_pending`.
+  Future retries and live send leases are ineligible.
 
-  A reconciled winner's row stays at `:enqueue_failed` (marked
-  `reconcile_pending` in `last_error`): concurrent reconcilers are
-  one-shot — the CAS only matches `:pending`, so of N racing reconcilers
-  exactly one wins each row. The row is also exactly the state the
-  re-dispatch repair path owns (a re-dispatch of the same event claims it
-  via the repair CAS, requeues it to `:pending`, and enqueues again).
-  The package's exactly-once bound is therefore PER CAS TRANSITION, one
-  winner each — cross-MECHANISM exactly-once enqueue is the SEAM's
-  contract: the canonical Oban seam's job uniqueness makes it effect-once
-  (proven on the real engine); a custom seam must be idempotent itself.
-  Note that a row a re-dispatch repair requeued (back to `:pending`,
-  `inserted_at` unchanged) is eligible for a LATER reconciliation too —
-  a pending row awaiting its job is indistinguishable from a stranded
-  one until the job drives it. That is one more reason the enqueue seam
-  itself must tolerate a duplicate. A crash mid-reconcile leaves the row
-  at `:enqueue_failed`: repairable, never lost.
+  Each row is claimed with a separate enqueue token and a 30-second lease in the
+  same atomic update that checks its state and due time. Successful durable
+  admission clears that token without rewriting delivery state, attempts,
+  retry time, or send lease. A crash leaves a reclaimable lease. The enqueue
+  seam must remain idempotent because an external effect can occur before a
+  crashed claimant clears its lease.
 
-  Options: `:older_than` (staleness cutoff; default now − 5 minutes),
-  `:tenant` (the pre-flight applies), `:enqueue` (the dispatch seam — it
-  receives the event RECONSTRUCTED from the row, never nil). The resource
+  Reconciliation validates the stored declaration source and route. A
+  deferred unbound route may bind once to a named callback or to an anonymous
+  callback carrying the same stable `:enqueue_key`. An unkeyed anonymous route
+  returns `:unresolved_route` and is never rebound implicitly.
+
+  Options: `:older_than` (staleness cutoff; default now minus 5 minutes),
+  `:tenant` (the pre-flight applies), `:enqueue`, and `:enqueue_key`. The seam
+  receives the event reconstructed from the row, never nil. The resource
   must carry `inserted_at` (the retention hooks' requirement).
 
-  Do not run with a cutoff overlapping still-live enqueue latency — a
-  wrongly claimed row's worst case is the `:enqueue_failed` repair path,
-  but the noise is avoidable by leaving the default. The default cutoff
-  moves with the clock for the same reason: re-running with a FIXED,
-  already-consumed cutoff re-claims previously reconciled rows (they are
-  `:pending` again with old timestamps) and re-enqueues them.
+  Keep the cutoff beyond normal enqueue latency. The default cutoff moves
+  with the clock; periodic recovery is a host scheduling obligation.
   """
   @spec reconcile_pending(module(), atom(), keyword()) ::
           {:ok, [dispatch_result()]} | {:error, term()}
@@ -573,11 +624,22 @@ defmodule AshHooks.Dispatcher do
          {:ok, deliv_mod} <- resolve_module(entity, :deliveries),
          {:ok, subs_mod} <- resolve_module(entity, :subscriptions),
          {:ok, endpoint_mod} <- resolve_endpoint_resource(subs_mod),
+         {:ok, route} <- OutboundBinding.route(opts[:enqueue], opts),
          {:ok, tenant} <-
            Tenancy.resolve([subs_mod, endpoint_mod, deliv_mod], opts[:tenant]),
          :ok <- require_timestamps(deliv_mod),
-         {:ok, winners} <- claim_stranded(deliv_mod, cutoff(opts), tenant) do
-      {:ok, Enum.map(winners, &reconcile_one(deliv_mod, &1, opts, tenant))}
+         recovery_cutoff <- cutoff(opts),
+         {:ok, candidates} <-
+           recovery_candidates(
+             deliv_mod,
+             OutboundBinding.source(resource, name, endpoint_mod),
+             recovery_cutoff,
+             tenant
+           ) do
+      {:ok,
+       Enum.map(candidates, fn row ->
+         reconcile_one(deliv_mod, row, route, opts, recovery_cutoff, tenant)
+       end)}
     end
   end
 
@@ -603,48 +665,221 @@ defmodule AshHooks.Dispatcher do
     end
   end
 
-  # The CAS claim: only rows still :pending past the cutoff flip, and only
-  # once — a concurrent reconciler's flip removes the row from the WHERE
-  # set. The recorded error marks the row as reconcile-claimed (bounded
-  # vocabulary, overwritten by any later transition).
-  defp claim_stranded(deliv_mod, cutoff, tenant) do
+  defp recovery_candidates(deliv_mod, source, cutoff, tenant) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
     result =
       with_transient_retry(fn ->
         deliv_mod
-        |> Ash.Query.filter(status == :pending and inserted_at < ^cutoff)
-        |> Ash.bulk_update(:mark_enqueue_failed, %{error: "reconcile_pending"},
-          authorize?: false,
-          return_records?: true,
-          return_errors?: true,
-          strategy: [:atomic],
-          tenant: tenant
-        )
+        |> Ash.Query.filter(dispatch_source == ^source)
+        |> recovery_candidate_filter(cutoff, now)
+        |> Ash.read(authorize?: false, tenant: tenant)
       end)
 
     case result do
-      %Ash.BulkResult{status: :success, records: winners} -> {:ok, winners}
-      %Ash.BulkResult{errors: [error | _]} -> {:error, error}
+      {:ok, rows} -> collect_pages(rows, [])
+      {:error, error} -> {:error, error}
     end
   end
 
-  defp reconcile_one(_deliv_mod, row, opts, _tenant) do
-    case row_event(row) do
+  defp recovery_candidate_filter(query, cutoff, now) do
+    filters = [
+      pending_recovery_filter(cutoff),
+      Ash.Expr.expr(status in [:enqueue_failed, :disable_pending]),
+      retry_recovery_filter(now),
+      sending_recovery_filter(now)
+    ]
+
+    filter = Enum.reduce(filters, fn expression, acc -> Ash.Expr.expr(^acc or ^expression) end)
+    Ash.Query.do_filter(query, filter)
+  end
+
+  defp pending_recovery_filter(cutoff),
+    do: Ash.Expr.expr(status == :pending and inserted_at < ^cutoff)
+
+  defp retry_recovery_filter(now),
+    do:
+      Ash.Expr.expr(
+        status == :failed_retryable and
+          (is_nil(next_attempt_at) or next_attempt_at <= ^now)
+      )
+
+  defp sending_recovery_filter(now),
+    do:
+      Ash.Expr.expr(
+        status == :sending and
+          (is_nil(send_lease_expires_at) or send_lease_expires_at <= ^now)
+      )
+
+  defp reconcile_one(deliv_mod, row, route, opts, cutoff, tenant) do
+    with {:ok, row} <- bind_or_validate_route(deliv_mod, row, route, tenant),
+         {:ok, claimed} <- claim_enqueue(deliv_mod, row, cutoff, tenant) do
+      reconcile_claimed(deliv_mod, claimed, opts, tenant)
+    else
+      {:error, :enqueue_contended} -> reconcile_result(row, :duplicate, :enqueue_contended)
+      {:error, reason} -> reconcile_result(row, :enqueue_failed, reason)
+    end
+  end
+
+  defp reconcile_claimed(deliv_mod, claimed, opts, tenant) do
+    case row_event(claimed) do
       {:ok, event} ->
-        case enqueue_result(opts[:enqueue], row, event) do
-          :ok ->
-            reconcile_result(row, :reconciled, nil)
-
-          :deferred ->
-            reconcile_result(row, :deferred, nil)
-
-          {:error, reason} ->
-            reconcile_result(row, :enqueue_failed, reason)
-        end
+        reconcile_enqueue_result(
+          deliv_mod,
+          claimed,
+          enqueue_result(opts[:enqueue], claimed, event),
+          tenant
+        )
 
       {:error, reason} ->
-        reconcile_result(row, :enqueue_failed, {:invalid_event, reason})
+        release_reconcile_claim(
+          deliv_mod,
+          claimed,
+          error_string(reason),
+          :enqueue_failed,
+          reason,
+          tenant
+        )
     end
   end
+
+  defp reconcile_enqueue_result(deliv_mod, claimed, result, tenant) do
+    case result do
+      :ok ->
+        release_reconcile_claim(deliv_mod, claimed, nil, :reconciled, nil, tenant)
+
+      {:error, reason} ->
+        release_reconcile_claim(
+          deliv_mod,
+          claimed,
+          error_string(reason),
+          :enqueue_failed,
+          reason,
+          tenant
+        )
+    end
+  end
+
+  defp release_reconcile_claim(deliv_mod, claimed, error, status, reason, tenant) do
+    case release_enqueue(deliv_mod, claimed, error, tenant) do
+      :ok -> reconcile_result(claimed, status, reason)
+      {:error, release_reason} -> reconcile_result(claimed, :endpoint_error, release_reason)
+    end
+  end
+
+  defp bind_or_validate_route(_deliv_mod, _row, route, _tenant)
+       when route in ["v1:route:unbound", "v1:route:anonymous:unkeyed"],
+       do: {:error, :unresolved_route}
+
+  defp bind_or_validate_route(deliv_mod, row, route, tenant) do
+    cond do
+      row.dispatch_route == route ->
+        {:ok, row}
+
+      row.dispatch_route == OutboundBinding.unbound_route() ->
+        result =
+          deliv_mod
+          |> Ash.Query.do_filter(PrimaryKey.filter(row))
+          |> Ash.Query.filter(
+            dispatch_source == ^row.dispatch_source and
+              dispatch_route == ^OutboundBinding.unbound_route()
+          )
+          |> Ash.bulk_update(:bind_dispatch_route, %{dispatch_route: route},
+            authorize?: false,
+            return_records?: true,
+            return_errors?: true,
+            strategy: [:atomic],
+            tenant: tenant
+          )
+
+        bulk_one(result, :dispatch_route_conflict)
+
+      row.dispatch_route == OutboundBinding.unkeyed_route() ->
+        {:error, :unresolved_route}
+
+      true ->
+        {:error, :dispatch_route_conflict}
+    end
+  end
+
+  defp claim_enqueue(deliv_mod, row, cutoff, tenant) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    token = Ash.UUID.generate()
+    lease = DateTime.add(now, @enqueue_lease_seconds, :second)
+
+    result =
+      deliv_mod
+      |> Ash.Query.do_filter(PrimaryKey.filter(row))
+      |> Ash.Query.filter(
+        dispatch_source == ^row.dispatch_source and dispatch_route == ^row.dispatch_route and
+          (is_nil(enqueue_token) or is_nil(enqueue_lease_expires_at) or
+             enqueue_lease_expires_at <= ^now)
+      )
+      |> recovery_state_filter(row.status, cutoff, now)
+      |> Ash.bulk_update(
+        :claim_enqueue,
+        %{enqueue_token: token, enqueue_lease_expires_at: lease},
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
+
+    bulk_one(result, :enqueue_contended)
+  end
+
+  defp recovery_state_filter(query, :pending, cutoff, _now),
+    do: Ash.Query.filter(query, status == :pending and inserted_at < ^cutoff)
+
+  defp recovery_state_filter(query, :enqueue_failed, _cutoff, _now),
+    do: Ash.Query.filter(query, status == :enqueue_failed)
+
+  defp recovery_state_filter(query, :failed_retryable, _cutoff, now),
+    do:
+      Ash.Query.filter(
+        query,
+        status == :failed_retryable and
+          (is_nil(next_attempt_at) or next_attempt_at <= ^now)
+      )
+
+  defp recovery_state_filter(query, :sending, _cutoff, now),
+    do:
+      Ash.Query.filter(
+        query,
+        status == :sending and
+          (is_nil(send_lease_expires_at) or send_lease_expires_at <= ^now)
+      )
+
+  defp recovery_state_filter(query, :disable_pending, _cutoff, _now),
+    do: Ash.Query.filter(query, status == :disable_pending)
+
+  defp release_enqueue(deliv_mod, row, error, tenant) do
+    result =
+      deliv_mod
+      |> Ash.Query.do_filter(PrimaryKey.filter(row))
+      |> Ash.Query.filter(
+        dispatch_source == ^row.dispatch_source and enqueue_token == ^row.enqueue_token
+      )
+      |> Ash.bulk_update(:release_enqueue, %{error: error},
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
+
+    case bulk_one(result, :stale_enqueue_claim) do
+      {:ok, _row} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp bulk_one(%Ash.BulkResult{status: :success, records: [row]}, _empty), do: {:ok, row}
+  defp bulk_one(%Ash.BulkResult{status: :success, records: []}, empty), do: {:error, empty}
+
+  defp bulk_one(%Ash.BulkResult{} = result, _empty),
+    do: {:error, List.first(result.errors || []) || result}
 
   # the enqueue seam takes (delivery, event) — reconstruction from the
   # row instead of a nil, so a seam matching %Event{} or reading event
@@ -723,8 +958,7 @@ defmodule AshHooks.Dispatcher do
   # 255 combining-grapheme values the ledger then rejected, failing every
   # endpoint's :dispatch create. Bytes bound codepoints and graphemes
   # alike; the inbound side already bounds bytes (ingress external ids).
-  defp valid_event_id?(id),
-    do: is_binary(id) and id != "" and not String.contains?(id, ".") and byte_size(id) <= 255
+  defp valid_event_id?(id), do: Event.valid_id?(id)
 
   defp valid_event_type?(type), do: is_binary(type) and type != "" and byte_size(type) <= 255
 
@@ -748,7 +982,9 @@ defmodule AshHooks.Dispatcher do
   # carry payload or secret material (the bounded-classification rule).
   # Byte cap so the 255 constraint holds in any counting mode.
   defp error_string({:exit, reason}) when is_atom(reason),
-    do: ("exit: " <> Atom.to_string(reason)) |> AshHooks.BoundedText.cap(255)
+    do:
+      ("exit: " <> AshHooks.Telemetry.classify_token(reason))
+      |> AshHooks.BoundedText.cap(255)
 
   defp error_string({:exit, _reason}), do: "exit: unclassified"
 

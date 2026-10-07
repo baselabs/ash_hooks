@@ -1,67 +1,89 @@
 defmodule AshHooks.Http.Httpc do
   @moduledoc """
-  The `:httpc` adapter for `AshHooks.Http` — an alternative to the default
-  `AshHooks.Http.Bounded`, built on OTP's `:httpc`, hardened.
+  An `AshHooks.Http` adapter built on OTP's `:httpc`.
 
-  **IP pinning (closes the DNS-rebinding TOCTOU):** the hostname is
-  resolved ONCE through `AshHooks.Ssrf.resolve_public/1` (every answer
-  must be public), and the connection is made to the VALIDATED address —
-  not the hostname again. TLS keeps verifying the certificate against the
-  ORIGINAL hostname (SNI + hostname check), and the `host` header carries
-  the original host, so receivers and cert chains are unchanged while the
-  validate-then-connect gap disappears.
+  The adapter resolves and validates the destination, pins the connection
+  address, and preserves the original hostname for TLS certificate verification,
+  SNI, and the Host header. Redirects are returned without following them.
+  TLS uses the OTP CA store unless `cacerts: der_list` supplies a private CA
+  bundle. The operation deadline covers DNS, connection, send, and response
+  collection; connection also has a separate, shorter ceiling.
 
-  **Bounded body (memory DoS floor):** the response is read as a STREAM
-  (`:httpc` streams only 200/206 — every other status arrives as the
-  complete result message) and accumulation stops at `:max_body_bytes`
-  (default 64 KiB); the remainder is cancelled. Residual, documented: a
-  hostile NON-2xx giant body is assembled inside `:httpc` before delivery
-  (the client's API offers no earlier cut for the transparent path) — the
-  window is narrowed from every response to error-status responses.
+  Response retention is capped by `max_body_bytes` (64 KiB by default).
+  OTP streams 200 and 206 responses, so this adapter cancels collection at
+  that limit. Other statuses are buffered inside `:httpc` before the adapter
+  can truncate them. Use the default `AshHooks.Http.Bounded` adapter when the
+  allocation of an untrusted error response must also be bounded. OTP's
+  streaming interface does not distinguish 206 from 200; both are reported
+  as 200 by this adapter and classified as successful delivery.
 
-  Redirects are DISABLED (`autoredirect: false` — a 303-on-POST is
-  otherwise re-issued as GET and the target's body returned). TLS
-  verifies peers against the OTP CA store, or a pinned private-CA bundle
-  via the adapter opts (`[cacerts: der_list]` — same seam as Bounded).
-  Connect/receive are bounded; the Oban job timeout is the outer bound.
-
-  **Literal-IP HTTPS fails closed here** (`{:error,
-  :ip_literal_https_needs_bounded}`): this adapter never holds the
-  socket, so the iPAddress-SAN floor `Bounded` enforces cannot run, and
-  chain validation alone would let ANY chain-valid certificate
-  authenticate the endpoint IP. Use the default adapter for literal-IP
-  HTTPS endpoints.
+  HTTPS URLs with literal IP hosts return
+  `{:error, :ip_literal_https_needs_bounded}`. Use `AshHooks.Http.Bounded` for
+  those endpoints: it can inspect the socket certificate's IP subject
+  alternative name as well as validate its certificate chain.
   """
 
   @behaviour AshHooks.Http
 
+  alias AshHooks.Http.Headers
   alias AshHooks.Http.Target
 
   @default_timeout 15_000
   @default_connect_timeout 5_000
   @default_max_body_bytes 65_536
 
+  @methods %{
+    "delete" => :delete,
+    "get" => :get,
+    "head" => :head,
+    "options" => :options,
+    "patch" => :patch,
+    "post" => :post,
+    "put" => :put,
+    "trace" => :trace
+  }
+
   @impl true
   @spec request(atom(), String.t(), map(), binary() | nil, keyword()) ::
           {:ok, %{status: integer(), headers: list(), body: binary() | nil}}
           | {:error, term()}
   def request(method, url, headers, body, opts \\ []) do
-    method = if is_binary(method), do: String.to_atom(method), else: method
-    headers = Map.new(headers)
+    deadline = System.monotonic_time(:millisecond) + (opts[:timeout] || @default_timeout)
 
     # shared pinning substrate (also the test seam — the SSRF obligation
     # lives in the driver's send-time check; adapter resolution is
     # defense-in-depth)
-    case Target.resolve(url, opts) do
-      {:ok, target} ->
-        pinned_request(method, target, headers, body, opts)
+    with {:ok, method} <- normalize_method(method),
+         {:ok, headers} <- Headers.validate(headers) do
+      case Target.resolve(url, Keyword.put(opts, :deadline, deadline)) do
+        {:ok, target} ->
+          pinned_request(method, target, headers, body, opts, deadline)
 
-      {:error, error} ->
-        {:error, error}
+        {:error, error} ->
+          {:error, error}
+      end
     end
   end
 
-  defp pinned_request(method, target, headers, body, opts) do
+  defp normalize_method(method) when is_atom(method) do
+    if method in Map.values(@methods), do: {:ok, method}, else: {:error, :unsupported_method}
+  end
+
+  defp normalize_method(method) when is_binary(method) do
+    if String.valid?(method) do
+      Map.fetch(@methods, String.downcase(method))
+      |> case do
+        {:ok, normalized} -> {:ok, normalized}
+        :error -> {:error, :unsupported_method}
+      end
+    else
+      {:error, :unsupported_method}
+    end
+  end
+
+  defp normalize_method(_method), do: {:error, :unsupported_method}
+
+  defp pinned_request(method, target, headers, body, opts, deadline) do
     # A literal-IP https destination FAILS CLOSED on this adapter: without
     # a hostname there is no RFC 6125 check, and :httpc never hands us the
     # socket so the iPAddress-SAN floor (cert_san.ex — Bounded enforces it)
@@ -71,11 +93,11 @@ defmodule AshHooks.Http.Httpc do
     if target.uri.scheme == "https" and Target.ip_literal?(target.host) do
       {:error, :ip_literal_https_needs_bounded}
     else
-      do_pinned_request(method, target, headers, body, opts)
+      do_pinned_request(method, target, headers, body, opts, deadline)
     end
   end
 
-  defp do_pinned_request(method, target, headers, body, opts) do
+  defp do_pinned_request(method, target, headers, body, opts, deadline) do
     host = target.host
     pinned_uri = %{target.uri | host: format_address(target.address)}
 
@@ -87,8 +109,9 @@ defmodule AshHooks.Http.Httpc do
     http_options =
       [
         autoredirect: false,
-        timeout: opts[:timeout] || @default_timeout,
-        connect_timeout: opts[:connect_timeout] || @default_connect_timeout
+        timeout: remaining_timeout(deadline),
+        connect_timeout:
+          min(remaining_timeout(deadline), opts[:connect_timeout] || @default_connect_timeout)
       ]
       |> maybe_put_ssl(target.uri.scheme, host, opts[:cacerts])
 
@@ -107,7 +130,7 @@ defmodule AshHooks.Http.Httpc do
 
     with {:ok, req_id} <-
            :httpc.request(method, request, http_options, sync: false, stream: :self) do
-      collect(req_id, opts[:max_body_bytes] || @default_max_body_bytes)
+      collect(req_id, opts[:max_body_bytes] || @default_max_body_bytes, deadline)
     end
   end
 
@@ -116,10 +139,10 @@ defmodule AshHooks.Http.Httpc do
   # status is always recoverable: streamed ⇒ 2xx. A streamed 206 is
   # indistinguishable from a 200 in this client's streaming API and is
   # recorded as 200 (classification is unaffected — both are 2xx).
-  defp collect(req_id, max_body) do
+  defp collect(req_id, max_body, deadline) do
     receive do
       {:http, {^req_id, :stream_start, headers}} ->
-        stream_body(req_id, headers, 200, "", max_body)
+        stream_body(req_id, headers, 200, "", max_body, deadline)
 
       {:http, {^req_id, {{_version, status, _phrase}, headers, body}}} ->
         # the transparent path assembles inside :httpc before delivery
@@ -136,10 +159,14 @@ defmodule AshHooks.Http.Httpc do
 
       {:http, {^req_id, {:error, reason}}} ->
         {:error, reason}
+    after
+      remaining_timeout(deadline) ->
+        :httpc.cancel_request(req_id)
+        {:error, :timeout}
     end
   end
 
-  defp stream_body(req_id, headers, status, acc, max_body) do
+  defp stream_body(req_id, headers, status, acc, max_body, deadline) do
     receive do
       # a mid-stream transport failure is delivered this way — without
       # this clause the caller stalls to the backstop and loses the
@@ -162,13 +189,20 @@ defmodule AshHooks.Http.Httpc do
              body: binary_part(acc, 0, max_body)
            }}
         else
-          stream_body(req_id, headers, status, acc, max_body)
+          stream_body(req_id, headers, status, acc, max_body, deadline)
         end
 
       {:http, {^req_id, :stream_end, _headers}} ->
         {:ok, %{status: status, headers: normalize_headers(headers), body: acc}}
+    after
+      remaining_timeout(deadline) ->
+        :httpc.cancel_request(req_id)
+        {:error, :timeout}
     end
   end
+
+  defp remaining_timeout(deadline),
+    do: max(deadline - System.monotonic_time(:millisecond), 0)
 
   defp truncate(body, max) when byte_size(body) > max, do: binary_part(body, 0, max)
   defp truncate(body, _max), do: body

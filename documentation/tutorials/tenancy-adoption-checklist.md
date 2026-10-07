@@ -1,6 +1,6 @@
 # Multi-tenant adoption checklist
 
-ash_hooks 1.2+ supports Ash attribute multitenancy: every dispatch, ingest,
+ash_hooks supports Ash attribute multitenancy: every dispatch, ingest,
 delivery run, sweep, and reconciliation threads an explicit tenant, and the
 package fails closed with a named error when a multitenant resource is
 touched without one. This checklist walks one app — two tenants or two
@@ -35,6 +35,9 @@ Two declarations are rejected outright with `{:error, :tenancy_mismatch}`:
   works across every data layer the package supports.
 
 ## The ordered steps
+
+If you are also upgrading from 1.x to 2.0, complete the schema and declaration/route
+backfill in [UPGRADING](../../UPGRADING.md) before enabling the new runtime.
 
 **0. Drain in-flight Oban jobs from the 1.1.x shape** (skip if you have
 no queued deliveries). The moment your resources declare multitenancy,
@@ -71,9 +74,8 @@ SELECT COUNT(*) FROM outbound_deliveries WHERE org_id IS NULL;
 
 A NULL-tenant row is a quiet trap: the unique identities become
 tenant-scoped in step 2, and NULL never equals a tenant value — so a new
-delivery creates a PARALLEL row instead of matching the old one, the
-enqueue then collides with the historical completed job, and the new row
-sits at `:pending` forever. NULL-tenant rows are also invisible to every
+delivery creates a separate row instead of matching the old one and may repeat
+its network effect. NULL-tenant rows are also invisible to every
 tenant-scoped sweep. Backfill before proceeding; the count above is the
 gate.
 
@@ -104,13 +106,13 @@ AshHooks.Ingress.ingest(WebhookLedger, :stripe, raw_body, %{signature: sig, tena
   tenants sequentially — one tenant's failure never stops the others —
   and return each tenant's result plus a total:
   `{:ok, %{results: %{"org_a" => {:ok, 3}, ...}, total: 3}}`.
-- Reconciliation of rows stranded at `:pending` by a crash between the
-  row write and the enqueue:
+- Reconciliation of stale pending rows, enqueue failures, due retries, expired
+  sends, and pending endpoint disables:
   `AshHooks.reconcile_pending(Order, :order_paid, tenant: org.id,
   enqueue: {MyWorker, :enqueue})`. The delivery resource needs
   `timestamps()` (`inserted_at` drives the staleness cutoff — the
-  default of five minutes is right for almost everyone). Concurrent
-  reconcilers never double-claim a row; note that the enqueue callback
+  default is five minutes). Use the same declaration and durable queue route.
+  Concurrent reconcilers use separate expiring enqueue claims; the enqueue callback
   receives the event reconstructed from the row (id, type, payload —
   its metadata map is empty), so write custom callbacks accordingly.
 - Tenant-aware secrets (all optional): the worker macro's
@@ -132,15 +134,12 @@ AshHooks.Ingress.ingest(WebhookLedger, :stripe, raw_body, %{signature: sig, tena
 - Workers recover full tenant context from job args alone (string
   tenants are the supported shape; a custom `parse_attribute` pairs
   with `tenant_from_attribute`, which the worker inverts through).
-- Reconciliation claims each stranded row at most once per run. One
-  caveat across mechanisms: a re-dispatch of a reconciled event claims
-  the row again through the ordinary repair path and may enqueue it a
-  second time — with the package's Oban worker this is deduplicated by
-  job uniqueness; if you supply your OWN enqueue function, it must
-  tolerate being called twice for the same row.
+- Recovery is fenced to the row's declaration, route, tenant, and enqueue token.
+  A crash after queue admission can still invoke a custom enqueue callback again;
+  make that callback idempotent. The generated Oban worker requires a persisted
+  matching runnable job before reporting successful admission.
 
 ## Single-tenant apps
 
-Change nothing. No tenant passed, no tenant threaded: behavior is
-identical to 1.1.x — the library's own test suite runs entirely over
-tenant-less fixtures in both versions.
+Leave multitenancy undeclared and omit `:tenant`. The same entry points work
+with a single-tenant ledger; the 2.0 schema upgrade still applies.

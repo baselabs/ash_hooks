@@ -22,9 +22,13 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
     with {:ok, mark_sending} <- build_mark_sending(),
          {:ok, mark_succeeded} <- build_mark_succeeded(),
          {:ok, mark_send_failed} <- build_mark_send_failed(),
+         {:ok, mark_disable_pending} <- build_mark_disable_pending(),
+         {:ok, finalize_disable} <- build_finalize_disable(),
          {:ok, dsl_state} <- add(dsl_state, mark_sending),
-         {:ok, dsl_state} <- add(dsl_state, mark_succeeded) do
-      add(dsl_state, mark_send_failed)
+         {:ok, dsl_state} <- add(dsl_state, mark_succeeded),
+         {:ok, dsl_state} <- add(dsl_state, mark_send_failed),
+         {:ok, dsl_state} <- add(dsl_state, mark_disable_pending) do
+      add(dsl_state, finalize_disable)
     end
   end
 
@@ -41,7 +45,22 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
 
     {:ok, status} = Builder.build_action_change(Builtins.set_attribute(:status, :sending))
 
-    Builder.build_action(:update, :mark_sending, accept: [], changes: [bump, status])
+    {:ok, token} =
+      Builder.build_action_change(Builtins.set_attribute(:attempt_token, arg(:attempt_token)))
+
+    {:ok, lease} =
+      Builder.build_action_change(
+        Builtins.set_attribute(:send_lease_expires_at, arg(:send_lease_expires_at))
+      )
+
+    Builder.build_action(:update, :mark_sending,
+      accept: [],
+      arguments: [
+        argument(:attempt_token, :uuid, allow_nil?: false),
+        argument(:send_lease_expires_at, :utc_datetime_usec, allow_nil?: false)
+      ],
+      changes: [bump, status, token, lease]
+    )
   end
 
   defp build_mark_succeeded do
@@ -55,13 +74,16 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
         Builtins.set_attribute(:response_snippet, arg(:response_snippet))
       )
 
+    {:ok, clear_lease} =
+      Builder.build_action_change(Builtins.set_attribute(:send_lease_expires_at, nil))
+
     Builder.build_action(:update, :mark_succeeded,
       accept: [],
       arguments: [
         argument(:response_status, :integer, allow_nil?: false),
         argument(:response_snippet, :string, allow_nil?: true)
       ],
-      changes: [status, code, snippet]
+      changes: [status, code, snippet, clear_lease]
     )
   end
 
@@ -98,6 +120,9 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
         Builtins.set_attribute(:response_snippet, arg(:response_snippet))
       )
 
+    {:ok, clear_lease} =
+      Builder.build_action_change(Builtins.set_attribute(:send_lease_expires_at, nil))
+
     Builder.build_action(:update, :mark_send_failed,
       accept: [],
       arguments: [
@@ -107,12 +132,48 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
         argument(:response_status, :integer, allow_nil?: true, default: nil),
         argument(:response_snippet, :string, allow_nil?: true, default: nil)
       ],
-      changes: [status, error, next, code, snippet]
+      changes: [status, error, next, code, snippet, clear_lease]
+    )
+  end
+
+  defp build_mark_disable_pending do
+    Builder.build_action(:update, :mark_disable_pending,
+      accept: [],
+      arguments: [
+        argument(:response_status, :integer, allow_nil?: false),
+        argument(:response_snippet, :string, allow_nil?: true),
+        argument(:endpoint_snapshot, :map, allow_nil?: false)
+      ],
+      changes: [
+        change(Builtins.set_attribute(:status, :disable_pending)),
+        change(Builtins.set_attribute(:response_status, arg(:response_status))),
+        change(Builtins.set_attribute(:response_snippet, arg(:response_snippet))),
+        change(Builtins.set_attribute(:endpoint_snapshot, arg(:endpoint_snapshot))),
+        change(Builtins.set_attribute(:last_error, "gone_410")),
+        change(Builtins.set_attribute(:next_attempt_at, nil)),
+        change(Builtins.set_attribute(:send_lease_expires_at, nil))
+      ]
+    )
+  end
+
+  defp build_finalize_disable do
+    Builder.build_action(:update, :finalize_disable,
+      accept: [],
+      arguments: [argument(:error, :string, allow_nil?: false)],
+      changes: [
+        change(Builtins.set_attribute(:status, :dead_letter)),
+        change(Builtins.set_attribute(:last_error, arg(:error)))
+      ]
     )
   end
 
   defp argument(name, type, opts) do
     {:ok, entity} = Builder.build_action_argument(name, type, opts)
+    entity
+  end
+
+  defp change(ref) do
+    {:ok, entity} = Builder.build_action_change(ref)
     entity
   end
 end

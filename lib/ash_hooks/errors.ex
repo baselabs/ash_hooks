@@ -24,7 +24,7 @@ defmodule AshHooks.Errors do
 
   @doc """
   Maps a provider callback's reason atom (the `{:error, reason}` shape the
-  behaviour returns) to its splode error, passing `opts` through to
+  behavior returns) to its splode error, passing `opts` through to
   `exception/1`.
 
   Raises on an unmapped reason — that is a programming error on the caller's

@@ -132,10 +132,15 @@ defmodule AshHooks.RetentionTest do
     CREATE TABLE IF NOT EXISTS #{@deliveries} (
       id TEXT PRIMARY KEY, event_uuid TEXT NOT NULL, event_type TEXT NOT NULL,
       payload BLOB NOT NULL, endpoint_id TEXT NOT NULL, subscription_id TEXT,
-      signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
-      attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
-      response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
-      inserted_at TEXT, updated_at TEXT
+    signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
+    response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
+    dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+    dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+    attempt_token TEXT, send_lease_expires_at TEXT,
+    enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+    endpoint_snapshot TEXT,
+    inserted_at TEXT, updated_at TEXT
     )
     """)
 
@@ -210,9 +215,47 @@ defmodule AshHooks.RetentionTest do
       assert {:error, error} = Ingress.prune(NoTimestamps, older_than: @old)
       assert Exception.message(error) =~ "timestamps"
     end
+
+    test "deletes at most one bounded batch per call" do
+      for id <- 1..3 do
+        row!(@ledgers, :processed, @old, "bounded-inbound-#{id}")
+      end
+
+      assert {:ok, 2} = Ingress.prune(Ledger, older_than: @old, batch_size: 2)
+
+      assert [[1]] =
+               Repo.query!(
+                 "SELECT count(*) FROM #{@ledgers} WHERE external_event_id LIKE 'bounded-inbound-%'"
+               ).rows
+    end
+
+    test "rejects zero, excessive, and non-integer batch sizes before deleting" do
+      row!(@ledgers, :processed, @old, "bounded-invalid")
+
+      for batch_size <- [0, 1_001, "1"] do
+        assert {:error, error} =
+                 Ingress.prune(Ledger, older_than: @old, batch_size: batch_size)
+
+        assert Exception.message(error) =~ "batch_size must be an integer from 1 through 1000"
+      end
+
+      assert [[1]] =
+               Repo.query!(
+                 "SELECT count(*) FROM #{@ledgers} WHERE external_event_id = 'bounded-invalid'"
+               ).rows
+    end
   end
 
   describe "Delivery.prune/2" do
+    test "an empty terminal set completes with zero deletions" do
+      delivery_row!(:pending, @old, "dlv-empty-terminal-set")
+
+      assert {:ok, 0} =
+               AshHooks.Delivery.prune(DeliveryLedger, older_than: @old, batch_size: 2)
+
+      assert remaining_statuses(@deliveries) == [:pending]
+    end
+
     test "deletes ONLY old terminal rows — pending/sending/retryable survive" do
       for status <- [
             :succeeded,
@@ -233,6 +276,37 @@ defmodule AshHooks.RetentionTest do
 
       assert Enum.sort(remaining) ==
                [:enqueue_failed, :failed_retryable, :pending, :sending, :succeeded]
+    end
+
+    test "deletes every terminal row across bounded batches" do
+      for id <- 1..5 do
+        delivery_row!(:succeeded, @old, "dlv-batched-#{id}")
+      end
+
+      assert {:ok, 5} =
+               AshHooks.Delivery.prune(DeliveryLedger, older_than: @old, batch_size: 2)
+
+      assert [[0]] =
+               Repo.query!(
+                 "SELECT count(*) FROM #{@deliveries} WHERE event_uuid LIKE 'dlv-batched-%'"
+               ).rows
+    end
+
+    test "rejects invalid batch sizes before deleting" do
+      delivery_row!(:succeeded, @old, "dlv-invalid-batch")
+
+      for batch_size <- [-1, 0, 5_001, "1"] do
+        assert {:error, :invalid_batch_size} =
+                 AshHooks.Delivery.prune(DeliveryLedger,
+                   older_than: @old,
+                   batch_size: batch_size
+                 )
+      end
+
+      assert [[1]] =
+               Repo.query!(
+                 "SELECT count(*) FROM #{@deliveries} WHERE event_uuid = 'dlv-invalid-batch'"
+               ).rows
     end
 
     test "a resource without timestamps returns an error tuple naming the fix (Ingress.prune/2 contract)" do
@@ -285,6 +359,13 @@ defmodule AshHooks.RetentionTest do
   end
 
   describe "Ingress.redact_payload/4" do
+    test "an unknown complete key returns not_found without invoking the redactor" do
+      assert {:error, :not_found} =
+               Ingress.redact_payload(Ledger, Ash.UUID.generate(), 1, fn _ ->
+                 flunk("redactor must not run without a row")
+               end)
+    end
+
     test "replaces the payload under the claim fence; a stale token is rejected" do
       id = row!(@ledgers, :received, @recent, "evt-redact")
       {:ok, token, _} = Ingress.claim_delivery(Ledger, id)

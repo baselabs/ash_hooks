@@ -10,21 +10,21 @@ delivery, and changes no endpoint registration.
 
 ## Receiver
 
-`webhook-tester.compose.yaml` pins the image by digest, binds `127.0.0.1:52871`,
-keeps `restart: always` and the named capture volume `local-webhook-tester-captures`
-(seven-day session TTL, 1,000 requests per session). Where a receiver already
-answers on that port (the BaseLabs local cluster runs one shared WebHook Tester on
-`127.0.0.1:52871` for every repository), USE THE RUNNING ONE. Check it without
-restarting anything; it answers with its version:
+The BaseLabs cluster provides one shared WebHook Tester on
+`127.0.0.1:52871` for local package verification. Use that running receiver.
+Check it without restarting anything; it answers with its version:
 
 ```sh
 curl -fsS http://127.0.0.1:52871/api/version
 ```
 
-Create the Compose receiver only when nothing answers there:
+BaseLabs repositories use the shared receiver in the BaseLabs cluster. If the
+version probe fails, inspect that cluster; wait for a restarting pod or stop and
+report the unavailable service. Do not start a second receiver or a standalone
+Compose stack:
 
 ```sh
-docker compose -f ops/local/webhook-tester.compose.yaml up -d
+~/Developer/kimosabe/bin/kimosabe-cluster status
 ```
 
 Never delete the named capture volume to "restart" the service.
@@ -40,7 +40,7 @@ MIX_ENV=dev elixir ops/local/send-webhook.exs
 MIX_ENV=dev elixir ops/local/send-webhook.exs /path/to/payload.json
 ```
 
-To use a receiver on another loopback port (a private one for a destructive run, say), set
+To use an existing sanctioned receiver on another loopback port, set
 `LOCAL_WEBHOOK_TESTER_PORT` for that command; the default is 52871:
 
 ```sh
@@ -50,5 +50,5 @@ LOCAL_WEBHOOK_TESTER_PORT=37524 MIX_ENV=dev elixir ops/local/send-webhook.exs
 Each run opens a FRESH receiver session (auto-created on first POST) and signs
 with an EPHEMERAL key that is never persisted or printed. A passing run ends with
 `PASS: captured payload and signature verified (msg_...)` and prints the session's
-inbox URL. Use development payloads: captures are retained in the local Docker
-volume.
+inbox URL. Use development payloads: the receiver retains captured requests
+according to its configured storage and session TTL.

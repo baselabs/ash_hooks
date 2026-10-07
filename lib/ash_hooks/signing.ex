@@ -1,29 +1,25 @@
 defmodule AshHooks.Signing do
   @moduledoc """
-  Standard Webhooks canon signing and verification — `v1` (HMAC-SHA256) and
-  `v1a` (ed25519) from day one (ADR-0006), over the canonical string
-  `msg_id.timestamp.payload`.
+  Standard Webhooks signing and verification for `v1` (HMAC-SHA256) and
+  `v1a` (ed25519), over `msg_id.timestamp.payload`.
 
-  Conformance anchors: the official Go reference library's own test vector
-  (`TestWebhookSign`) is reproduced byte-for-byte by `sign/4`; verification
-  semantics (space-delimited multi-signatures, unknown version identifiers
-  skipped, timestamp tolerance, `whsec_` prefix optional) match the official
-  reference libraries read first-hand. ed25519 usage is anchored to RFC 8032
-  §7.1 known-answers.
+  Pass the exact payload bytes. `headers/4` assembles the webhook ID,
+  timestamp, and signatures; `verify/4` validates those headers against the
+  received bytes and enforces a timestamp tolerance by default.
 
   Secret formats:
 
     * symmetric — `whsec_` + base64 of 24–64 random bytes (prefix optional,
       matching the references). `sign/4` enforces the 24–64 byte band (the
-      spec's emitter guidance); `verify/4` rejects only EMPTY secrets so a
-      vendor with a shorter secret still interoperates.
+      emitter's length bound); verification accepts nonempty decoded symmetric
+      secrets, including shorter keys, and rejects malformed base64.
     * asymmetric — `whsk_` + base64 of the 32-byte ed25519 seed (signing),
       `whpk_` + base64 of the 32-byte public key (verification). Prefixes are
       required — they are what `verify/4` dispatches on.
 
-  `headers_for_mode/5` is the single seam the delivery runtime uses to emit
-  `:standard`, `:dual` (SW + byte-identical legacy envelope, ADR-0002), or
-  `:legacy` headers.
+  `headers_for_mode/5` emits `:standard`, `:dual` (Standard Webhooks and
+  legacy), or `:legacy` headers for the delivery runtime. Rotation options
+  include the previous key's signature alongside the current signature.
   """
 
   alias AshHooks.Legacy
@@ -96,9 +92,9 @@ defmodule AshHooks.Signing do
 
   Dispatches on the secret's prefix: `whpk_` verifies `v1a` (ed25519)
   entries; anything else verifies `v1` (HMAC) entries and skips all other
-  version identifiers, matching the official references.
+  version identifiers.
 
-  `headers` is a map with EXACTLY the lowercased header names as string keys
+  `headers` is a map with lowercased header names as string keys
   and single binary values (`"webhook-id"`, `"webhook-timestamp"`,
   `"webhook-signature"`) — the shape Plug and the inbound seam supply after
   normalization. Mixed-case keys or multi-value header lists are
@@ -156,7 +152,7 @@ defmodule AshHooks.Signing do
 
   @doc """
   The three Standard Webhooks headers. `:whsec` and/or `:whsk` select the
-  signature schemes (both day one); `:previous_whsec` / `:previous_whsk`
+  signature schemes; `:previous_whsec` / `:previous_whsk`
   append the rotated-out key's signature (space-delimited, per the spec's
   zero-downtime rotation — symmetric and asymmetric alike).
   """

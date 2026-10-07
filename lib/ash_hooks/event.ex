@@ -1,36 +1,33 @@
 defmodule AshHooks.Event do
   @moduledoc """
-  The outbound pipeline's unit of work — what a consumer emits and the
-  fanout dispatcher delivers.
+  An outbound event: its identity, type, exact payload bytes, and optional context.
 
-      {:ok, event} = AshHooks.Event.new(type: :order_paid, payload: Jason.encode!(order))
+      {:ok, event} = AshHooks.Event.new(
+        id: "msg_order-" <> to_string(order.id),
+        type: :order_paid,
+        payload: Jason.encode!(%{order_id: order.id})
+      )
 
       AshHooks.dispatch(OrderResource, :order_paid, event)
 
-  Contract:
+  Choose a deterministic `id` for each logical event when a producer can run
+  again. Reusing that ID lets dispatch recognize an existing delivery and lets
+  receivers deduplicate `webhook-id`. A generated ID makes each invocation a
+  new event, which can produce a duplicate POST for the same business change.
+  If a record can emit several changes, include the change's stable identity
+  or revision rather than using the record ID alone.
 
-    * `id` — the webhook id (`msg_`-prefixed, URL-safe, NEVER
-      `.`-carrying: `.` is the canonical-string delimiter of the Standard
-      Webhooks signature, `msg_id.timestamp.payload`). Generated when
-      absent; a caller-supplied id that is non-binary, empty, or carries a
-      `.` is rejected (the signing path enforces the same constraint —
-      this keeps the rejection at the boundary, before anything persists).
-
-      DERIVE THE ID DETERMINISTICALLY from your artifact's stable id
-      (e.g. `id: "msg_\#{alert.id}"`) whenever a producer can re-fire for
-      the same underlying row — upsert-deduped after-hooks re-firing per
-      sweep is a steady state, not an edge, and a GENERATED id makes every
-      re-fire a NEW event (`{endpoint_id, event_uuid}` dedup never
-      matches): one duplicate POST per sweep, per endpoint. A deterministic
-      id is what makes the dispatcher's `:duplicate` classification (and
-      the receiver's `webhook-id` dedup) hold across re-fires.
-    * `type` — atom or binary, canonicalized to a STRING at construction:
-      strings are the single representation the subscription filter, the
-      delivery ledger, and the outbound DSL name compare on.
-    * `payload` — the exact BINARY bytes to sign and send. Structs and
-      maps are rejected: signing re-encoded maps is the interoperability
-      failure that kept the official Elixir reference library unusable.
-    * `metadata` — a map of non-signed context (default `%{}`).
+    * `id` is generated with a `msg_` prefix when omitted or `nil`. Supplied
+      IDs do not require that prefix. They must be nonempty UTF-8 binaries,
+      at most 255 bytes, without dots, spaces, or control characters. Dots
+      delimit the Standard Webhooks signing string. Dispatch also validates
+      IDs supplied through direct struct construction before persistence.
+    * `type` is an atom or nonempty binary, at most 255 bytes. Construction
+      converts atoms to strings, the representation used by subscriptions
+      and the delivery ledger.
+    * `payload` is a nonempty binary containing the exact bytes to sign and
+      send. Serialize once; maps and structs are rejected.
+    * `metadata` is a map of unsigned application context, defaulting to `%{}`.
   """
 
   defstruct [:id, :type, :payload, metadata: %{}]
@@ -78,27 +75,46 @@ defmodule AshHooks.Event do
   # header-safe characters: the id becomes the `webhook-id` HTTP header at
   # send time, and CR/LF/space in it is a header-injection surface handed
   # to the delivery runtime.
-  defp validate_id(id) when is_binary(id) do
-    cond do
-      id == "" ->
-        {:error, "event id must not be empty"}
+  @doc false
+  @spec valid_id?(term()) :: boolean()
+  def valid_id?(id), do: is_nil(id_validation_error(id))
 
-      String.contains?(id, ".") ->
-        {:error, "event id must not contain a dot (\".\") — it is the canonical-string delimiter"}
-
-      byte_size(id) > 255 ->
-        {:error, "event id must be at most 255 bytes (the ledger column bound)"}
-
-      id =~ ~r/[\r\n\t ]/ ->
-        {:error,
-         "event id must not contain whitespace or control characters (it becomes an HTTP header)"}
-
-      true ->
-        {:ok, id}
+  defp validate_id(id) do
+    case id_validation_error(id) do
+      nil -> {:ok, id}
+      reason -> {:error, reason}
     end
   end
 
-  defp validate_id(_other), do: {:error, "event id must be a binary"}
+  defp id_validation_error(id) when is_binary(id) do
+    cond do
+      id == "" ->
+        "event id must not be empty"
+
+      String.contains?(id, ".") ->
+        "event id must not contain a dot (\".\") — it is the canonical-string delimiter"
+
+      byte_size(id) > 255 ->
+        "event id must be at most 255 bytes (the ledger column bound)"
+
+      not String.valid?(id) ->
+        "event id must be valid UTF-8 (it becomes an HTTP header)"
+
+      contains_control_character?(id) or String.contains?(id, " ") ->
+        "event id must not contain whitespace or control characters (it becomes an HTTP header)"
+
+      true ->
+        nil
+    end
+  end
+
+  defp id_validation_error(_other), do: "event id must be a binary"
+
+  defp contains_control_character?(binary) do
+    binary
+    |> String.to_charlist()
+    |> Enum.any?(&(&1 <= 31 or &1 in 127..159))
+  end
 
   defp cast_type(%{type: type}) when is_atom(type) and not is_nil(type),
     do: cast_type(%{type: Atom.to_string(type)})

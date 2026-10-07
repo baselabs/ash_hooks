@@ -13,7 +13,7 @@ defmodule AshHooks do
         inbound :comply_cube do
           secret {:app_env, [:my_app, :complycube_secret]}
           # optional: extract a stable event id (payload -> {:ok, id} | :error);
-          # without it a deterministic content-hash identity is used
+          # otherwise the provider identity callback, then raw-body digest, applies
         end
 
         # convention-resolves to AshHooks.Provider.HubSpotV3 — the
@@ -61,7 +61,7 @@ defmodule AshHooks do
         The provider MODULE implementing `AshHooks.Provider`. When unset, the
         ingress resolves `AshHooks.Provider.<Camelized(name)>` and fails
         closed when that module does not exist or does not implement the
-        behaviour.
+        behavior.
         """
       ],
       secret: [
@@ -81,9 +81,10 @@ defmodule AshHooks do
         type: :any,
         doc: """
         Extractor for the provider's external event id from the decoded payload
-        (`payload -> {:ok, id} | :error`). Providers without a stable id fall
-        back to a deterministic content-hash identity — never a fresh UUID
-        (ADR-0003).
+        (`payload -> {:ok, id} | :error`). This explicit extractor takes precedence
+        over the provider's optional `event_identity/1`. Without either, the raw
+        request-body digest supplies the identity. A provider callback error fails
+        closed rather than falling back to the digest.
         """
       ],
       replay_window_seconds: [
@@ -154,7 +155,10 @@ defmodule AshHooks do
 
   use Spark.Dsl.Extension,
     sections: [@webhooks],
-    verifiers: [AshHooks.Verifiers.ReplayWindowRequiresTimestamp]
+    verifiers: [
+      AshHooks.Verifiers.ReplayWindowRequiresTimestamp,
+      AshHooks.Verifiers.OutboundReferences
+    ]
 
   alias Ash.Resource.Info, as: ResourceInfo
   alias AshHooks.{Delivery, InboundDelivery, Ingress, OutboundDelivery}
@@ -170,10 +174,10 @@ defmodule AshHooks do
   defdelegate dispatch(resource, name, event, opts \\ []), to: AshHooks.Dispatcher
 
   @doc """
-  Reconciles outbound delivery rows stranded at `:pending` by a crash
-  between the row write and the enqueue — the supported, auditable
-  alternative to hand-rolled queries against package internals
-  (`AshHooks.Dispatcher.reconcile_pending/3`).
+  Recovers eligible outbound rows for a declaration and tenant, including
+  interrupted enqueue, due retries, and expired send leases. Schedule this
+  periodically for each outbound declaration and tenant; it preserves retry
+  timing and attempt counts. See `AshHooks.Dispatcher.reconcile_pending/3`.
   """
   @spec reconcile_pending(module(), atom(), keyword()) ::
           {:ok, [AshHooks.Dispatcher.dispatch_result()]} | {:error, term()}

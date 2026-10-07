@@ -1,37 +1,28 @@
 defmodule AshHooks.Http do
   @moduledoc """
-  The HTTP adapter behaviour the delivery runtime sends through.
+  HTTP adapter contract for outbound delivery.
 
-  `request/5` returns `{:ok, %{status: integer, headers: [{name, value}]},
-  body :: binary}` or `{:error, term}` — one request, NO redirect
-  following (a 3xx must surface as a response the runtime classifies as a
-  refused redirect, never be chased). The default implementation is
-  `AshHooks.Http.Bounded` (memory-bounded raw sockets); `AshHooks.Http.Httpc`
-  (`:httpc`) is the alternative adapter, and tests inject a double.
+  `request/5` returns `{:ok, %{status: status, headers: headers, body: body}}`
+  or `{:error, reason}`. Issue one request and return redirects to the delivery
+  runtime for classification. The default adapter is `AshHooks.Http.Bounded`;
+  `AshHooks.Http.Httpc` provides an alternative built on OTP's HTTP client.
 
-  ## The adapter-author contract
+  ## Writing an adapter
 
-    * **Header shape:** `headers` MUST be a LIST of `{name, value}` tuples
-      with binary values — not a map. The runtime's `Retry-After` and
-      content-type reads (`AshHooks.Delivery`) guard on `is_list/1` and
-      otherwise degrade SILENTLY to plain backoff and the `other`
-      content-kind: a map-shaped header list (e.g. Req 0.7's
-      `%{binary => [binary]}`) loses `Retry-After` with no error anywhere.
-      Header NAMES may be downcased or Capitalized — both spellings of
-      `retry-after`/`content-type` are matched — but the LIST shape is
-      required.
-    * **Resolve-and-pin (the TOCTOU closure):** an adapter that performs
-      its own DNS resolution and connects by hostname re-opens the
-      DNS-rebinding window the SSRF floor exists to close (check-then-
-      connect uses two different answers). Resolve the hostname ONCE
-      through `AshHooks.Ssrf.resolve_public/1` (or `AshHooks.Http.Target.resolve/2`)
-      and connect to the VALIDATED address — TLS names the original host,
-      the host header carries the original host:port. `AshHooks.Http.Bounded`
-      does this; the driver's send-time `ssrf_check` is the RESIDUAL
-      guarantee, not a replacement for it.
-    * **Bounds:** adapters SHOULD bound their own connect/receive timeouts
-      and response memory (Bounded: 32 KiB headers, 64 KiB body) — the
-      runtime also runs under the Oban job timeout as the outer bound.
+    * Return response headers as a list of `{name, value}` tuples with binary
+      names and values. Normalize names to lowercase; conventional `Retry-After`
+      and `Content-Type` names are also recognized.
+      This shape preserves `Retry-After` and content-type handling; a map
+      causes the runtime to use ordinary backoff and the `other` content kind.
+    * Resolve-and-pin: resolve through `AshHooks.Ssrf.resolve_public/1` and
+      connect to an address from that validated result. Preserve the original
+      hostname for TLS certificate verification and SNI, and the original
+      authority for the Host header. Resolving again during connection allows
+      DNS rebinding between validation and use. Both supplied adapters pin
+      their connection address.
+    * Bound the complete operation and response memory. Bounded defaults to
+      15 seconds for the operation, 32 KiB for headers, and 64 KiB for the body.
+      See `AshHooks.Http.Httpc` for its response-buffering limitations.
   """
 
   @callback request(atom(), String.t(), map(), binary(), keyword()) ::

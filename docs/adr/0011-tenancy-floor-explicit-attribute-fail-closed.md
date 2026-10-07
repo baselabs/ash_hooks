@@ -11,13 +11,18 @@ ash_hooks 1.1.1 had no tenant concept at any layer (census-verified: zero
 "tenant" occurrences across `lib/`, no public head accepting a tenant, all 18
 Ash data calls tenant-less). Under multi-tenant use, six operation shapes had
 global data access — most critically the subscription fanout read, which
-delivers an event's payload bytes to EVERY subscription row matching its type
+delivers an event's payload bytes to every subscription row matching its type
 string, regardless of which tenant's subscriptions they are. An RLS-only
 alternative carries the entire isolation burden with silent failure modes (an
 RLS-invisible endpoint row is indistinguishable from a gone one and is skipped
 by design).
 
 ## Decision
+
+**2.0 amendment:** [ADR-0012](0012-durable-delivery-ownership-and-recovery.md)
+extends all row fences to complete primary keys and persisted declaration/route
+ownership, and uses separate enqueue tokens/leases for recovery. Site counts and
+the `mark_enqueue_failed` recovery mechanism below describe September 24 source.
 
 The package aligns with **Ash attribute multitenancy** and threads an explicit
 tenant through every path. The floor, in four rules:
@@ -83,7 +88,7 @@ reconciles orphan-pending rows through a real CAS flip on
   multitenant dispatch (pre-tenancy args fail closed — correct but noisy);
   single→multi transitions on populated tables follow the ordered steps in
   the adoption checklist (backfill → regenerate indexes → enable — NULL-tenant
-  rows form a shadow partition that strands effect-once).
+  rows form a shadow partition that can permit repeated processing).
 - `:context`/`:substring` strategies are out of scope: unavailable on the
   package's sqlite test substrate; `:attribute` is the only portable strategy.
 - No RLS claim: the package proves Ash-layer isolation only; adopter-side RLS

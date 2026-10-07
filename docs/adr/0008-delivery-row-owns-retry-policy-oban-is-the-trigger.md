@@ -14,11 +14,19 @@ attempt.
 
 ## Decision
 
+**Superseded mechanisms in 2.0:** [ADR-0012](0012-durable-delivery-ownership-and-recovery.md)
+replaces counter-only admission with UUID attempt fencing, adds a driver-owned
+deadline and durable `disable_pending`, and limits uniqueness to runnable jobs.
+The original August 21 mechanism is retained below as design history; the ledger
+still owns retry policy.
+
 **ONE policy source: the `OutboundDelivery` row.** Oban is the durable
 TRIGGER only. `perform/1` loads the row and drives its state machine:
 
 - terminal rows (`:succeeded` / `:dead_letter`) → `:ok` — the trigger is
-  idempotent, the effect-once guarantee lives in the row;
+  idempotent. ~~The effect-once guarantee lives in the row.~~ Correction:
+  a row prevents terminal redrive, but network delivery remains at-least-once;
+  receivers must deduplicate the webhook ID.
 - a `:failed_retryable` row before `next_attempt_at` → `{:snooze, s}` —
   snooze EXTENDS the job's `max_attempts` (verified in local oban 2.23.1,
   the uniqueness engine source of that release), so waiting never exhausts the job and only the ROW's

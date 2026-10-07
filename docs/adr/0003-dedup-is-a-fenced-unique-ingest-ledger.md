@@ -7,15 +7,19 @@
 
 Providers deliver at-least-once; receivers must dedup. Candidate primitive 1: the sibling
 `ash_onetime` extension — but it hard-depends `ash_postgres` + `postgrex`, which would force
-Postgres on every consumer and defeat data-layer agnosticism. Candidate primitive 2 (what
-the reference platform actually built): a delivery-audit resource with DB-unique ingest on
-`{platform, external_event_id}` — but the as-built version has a verified silent-loss
-window: a crash between ingest commit and mark-processed strands a `:received` row that
-redelivery treats as a no-op.
+Postgres on every consumer and defeat data-layer agnosticism. A unique delivery-audit
+table records arrival but does not by itself recover unfinished processing. A crash
+between ingest and finalization must leave a row that redelivery can claim again.
 
 ## Decision
 
-Dedup is `AshHooks.InboundDelivery`: raw payload persisted before handling, DB-unique
+**2.0 amendment:** [ADR-0012](0012-durable-delivery-ownership-and-recovery.md)
+adds provider-defined identity precedence, explicit legacy adoption, and complete
+ledger primary-key handling. The content-digest fallback below applies only when
+neither the declaration nor its provider defines an identity.
+
+Dedup is `AshHooks.InboundDelivery`: decoded payload and signed-body digest persisted
+before handling, DB-unique
 identity `{provider, external_event_id}` extended by consumer-declared scope slots (provider
 ids are not globally unique across accounts), deterministic content-hash identity for
 providers without ids (never a fresh UUID), and a **fenced claim/lease state machine**
@@ -27,7 +31,8 @@ idempotency elsewhere.
 
 ## Consequences
 
-- Crash between any two steps re-drives instead of silently dropping or double-processing.
+- A crash leaves unfinished processing recoverable. A crash after a handler's effect but
+  before finalization can repeat that effect; handlers must be idempotent.
 - Uniqueness identity must include declared scope where configured (verifier enforces).
 - Byte-identical distinct deliveries from no-id providers dedupe to one event — documented
   at-least-once semantics (no identity exists to distinguish them).

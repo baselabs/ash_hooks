@@ -21,7 +21,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
   def before?(_), do: false
 
   def transform(dsl_state) do
-    with {:ok, status_attribute} <- check_status_attribute(dsl_state),
+    with {:ok, dsl_state, status_attribute} <- check_status_attribute(dsl_state),
          {:ok, dsl_state} <- add_primary_key(dsl_state) do
       add_attributes(dsl_state, status_attribute)
     end
@@ -31,8 +31,6 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
     resource = Transformer.get_persisted(dsl_state, :resource)
 
     status_attribute = Extension.get_opt(dsl_state, [:endpoint], :status_attribute, nil)
-    enabled_values = Extension.get_opt(dsl_state, [:endpoint], :enabled_values, nil)
-    disabled_value = Extension.get_opt(dsl_state, [:endpoint], :disabled_value, nil)
 
     attributes =
       dsl_state |> Transformer.get_entities([:attributes]) |> Map.new(&{&1.name, &1})
@@ -41,9 +39,10 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
 
     cond do
       is_nil(status_attribute) ->
-        {:ok, nil}
+        {:ok, dsl_state, nil}
 
-      status_attribute in [:id | reserved] ->
+      status_attribute in [:id | reserved] or
+          match?(%{primary_key?: true}, Map.get(attributes, status_attribute)) ->
         {:error,
          DslError.exception(
            module: resource,
@@ -66,7 +65,8 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
              "status_attribute #{inspect(status_attribute)} is not an attribute declared on this resource — declare it under your own `attributes` block (it is the durable enable/disable switch, H4)"
          )}
 
-      is_nil(enabled_values) or is_nil(disabled_value) ->
+      Transformer.fetch_option(dsl_state, [:endpoint], :enabled_values) == :error or
+          Transformer.fetch_option(dsl_state, [:endpoint], :disabled_value) == :error ->
         # both ends of the mapping must be spelled out: a defaulted
         # `[:enabled]`/`:disabled` against a boolean or custom-enum switch
         # matches NOTHING — zero deliveries, no error (the H8 failure
@@ -79,21 +79,69 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
              "status_attribute #{inspect(status_attribute)} requires explicit enabled_values and disabled_value — a defaulted mapping silently matches no row value and delivers nothing"
          )}
 
-      disabled_value in enabled_values ->
-        # a disable that lands INSIDE enabled_values leaves the endpoint
-        # deliverable — the 410 breaker would write a no-op
-        {:error,
-         DslError.exception(
-           module: resource,
-           path: [:endpoint],
-           message:
-             "disabled_value #{inspect(disabled_value)} is inside enabled_values — the durable disable must leave the endpoint non-deliverable"
-         )}
-
       true ->
-        {:ok, status_attribute}
+        normalize_mapping(dsl_state, resource, Map.fetch!(attributes, status_attribute))
     end
   end
+
+  defp normalize_mapping(dsl_state, resource, attribute) do
+    enabled = Extension.get_opt(dsl_state, [:endpoint], :enabled_values)
+    disabled = Extension.get_opt(dsl_state, [:endpoint], :disabled_value)
+
+    with true <- is_list(enabled) and enabled != [],
+         {:ok, constraints} <- Ash.Type.init(attribute.type, attribute.constraints),
+         {:ok, values} <- cast_values(attribute, constraints, enabled),
+         {:ok, disabled} <- cast_value(attribute, constraints, disabled),
+         false <- Enum.any?(values, &Ash.Type.equal?(attribute.type, &1, disabled, constraints)) do
+      state =
+        dsl_state
+        |> Transformer.set_option([:endpoint], :enabled_values, values)
+        |> Transformer.set_option([:endpoint], :disabled_value, disabled)
+
+      {:ok, state, attribute.name}
+    else
+      true ->
+        mapping_error(
+          resource,
+          "disabled_value is inside enabled_values after type normalization"
+        )
+
+      false ->
+        mapping_error(resource, "enabled_values must be a nonempty list")
+
+      _invalid ->
+        mapping_error(
+          resource,
+          "status mapping contains an invalid value for the declared attribute type or nil constraint"
+        )
+    end
+  end
+
+  defp cast_values(attribute, constraints, values) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
+      case cast_value(attribute, constraints, value) do
+        {:ok, cast} -> {:cont, {:ok, [cast | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
+  end
+
+  defp cast_value(attribute, constraints, value) do
+    with {:ok, cast} <- Ash.Type.cast_input(attribute.type, value, constraints),
+         true <- attribute.allow_nil? or not is_nil(cast),
+         {:ok, constrained} <- Ash.Type.apply_constraints(attribute.type, cast, constraints) do
+      {:ok, constrained}
+    else
+      _invalid -> {:error, :invalid_status_mapping}
+    end
+  end
+
+  defp mapping_error(resource, message),
+    do: {:error, DslError.exception(module: resource, path: [:endpoint], message: message)}
 
   defp add_primary_key(dsl_state) do
     has_pk? =

@@ -1,20 +1,20 @@
 defmodule AshHooks.Provider do
   @moduledoc """
-  Behaviour for inbound webhook providers.
+  Behavior for inbound webhook providers.
 
-  A provider module owns one vendor's webhook contract: how a delivery's
-  signature is verified, where its signing secret lives, how the event type is
-  parsed from the payload, and how a payload becomes a typed event.
+  A provider verifies a request's signature, parses its event type, and handles
+  its decoded payload. Optional callbacks resolve per-connection secrets,
+  declare an authenticated timestamp, or identify a complete delivery.
 
   `verify_signature/3` implementations whose scheme is exactly "lowercase-hex
   HMAC over the raw body" delegate to `default_verify_signature/4`;
   scheme-specific providers (composite strings, separate timestamp headers,
   replay windows) implement their own.
 
-  This behaviour is the migration boundary for adopting platforms: provider
-  modules written against a previous in-house behaviour of this shape migrate
-  by alias change — the callback names, arities, context map, and
-  `default_verify_signature/4` semantics are kept identical for that reason.
+  Built-in providers return typed events. Implement `handle_event/2` in your
+  own provider when ingress must execute application actions. Make those
+  actions idempotent: durable ingress claims prevent overlapping ownership,
+  but cannot make a remote side effect and the ledger update one transaction.
   """
 
   @type raw_body :: binary()
@@ -38,11 +38,14 @@ defmodule AshHooks.Provider do
     * `:tenant` — the ingest tenant when the ledger is multitenant, `nil`
       otherwise. A provider whose custody is per-tenant (per-connection
       secrets keyed by organization) reads it here.
+    * `:replay_window_seconds` — the declaration override when configured;
+      absent when the provider should use its own default.
 
   A provider whose scheme needs only the signature reads `:signature` and
   ignores the rest.
   """
   @type verify_context :: %{
+          optional(:replay_window_seconds) => pos_integer(),
           signature: signature_header_value(),
           headers: %{optional(String.t()) => String.t()},
           method: String.t() | nil,
@@ -105,7 +108,7 @@ defmodule AshHooks.Provider do
                       timestamp_header: 0
 
   @doc """
-  The `use` form for new providers: sets the behaviour and provides the
+  The `use` form for new providers: sets the behavior and provides the
   tenant-aware `webhook_signing_secret/2` as an overridable default that
   delegates to `webhook_signing_secret/1` when the provider implements it
   — implement `/1` and both shapes resolve; override `/2` for
@@ -137,7 +140,7 @@ defmodule AshHooks.Provider do
   end
 
   @doc """
-  Parses the event type from the DECODED request body — a map for
+  Parses the event type from the decoded request body — a map for
   object-shaped vendors, a list for batch vendors (HubSpot delivers
   top-level arrays). Providers receiving a shape their vendor never sends
   fail closed through their catch-all clause (`{:error, :malformed_payload}`).
@@ -145,9 +148,23 @@ defmodule AshHooks.Provider do
   @callback parse_event_type(payload :: map() | list()) ::
               {:ok, atom()} | {:error, parse_error()}
 
+  @doc "Converts a verified, parsed payload into the provider's typed event."
   @callback handle_event(event_type :: atom(), payload :: map() | list()) ::
               {:ok, typed_event :: struct()}
               | {:error, :retry | :permanent, term()}
+
+  @doc """
+  Returns a stable provider-defined identity for a decoded webhook payload.
+
+  This callback is optional. Ingress uses it only when the inbound declaration
+  has no explicit host `event_id` extractor. An implemented callback's error is
+  authoritative and never falls back to the raw-body digest. Providers without
+  the callback retain the raw-body SHA-256 identity behavior.
+  """
+  @callback event_identity(payload :: map() | list()) ::
+              {:ok, String.t()} | {:error, :malformed_payload}
+
+  @optional_callbacks event_identity: 1
 
   @doc """
   Resolves a provider's webhook secret scope, defaulting to `:app_level` when
@@ -179,6 +196,22 @@ defmodule AshHooks.Provider do
       provider.timestamp_header()
     else
       nil
+    end
+  end
+
+  @doc """
+  Resolves the optional stable event identity callback.
+
+  `:not_supported` means the provider leaves identity to the raw request
+  digest. Callback errors are returned unchanged for ingress to reject.
+  """
+  @spec event_identity(module(), map() | list()) ::
+          :not_supported | {:ok, String.t()} | {:error, :malformed_payload}
+  def event_identity(provider, payload) when is_atom(provider) do
+    if Code.ensure_loaded?(provider) and function_exported?(provider, :event_identity, 1) do
+      provider.event_identity(payload)
+    else
+      :not_supported
     end
   end
 

@@ -184,7 +184,7 @@ defmodule AshHooks.HttpTest do
           :inet.setopts(socket, linger: {true, 0})
           :gen_tcp.close(socket)
 
-        :close ->
+        {:close, _value} ->
           :gen_tcp.close(socket)
       end)
 

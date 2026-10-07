@@ -10,10 +10,10 @@
 
 ## Context
 
-1.0.0 freezes a public API. Adopters (#12, #13 in flight) are building against it, and
-nothing in the repo yet states what stability the version number promises, which
-surfaces are covered, or how deprecation works. Semver applies cleanly only when the
-covered surface is named.
+Applications need a clear contract for dependency upgrades: which interfaces stay
+stable, which changes require migration, and how long deprecated behavior remains
+available. Semantic versioning needs an explicit public surface to make that
+promise useful.
 
 ## Decision
 
@@ -22,7 +22,8 @@ From 1.0.0, ash_hooks follows **semantic versioning** over this covered surface:
 - **Covered:** the `webhooks` DSL (sections, options, defaults), the public functions of
   `AshHooks` / `AshHooks.Ingress` / `AshHooks.Delivery` / `AshHooks.Dispatcher` /
   `AshHooks.Signing` / `AshHooks.Legacy` / `AshHooks.Ssrf` / `AshHooks.Provider` (the
-  behaviour + its callbacks), the injected resource attributes/actions/identities and
+  behavior + its callbacks), `AshHooks.OutboundBinding` and the public ingress
+  identity-adoption operations (added in 2.0), the injected resource attributes/actions/identities and
   their names and semantics, telemetry event names + payload shapes, error classes, the
   `use AshHooks.Worker` macro options, and the installer task.
 - **Not covered:** `@moduledoc false` modules, function arity/shape of private helpers,
@@ -41,7 +42,9 @@ Rules:
    truncated bodies as success) is fixed forward and CHANGELOG'd under "Fixed", even
    where a consumer might have depended on the defect.
 4. **Support matrix:** the newest minor release of ash_hooks receives fixes; the
-   supported floors are Elixir ~> 1.20, OTP 28+, Ash ~> 3.0 *(amended
+   supported floors are Elixir ~> 1.20, OTP 28+, Ash >= 3.34.3 and < 4.0 *(Ash floor
+   amended October 6, 2026 for the tenant inverse API and CVE-2026-94201;
+   this release also requires the 2.0 durable-schema migration. Earlier support floors amended
    2026-09-16, released as 1.1.0: previously Elixir ~> 1.17, OTP 27+. History: the
    original 1.15 claim was disproven by the floor leg — modern ash requires the
    `Duration` struct, added in Elixir 1.17)* — each floor is
@@ -54,7 +57,8 @@ Rules:
 
 ## Consequences
 
-- Adopters can pin `~> 1.0` and reason about upgrades from the version number alone.
+- Adopters can pin the current major (`~> 2.0`) and assess upgrades through the
+  version number and the ordered migration in UPGRADING.md.
 - The covered/not-covered line gives the internals room to evolve without major churn.
 - The policy itself changes only via this ADR's amendment — never silently in a
   changelog.

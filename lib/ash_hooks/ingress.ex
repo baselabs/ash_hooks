@@ -5,25 +5,29 @@ defmodule AshHooks.Ingress do
 
   `ingest/4` is the sync-mode entry point a consumer's controller calls with
   the raw request body (captured pre-parser via the endpoint body_reader — a
-  router plug cannot recover pre-parse bytes). The machine's crash-safety
-  contract:
+  router plug cannot recover pre-parse bytes). Request context carries the
+  signature, lowercased headers, public request method/URI, scope, connection,
+  and tenant. It does not accept or forward a request-controlled clock;
+  replay-window verification uses the runtime system clock. The machine's
+  crash-safety contract:
 
-    * the raw payload persists BEFORE any handling (audit + verification
-      integrity via `payload_digest`);
-    * the unique identity + storage-level uniqueness make exactly one
-      `:created` per delivery — concurrent or sequential duplicates get
-      `:duplicate`;
+    * the decoded payload persists before handling; `payload_digest` binds
+      it to the signed raw bytes;
+    * the unique index preserves one row per provider/event/scope identity.
+      With the injected writable UUID key, the surviving key distinguishes
+      `:created` from `:duplicate`. Custom generated keys use a pre-read;
+      concurrent first arrivals may both be reported as `:created`, while
+      the stored row and claim remain deduplicated;
     * a claim is a WHERE-gated update (`status == :received`, a
-      re-driveable failure, or an EXPIRED lease) that bumps the monotonic
-      fencing token — so a redelivery of a stranded row re-drives it, never
-      no-ops (the incumbent's silent-loss window);
-    * marks are gated on the caller's token AND an unexpired lease — a
+      retryable failure, or an expired lease) that bumps the monotonic
+      fencing token, allowing redelivery to recover a stranded row;
+    * marks are gated on the caller's token and an unexpired lease — a
       stale owner (superseded or expired) is rejected.
 
   Returns `{:ok, :created | :duplicate, delivery}` — the delivery's
   `status` carries the outcome (`:processed`, `:failed_retryable`,
-  `:failed_permanent`); handler failures are recorded in the ledger, not
-  raised. Verification/config failures return `{:error, error}` BEFORE any
+  `:failed_permanent`, or retained `:superseded`); handler failures are recorded in the ledger, not
+  raised. Verification/config failures return `{:error, error}` before any
   ledger write (fail closed: missing secret verifies nothing; a missing raw
   body never runs).
 
@@ -34,11 +38,10 @@ defmodule AshHooks.Ingress do
   the tenancy options; the pre-1.2 arities (one fewer argument) keep
   working for single-tenant ledgers.
 
-  All ledger operations run unauthorized: the signature verification IS the
-  trust boundary for writes. The package injects NO read policies — read
-  access to the ledger resource is governed ENTIRELY by the consumer's own
-  domain policies. The ledger stores raw provider payloads: mount it behind
-  policies that deny reads by default (see README → Security).
+  Internal ledger operations use `authorize?: false`; callers must restrict
+  access to these machine functions. Signature verification gates the sync
+  ingest path. Your domain policies govern application read access to decoded
+  provider payloads and signed-body digests. See the README's Security section.
   """
 
   require Ash.Query
@@ -47,17 +50,18 @@ defmodule AshHooks.Ingress do
   alias AshHooks.Errors.Invalid.MalformedPayload
   alias AshHooks.Errors.Invalid.NoWebhookSecret
   alias AshHooks.Errors.Unknown.UnknownError
-  alias AshHooks.{Info, Provider, Tenancy}
+  alias AshHooks.{Info, PrimaryKey, Provider, Tenancy}
   alias Spark.Dsl.Extension
 
   @typedoc """
-  The request context. `:signature` is the provider's signature header
-  value; `:headers` the lowercased request headers; `:scope` carries values
-  for the ledger's declared `scope_identity` slots; `:connection` is the
-  per-connection provider's secret source argument; `:tenant` is the
-  ingest tenant (required on multitenant ledgers — the named
-  `{:error, :tenant_required}` comes back before any data access when
-  absent).
+  The request context. `:signature` is the provider's signature header value;
+  `:headers` contains lowercased request headers; `:method` and `:request_uri`
+  must reproduce the public request values covered by the provider signature;
+  `:scope` carries values for the ledger's declared `scope_identity` slots;
+  `:connection` is the per-connection provider's secret source argument; and
+  `:tenant` is required on multitenant ledgers. Ingress constructs the
+  provider verification context from these known keys and never forwards an
+  input `:now_ms` clock override.
   """
   @type ctx :: %{
           optional(:signature) => String.t(),
@@ -70,6 +74,8 @@ defmodule AshHooks.Ingress do
         }
 
   @lease_default_seconds 30
+  @prune_default_batch_size 100
+  @prune_max_batch_size 1_000
 
   # Transient sqlite write-lock contention (pool > 1 consumers on the
   # best-effort sqlite leg): the fenced ops are idempotent or gate-reevaluated,
@@ -80,6 +86,16 @@ defmodule AshHooks.Ingress do
   @transient_retry_deadline_ms 2_000
   @transient_retry_spacing_ms 100
   @transient_retry_jitter_ms 50
+
+  @doc "Builds the legacy provider-identity adoption audit without writing rows."
+  defdelegate plan_legacy_identity_adoption(resource, name, opts \\ []),
+    to: AshHooks.InboundDelivery.LegacyAdoption,
+    as: :plan
+
+  @doc "Applies one reviewed, quiesced provider-identity adoption partition."
+  defdelegate adopt_legacy_identity(resource, name, opts \\ []),
+    to: AshHooks.InboundDelivery.LegacyAdoption,
+    as: :apply
 
   # ────────────────────────── sync pipeline ──────────────────────────
 
@@ -135,7 +151,7 @@ defmodule AshHooks.Ingress do
   end
 
   @doc """
-  Persists the ledger row (raw payload BEFORE handling) via the
+  Persists the decoded payload and signed-body digest before handling via the
   no-touch unique upsert. Classifies `:created` by comparing the surviving
   row's client-generated id against ours. The env carries the resolved
   tenant (`env[:tenant]`).
@@ -158,17 +174,17 @@ defmodule AshHooks.Ingress do
       }
       |> Map.merge(env.scope)
 
-    if AshHooks.Info.writable_id?(resource) do
+    if AshHooks.Info.writable_id?(resource) and Ash.Resource.Info.primary_key(resource) == [:id] do
       ingest_with_supplied_id(resource, input, env, tenant)
     else
-      # H2: a non-writable PK (uuid_v7_primary_key & friends) cannot
-      # accept :id, so classification pre-reads the unique_ingest
+      # A custom/generated PK cannot use the supplied UUID classification,
+      # so classification pre-reads the unique_ingest
       # identity instead. Exact in every sequential case (provider
       # redeliveries) and whenever the primary read can see the existing
       # row (a base-filtered read that hides it classifies :created).
-      # handle_event stays effect-once under any misclassification: the
-      # claim fence (a terminal or leased row refuses the second claim),
-      # beside the storage upsert.
+      # The storage upsert still deduplicates the row. The claim rejects a
+      # terminal or currently leased row; handler invocation remains
+      # at-least-once across crashes or lease expiry.
       ingest_with_pre_read(resource, input, env, tenant)
     end
   end
@@ -248,7 +264,8 @@ defmodule AshHooks.Ingress do
   @spec claim_delivery(module(), term(), keyword()) ::
           {:ok, non_neg_integer(), struct()} | {:error, :lease_held | term()}
   def claim_delivery(resource, delivery_id, opts \\ []) do
-    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
+    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
+         {:ok, key} <- normalize_primary_key(resource, delivery_id) do
       # `now` and the lease are recomputed on EVERY attempt: a retry that
       # spends contention time sleeping must not grant a lease that is
       # shorter than configured — or already expired.
@@ -258,10 +275,10 @@ defmodule AshHooks.Ingress do
           lease_expires_at = DateTime.add(attempt_now, lease_seconds(resource), :second)
 
           resource
+          |> Ash.Query.do_filter(key)
           |> Ash.Query.filter(
-            id == ^delivery_id and
-              (status == :received or status == :failed_retryable or
-                 (status == :claimed and lease_expires_at < ^attempt_now))
+            status == :received or status == :failed_retryable or
+              (status == :claimed and lease_expires_at < ^attempt_now)
           )
           |> Ash.bulk_update(:claim, %{lease_expires_at: lease_expires_at},
             authorize?: false,
@@ -298,8 +315,8 @@ defmodule AshHooks.Ingress do
   end
 
   @doc """
-  Retention hook: deletes TERMINAL ledger rows (`:processed`,
-  `:failed_permanent`) older than `older_than`, by the resource's
+  Retention hook: deletes one bounded batch of TERMINAL ledger rows
+  (`:processed`, `:failed_permanent`, `:superseded`) older than `older_than`, by the resource's
   `inserted_at` (add Ash `timestamps()` to the resource and its
   migration). Non-terminal rows are never deleted — retryable and
   lease-held deliveries keep their dedup identity and re-drive path.
@@ -308,22 +325,32 @@ defmodule AshHooks.Ingress do
   delivery of the same webhook processes again (inbound), and — on the
   outbound side — a re-emission of the same event re-dispatches and
   double-sends. Set the TTL beyond any replay/re-emission horizon.
-  Returns `{:ok, deleted_count}`.
+  `:batch_size` defaults to 100 and is capped at 1,000. Only primary-key
+  columns are selected before deletion. Returns `{:ok, deleted_count}` for
+  this batch; call again until it returns a count below the requested size.
   """
   @spec prune(module(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def prune(resource, opts) do
     older_than = normalize_cutoff(Keyword.fetch!(opts, :older_than))
+    batch_size = Keyword.get(opts, :batch_size, @prune_default_batch_size)
 
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
-         :ok <- require_timestamps!(resource) do
+         :ok <- require_timestamps!(resource),
+         :ok <- validate_prune_batch_size(batch_size) do
       require Ash.Query
+
+      primary_key = Ash.Resource.Info.primary_key(resource)
 
       result =
         with_transient_retry(fn ->
           resource
           |> Ash.Query.filter(
-            status in [:processed, :failed_permanent] and inserted_at < ^older_than
+            status in [:processed, :failed_permanent, :superseded] and
+              inserted_at < ^older_than
           )
+          |> Ash.Query.sort(primary_key)
+          |> Ash.Query.limit(batch_size)
+          |> Ash.Query.select(primary_key)
           |> Ash.bulk_destroy(:prune, %{},
             authorize?: false,
             return_records?: true,
@@ -360,13 +387,14 @@ defmodule AshHooks.Ingress do
           :ok | {:error, :stale_token | :redactor_crash | :invalid_redactor_result | term()}
   def redact_payload(resource, delivery_id, token, redactor, opts \\ []) do
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
-         {:ok, delivery} <- Ash.get(resource, delivery_id, authorize?: false, tenant: tenant),
+         {:ok, key} <- normalize_primary_key(resource, delivery_id),
+         {:ok, delivery} <- read_by_key(resource, key, tenant),
          # the fence is checked BEFORE the redactor sees the payload — a
          # stale token must not receive sensitive bytes through the
          # callback even though the eventual write would be rejected
          #
          :ok <- check_fence(delivery, token) do
-      apply_redactor(redactor, delivery.payload, resource, delivery_id, token, tenant)
+      apply_redactor(redactor, delivery.payload, resource, key, token, tenant)
     end
   end
 
@@ -425,6 +453,17 @@ defmodule AshHooks.Ingress do
              "(and the inserted_at/updated_at columns to its migration) to use the retention hooks"
        )}
     end
+  end
+
+  defp validate_prune_batch_size(size)
+       when is_integer(size) and size > 0 and size <= @prune_max_batch_size,
+       do: :ok
+
+  defp validate_prune_batch_size(_size) do
+    {:error,
+     UnknownError.exception(
+       error: "batch_size must be an integer from 1 through #{@prune_max_batch_size}"
+     )}
   end
 
   @doc """
@@ -529,7 +568,9 @@ defmodule AshHooks.Ingress do
   # ────────────────────────── internals ──────────────────────────
 
   defp drive(resource, env, delivery, created?) do
-    case claim_delivery(resource, delivery.id, tenant: env[:tenant]) do
+    key = PrimaryKey.map(delivery)
+
+    case claim_delivery(resource, key, tenant: env[:tenant]) do
       {:error, :lease_held} ->
         {:ok, result(created?), delivery}
 
@@ -542,7 +583,7 @@ defmodule AshHooks.Ingress do
         # payload, never the new bytes.
         handling_env = row_env(env, delivery)
 
-        handle_and_mark(resource, handling_env, delivery.id, claimed)
+        handle_and_mark(resource, handling_env, key, claimed)
         |> case do
           {:ok, final} -> {:ok, result(created?), final}
           {:error, error} -> {:error, error}
@@ -600,8 +641,8 @@ defmodule AshHooks.Ingress do
         {:error, error}
     end
     |> case do
-      :ok -> {:ok, reload(resource, delivery_id, tenant)}
-      {:error, :stale_token} -> {:ok, reload(resource, delivery_id, tenant)}
+      :ok -> reload(resource, delivery_id, tenant)
+      {:error, :stale_token} -> reload(resource, delivery_id, tenant)
       {:error, error} -> {:error, error}
     end
   end
@@ -626,15 +667,17 @@ defmodule AshHooks.Ingress do
   # The reaper drives rows that already passed verification at ingest — no
   # signature to check, so it rebuilds the handling env from the stored row.
   defp redrive(resource, row, tenant) do
+    key = PrimaryKey.map(row)
+
     with {:ok, inbound} <- fetch_inbound(resource, row.provider),
          {:ok, provider} <- resolve_provider(inbound, row.provider),
-         {:ok, _token, claimed} <- claim_delivery(resource, row.id, tenant: tenant) do
+         {:ok, _token, claimed} <- claim_delivery(resource, key, tenant: tenant) do
       parsed_type = provider.parse_event_type(row.payload)
 
       handle_and_mark(
         resource,
         redrive_env(row, provider, parsed_type, tenant),
-        row.id,
+        key,
         claimed
       )
     end
@@ -659,32 +702,60 @@ defmodule AshHooks.Ingress do
     # the reload after a successful mark must not crash the caller for a
     # delivered-and-processed event under read contention (consumer journal
     # modes can block readers on writers)
-    with_transient_retry(fn ->
-      Ash.get!(resource, delivery_id, authorize?: false, tenant: tenant)
-    end)
+    with_transient_retry(fn -> read_by_key(resource, delivery_id, tenant) end)
   end
 
   defp gated_update(resource, delivery_id, token, action, input, tenant) do
-    result =
-      with_transient_retry(fn ->
-        resource
-        |> Ash.Query.filter(
-          id == ^delivery_id and fencing_token == ^token and status == :claimed and
-            lease_expires_at > ^now()
-        )
-        |> Ash.bulk_update(action, input,
-          authorize?: false,
-          return_records?: true,
-          return_errors?: true,
-          strategy: [:atomic],
-          tenant: tenant
-        )
-      end)
+    with {:ok, key} <- normalize_primary_key(resource, delivery_id) do
+      result =
+        with_transient_retry(fn ->
+          resource
+          |> Ash.Query.do_filter(key)
+          |> Ash.Query.filter(
+            fencing_token == ^token and status == :claimed and lease_expires_at > ^now()
+          )
+          |> Ash.bulk_update(action, input,
+            authorize?: false,
+            return_records?: true,
+            return_errors?: true,
+            strategy: [:atomic],
+            tenant: tenant
+          )
+        end)
 
-    case result do
-      %Ash.BulkResult{status: :success, records: [_]} -> :ok
-      %Ash.BulkResult{status: :success, records: []} -> {:error, :stale_token}
-      %Ash.BulkResult{errors: [error | _]} -> {:error, error}
+      case result do
+        %Ash.BulkResult{status: :success, records: [_]} -> :ok
+        %Ash.BulkResult{status: :success, records: []} -> {:error, :stale_token}
+        %Ash.BulkResult{errors: [error | _]} -> {:error, error}
+      end
+    end
+  end
+
+  defp read_by_key(resource, key, tenant) do
+    resource
+    |> Ash.Query.do_filter(key)
+    |> Ash.read_one(authorize?: false, tenant: tenant)
+    |> case do
+      {:ok, nil} -> {:error, :not_found}
+      result -> result
+    end
+  end
+
+  defp normalize_primary_key(resource, %resource{} = record),
+    do: {:ok, PrimaryKey.map(record)}
+
+  defp normalize_primary_key(resource, key) when is_map(key) do
+    key
+    |> PrimaryKey.encode()
+    |> then(&PrimaryKey.decode(resource, &1))
+  rescue
+    ArgumentError -> {:error, :invalid_primary_key}
+  end
+
+  defp normalize_primary_key(resource, value) do
+    case Ash.Resource.Info.primary_key(resource) do
+      [name] -> PrimaryKey.decode(resource, %{Atom.to_string(name) => value})
+      _composite -> {:error, :primary_key_mismatch}
     end
   end
 
@@ -742,9 +813,11 @@ defmodule AshHooks.Ingress do
 
   # resolve/4: provider + inbound entity + secret + verification + decode +
   # digest + external id + parsed type. Nothing here writes to the ledger.
-  # A signature-valid but undecodable body is NOT rejected: it persists
-  # (payload %{}) and is marked permanently malformed after the claim — the
-  # provider demonstrably sent it, so the ledger records it.
+  # A signature-valid but undecodable body persists as `%{}` for providers
+  # without a stable-identity callback and is marked permanently malformed
+  # after the claim. A provider identity callback may reject that decoded
+  # shape explicitly; ingress never substitutes the raw digest after a
+  # callback error.
   defp resolve(resource, name, raw_body, ctx) do
     with {:ok, inbound} <- fetch_inbound(resource, name),
          {:ok, provider} <- resolve_provider(inbound, name),
@@ -757,19 +830,22 @@ defmodule AshHooks.Ingress do
 
       {payload, parsed_type} = decode_and_parse(provider, raw_body)
 
-      {:ok,
-       %{
-         name: name,
-         provider: provider,
-         inbound: inbound,
-         payload: payload,
-         digest: digest,
-         external_event_id: external_event_id(inbound, payload, digest),
-         parsed_type: parsed_type,
-         type_string: type_string(parsed_type),
-         scope: declared_scope(resource, ctx),
-         tenant: ctx[:tenant]
-       }}
+      with {:ok, external_event_id} <-
+             external_event_id(inbound, provider, payload, digest, name) do
+        {:ok,
+         %{
+           name: name,
+           provider: provider,
+           inbound: inbound,
+           payload: payload,
+           digest: digest,
+           external_event_id: external_event_id,
+           parsed_type: parsed_type,
+           type_string: type_string(parsed_type),
+           scope: declared_scope(resource, ctx),
+           tenant: ctx[:tenant]
+         }}
+      end
     end
   end
 
@@ -979,23 +1055,39 @@ defmodule AshHooks.Ingress do
   defp content_digest(raw_body),
     do: :crypto.hash(:sha256, raw_body) |> Base.encode16(case: :lower)
 
-  defp external_event_id(inbound, payload, digest) do
-    extractor = inbound.event_id
-
+  defp external_event_id(%{event_id: extractor}, _provider, payload, digest, _name)
+       when is_function(extractor, 1) do
     id =
-      if is_function(extractor, 1) do
-        case extractor.(payload) do
-          # attribute cap is 255 — a longer id hashes to a bounded,
-          # deterministic identity instead of erroring on every delivery
-          {:ok, id} when is_binary(id) and byte_size(id) <= 255 -> id
-          {:ok, id} when is_binary(id) -> content_digest(id)
-          _else -> nil
-        end
-      else
-        nil
+      case extractor.(payload) do
+        # Preserve the established host-extractor contract: invalid results
+        # use the raw digest, and overlong strings hash to the bounded column.
+        {:ok, id} when is_binary(id) and byte_size(id) <= 255 -> id
+        {:ok, id} when is_binary(id) -> content_digest(id)
+        _else -> digest
       end
 
-    id || digest
+    {:ok, id}
+  end
+
+  defp external_event_id(_inbound, provider, payload, digest, name) do
+    case Provider.event_identity(provider, payload) do
+      :not_supported ->
+        {:ok, digest}
+
+      {:ok, id} when is_binary(id) and byte_size(id) > 0 and byte_size(id) <= 255 ->
+        {:ok, id}
+
+      _invalid_result ->
+        provider_identity_error(name)
+    end
+  end
+
+  defp provider_identity_error(name) do
+    {:error,
+     MalformedPayload.exception(
+       provider: name,
+       detail: "provider event identity callback rejected the decoded payload"
+     )}
   end
 
   defp type_string({:ok, type}) when is_atom(type), do: Atom.to_string(type)

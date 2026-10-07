@@ -4,7 +4,7 @@ defmodule AshHooks.Provider.HubSpotV3Test do
   docs page's own Java example, openssl-reproduced 2026-08-21 — never
   self-signed), scheme floors (the method/URI/timestamp-header bindings a
   roundtrip-only suite cannot prove), the two-sided replay window, the
-  documented URI decode map, and the vendor-documented 41-entry
+  documented URI decode map, and the vendor-documented 47-entry
   subscriptionType taxonomy (webhooks guide, fetched first-hand 2026-08-21;
   9/9 cross-check against the incumbent's production set).
   """
@@ -27,7 +27,7 @@ defmodule AshHooks.Provider.HubSpotV3Test do
   # Milliseconds — the v3 timestamp header's unit (not unix seconds).
   @vector_now_ms 1_752_613_922_216
 
-  # The vendor's documented taxonomy (webhooks guide, 2026-08-21): 41
+  # The vendor's documented taxonomy (webhooks guide, 2026-08-21): 47
   # subscriptionTypes across seven objects. The test pins every entry —
   # dropping one silently downgrades a real vendor event to
   # unknown_event_type.
@@ -442,6 +442,77 @@ defmodule AshHooks.Provider.HubSpotV3Test do
         assert {:error, :malformed_payload} = HubSpotV3.parse_event_type(payload)
       end
     end
+
+    test "maps the six documented generic object subscription types without atomizing objectTypeId" do
+      for {raw, expected} <- %{
+            "object.creation" => :object_creation,
+            "object.deletion" => :object_deletion,
+            "object.propertyChange" => :object_property_change,
+            "object.associationChange" => :object_association_change,
+            "object.restore" => :object_restore,
+            "object.merge" => :object_merge
+          } do
+        payload = [%{"subscriptionType" => raw, "objectTypeId" => "2-123456"}]
+        assert {:ok, ^expected} = HubSpotV3.parse_event_type(payload)
+      end
+    end
+  end
+
+  describe "event_identity/1 — retry-stable complete-event canonicalization" do
+    test "ignores only outer attemptNumber and tolerates outer batch reorder" do
+      first = %{
+        "subscriptionType" => "object.propertyChange",
+        "objectTypeId" => "2-123456",
+        "objectId" => 10,
+        "propertyName" => "tier",
+        "propertyValue" => "gold",
+        "attemptNumber" => 0,
+        "business" => %{"attemptNumber" => 99, "ordered" => [3, 2, 1]}
+      }
+
+      second = %{
+        "subscriptionType" => "object.associationChange",
+        "objectTypeId" => "2-123456",
+        "objectId" => 10,
+        "associatedObjectId" => 22,
+        "associationType" => "custom_to_contact",
+        "attemptNumber" => 0
+      }
+
+      assert {:ok, identity} = HubSpotV3.event_identity([first, second])
+
+      retried = [Map.put(second, "attemptNumber", 4), Map.put(first, "attemptNumber", 8)]
+      assert {:ok, ^identity} = HubSpotV3.event_identity(retried)
+    end
+
+    test "retains unknown fields, nested list order, nested attemptNumber, and multiplicity" do
+      base = %{
+        "subscriptionType" => "contact.creation",
+        "objectId" => 10,
+        "attemptNumber" => 0,
+        "unknownBusinessField" => %{"attemptNumber" => 1, "items" => [1, 2]}
+      }
+
+      assert {:ok, identity} = HubSpotV3.event_identity([base])
+
+      refute HubSpotV3.event_identity([
+               put_in(base, ["unknownBusinessField", "attemptNumber"], 2)
+             ]) == {:ok, identity}
+
+      refute HubSpotV3.event_identity([
+               put_in(base, ["unknownBusinessField", "items"], [2, 1])
+             ]) == {:ok, identity}
+
+      refute HubSpotV3.event_identity([base, base]) == {:ok, identity}
+      refute HubSpotV3.event_identity([Map.put(base, "newField", true)]) == {:ok, identity}
+    end
+
+    test "malformed payload is an explicit callback error" do
+      assert {:error, :malformed_payload} = HubSpotV3.event_identity(%{})
+      assert {:error, :malformed_payload} = HubSpotV3.event_identity([])
+      assert {:error, :malformed_payload} = HubSpotV3.event_identity([%{}])
+      assert {:error, :malformed_payload} = HubSpotV3.event_identity([%{}, :not_an_event])
+    end
   end
 
   describe "handle_event/2" do
@@ -619,7 +690,7 @@ defmodule AshHooks.Provider.HubSpotV3E2ETest do
     assert [%{status: :processed}] = rows()
   end
 
-  test "a byte-identical redelivery is a duplicate no-op (content-digest identity — eventId is not unique per the docs)" do
+  test "a byte-identical redelivery is a provider-identity duplicate no-op (eventId is not unique per the docs)" do
     raw = batch("deal.creation", 202)
     ts = fresh_ts()
 

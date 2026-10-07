@@ -1,24 +1,21 @@
 defmodule AshHooks.Ssrf do
   @moduledoc """
-  The SSRF destination classifier (ADR-0005 — enforced at endpoint
-  registration AND again at send time).
+  Destination validation for outbound webhooks.
 
-  A URL is safe when: the scheme is `http`/`https`, the host is not a
-  known cloud-metadata name, and EVERY address the host resolves to is
-  public. Any private/loopback/link-local/ULA/CGNAT/reserved answer
-  rejects the URL — one rogue A record among the answers is exactly the
-  bypass; resolver failure rejects too (fail-closed: an unresolvable
-  destination cannot be verified safe).
+  Endpoint registration uses `registration_safe?/1`: it checks the HTTP(S)
+  scheme, known metadata hostnames, and literal IP addresses without DNS.
+  Hostname resolution happens at send time, so registration does not depend
+  on the destination's current DNS availability.
 
-  IPv4-mapped and IPv4-compatible IPv6 forms (`::ffff:a.b.c.d`, `::a.b.c.d`)
-  are normalized to their embedded v4 before classification.
-  Registration-time resolution is bounded (`@resolve_timeout_ms`) — an
-  offline or slow resolver fails the cast loudly rather than hanging it.
+  `safe_url?/1` and `resolve_public/2` resolve IPv4 and IPv6 addresses and
+  require a nonempty result containing only public addresses. Private,
+  loopback, link-local, unique-local, shared, and reserved ranges are rejected.
+  IPv4-mapped and IPv4-compatible IPv6 addresses are classified using their
+  embedded IPv4 address.
 
-  Residual (documented, by design of the `:httpc` adapter): send-time
-  re-resolution narrows but cannot eliminate the DNS-rebinding TOCTOU
-  window — full elimination needs connect-time IP pinning the adapter
-  cannot express.
+  DNS resolution has a two-second ceiling, shortened by a supplied operation
+  deadline. Both supplied HTTP adapters connect to an address from the
+  validated result while retaining the original hostname for TLS and HTTP.
   """
 
   @resolve_timeout_ms 2_000
@@ -50,31 +47,33 @@ defmodule AshHooks.Ssrf do
   def safe_url?(_other), do: false
 
   @doc """
-  The VALIDATED ADDRESSES behind a URL — the adapter's pinning input:
+  Returns validated addresses behind a URL for connection pinning:
   `{:ok, %{uri: URI, addresses: [ip]}}` when every resolved address is
   public, `{:error, :unsafe | :unresolvable}` otherwise. The connection
-  target comes FROM this same resolution, which is what closes the
-  rebinding TOCTOU (validate-then-connect-on-the-same-answer).
+  target must come from this same result to prevent DNS rebinding between
+  validation and connection.
   """
   @spec resolve_public(term()) ::
           {:ok, %{uri: URI.t(), addresses: [:inet.ip_address()]}} | {:error, atom()}
-  def resolve_public(url) when is_binary(url) do
+  def resolve_public(url, opts \\ [])
+
+  def resolve_public(url, opts) when is_binary(url) do
     case URI.new(url) do
       {:ok, %URI{scheme: scheme, host: host} = uri} when scheme in ["http", "https"] ->
-        check_host(uri, host && String.downcase(host))
+        check_host(uri, host && String.downcase(host), opts)
 
       _other ->
         {:error, :unsafe}
     end
   end
 
-  def resolve_public(_other), do: {:error, :unsafe}
+  def resolve_public(_other, _opts), do: {:error, :unsafe}
 
-  defp check_host(_uri, host) when host in [nil, ""], do: {:error, :unsafe}
-  defp check_host(_uri, host) when host in @metadata_hostnames, do: {:error, :unsafe}
+  defp check_host(_uri, host, _opts) when host in [nil, ""], do: {:error, :unsafe}
+  defp check_host(_uri, host, _opts) when host in @metadata_hostnames, do: {:error, :unsafe}
 
-  defp check_host(uri, host) do
-    case resolve(uri, host) do
+  defp check_host(uri, host, opts) do
+    case resolve(uri, host, opts) do
       {:ok, addresses} ->
         if Enum.all?(addresses, &public_address?/1),
           do: {:ok, %{uri: uri, addresses: addresses}},
@@ -86,9 +85,8 @@ defmodule AshHooks.Ssrf do
   end
 
   @doc """
-  The REGISTRATION-time check: scheme, metadata hostnames, and literal-IP
-  hosts — deterministic and offline-safe (hostname DNS is the delivery
-  runtime's send-time check, per ADR-0005's split).
+  Checks the scheme, metadata hostnames, and literal IP addresses at
+  registration. This check does not resolve hostnames.
   """
   @spec registration_safe?(term()) :: boolean()
   def registration_safe?(url) when is_binary(url) do
@@ -118,7 +116,7 @@ defmodule AshHooks.Ssrf do
   end
 
   defp host_public?(uri, host) do
-    case resolve(uri, host) do
+    case resolve(uri, host, []) do
       {:ok, addresses} -> Enum.all?(addresses, &public_address?/1)
       :error -> false
     end
@@ -126,7 +124,7 @@ defmodule AshHooks.Ssrf do
 
   # Literal IP hosts skip DNS; hostnames resolve — BOTH families, because
   # ANY answer class can carry the private address that must reject.
-  defp resolve(uri, host) do
+  defp resolve(uri, host, opts) do
     bare = host_without_brackets(host)
 
     case :inet.parse_address(String.to_charlist(bare)) do
@@ -134,7 +132,7 @@ defmodule AshHooks.Ssrf do
         {:ok, [address]}
 
       {:error, _} ->
-        case resolved_addresses(uri, String.to_charlist(bare)) do
+        case resolved_addresses(uri, String.to_charlist(bare), opts) do
           [] -> :error
           addresses -> {:ok, addresses}
         end
@@ -144,19 +142,22 @@ defmodule AshHooks.Ssrf do
   # uri.host arrives bracketless — URI.new strips IPv6 brackets
   defp host_without_brackets(host), do: host
 
-  defp resolved_addresses(_uri, charlist) do
-    # BOTH families are queried; a family with no answers (or a family
-    # resolution error — fail-closed) contributes nothing. What matters is
-    # that the UNION is non-empty and every member is public.
-    bounded_resolve(charlist, :inet) ++ bounded_resolve(charlist, :inet6)
+  defp resolved_addresses(_uri, charlist, opts) do
+    now = System.monotonic_time(:millisecond)
+    deadline = min(opts[:deadline] || now + @resolve_timeout_ms, now + @resolve_timeout_ms)
+
+    # Query both families under one deadline. A family that returns no
+    # addresses contributes nothing; the combined result must be nonempty,
+    # and adapters connect only to an address validated from that result.
+    bounded_resolve(charlist, :inet, deadline) ++ bounded_resolve(charlist, :inet6, deadline)
   end
 
-  # Bounded resolution: a stalled resolver must fail the check, not hang
-  # the registration cast (2s wall clock, then fail-closed).
-  defp bounded_resolve(charlist, family) do
+  # Bound send-time resolution by the shared DNS and operation deadlines.
+  defp bounded_resolve(charlist, family, deadline) do
     task = Task.async(fn -> :inet.gethostbyname(charlist, family) end)
+    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
 
-    case Task.yield(task, @resolve_timeout_ms) || Task.shutdown(task, :brutal_kill) do
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
       {:ok, {:ok, {:hostent, _, _, _, _, addresses}}} -> addresses
       _failed_or_timeout -> []
     end
@@ -189,9 +190,14 @@ defmodule AshHooks.Ssrf do
   defp ipv4_public?(169, 254, _, _), do: false
   defp ipv4_public?(100, b, _, _) when b in 64..127, do: false
   defp ipv4_public?(0, _, _, _), do: false
+  # IETF protocol assignments: only PCP and TURN anycast are globally reachable.
+  defp ipv4_public?(192, 0, 0, d) when d in [9, 10], do: true
+  defp ipv4_public?(192, 0, 0, _), do: false
   # documentation ranges (TEST-NET-1/2/3) — reserved, never a real destination
   defp ipv4_public?(192, 0, 2, _), do: false
+  defp ipv4_public?(192, 88, 99, _), do: false
   defp ipv4_public?(198, 51, 100, _), do: false
+  defp ipv4_public?(198, b, _, _) when b in 18..19, do: false
   defp ipv4_public?(203, 0, 113, _), do: false
   defp ipv4_public?(a, _, _, _) when a in 224..255, do: false
   defp ipv4_public?(_, _, _, _), do: true
@@ -201,18 +207,37 @@ defmodule AshHooks.Ssrf do
   # ff00–ffff — naive /16 checks would let fc00::, fe90:: and ff02::
   # through.
   # ::1 is handled by the embedded-v4 reduction below (hi == 0). ULA fc00::/7
+  # Globally reachable exceptions within IETF's otherwise non-global 2001::/23.
+  defp ipv6_public?({0x2001, 1, 0, 0, 0, 0, 0, last}) when last in [1, 2, 3], do: true
+  defp ipv6_public?({0x2001, 3, _, _, _, _, _, _}), do: true
+  defp ipv6_public?({0x2001, 4, 0x0112, _, _, _, _, _}), do: true
+  defp ipv6_public?({0x2001, second, _, _, _, _, _, _}) when second in 0x20..0x2F, do: true
+  defp ipv6_public?({0x2001, second, _, _, _, _, _, _}) when second in 0x30..0x3F, do: true
+  # IPv4/IPv6 translation's local-use prefix.
+  defp ipv6_public?({0x0064, 0xFF9B, 1, _, _, _, _, _}), do: false
+  # Discard-only and dummy prefixes.
+  defp ipv6_public?({0x0100, 0, 0, fourth, _, _, _, _}) when fourth in [0, 1], do: false
+  # IETF protocol assignments are non-global except the exact exceptions above.
+  defp ipv6_public?({0x2001, second, _, _, _, _, _, _}) when band(second, 0xFE00) == 0,
+    do: false
+
+  # Documentation, SRv6 SIDs, and deprecated site-local ranges.
+  defp ipv6_public?({0x2001, 0x0DB8, _, _, _, _, _, _}), do: false
+  defp ipv6_public?({a, _, _, _, _, _, _, _}) when band(a, 0xFFF0) == 0x3FF0, do: false
+  defp ipv6_public?({0x5F00, _, _, _, _, _, _, _}), do: false
   defp ipv6_public?({a, _, _, _, _, _, _, _}) when band(a, 0xFE00) == 0xFC00, do: false
   # link-local fe80::/10
   defp ipv6_public?({a, _, _, _, _, _, _, _}) when band(a, 0xFFC0) == 0xFE80, do: false
+  # deprecated site-local fec0::/10
+  defp ipv6_public?({a, _, _, _, _, _, _, _}) when band(a, 0xFFC0) == 0xFEC0, do: false
   # multicast ff00::/8
   defp ipv6_public?({a, _, _, _, _, _, _, _}) when band(a, 0xFF00) == 0xFF00, do: false
   # transition forms embedding a (possibly private) IPv4: 6to4
   # 2002::/16 and Teredo 2001:0::/32 are refused outright; NAT64
   # 64:ff9b::/96 unwraps its embedded v4
   defp ipv6_public?({0x2002, _, _, _, _, _, _, _}), do: false
-  defp ipv6_public?({0x2001, 0, _, _, _, _, _, _}), do: false
 
-  defp ipv6_public?({0x0064, 0xFF9B, _, _, _, _, hi, lo}),
+  defp ipv6_public?({0x0064, 0xFF9B, 0, 0, 0, 0, hi, lo}),
     do:
       ipv4_public?(
         band(hi, 0xFF00) >>> 8,

@@ -2,12 +2,13 @@ defmodule AshHooks.Endpoint.SecretRef do
   @moduledoc """
   A reference to a consumer-held secret — never the secret itself.
 
-  The cast rejects any value carrying a live secret's shape (`whsec_` /
-  `whsk_` / `whpk_` prefix, the Standard Webhooks secret encodings): a
-  literal pasted into an endpoint row is the exact leak ADR-0005's
-  callback-only rule exists to prevent, and because the rejection lives in
-  the TYPE it holds on every write path — the package's actions, and any
-  consumer-defined create/update that accepts the attribute.
+  Input casting rejects empty references and values beginning with `whsec_`,
+  `whsk_`, or `whpk_`, the Standard Webhooks key encodings. The same check
+  applies to package actions and consumer actions that accept this type.
+
+  Other nonempty binaries are references. The type cannot recognize arbitrary
+  unprefixed secret material; applications must store only identifiers that
+  their secret resolver can look up.
   """
 
   use Ash.Type
@@ -23,8 +24,7 @@ defmodule AshHooks.Endpoint.SecretRef do
   def cast_input(value, _constraints) when is_binary(value) do
     cond do
       # allow_nil? blocks only nil — the empty string must be refused by the
-      # type itself or a required endpoint persists an unusable reference
-      # .
+      # type itself or a required endpoint persists an unusable reference.
       value == "" ->
         {:error,
          "must be a non-empty secret REFERENCE — an empty reference cannot resolve a secret"}

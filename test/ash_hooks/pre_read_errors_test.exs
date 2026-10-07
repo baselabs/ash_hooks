@@ -24,12 +24,14 @@ defmodule AshHooks.PreReadErrorsTest do
     use Ash.Resource.Change
 
     @impl true
-    def change(changeset, _ctx, _opts) do
+    def change(%{action_type: :create} = changeset, _ctx, _opts) do
       Ash.Changeset.add_error(
         changeset,
         InvalidAttribute.exception(field: :event_uuid, message: "forced")
       )
     end
+
+    def change(changeset, _ctx, _opts), do: changeset
   end
 
   defmodule UnreadableDelivery do
@@ -74,7 +76,7 @@ defmodule AshHooks.PreReadErrorsTest do
     end
 
     changes do
-      change({FailingCreateChange, []})
+      change({FailingCreateChange, []}, on: [:create])
     end
 
     actions do
@@ -124,7 +126,7 @@ defmodule AshHooks.PreReadErrorsTest do
     end
 
     changes do
-      change({FailingCreateChange, []})
+      change({FailingCreateChange, []}, on: [:create])
     end
 
     actions do
@@ -317,7 +319,12 @@ defmodule AshHooks.PreReadErrorsTest do
       response_status INTEGER,
       response_snippet TEXT,
       last_error TEXT,
-      next_attempt_at TEXT
+      next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot TEXT
     )
     """)
 

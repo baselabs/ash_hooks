@@ -16,9 +16,13 @@ dep is absent — and current Oban uniqueness config requires `fields: [:args]` 
 
 ## Decision
 
-`{:oban, "~> 2.20", optional: true}`. As built (trued up 2026-08-22): the delivery runtime
+**2.0 amendment:** [ADR-0012](0012-durable-delivery-ownership-and-recovery.md)
+defines runnable-job uniqueness and persisted matching-job admission. The
+host-injected, optional-Oban boundary remains unchanged.
+
+`{:oban, "~> 2.20", optional: true}`. The delivery runtime
 is the concrete row-driven driver `AshHooks.Delivery` (ADR-0008; the package's one
-pluggable behaviour is `AshHooks.Http`, not the runtime); the Oban integration is a
+pluggable behavior is `AshHooks.Http`, not the runtime); the Oban integration is a
 **host-injected `use AshHooks.Worker` macro** that expands `use Oban.Worker` inside the
 consuming app and delegates each job to `AshHooks.Delivery.run/2` — the Oban beam only
 compiles where Oban exists; queue configuration stays host-owned. Selecting the Oban
@@ -32,7 +36,7 @@ note applies only to Oban's Postgres engine; MySQL/SQLite engines are unaffected
 
 ## Consequences
 
-- Inbound-only installs stay queue-free; both first-party adopters (already on Oban) opt in
-  by defining one worker module.
+- Inbound-only installs stay queue-free; outbound applications opt into Oban by
+  defining a worker module.
 - Consumers must define the worker module themselves (one line) — documented in the
   installer.

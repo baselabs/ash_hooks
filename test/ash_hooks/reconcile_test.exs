@@ -1,12 +1,10 @@
 defmodule AshHooks.ReconcileTest do
   @moduledoc """
-  The orphan-pending reconciliation (D8): delivery rows stranded at
-  `:pending` by a crash between the row write and the enqueue are claimed
-  by a WHERE-gated CAS on `:mark_enqueue_failed` (a REAL state flip —
-  matched-records is the win signal) and driven through the same enqueue
-  seam dispatch takes. The race proof uses a CUSTOM (non-Oban) counting
-  enqueuer so Oban uniqueness cannot mask the CAS: concurrent reconcilers
-  enqueue each stranded row EXACTLY ONCE.
+  SQLite checks for recovery candidate selection, tenant scope, route binding,
+  active enqueue leases, and the custom callback contract. Concurrent persisted
+  job admission and receiver effects are exercised on real PostgreSQL/Oban in
+  OutboundPostgresReadinessTest. A released lease permits later recovery calls;
+  custom enqueue callbacks must be idempotent.
   """
 
   defmodule Endpoint do
@@ -198,6 +196,11 @@ defmodule AshHooks.ReconcileTest do
       response_snippet TEXT,
       last_error TEXT,
       next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot TEXT,
       org_id TEXT NOT NULL,
       inserted_at TEXT,
       updated_at TEXT
@@ -253,7 +256,8 @@ defmodule AshHooks.ReconcileTest do
         event_type: "order_paid",
         payload: @payload,
         endpoint_id: endpoint_id(org),
-        signing_mode: :standard
+        signing_mode: :standard,
+        dispatch_source: AshHooks.OutboundBinding.source(Emitter, :order_paid, Endpoint)
       },
       action: :dispatch,
       tenant: org,
@@ -288,24 +292,106 @@ defmodule AshHooks.ReconcileTest do
     end
   end
 
-  test "a stranded :pending row is CAS-flipped, enqueued, and reported :reconciled" do
+  def enqueue_must_not_run(_delivery, _event), do: raise("enqueue must not run")
+
+  test "a stranded pending row is lease-claimed, enqueued, and reported reconciled" do
     stranded_row!("org_a", "rec-1")
 
     assert {:ok, results} =
              Dispatcher.reconcile_pending(Emitter, :order_paid,
                tenant: "org_a",
                older_than: cutoff(),
+               enqueue_key: "reconcile-test",
                enqueue: counting_enqueuer(self())
              )
 
     assert [%{status: :reconciled, error: nil}] = results
     assert_received {:enqueued, "rec-1"}
 
-    # the winner stays :enqueue_failed (one-shot per reconcile run: a
-    # concurrent reconciler cannot re-claim it), carrying the claim marker
+    # The enqueue lease is released after durable admission; the delivery
+    # state remains pending for the worker to claim.
     row = row_state!("rec-1", "org_a")
-    assert row.status == :enqueue_failed
-    assert row.last_error == "reconcile_pending"
+    assert row.status == :pending
+    assert row.enqueue_token == nil
+  end
+
+  test "recovery admits every due state and preserves future retry and live-send windows" do
+    for uuid <- [
+          "rec-state-pending",
+          "rec-state-enqueue-failed",
+          "rec-state-retry-due",
+          "rec-state-retry-future",
+          "rec-state-send-expired",
+          "rec-state-send-live",
+          "rec-state-disable"
+        ] do
+      stranded_row!("org_a", uuid)
+    end
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    past = DateTime.add(now, -120, :second) |> DateTime.to_iso8601()
+    future = DateTime.add(now, 120, :second) |> DateTime.to_iso8601()
+
+    Repo.query!("UPDATE #{@deliveries} SET status = 'enqueue_failed' WHERE event_uuid = ?", [
+      "rec-state-enqueue-failed"
+    ])
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'failed_retryable', attempts = 1, next_attempt_at = ? WHERE event_uuid = ?",
+      [past, "rec-state-retry-due"]
+    )
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'failed_retryable', attempts = 1, next_attempt_at = ? WHERE event_uuid = ?",
+      [future, "rec-state-retry-future"]
+    )
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'sending', attempts = 2, attempt_token = ?, send_lease_expires_at = ? WHERE event_uuid = ?",
+      [Ash.UUID.generate(), past, "rec-state-send-expired"]
+    )
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'sending', attempts = 2, attempt_token = ?, send_lease_expires_at = ? WHERE event_uuid = ?",
+      [Ash.UUID.generate(), future, "rec-state-send-live"]
+    )
+
+    Repo.query!("UPDATE #{@deliveries} SET status = 'disable_pending' WHERE event_uuid = ?", [
+      "rec-state-disable"
+    ])
+
+    assert {:ok, results} =
+             Dispatcher.reconcile_pending(Emitter, :order_paid,
+               tenant: "org_a",
+               older_than: cutoff(),
+               enqueue_key: "reconcile-states",
+               enqueue: counting_enqueuer(self())
+             )
+
+    assert Enum.all?(results, &(&1.status == :reconciled))
+    assert length(results) == 5
+
+    enqueued =
+      for _ <- 1..5 do
+        assert_receive {:enqueued, uuid}, 1_000
+        uuid
+      end
+
+    assert Enum.sort(enqueued) ==
+             Enum.sort([
+               "rec-state-pending",
+               "rec-state-enqueue-failed",
+               "rec-state-retry-due",
+               "rec-state-send-expired",
+               "rec-state-disable"
+             ])
+
+    refute_receive {:enqueued, _}, 100
+
+    assert row_state!("rec-state-retry-future", "org_a").status == :failed_retryable
+    assert row_state!("rec-state-send-live", "org_a").status == :sending
+    assert row_state!("rec-state-retry-due", "org_a").attempts == 1
+    assert row_state!("rec-state-send-expired", "org_a").attempts == 2
   end
 
   test "the cutoff gates the claim: fresh rows are left alone" do
@@ -334,6 +420,7 @@ defmodule AshHooks.ReconcileTest do
       Dispatcher.reconcile_pending(Emitter, :order_paid,
         tenant: "org_a",
         older_than: cutoff(),
+        enqueue_key: "reconcile-test",
         enqueue: enqueuer
       )
     end
@@ -359,12 +446,11 @@ defmodule AshHooks.ReconcileTest do
 
     refute_receive {:enqueued, _}, 100
 
-    # and every stranded row was claimed exactly once — :enqueue_failed
-    # with the marker, never re-claimable by another reconciler
+    # Every lease was released after the one admitted enqueue.
     for i <- 1..5 do
       row = row_state!("rec-race-#{i}", "org_a")
-      assert row.status == :enqueue_failed
-      assert row.last_error == "reconcile_pending"
+      assert row.status == :pending
+      assert row.enqueue_token == nil
     end
   end
 
@@ -376,12 +462,12 @@ defmodule AshHooks.ReconcileTest do
       authorize?: false
     )
 
-    # reconcile first: claims + enqueues once (row left :enqueue_failed,
-    # marked — one-shot per reconcile run)
+    # Reconcile first: leases + enqueues once and leaves the delivery pending.
     assert {:ok, [%{status: :reconciled}]} =
              Dispatcher.reconcile_pending(Emitter, :order_paid,
                tenant: "org_a",
                older_than: cutoff(),
+               enqueue_key: "reconcile-test",
                enqueue: counting_enqueuer(self())
              )
 
@@ -389,85 +475,98 @@ defmodule AshHooks.ReconcileTest do
     # claims the marked row and enqueues AGAIN. This is the documented
     # boundary, not a defect: cross-mechanism exactly-once is the SEAM's
     # contract — the canonical Oban seam's uniqueness makes the second
-    # enqueue a conflict (:ok, effect-once, proven in worker_test); a
-    # custom seam must be idempotent itself (each mechanism claims the
-    # row at most once — the CAS guarantee this suite proves).
+    # Custom callbacks need idempotency across later recovery calls.
+    # Live enqueue leases serialize active admission.
     event = %AshHooks.Event{type: "order_paid", payload: @payload, id: "rec-repair"}
 
-    assert {:ok, [%{status: :created}]} =
+    assert {:ok, [%{status: :duplicate}]} =
              Dispatcher.dispatch(Emitter, :order_paid, event,
                tenant: "org_a",
+               enqueue_key: "reconcile-test",
                enqueue: counting_enqueuer(self())
              )
 
     assert_received {:enqueued, "rec-repair"}
-    assert_received {:enqueued, "rec-repair"}
+    refute_received {:enqueued, "rec-repair"}
 
-    # the repair requeue moved the row back to :pending for the runtime
+    # The pending row is still ready for the admitted trigger.
     assert row_state!("rec-repair", "org_a").status == :pending
   end
 
-  test "the design's test-9 race: concurrent reconcilers each claim a row AT MOST ONCE (the CAS bound)" do
-    for i <- 1..5, do: stranded_row!("org_a", "rec-mixed-#{i}")
-
-    parent = self()
-    enqueuer = counting_enqueuer(parent)
-
-    reconciler = fn ->
-      Dispatcher.reconcile_pending(Emitter, :order_paid,
-        tenant: "org_a",
-        older_than: cutoff(),
-        enqueue: enqueuer
-      )
-    end
-
-    reconcilers = for _ <- 1..6, do: Task.async(reconciler)
-    results = Task.await_many(reconcilers, 10_000)
-
-    assert Enum.all?(results, &match?({:ok, _}, &1))
-
-    # exactly one enqueue per row across ALL reconcilers — matched-records
-    # is the win signal and :enqueue_failed is one-shot
-    enqueued =
-      for _ <- 1..5 do
-        receive do
-          {:enqueued, uuid} -> uuid
-        after
-          1_000 -> flunk("expected exactly 5 enqueues")
-        end
-      end
-
-    assert Enum.sort(enqueued) == Enum.sort(for i <- 1..5, do: "rec-mixed-#{i}")
-    refute_receive {:enqueued, _}, 100
-  end
-
-  test "a failing enqueue leaves the row :enqueue_failed for the repair path and reports the failure" do
+  test "a failing enqueue releases its lease and records the bounded error" do
     stranded_row!("org_a", "rec-fail")
 
     assert {:ok, results} =
              Dispatcher.reconcile_pending(Emitter, :order_paid,
                tenant: "org_a",
                older_than: cutoff(),
+               enqueue_key: "reconcile-test",
                enqueue: fn _delivery, _event -> {:error, "queue down"} end
              )
 
-    # the seam's arbitrary string classifies through the bounded grammar
-    # (the ledger floor — never raw consumer terms)
+    # Arbitrary callback strings become a fixed contents-free classification.
     assert [%{status: :enqueue_failed, error: "unclassified"}] = results
-    assert row_state!("rec-fail", "org_a").status == :enqueue_failed
+    row = row_state!("rec-fail", "org_a")
+    assert row.status == :pending
+    assert row.enqueue_token == nil
+    assert row.last_error == "unclassified"
   end
 
-  test "a nil seam defers: rows are CAS-flipped for the re-dispatch repair path, nothing enqueued" do
+  test "a missing enqueue callback leaves pending rows unresolved" do
     stranded_row!("org_a", "rec-defer")
 
-    assert {:ok, [%{status: :deferred}]} =
+    assert {:ok, [%{status: :enqueue_failed, error: :unresolved_route}]} =
              Dispatcher.reconcile_pending(Emitter, :order_paid,
                tenant: "org_a",
                older_than: cutoff()
              )
 
     refute_received {:enqueued, _}
-    assert row_state!("rec-defer", "org_a").status == :enqueue_failed
+    assert row_state!("rec-defer", "org_a").status == :pending
+  end
+
+  test "an unkeyed or different stored route is rejected before enqueue" do
+    for {uuid, stored_route, expected} <- [
+          {"rec-unkeyed-route", AshHooks.OutboundBinding.unkeyed_route(), :unresolved_route},
+          {"rec-different-route",
+           AshHooks.OutboundBinding.named_route(__MODULE__, :different_enqueue),
+           :dispatch_route_conflict}
+        ] do
+      stranded_row!("org_a", uuid)
+
+      Repo.query!("UPDATE #{@deliveries} SET dispatch_route = ? WHERE event_uuid = ?", [
+        stored_route,
+        uuid
+      ])
+
+      assert {:ok, [%{status: :enqueue_failed, error: ^expected}]} =
+               Dispatcher.reconcile_pending(Emitter, :order_paid,
+                 tenant: "org_a",
+                 older_than: cutoff(),
+                 enqueue: {__MODULE__, :enqueue_must_not_run}
+               )
+
+      Repo.query!("DELETE FROM #{@deliveries}")
+    end
+  end
+
+  test "a live enqueue lease is reported as contended before enqueue" do
+    uuid = "rec-live-enqueue-lease"
+    stranded_row!("org_a", uuid)
+    route = AshHooks.OutboundBinding.named_route(__MODULE__, :enqueue_must_not_run)
+    future = DateTime.add(DateTime.utc_now(), 120, :second) |> DateTime.to_iso8601()
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET dispatch_route = ?, enqueue_token = ?, enqueue_lease_expires_at = ? WHERE event_uuid = ?",
+      [route, Ash.UUID.generate(), future, uuid]
+    )
+
+    assert {:ok, [%{status: :duplicate, error: :enqueue_contended}]} =
+             Dispatcher.reconcile_pending(Emitter, :order_paid,
+               tenant: "org_a",
+               older_than: cutoff(),
+               enqueue: {__MODULE__, :enqueue_must_not_run}
+             )
   end
 
   test "reconcile is tenant-scoped: org_a's sweep never claims org_b's stranded row" do
@@ -479,6 +578,7 @@ defmodule AshHooks.ReconcileTest do
              Dispatcher.reconcile_pending(Emitter, :order_paid,
                tenant: "org_a",
                older_than: cutoff(),
+               enqueue_key: "reconcile-test",
                enqueue: counting_enqueuer(self())
              )
 
@@ -492,7 +592,7 @@ defmodule AshHooks.ReconcileTest do
     # a blank event_uuid passes the storage layer but fails Event.new —
     # reconciliation surfaces it per-row instead of handing the seam junk
     Repo.query!(
-      "INSERT INTO #{@deliveries} (id, event_uuid, event_type, payload, endpoint_id, signing_mode, status, attempts, org_id, inserted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 'org_a', ?, ?)",
+      "INSERT INTO #{@deliveries} (id, event_uuid, event_type, payload, endpoint_id, signing_mode, dispatch_source, status, attempts, org_id, inserted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, 'org_a', ?, ?)",
       [
         Ash.UUID.generate(),
         "",
@@ -500,6 +600,7 @@ defmodule AshHooks.ReconcileTest do
         @payload,
         endpoint_id("org_a"),
         "standard",
+        AshHooks.OutboundBinding.source(Emitter, :order_paid, Endpoint),
         DateTime.to_iso8601(stale()),
         DateTime.to_iso8601(stale())
       ]
@@ -509,10 +610,11 @@ defmodule AshHooks.ReconcileTest do
              Dispatcher.reconcile_pending(Emitter, :order_paid,
                tenant: "org_a",
                older_than: cutoff(),
+               enqueue_key: "reconcile-test",
                enqueue: counting_enqueuer(self())
              )
 
-    assert [%{status: :enqueue_failed, error: {:invalid_event, _}}] = results
+    assert [%{status: :enqueue_failed, error: "event id must not be empty"}] = results
     refute_received {:enqueued, _}
   end
 
@@ -543,6 +645,11 @@ defmodule AshHooks.ReconcileTest do
       response_snippet TEXT,
       last_error TEXT,
       next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot TEXT,
       org_id TEXT NOT NULL,
       inserted_at TEXT,
       updated_at TEXT

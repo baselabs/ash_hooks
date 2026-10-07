@@ -1,14 +1,15 @@
 defmodule AshHooks.InboundDelivery.Payload do
   @moduledoc """
-  A decoded inbound webhook body: a JSON object OR a JSON array.
+  A decoded inbound webhook body, stored as a JSON object or array.
 
-  Vendors differ in wire shape — ComplyCube delivers top-level objects,
-  HubSpot batches top-level ARRAYS of event objects — and the ledger of
-  record persists what the vendor signed, not a normalized remix of it.
-  Storage is identical to `:map` (jsonb / JSON text) and every value
-  `Ash.Type.Map` accepts still casts: this is a strict superset whose only
-  addition is the list shape. A JSON string body (the raw undecoded wire)
-  is accepted and decoded, mirroring `:map`'s convenience cast.
+  ComplyCube delivers top-level objects; HubSpot delivers batches of event
+  objects. The ledger retains that decoded shape and separately stores a
+  digest of the signed raw bytes. This value does not preserve the original
+  wire encoding and must not be used to reconstruct bytes for verification.
+
+  Storage uses the same JSON representation as `:map`. Maps and lists cast
+  directly; a JSON-encoded binary is decoded before casting. Other decoded
+  scalar values are rejected.
   """
 
   use Ash.Type

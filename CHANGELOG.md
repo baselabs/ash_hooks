@@ -4,10 +4,68 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 1.3.0 — 2026-10-05
+## Unreleased
 
-The first-serious-consumer integration release: additive options that fit
-the extensions to a consumer's own domain naming and lifecycle, a compile
+## 2.0.0 — October 6, 2026
+
+Delivery rows now retain declaration and queue ownership, fence each send attempt,
+and recover unfinished work after queue exhaustion or an interrupted endpoint disable.
+HubSpot retries use a stable batch identity, and the default transport bounds the
+complete HTTP operation.
+**Existing installations require the ordered schema and identity migration in
+[UPGRADING.md](UPGRADING.md) before running 2.0 workers or ingress.**
+
+### Changed
+
+- Outbound rows persist declaration ownership and queue route. A declaration
+  cannot recover another declaration's rows. Named callbacks have stable routes;
+  anonymous callbacks can supply `enqueue_key` for durable recovery.
+- Send and recovery admission use separate UUID tokens and expiring leases.
+  Every result is fenced to the live attempt; retry ceilings are checked before
+  sending. The complete ledger primary key is used throughout.
+- A 410 response records `:disable_pending` before disabling the matching endpoint
+  configuration. Recovery completes that obligation without another HTTP request.
+- Oban uniqueness covers runnable jobs and the durable route/tenant identity.
+  Completed or discarded jobs do not strand recoverable rows; an unpersisted
+  conflict is an admission error.
+- HubSpot's default dedup identity canonicalizes the complete batch, ignoring only
+  each outer event's `attemptNumber`. The optional provider `event_identity/1`
+  callback follows an explicit declaration extractor in precedence. Retained
+  legacy rows are adopted explicitly, preserving payloads and an audit map.
+- Ash's supported floor is 3.34.3, including its security correction and the tenant
+  inverse API used by workers. The lock resolves Ash 3.34.4, AshPostgres 2.14.2,
+  and Spark 2.7.6.
+
+### Fixed
+
+- Minimal production consumers start `:public_key` and `:ssl` through the package's
+  application dependencies; optional packages are unnecessary for default HTTPS.
+- Direct delivery calls apply the documented retry defaults for omitted or `nil`
+  settings, including the attempt ceiling and bounded `Retry-After`, without
+  requiring an Oban worker.
+- Required keyset pagination, bounded retention deletion, custom ledger keys,
+  renamed UUID endpoint/subscription keys, and aliased worker HTTP-option resolvers.
+- Endpoint status values are cast and constrained at compile time; empty enabled
+  sets, overlapping states, and primary-key mappings are rejected.
+- IDs on direct event structs and HTTP headers reject control bytes and malformed UTF-8.
+  Telemetry reasons use a fixed vocabulary, preventing arbitrary tokens from escaping.
+- SSRF classification covers special-purpose address ranges; IPv6 Host values are
+  bracketed. Bounded HTTP follows interim responses to the final response, stops
+  at its body cap, and uses one deadline across resolution and transport.
+- HubSpot's finite event taxonomy includes generic object events.
+
+### Documentation and delivery
+
+- Current install/version pins, terminal inbound acknowledgments, generated DSL
+  references, migration instructions, and an executable 2.0.0 Livebook.
+- Candidate archive inspection and notebook execution precede publication; the
+  normal notebook then executes against the exact published version.
+- Documentation changes trigger Linux CI. The minimum-consumer leg pins Ash
+  3.34.3; package, PostgreSQL, coverage, and Livebook checks feed `all-checks-pass`.
+
+## 1.3.0 — October 5, 2026
+
+Additive options for domain naming and lifecycle, a compile
 fix for generated (non-writable) primary keys, typed subscription
 matching, loud documentation of the policy/id/adapter obligations, and a
 Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
@@ -19,10 +77,7 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   rename it when the consumer's domain reserves `payload` for its own
   sole payload store. The injected column, the `:dispatch` accept list,
   and every signing/sending read follow the configured name; a name
-  colliding with another injected field fails closed at compile. From
-  the first-serious-consumer integration (its arch guard reserves
-  `payload` as the sole store's attribute name and the injected column
-  collided).
+  colliding with another injected field fails closed at compile.
 - **`prune_action :none` on the `outbound_delivery` section.** Opt out
   of the retention `destroy :prune` action's injection for append-only
   audit ledgers (no destroy action exists on the resource at all);
@@ -58,9 +113,13 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   instead: exact in every sequential case (provider redeliveries,
   producer re-fires) and wherever the primary read can see the existing
   row (a base-filtered read that hides it classifies `:created`). Under
-  a misclassification the row itself stays effect-once (the storage
-  upsert) and a double send stays impossible (the `mark_sending` CAS /
-  the inbound claim fence); the enqueue seam is the configured
+  a misclassification the storage upsert preserves one row.
+  ~~A double send stays impossible through the `mark_sending` CAS and
+  inbound claim fence.~~ **Correction in 2.0.0:** the 1.3 outbound
+  state transition did not fence every late result or expired owner.
+  Version 2.0 adds attempt tokens, leases, and separate enqueue claims;
+  network sends remain at-least-once and require receiver deduplication.
+  In 1.3 the enqueue seam was the configured
   enqueuer's own fence — the default Oban enqueuer's
   endpoint_id+event_uuid job uniqueness, or the consumer's own dedup
   for a custom `enqueue:`. ADR-0010 note: the injected action accept
@@ -126,7 +185,7 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   `[:ash_hooks, :delivery, :disable]` telemetry event or accepts the
   posture in writing.
 
-## 1.2.1 — 2026-09-24
+## 1.2.1 — September 24, 2026
 
 ### Fixed
 
@@ -139,7 +198,7 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   the Livebook alongside those references. No library code changed; hexdocs
   and the package page README are unaffected.
 
-## 1.2.0 — 2026-09-24
+## 1.2.0 — September 24, 2026
 
 Tenancy release (ADR-0011, additive and opt-in): ash_hooks aligns with
 Ash attribute multitenancy — an explicit tenant threads every data call,
@@ -181,7 +240,7 @@ mechanically inert.
 - **Tenant-aware secret resolution (all optional)** — the worker macro's
   `:tenant_aware_secrets` (2-arity `f(ref, tenant)` resolver contract);
   the inbound `secret fn tenant -> ... end` source; the provider
-  behaviour's optional `webhook_signing_secret/2`
+  behavior's optional `webhook_signing_secret/2`
   (Organization × connection custody; `use AshHooks.Provider` ships an
   overridable default delegating to `/1`); and `:tenant` in the
   `verify_signature/3` context map.
@@ -192,7 +251,7 @@ mechanically inert.
   still conflicts with the tenant-bearing job on the same pair (proven
   on the real Oban engine).
 - The dispatch result contract is now a public typespec
-  (`AshHooks.Dispatcher.dispatch_result/0`) including the new
+  (`t:AshHooks.Dispatcher.dispatch_result/0`) including the new
   `:reconciled` status.
 - The multi-tenant adoption checklist
   (documentation/tutorials/tenancy-adoption-checklist.md) and ADR-0011.
@@ -207,7 +266,7 @@ single→multi on populated tables — backfill the tenant attribute first
 (NULL-tenant rows form a shadow partition that strands effect-once),
 then regenerate identity indexes, then enable.
 
-## 1.1.1 — 2026-09-16
+## 1.1.1 — September 16, 2026
 
 Tri-OS proof release. No covered-surface change (patch, ADR-0010): the
 package now carries mechanical proof of macOS, Linux, and Windows
@@ -239,7 +298,7 @@ exactly the OSes the legs prove.
     returned 500 on Windows — the fixtures now hand httpd
     forward-slash `server_root`/`document_root` (a no-op on unix).
 
-## 1.1.0 — 2026-09-16
+## 1.1.0 — September 16, 2026
 
 Support-window release: the Elixir floor rises to 1.20 (a minor, not a
 major, by ADR-0010 rule 4 — the first exercise of that rule), the
@@ -300,7 +359,7 @@ dependencies sit at latest with `mix hex.audit` running in CI.
   errored `hex.outdated` run (lock mismatch, resolver failure) also exits
   nonzero.
 
-## 1.0.4 — 2026-09-16
+## 1.0.4 — September 16, 2026
 
 Current-Ash compatibility release: the repo's own app surfaces carry Ash
 3.33's required `default_string_length_count`, and the byte-bound
@@ -354,7 +413,7 @@ correction family that requirement exposed is fixed.
   published advisories (ash_sqlite 0.2.19 / ash_sql 0.7.5 — test-only,
   never shipped in the package; `mix hex.audit` now clean).
 
-## 1.0.3 — 2026-08-23
+## 1.0.3 — August 23, 2026
 
 Docs-and-tests release (no functional changes; 1.0.2's gate and fixes
 unchanged):
@@ -375,7 +434,7 @@ unchanged):
   and the `:cacerts` trust-store seam; ADR-0009 records the seam
   decision (wayfinder D3) in Consequences.
 
-## 1.0.2 — 2026-08-22
+## 1.0.2 — August 22, 2026
 
 The 100% coverage release: the maintainership directive (2026-08-22)
 superseding 1.0.1's print-only posture, worked through the wayfinder
@@ -420,7 +479,7 @@ release carries the surfaces that build required.
   (commit d6f3788) rather than exempted; the shipped surface behaves
   identically.
 
-## 1.0.1 — 2026-08-22
+## 1.0.1 — August 22, 2026
 
 Docs-and-tests release (no functional changes). The 1.0.0 ship report's
 three residual postures are probed and pinned instead of documented:
@@ -446,7 +505,7 @@ three residual postures are probed and pinned instead of documented:
   "two rows, both `:created`" shape applies to degraded-upsert layers.
   The as-built floor is stronger than the docs claimed.
 
-## 1.0.0 — 2026-08-22
+## 1.0.0 — August 22, 2026
 
 1.0.0 is the semantic-versioning baseline (ADR-0010): no public API
 removals or renames from 0.2.x. Three behavior corrections below;
@@ -502,10 +561,10 @@ migration notes in [UPGRADING.md](UPGRADING.md).
   (it disproved the old 1.15 claim on its first run), a package leg checking the hex tarball ships
   every documentation file and that the DSL cheat sheets match the
   DSL, and an advisory coverage report.
-- `@spec` on the HTTP behaviour's `request/5` (both adapters),
+- `@spec` on the HTTP behavior's `request/5` (both adapters),
   `AshHooks.dispatch/4`, the resource extensions'
   `statuses/0`/`signing_modes/0` (now documented), and the
-  `AshHooks.Http.Target` helpers.
+  internal HTTP target-resolution helpers.
 - A dedicated extension-shape test suite for `AshHooks.OutboundDelivery`,
   pinning the injected attributes, the `unique_delivery` identity, and
   the `:dispatch` no-touch-upsert contract.
@@ -523,7 +582,7 @@ migration notes in [UPGRADING.md](UPGRADING.md).
   corrected, with the install-constraint check added to the release
   checklist.
 
-## 0.2.2 — 2026-08-22
+## 0.2.2 — August 22, 2026
 
 ### Fixed
 
@@ -531,7 +590,7 @@ migration notes in [UPGRADING.md](UPGRADING.md).
   convention reads it from the package) and renders on hexdocs. It was
   previously GitHub-only.
 
-## 0.2.1 — 2026-08-22
+## 0.2.1 — August 22, 2026
 
 ### Added
 
@@ -539,7 +598,7 @@ migration notes in [UPGRADING.md](UPGRADING.md).
   a live local delivery, telemetry, retention) — CI-verified headless
   on every push. No functional changes.
 
-## 0.2.0 — 2026-08-22
+## 0.2.0 — August 22, 2026
 
 ### Added
 
@@ -551,20 +610,20 @@ migration notes in [UPGRADING.md](UPGRADING.md).
   preserved). Deleting a terminal row re-opens its dedup identity —
   set TTLs beyond replay/re-emission horizons.
 
-## 0.1.1 — 2026-08-22
+## 0.1.1 — August 22, 2026
 
 ### Changed
 
 - README rewritten as a package front door (no functional changes):
   audience/register pass; internal build references removed.
 
-## 0.1.0 — 2026-08-22
+## 0.1.0 — August 22, 2026
 
 ### Added
 
 - Inbound machine: `AshHooks` + `AshHooks.InboundDelivery` extensions,
   `AshHooks.Ingress` (verify-before-trust, fenced unique-ingest dedup
-  ledger, lease-based claim, crash-window re-drive), provider behaviour
+  ledger, lease-based claim, crash-window re-drive), provider behavior
   with ComplyCube/HubSpot v3 references and a test provider.
 - Outbound machine: `AshHooks.dispatch/4` fanout with per-endpoint
   isolation and enqueue-repair CAS; `AshHooks.OutboundDelivery`,
@@ -574,7 +633,7 @@ migration notes in [UPGRADING.md](UPGRADING.md).
   envelopes), row-owned retry policy (Retry-After, jittered backoff,
   dead-letter ceiling), 410 durable disable, redirect refusal, send-time
   SSRF re-check.
-- `AshHooks.Http` adapter behaviour with a memory-bounded native
+- `AshHooks.Http` adapter behavior with a memory-bounded native
   HTTP/1.1 default (`AshHooks.Http.Bounded` — every read capped under
   all framings) and an OTP `:httpc` alternative.
 - Response-snippet redaction floor (ADR-0005 amendment): no body bytes

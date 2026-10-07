@@ -1,19 +1,19 @@
 defmodule AshHooks.Legacy do
   @moduledoc """
-  The incumbent webhook envelope, reproduced byte-identically for the
-  `:dual` migration mode (ADR-0002), with `verify/5` as the in-package
-  oracle proving that identity.
+  The legacy HMAC webhook envelope for receivers using the `:legacy` or
+  `:dual` signing modes.
 
-  Envelope (shape extracted first-hand from the adopting platform's
-  `Webhooks.Signing` + its deliver worker — read-only reference):
+  `AshHooks.Legacy.verify/5` validates its signature.
+
+  Envelope:
 
     * MAC — HMAC-SHA256 over `"<unix_ts>.<body>"`, lowercase hex.
     * `sign/3` → `"v1=<hex>"`; rotation appends `",v1prev=<hex>"` under the
       separately imported previous secret.
     * header — `x-webhook-signature: t=<unix_ts>,<signature>`.
 
-  This module exists for migration and is scheduled to shrink away as
-  subscriptions cut over to `:standard`.
+  Use `:dual` to send this envelope alongside Standard Webhooks while receivers
+  migrate. New integrations should use `:standard`.
   """
 
   @signature_prefix "v1"

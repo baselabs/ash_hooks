@@ -137,7 +137,12 @@ defmodule AshHooks.TelemetryTest do
       payload BLOB NOT NULL, endpoint_id TEXT NOT NULL, subscription_id TEXT,
       signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
       attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
-      response_snippet TEXT, last_error TEXT, next_attempt_at TEXT
+      response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot JSONB
     )
     """)
 

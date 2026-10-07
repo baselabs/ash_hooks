@@ -215,7 +215,12 @@ defmodule AshHooks.DeliveryTest do
       payload BLOB NOT NULL, endpoint_id TEXT NOT NULL, subscription_id TEXT,
       signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
       attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
-      response_snippet TEXT, last_error TEXT, next_attempt_at TEXT
+      response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot TEXT
     )
     """)
 
@@ -254,6 +259,43 @@ defmodule AshHooks.DeliveryTest do
   end
 
   defp args(row), do: %{"endpoint_id" => row.endpoint_id, "event_uuid" => row.event_uuid}
+
+  defp complete_args(row) do
+    %{
+      "delivery_pk" => AshHooks.PrimaryKey.encode(row),
+      "delivery_resource" => Atom.to_string(Delivery),
+      "endpoint_resource" => Atom.to_string(Endpoint),
+      "endpoint_id" => row.endpoint_id,
+      "event_uuid" => row.event_uuid,
+      "dispatch_source" => row.dispatch_source,
+      "dispatch_route" => row.dispatch_route
+    }
+  end
+
+  defp disable_snapshot(endpoint, overrides \\ %{}) do
+    Map.merge(
+      %{
+        "endpoint_pk" => AshHooks.PrimaryKey.encode(endpoint),
+        "url" => endpoint.url,
+        "secret_ref" => endpoint.secret_ref,
+        "previous_secret_ref" => endpoint.previous_secret_ref,
+        "legacy_secret_ref" => endpoint.legacy_secret_ref,
+        "legacy_previous_secret_ref" => endpoint.legacy_previous_secret_ref,
+        "status_attribute" => "status",
+        "status_value" => Atom.to_string(endpoint.status)
+      },
+      overrides
+    )
+  end
+
+  defp put_disable_pending!(row, snapshot) do
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'disable_pending', attempts = 1, endpoint_snapshot = ? WHERE id = ?",
+      [Jason.encode!(snapshot), row.id]
+    )
+
+    row!(row.id)
+  end
 
   defp config(overrides \\ []) do
     now = Keyword.get(overrides, :now)
@@ -1243,6 +1285,104 @@ defmodule AshHooks.DeliveryTest do
 
       create_tables!()
     end
+
+    test "complete job identity rejects malformed keys and partial legacy identity" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert {:error, :invalid_primary_key} =
+               DeliveryRuntime.run(%{"delivery_pk" => %{"id" => "not-a-uuid"}}, config())
+
+      assert {:error, :invalid_delivery_identity} =
+               DeliveryRuntime.run(%{"endpoint_id" => ep.id}, config())
+
+      assert row!(row.id).status == :pending
+      assert HttpDouble.calls() == []
+    end
+
+    test "complete job metadata is checked against the stored delivery before send" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+      bound_source = AshHooks.OutboundBinding.direct_source(Delivery, Endpoint)
+
+      Repo.query!("UPDATE #{@deliveries} SET dispatch_source = ? WHERE id = ?", [
+        bound_source,
+        row.id
+      ])
+
+      row = row!(row.id)
+      job = complete_args(row)
+
+      assert {:error, :worker_resource_mismatch} =
+               DeliveryRuntime.run(%{job | "delivery_resource" => "Wrong.Delivery"}, config())
+
+      assert {:error, :worker_resource_mismatch} =
+               DeliveryRuntime.run(%{job | "endpoint_resource" => "Wrong.Endpoint"}, config())
+
+      assert {:error, :dispatch_source_conflict} =
+               DeliveryRuntime.run(%{job | "dispatch_source" => "v1:source:wrong"}, config())
+
+      assert {:error, :dispatch_route_conflict} =
+               DeliveryRuntime.run(%{job | "dispatch_route" => "v1:route:wrong"}, config())
+
+      assert {:error, :dispatch_route_conflict} =
+               DeliveryRuntime.run(job, config(dispatch_route: "v1:route:wrong"))
+
+      assert row!(row.id).status == :pending
+      assert HttpDouble.calls() == []
+    end
+
+    test "a stored source bound to another endpoint resource fails closed" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      other_source =
+        AshHooks.OutboundBinding.direct_source(Delivery, AshHooks.WorkerTest.Endpoint)
+
+      Repo.query!("UPDATE #{@deliveries} SET dispatch_source = ? WHERE id = ?", [
+        other_source,
+        row.id
+      ])
+
+      row = row!(row.id)
+
+      assert {:error, :endpoint_resource_mismatch} =
+               DeliveryRuntime.run(complete_args(row), config())
+
+      assert row!(row.id).status == :pending
+      assert HttpDouble.calls() == []
+    end
+
+    test "direct source binding reports a lost or rejected compare-and-set" do
+      for {trigger_action, expected} <- [
+            {"SELECT RAISE(IGNORE)", :dispatch_source_conflict},
+            {"SELECT RAISE(ABORT, 'blocked source binding')", :storage_error}
+          ] do
+        ep = endpoint!()
+        row = pending_row!(ep)
+
+        Repo.query!("""
+        CREATE TRIGGER delivery_block_source_binding
+        BEFORE UPDATE OF dispatch_source ON #{@deliveries}
+        WHEN OLD.dispatch_source = 'v1:direct:unbound'
+        BEGIN
+          #{trigger_action};
+        END
+        """)
+
+        result = DeliveryRuntime.run(args(row), config())
+
+        case expected do
+          :dispatch_source_conflict -> assert {:error, :dispatch_source_conflict} = result
+          :storage_error -> assert {:error, %Ash.Error.Unknown{}} = result
+        end
+
+        Repo.query!("DROP TRIGGER delivery_block_source_binding")
+        assert row!(row.id).status == :pending
+      end
+
+      assert HttpDouble.calls() == []
+    end
   end
 
   describe "a gone endpoint" do
@@ -1261,12 +1401,13 @@ defmodule AshHooks.DeliveryTest do
   end
 
   describe "a contended row" do
-    test "mark_sending matching zero rows snoozes 1 (another executor owns the transition)" do
+    test "a result fenced out by a concurrent transition snoozes without overwriting it" do
       ep = endpoint!()
       row = pending_row!(ep)
 
-      # flip the row OUT of the mark_sending gate from inside the send-time
-      # check — the same window a concurrent executor's transition occupies
+      # Flip the row after this executor owns the attempt but before the
+      # adapter runs. The external request may happen, but its result cannot
+      # overwrite the concurrent terminal transition.
       contending =
         Keyword.put(config(), :ssrf_check, fn _url ->
           Repo.query!("UPDATE #{@deliveries} SET status = 'succeeded' WHERE id = ?", [row.id])
@@ -1275,8 +1416,333 @@ defmodule AshHooks.DeliveryTest do
 
       assert {:snooze, 1} = DeliveryRuntime.run(args(row), contending)
 
-      # no adapter call fired — the transition was never ours
+      assert length(HttpDouble.calls()) == 1
+      assert row!(row.id).status == :succeeded
+    end
+
+    test "a lost or rejected send claim never reaches the adapter" do
+      for {trigger_action, expected} <- [
+            {"SELECT RAISE(IGNORE)", {:snooze, 1}},
+            {"SELECT RAISE(ABORT, 'blocked send claim')", :storage_error}
+          ] do
+        ep = endpoint!()
+        row = pending_row!(ep)
+
+        Repo.query!("""
+        CREATE TRIGGER delivery_block_send_claim
+        BEFORE UPDATE OF status ON #{@deliveries}
+        WHEN OLD.status = 'pending' AND NEW.status = 'sending'
+        BEGIN
+          #{trigger_action};
+        END
+        """)
+
+        result = DeliveryRuntime.run(args(row), config())
+
+        case expected do
+          {:snooze, 1} -> assert {:snooze, 1} = result
+          :storage_error -> assert {:error, %Ash.Error.Unknown{}} = result
+        end
+
+        Repo.query!("DROP TRIGGER delivery_block_send_claim")
+        assert row!(row.id).status == :pending
+      end
+
       assert HttpDouble.calls() == []
+    end
+
+    test "retry and dead-letter writes cannot overwrite a concurrent terminal state" do
+      ep = endpoint!()
+      retry_row = pending_row!(ep)
+
+      retry_resolver = fn _ref ->
+        Repo.query!("UPDATE #{@deliveries} SET status = 'succeeded' WHERE id = ?", [retry_row.id])
+        {:error, :vault_down}
+      end
+
+      assert {:snooze, 1} =
+               DeliveryRuntime.run(args(retry_row), config(secret_resolver: retry_resolver))
+
+      assert row!(retry_row.id).status == :succeeded
+
+      dead_row = pending_row!(ep)
+
+      check = fn _url ->
+        Repo.query!("UPDATE #{@deliveries} SET status = 'succeeded' WHERE id = ?", [dead_row.id])
+        false
+      end
+
+      assert {:snooze, 1} = DeliveryRuntime.run(args(dead_row), config(ssrf_check: check))
+      assert row!(dead_row.id).status == :succeeded
+      assert HttpDouble.calls() == []
+    end
+  end
+
+  describe "driver deadline and send lease" do
+    test "the configured application clock is evaluated inside the monitored deadline" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+      parent = self()
+
+      clock = fn ->
+        send(parent, :clock_entered)
+        Process.sleep(500)
+        send(parent, :clock_finished)
+        DateTime.utc_now()
+      end
+
+      assert {:error, :attempt_timeout} =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(now: clock, attempt_timeout: 50, finalization_allowance: 50)
+               )
+
+      assert_received :clock_entered
+      refute_receive :clock_finished, 100
+      assert row!(row.id).status == :pending
+      assert HttpDouble.calls() == []
+    end
+
+    test "an exhausted finalization allowance returns without waiting for process shutdown" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      clock = fn ->
+        Process.sleep(500)
+        DateTime.utc_now()
+      end
+
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, :finalization_timeout} =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(now: clock, attempt_timeout: 25, finalization_allowance: 0)
+               )
+
+      assert System.monotonic_time(:millisecond) - started < 250
+      assert row!(row.id).status == :pending
+      assert HttpDouble.calls() == []
+    end
+
+    test "the deadline bounds delivery-row preflight while the real SQLite pool is occupied" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+      parent = self()
+
+      holder =
+        spawn(fn ->
+          Repo.transaction(fn ->
+            send(parent, :preflight_pool_occupied)
+            Process.sleep(400)
+          end)
+        end)
+
+      assert_receive :preflight_pool_occupied, 1_000
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, :attempt_timeout} =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(attempt_timeout: 50, finalization_allowance: 50)
+               )
+
+      elapsed = System.monotonic_time(:millisecond) - started
+      assert elapsed < 250
+      assert HttpDouble.calls() == []
+
+      ref = Process.monitor(holder)
+      assert_receive {:DOWN, ^ref, :process, ^holder, :normal}, 1_000
+    end
+
+    test "timeout cleanup is bounded by the finalization allowance under SQLite write contention" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+      parent = self()
+
+      run =
+        Task.async(fn ->
+          DeliveryRuntime.run(
+            args(row),
+            config(
+              now: &DateTime.utc_now/0,
+              attempt_timeout: 500,
+              finalization_allowance: 100,
+              ssrf_check: fn _url ->
+                send(parent, {:claimed_preflight, self()})
+
+                receive do
+                  :continue_after_lock -> true
+                end
+              end
+            )
+          )
+        end)
+
+      assert_receive {:claimed_preflight, driver}, 1_000
+
+      holder =
+        spawn(fn ->
+          Repo.transaction(fn ->
+            Repo.query!("UPDATE #{@deliveries} SET attempts = attempts WHERE id = ?", [row.id])
+            send(parent, :finalization_write_locked)
+            Process.sleep(1_000)
+          end)
+        end)
+
+      assert_receive :finalization_write_locked, 1_000
+      started = System.monotonic_time(:millisecond)
+      send(driver, :continue_after_lock)
+
+      assert {:error, :finalization_timeout} = Task.await(run, 2_000)
+      elapsed = System.monotonic_time(:millisecond) - started
+      assert elapsed < 800
+
+      ref = Process.monitor(holder)
+      assert_receive {:DOWN, ^ref, :process, ^holder, :normal}, 2_000
+
+      stranded = row!(row.id)
+      assert stranded.status == :sending
+      assert stranded.attempts == 1
+      assert is_binary(stranded.attempt_token)
+      assert HttpDouble.calls() |> length() == 1
+    end
+
+    test "the monitored deadline includes secret-resolution preflight and kills late work" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+      parent = self()
+
+      resolver = fn "acme-main" ->
+        send(parent, :resolver_entered)
+        Process.sleep(1_500)
+        send(parent, :resolver_finished)
+        {:ok, @secret}
+      end
+
+      assert {:snooze, delay} =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(
+                   secret_resolver: resolver,
+                   now: &DateTime.utc_now/0,
+                   attempt_timeout: 500,
+                   finalization_allowance: 1_000
+                 )
+               )
+
+      assert delay >= 1
+      assert_received :resolver_entered
+      refute_receive :resolver_finished, 100
+
+      final = row!(row.id)
+      assert final.status == :failed_retryable
+      assert final.attempts == 1
+      assert final.last_error == "attempt_timeout"
+      assert final.send_lease_expires_at == nil
+      assert HttpDouble.calls() == []
+    end
+
+    test "an abnormal monitored-process exit after claim is fenced into retry state" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert {:snooze, delay} =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(ssrf_check: fn _url -> throw(:preflight_crash) end)
+               )
+
+      assert delay >= 1
+      final = row!(row.id)
+      assert final.status == :failed_retryable
+      assert final.attempts == 1
+      assert final.last_error == "driver_crash"
+      assert final.send_lease_expires_at == nil
+      assert HttpDouble.calls() == []
+    end
+
+    test "a crashing bounded finalizer returns finalization_crash and leaves the claim recoverable" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+      clock_owners = :ets.new(:delivery_clock_owners, [:set, :public])
+
+      clock = fn ->
+        case :ets.lookup(clock_owners, :driver) do
+          [] ->
+            true = :ets.insert_new(clock_owners, {:driver, self()})
+            DateTime.utc_now() |> DateTime.truncate(:second)
+
+          [{:driver, pid}] when pid == self() ->
+            DateTime.utc_now() |> DateTime.truncate(:second)
+
+          [{:driver, _pid}] ->
+            raise "finalizer clock failed"
+        end
+      end
+
+      assert {:error, {:finalization_crash, "unclassified"}} =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(now: clock, ssrf_check: fn _url -> throw(:driver_failed) end)
+               )
+
+      final = row!(row.id)
+      assert final.status == :sending
+      assert final.attempts == 1
+      assert is_binary(final.attempt_token)
+      assert HttpDouble.calls() == []
+    end
+
+    test "application-clock lease expiry protects a live final attempt, then terminalizes it" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+      base = DateTime.utc_now() |> DateTime.truncate(:second)
+      lease = DateTime.add(base, 120, :second)
+      token = Ash.UUID.generate()
+      handler = {__MODULE__, make_ref()}
+
+      :ok =
+        :telemetry.attach_many(
+          handler,
+          [
+            [:ash_hooks, :delivery, :result],
+            [:ash_hooks, :delivery, :dead_letter]
+          ],
+          fn event, _measurements, metadata, owner -> send(owner, {event, metadata}) end,
+          self()
+        )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      Repo.query!(
+        "UPDATE #{@deliveries} SET status = 'sending', attempts = 3, attempt_token = ?, send_lease_expires_at = ? WHERE id = ?",
+        [token, DateTime.to_iso8601(lease), row.id]
+      )
+
+      assert {:snooze, seconds} =
+               DeliveryRuntime.run(args(row), config(now: fn -> base end))
+
+      assert seconds >= 119
+      live = row!(row.id)
+      assert live.status == :sending
+      assert live.attempts == 3
+      assert live.attempt_token == token
+
+      after_lease = DateTime.add(lease, 30, :second)
+      assert :ok = DeliveryRuntime.run(args(row), config(now: fn -> after_lease end))
+
+      final = row!(row.id)
+      assert final.status == :dead_letter
+      assert final.attempts == 3
+      assert final.last_error == "attempt_ceiling"
+      assert HttpDouble.calls() == []
+
+      assert_received {[:ash_hooks, :delivery, :result],
+                       %{status: :dead_letter, reason: "attempt_ceiling"}}
+
+      assert_received {[:ash_hooks, :delivery, :dead_letter],
+                       %{reason: "attempt_ceiling", response_status: nil}}
     end
   end
 
@@ -1378,6 +1844,28 @@ defmodule AshHooks.DeliveryTest do
       assert row!(row.id).last_error == "secret_resolution"
     end
 
+    test "invalid, raising, exiting, and throwing resolvers become bounded retry reasons" do
+      resolvers = [
+        :invalid,
+        fn _ref -> raise "secret payload" end,
+        fn _ref -> exit(:secret_payload) end,
+        fn _ref -> throw(:secret_payload) end
+      ]
+
+      for resolver <- resolvers do
+        ep = endpoint!()
+        row = pending_row!(ep)
+
+        assert {:snooze, delay} =
+                 DeliveryRuntime.run(args(row), config(secret_resolver: resolver))
+
+        assert delay >= 1
+        assert row!(row.id).last_error == "secret_resolution"
+      end
+
+      assert HttpDouble.calls() == []
+    end
+
     test "an endpoint with an empty secret_ref fails :no_secret (retryable, fixable)" do
       ep_id = Ash.UUID.generate()
 
@@ -1390,6 +1878,273 @@ defmodule AshHooks.DeliveryTest do
 
       assert {:snooze, _delay} = DeliveryRuntime.run(args(row), config())
       assert row!(row.id).last_error == "no_secret"
+    end
+  end
+
+  describe "durable disable recovery" do
+    test "a stored obligation disables the unchanged endpoint and finalizes the delivery" do
+      ep = endpoint!()
+      row = ep |> pending_row!() |> put_disable_pending!(disable_snapshot(ep))
+
+      assert :ok = DeliveryRuntime.run(args(row), config())
+      assert Ash.reload!(ep, authorize?: false).status == :disabled
+      assert row!(row.id).status == :dead_letter
+      assert row!(row.id).last_error == "gone_410"
+      assert HttpDouble.calls() == []
+    end
+
+    test "gone, reconfigured, and already-disabled endpoints finalize without a send" do
+      gone = endpoint!()
+      gone_row = gone |> pending_row!() |> put_disable_pending!(disable_snapshot(gone))
+      Repo.query!("DELETE FROM #{@endpoints} WHERE id = ?", [gone.id])
+
+      assert :ok = DeliveryRuntime.run(args(gone_row), config())
+      assert row!(gone_row.id).last_error == "gone_410_endpoint_gone"
+
+      changed = endpoint!()
+      changed_row = changed |> pending_row!() |> put_disable_pending!(disable_snapshot(changed))
+
+      Repo.query!("UPDATE #{@endpoints} SET url = ? WHERE id = ?", [
+        "https://hooks.example.test/changed",
+        changed.id
+      ])
+
+      assert :ok = DeliveryRuntime.run(args(changed_row), config())
+      assert row!(changed_row.id).last_error == "gone_410_endpoint_reconfigured"
+
+      disabled = endpoint!()
+      Ash.update!(disabled, %{}, action: :disable, authorize?: false)
+      disabled = Ash.reload!(disabled, authorize?: false)
+
+      disabled_row =
+        disabled
+        |> pending_row!()
+        |> put_disable_pending!(disable_snapshot(disabled))
+
+      assert :ok = DeliveryRuntime.run(args(disabled_row), config())
+      assert row!(disabled_row.id).last_error == "gone_410_endpoint_already_disabled"
+      assert HttpDouble.calls() == []
+    end
+
+    test "invalid snapshots and status mappings surface bounded recovery results" do
+      ep = endpoint!()
+      invalid_pk = ep |> pending_row!() |> put_disable_pending!(%{"endpoint_pk" => %{}})
+
+      assert {:error, {:disable_failed, :primary_key_mismatch}} =
+               DeliveryRuntime.run(args(invalid_pk), config())
+
+      mapped = endpoint!()
+
+      mapped_row =
+        mapped
+        |> pending_row!()
+        |> put_disable_pending!(disable_snapshot(mapped, %{"status_attribute" => "other"}))
+
+      assert :ok = DeliveryRuntime.run(args(mapped_row), config())
+      assert row!(mapped_row.id).last_error == "gone_410_endpoint_reconfigured"
+      assert HttpDouble.calls() == []
+    end
+
+    test "a zero-match endpoint disable is reread and reported as changed" do
+      ep = endpoint!()
+      row = ep |> pending_row!() |> put_disable_pending!(disable_snapshot(ep))
+
+      Repo.query!("""
+      CREATE TRIGGER delivery_ignore_endpoint_disable
+      BEFORE UPDATE OF status ON #{@endpoints}
+      WHEN OLD.status = 'enabled' AND NEW.status = 'disabled'
+      BEGIN
+        SELECT RAISE(IGNORE);
+      END
+      """)
+
+      on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS delivery_ignore_endpoint_disable") end)
+
+      assert {:error, {:disable_failed, :endpoint_changed}} =
+               DeliveryRuntime.run(args(row), config())
+
+      assert Ash.reload!(ep, authorize?: false).status == :enabled
+      assert row!(row.id).status == :disable_pending
+      assert HttpDouble.calls() == []
+    end
+
+    test "zero-match disable recovery observes a concurrently gone or reconfigured endpoint" do
+      for {trigger_body, expected} <- [
+            {"DELETE FROM #{@endpoints} WHERE id = OLD.id", "gone_410_endpoint_gone"},
+            {"UPDATE #{@endpoints} SET url = 'https://hooks.example.test/reconfigured' WHERE id = OLD.id",
+             "gone_410_endpoint_reconfigured"},
+            {"UPDATE #{@endpoints} SET status = 'disabled' WHERE id = OLD.id",
+             "gone_410_endpoint_already_disabled"}
+          ] do
+        ep = endpoint!()
+        row = ep |> pending_row!() |> put_disable_pending!(disable_snapshot(ep))
+
+        Repo.query!("""
+        CREATE TRIGGER delivery_change_endpoint_during_disable
+        BEFORE UPDATE OF status ON #{@endpoints}
+        WHEN OLD.status = 'enabled' AND NEW.status = 'disabled'
+        BEGIN
+          #{trigger_body};
+          SELECT RAISE(IGNORE);
+        END
+        """)
+
+        assert :ok = DeliveryRuntime.run(args(row), config())
+        assert row!(row.id).last_error == expected
+        Repo.query!("DROP TRIGGER delivery_change_endpoint_during_disable")
+      end
+
+      assert HttpDouble.calls() == []
+    end
+
+    test "all configured endpoint references participate in the conditional disable" do
+      ep =
+        Ash.create!(
+          Endpoint,
+          %{
+            url: "https://hooks.example.test/accept",
+            secret_ref: "current",
+            previous_secret_ref: "previous",
+            legacy_secret_ref: "legacy",
+            legacy_previous_secret_ref: "legacy-previous"
+          },
+          authorize?: false
+        )
+
+      row = ep |> pending_row!() |> put_disable_pending!(disable_snapshot(ep))
+
+      assert :ok = DeliveryRuntime.run(args(row), config())
+      assert Ash.reload!(ep, authorize?: false).status == :disabled
+      assert row!(row.id).last_error == "gone_410"
+      assert HttpDouble.calls() == []
+    end
+
+    test "a rejected endpoint disable preserves the recoverable obligation" do
+      ep = endpoint!()
+      row = ep |> pending_row!() |> put_disable_pending!(disable_snapshot(ep))
+
+      Repo.query!("""
+      CREATE TRIGGER delivery_reject_endpoint_disable
+      BEFORE UPDATE OF status ON #{@endpoints}
+      WHEN OLD.status = 'enabled' AND NEW.status = 'disabled'
+      BEGIN
+        SELECT RAISE(ABORT, 'blocked endpoint disable');
+      END
+      """)
+
+      on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS delivery_reject_endpoint_disable") end)
+
+      assert {:error, {:disable_failed, %Ash.Error.Unknown{}}} =
+               DeliveryRuntime.run(args(row), config())
+
+      assert row!(row.id).status == :disable_pending
+      assert HttpDouble.calls() == []
+    end
+
+    test "a stale or rejected finalization keeps the disable obligation recoverable" do
+      for {trigger_action, expected} <- [
+            {"SELECT RAISE(IGNORE)", {:disable_failed, :stale_disable_obligation}},
+            {"SELECT RAISE(ABORT, 'blocked finalization')", :storage_error}
+          ] do
+        ep = endpoint!()
+        row = ep |> pending_row!() |> put_disable_pending!(disable_snapshot(ep))
+
+        Repo.query!("""
+        CREATE TRIGGER delivery_block_disable_finalize
+        BEFORE UPDATE OF status ON #{@deliveries}
+        WHEN OLD.status = 'disable_pending' AND NEW.status = 'dead_letter'
+        BEGIN
+          #{trigger_action};
+        END
+        """)
+
+        result = DeliveryRuntime.run(args(row), config())
+
+        case expected do
+          {:disable_failed, reason} -> assert {:error, {:disable_failed, ^reason}} = result
+          :storage_error -> assert {:error, {:disable_failed, %Ash.Error.Unknown{}}} = result
+        end
+
+        Repo.query!("DROP TRIGGER delivery_block_disable_finalize")
+        assert row!(row.id).status == :disable_pending
+      end
+
+      assert HttpDouble.calls() == []
+    end
+  end
+
+  describe "attempt ceiling compare-and-set" do
+    test "pending and due retry rows terminalize without sending" do
+      ep = endpoint!()
+
+      for {status, event_id} <- [
+            {"pending", "ceiling-pending"},
+            {"enqueue_failed", "ceiling-enqueue-failed"},
+            {"failed_retryable", "ceiling-retry"}
+          ] do
+        row = pending_row!(ep)
+
+        Repo.query!(
+          "UPDATE #{@deliveries} SET event_uuid = ?, status = ?, attempts = 3, next_attempt_at = NULL WHERE id = ?",
+          [event_id, status, row.id]
+        )
+
+        row = row!(row.id)
+        assert :ok = DeliveryRuntime.run(args(row), config())
+        assert row!(row.id).status == :dead_letter
+        assert row!(row.id).last_error == "attempt_ceiling"
+      end
+
+      assert HttpDouble.calls() == []
+    end
+
+    test "a lost or rejected terminal claim leaves the exhausted row recoverable" do
+      for {trigger_action, expected} <- [
+            {"SELECT RAISE(IGNORE)", {:snooze, 1}},
+            {"SELECT RAISE(ABORT, 'blocked ceiling')", :storage_error}
+          ] do
+        ep = endpoint!()
+        row = pending_row!(ep)
+        Repo.query!("UPDATE #{@deliveries} SET attempts = 3 WHERE id = ?", [row.id])
+
+        Repo.query!("""
+        CREATE TRIGGER delivery_block_ceiling
+        BEFORE UPDATE OF status ON #{@deliveries}
+        WHEN NEW.status = 'dead_letter'
+        BEGIN
+          #{trigger_action};
+        END
+        """)
+
+        result = DeliveryRuntime.run(args(row), config())
+
+        case expected do
+          {:snooze, 1} -> assert {:snooze, 1} = result
+          :storage_error -> assert {:error, %Ash.Error.Unknown{}} = result
+        end
+
+        Repo.query!("DROP TRIGGER delivery_block_ceiling")
+        assert row!(row.id).status == :pending
+      end
+
+      assert HttpDouble.calls() == []
+    end
+
+    test "an expired sending lease is reclaimed through the sending-state fence" do
+      ep = endpoint!()
+      row = pending_row!(ep)
+      past = DateTime.add(DateTime.utc_now(), -60, :second) |> DateTime.to_iso8601()
+
+      Repo.query!(
+        "UPDATE #{@deliveries} SET status = 'sending', attempts = 1, attempt_token = ?, send_lease_expires_at = ? WHERE id = ?",
+        [Ash.UUID.generate(), past, row.id]
+      )
+
+      row = row!(row.id)
+      assert :ok = DeliveryRuntime.run(args(row), config(ssrf_check: fn _url -> false end))
+      assert row!(row.id).status == :dead_letter
+      assert row!(row.id).attempts == 2
+      assert HttpDouble.calls() == []
     end
   end
 
