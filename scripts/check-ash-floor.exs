@@ -96,7 +96,9 @@ try do
     )
 
     Mix.Task.run("loadconfig")
-    Mix.Task.run("deps.unlock", ["ash"])
+    # Resolve the PostgreSQL test substrate for the exact Ash floor as well.
+    # The latest locked AshPostgres requires a newer Ash; the root lock stays current.
+    Mix.Task.run("deps.unlock", ["ash", "ash_postgres"])
     Mix.Task.run("deps.get")
     Mix.Task.run("compile", ["--warnings-as-errors"])
     Mix.Task.run("app.start")

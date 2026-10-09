@@ -315,29 +315,39 @@ defmodule AshHooks.Worker do
 
       defp insert_durably(changeset, expected, retries_left) do
         case Oban.insert(@ash_hooks_oban, changeset) do
-          {:ok, %Oban.Job{id: nil, conflict?: true}} when retries_left > 0 ->
-            Process.sleep(5)
-            insert_durably(changeset, expected, retries_left - 1)
-
           {:ok, %Oban.Job{} = job} ->
-            durable_admission(job, expected)
+            if job.conflict? == true and not job_persisted?(job) and retries_left > 0 do
+              Process.sleep(5)
+              insert_durably(changeset, expected, retries_left - 1)
+            else
+              durable_admission(job, expected)
+            end
 
           {:error, reason} ->
             {:error, reason}
         end
       end
 
-      defp durable_admission(%Oban.Job{id: id, state: state, args: args}, expected)
-           when not is_nil(id) and state in ["available", "scheduled", "executing", "retryable"] do
-        if Map.take(args, Map.keys(expected)) == expected do
-          :ok
-        else
-          {:error, :job_identity_mismatch}
+      # Oban.Job.t() omits the unsaved uniqueness-conflict case (id: nil).
+      # Read the map in a helper so consumer type checks retain that runtime case.
+      defp job_persisted?(job), do: not is_nil(Map.get(job, :id))
+
+      defp durable_admission(%Oban.Job{state: state, args: args} = job, expected) do
+        cond do
+          not job_persisted?(job) ->
+            {:error, :job_not_persisted}
+
+          state in ["available", "scheduled", "executing", "retryable"] ->
+            if Map.take(args, Map.keys(expected)) == expected do
+              :ok
+            else
+              {:error, :job_identity_mismatch}
+            end
+
+          true ->
+            {:error, :job_not_runnable}
         end
       end
-
-      defp durable_admission(%Oban.Job{id: nil}, _expected), do: {:error, :job_not_persisted}
-      defp durable_admission(_job, _expected), do: {:error, :job_not_runnable}
 
       # the tenant rides the args only when the ledger carries a
       # multitenancy attribute (undeclared → nil → no key)

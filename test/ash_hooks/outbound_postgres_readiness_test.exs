@@ -142,16 +142,6 @@ if Code.ensure_loaded?(Oban) do
       def local_receiver?(url), do: URI.parse(url).host == "127.0.0.1"
     end
 
-    defmodule Worker do
-      @moduledoc false
-      use AshHooks.Worker,
-        deliveries: AshHooks.OutboundPostgresReadinessTest.Delivery,
-        endpoints: AshHooks.OutboundPostgresReadinessTest.Endpoint,
-        secret_resolver: {AshHooks.OutboundPostgresReadinessTest.Runtime, :secret},
-        oban: AshHooks.OutboundPostgresReadinessTest.Oban,
-        queue: :outbound_readiness
-    end
-
     defmodule OtherWorker do
       @moduledoc false
       use AshHooks.Worker,
@@ -257,6 +247,7 @@ if Code.ensure_loaded?(Oban) do
     alias AshHooks.Delivery, as: DeliveryRuntime
     alias AshHooks.{Dispatcher, Event, OutboundBinding, PrimaryKey}
     alias AshHooks.Http.Bounded
+    alias AshHooks.OutboundPostgresReadinessTest.Worker
     alias AshHooks.TestPostgres.Repo
 
     @moduletag :postgres
@@ -742,7 +733,9 @@ if Code.ensure_loaded?(Oban) do
         assert {:snooze, _seconds} =
                  DeliveryRuntime.run(
                    delivery_args(row),
-                   delivery_config(attempt_timeout: 100, finalization_allowance: 1_000)
+                   # Leave time for real PostgreSQL admission and endpoint reads.
+                   # The receiver's two-second delay still exceeds this budget.
+                   delivery_config(attempt_timeout: 1_000, finalization_allowance: 1_000)
                  )
 
         assert_receive_count(session, event.id, 1)
@@ -853,6 +846,46 @@ if Code.ensure_loaded?(Oban) do
           assert :ok = AnonymousWorker.perform(%Oban.Job{args: args})
           assert_receive_count(session, event.id, 1)
         end
+      end
+
+      @tag :unsaved_conflict
+      test "an unsaved conflict retries until the real winning transaction commits" do
+        {_endpoint, _session} = endpoint_and_subscription!()
+        event = event!()
+        row = dispatched_row!(event)
+        route = OutboundBinding.named_route(Worker, :enqueue)
+        assert {:ok, bound} = AshHooks.Worker.bind_route(row, route, nil)
+
+        with_uncommitted_job(bound, event, fn holder ->
+          observe_admission_jobs(holder)
+          assert :ok = Worker.enqueue(bound, event)
+          assert_receive {:admission_job, nil, true}
+          assert_receive {:admission_job, job_id, true} when is_integer(job_id)
+        end)
+
+        assert [[job_id, "available", _args]] = jobs_for_event(event.id)
+        assert is_integer(job_id)
+      end
+
+      @tag :unsaved_conflict
+      test "an unsaved conflict refuses admission after all twenty retries" do
+        {_endpoint, _session} = endpoint_and_subscription!()
+        event = event!()
+        row = dispatched_row!(event)
+        route = OutboundBinding.named_route(Worker, :enqueue)
+        assert {:ok, bound} = AshHooks.Worker.bind_route(row, route, nil)
+
+        with_uncommitted_job(bound, event, fn _holder ->
+          observe_admission_jobs(nil)
+          assert {:error, :job_not_persisted} = Worker.enqueue(bound, event)
+
+          for _ <- 1..21, do: assert_receive({:admission_job, nil, true})
+          refute_receive {:admission_job, _id, _conflict}, 0
+          assert [] = jobs_for_event(event.id)
+        end)
+
+        assert [[job_id, "available", _args]] = jobs_for_event(event.id)
+        assert is_integer(job_id)
       end
 
       test "an advisory-lock uniqueness conflict resolves to one persisted job id" do
@@ -1131,6 +1164,61 @@ if Code.ensure_loaded?(Oban) do
       Ash.get!(Endpoint, endpoint.id, authorize?: false)
     end
 
+    # Hold Oban.Basic's actual uniqueness lock and inserted row in an open
+    # PostgreSQL transaction. A second connection must get Oban's unsaved job.
+    defp with_uncommitted_job(row, event, fun) do
+      parent = self()
+
+      holder =
+        Task.async(fn ->
+          Repo.transaction(fn ->
+            assert :ok = Worker.enqueue(row, event)
+            send(parent, :unique_job_uncommitted)
+
+            receive do
+              :commit -> :ok
+            after
+              5_000 -> raise "uniqueness transaction was not released"
+            end
+          end)
+        end)
+
+      try do
+        assert_receive :unique_job_uncommitted, 2_000
+        fun.(holder.pid)
+      after
+        send(holder.pid, :commit)
+        assert {:ok, :ok} = Task.await(holder, 5_000)
+      end
+    end
+
+    defp observe_admission_jobs(commit_on_conflict) do
+      handler = {__MODULE__, :admission_jobs, make_ref()}
+      parent = self()
+
+      :ok =
+        :telemetry.attach(
+          handler,
+          [:oban, :engine, :insert_job, :stop],
+          &__MODULE__.admission_job/4,
+          {parent, commit_on_conflict}
+        )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+    end
+
+    @doc false
+    def admission_job(_event, _measurements, %{job: job}, {parent, commit_on_conflict}) do
+      if self() == parent do
+        id = Map.get(job, :id)
+        send(parent, {:admission_job, id, job.conflict?})
+
+        if is_nil(id) and commit_on_conflict do
+          send(commit_on_conflict, :commit)
+        end
+      end
+    end
+
     defp event! do
       {:ok, event} = Event.new(type: :order_paid, payload: @payload)
       event
@@ -1189,8 +1277,10 @@ if Code.ensure_loaded?(Oban) do
           secret_resolver: {Runtime, :secret},
           http_opts: [validate_destination: false, timeout: 5_000],
           ssrf_check: fn url -> URI.parse(url).host == "127.0.0.1" end,
-          attempt_timeout: 3_000,
-          finalization_allowance: 1_000,
+          # Use the driver's normal budgets for real database and receiver work.
+          # Deadline tests override them explicitly.
+          attempt_timeout: 25_000,
+          finalization_allowance: 5_000,
           max_attempts: 3,
           base_backoff_seconds: 1,
           max_backoff_seconds: 2,

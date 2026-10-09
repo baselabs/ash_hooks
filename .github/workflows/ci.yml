@@ -168,8 +168,8 @@ jobs:
   # code-and-toolchain requirement, not a CI topology. No macos/windows
   # build legs; do not re-add them.
 
-  # Type-check gate on the public API (found the dead IP-SAN matcher on
-  # its first run — 2026-08-22).
+  # Type-check the public API and the consumer worker compiled from test/support.
+  # The PostgreSQL suite exercises that same generated worker at runtime.
   dialyzer:
     runs-on: ubuntu-latest
     env:

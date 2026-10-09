@@ -68,9 +68,13 @@ mix compile --warnings-as-errors
 mix credo --strict
 mix test
 ASH_HOOKS_POSTGRES=1 mix test --cover
-mix dialyzer
+MIX_ENV=test mix dialyzer
 ./scripts/check-currency.sh
 ```
+
+The type gate uses the test environment to compile the PostgreSQL suite's worker
+from `test/support/postgres_worker.ex`. This checks the consumer code injected by
+`use AshHooks.Worker` as well as the library modules.
 
 The coverage gate runs the complete suite with PostgreSQL and the real receiver
 available. It requires 100% in the coverage surface declared in `mix.exs`.

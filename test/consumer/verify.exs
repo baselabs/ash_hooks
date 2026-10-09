@@ -51,7 +51,7 @@ unless asymmetric_id == event.id, do: raise("asymmetric signature identity misma
   AshHooks.Http.Bounded.request(
     :get,
     "https://hex.pm/api/packages/ash_hooks",
-    %{"user-agent" => "ash_hooks-consumer-verification/2.0.2"},
+    %{"user-agent" => "ash_hooks-consumer-verification/#{version}"},
     "",
     max_body_bytes: 1_024,
     timeout: 10_000
@@ -63,7 +63,7 @@ unless byte_size(body) > 0 and byte_size(body) <= 1_024, do: raise("unexpected H
   AshHooks.Http.Httpc.request(
     :get,
     "https://hex.pm/api/packages/ash_hooks",
-    %{"user-agent" => "ash_hooks-consumer-verification/2.0.2"},
+    %{"user-agent" => "ash_hooks-consumer-verification/#{version}"},
     "",
     max_body_bytes: 1_024,
     timeout: 10_000

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.0.4 — October 9, 2026
+
+### Fixed
+
+- Generated Oban workers no longer report Dialyzer pattern-match warnings for
+  unsaved uniqueness conflicts. Oban's job type declares a persisted ID but its
+  Basic engine can return an unsaved conflict; admission reads the ID through a
+  private map helper. Retry limits, not-persisted refusals, identity checks, and
+  runnable-state checks retain their behavior.
+- The type gate now compiles the same generated worker used by the PostgreSQL
+  suite. Real Oban.Basic transaction tests force an unsaved conflict, verify
+  retry after the winning transaction commits, and verify refusal after all
+  twenty retries.
+- Dependency currency: Ash 3.34.4 → 3.34.6 (resolves EEF-CVE-2026-101028 in the
+  locked graph) and AshPostgres 2.14.3 → 2.14.5.
+
 ## 2.0.3 — October 7, 2026
 
 ### Fixed
