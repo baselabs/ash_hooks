@@ -19,15 +19,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `unsafe_destination` label, while the same condition surfacing one layer
   later (inside the HTTP adapter) retried as transport. Now a validated-unsafe
   answer still dead-letters immediately as `unsafe_destination`; an
-  unresolvable host retries under its honest label `unresolved_host` (added
-  to the telemetry reason vocabulary — it previously collapsed to
-  `unclassified`), and a permanently dead domain dead-letters at the row
-  ceiling carrying that label. Consumer-observable: rows that would have
-  been terminal at attempts == 1 now climb the backoff ladder; consumers
-  branching on an immediate `unsafe_destination` for DNS-dark endpoints see
-  `failed_retryable`/`unresolved_host` rows instead. The injected
-  `:ssrf_check` boolean seam is unchanged (false still dead-letters as
-  `unsafe_destination`).
+  unresolvable host retries under its honest label — `nxdomain` when every
+  queried address family answered authoritatively negative, `resolve_timeout`
+  for an outage, congestion, or mixed evidence (both in the telemetry reason
+  vocabulary; `nxdomain` had sat unused there) — and a permanently dead
+  domain dead-letters at the row ceiling carrying that label. The HTTP
+  adapter's umbrella atom for the same failures is `unresolved_host` (also
+  newly in the vocabulary — it previously collapsed to `unclassified`).
+  Consumer-observable: rows that would have been terminal at attempts == 1
+  now climb the backoff ladder; consumers branching on an immediate
+  `unsafe_destination` for DNS-dark endpoints see
+  `failed_retryable`/`nxdomain`/`resolve_timeout` rows instead. The
+  injected `:ssrf_check` boolean seam is unchanged (false still dead-letters
+  as `unsafe_destination`).
 - **Compiled worker-budget tripwires.** `use AshHooks.Worker` now refuses,
   at compile time, related budgets whose silent misfit stalls rows or walls
   off every slow send: Oban's `:max_attempts` must exceed
@@ -40,23 +44,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `:attempt_timeout` (the runtime kills the attempt at the budget wall
   before the driver's own deadline), every budget option must be a positive
   integer, and `:max_backoff_seconds` must be at least
-  `:base_backoff_seconds`. Previously-compiling misfits now raise
-  `ArgumentError` at compile; `{m, f, a}` http_opts bundles resolve
-  per-perform and cannot be compile-checked.
+  `:base_backoff_seconds`. A literal `:http_opts`
+  `validate_destination: false` — the test seam for loopback listeners —
+  now refuses to compile outside `:test` (with it baked in, the driver's
+  send-time check would be the only remaining SSRF layer; an `{m, f, a}`
+  bundle resolves per-perform and cannot be compile-checked).
+  Previously-compiling misfits now raise `ArgumentError` at compile.
 
 ### Docs
 
 - The `:http_opts` option of `AshHooks.Worker` now states its trust posture:
   `validate_destination: false` (the test seam loopback listeners use)
-  disables the adapter's resolve-and-pin defense and must never ship to
-  production. The `AshHooks.Delivery` classification table gains the
-  unresolvable-DNS row.
+  disables the adapter's resolve-and-pin defense, is refused at compile
+  outside `:test`, and must never ship to production. The
+  `AshHooks.Delivery` classification table gains the unresolvable-DNS row.
 - The send-time SSRF classification is now pinned end-to-end with real DNS
   through the package's own driver — a registration-clean hostname whose
   send-time answer is private is refused by `AshHooks.Http.Bounded`'s
   resolve-and-pin and dead-letters through the runtime (no injected
   refusal, no `validate_destination` bypass) — alongside the driver-side
   unresolvable arm and the default-check arms for both classes.
+
+### Dependencies
+
+- Lock-only substrate refresh clearing every published advisory and all
+  resolver-updatable drift (the shipped requirement lines are unchanged;
+  the declared Ash floor stays `>= 3.34.3` and the floor qualification
+  still pins it): ash 3.34.6 → 3.37.2 (EEF-CVE-2026-96581 HIGH,
+  EEF-CVE-2026-114214 MEDIUM), ash_postgres 2.14.5 → 2.15.2
+  (EEF-CVE-2026-115627, EEF-CVE-2026-115635, plus the retired-package
+  notice), plug_crypto 2.2.0 → 2.2.1 (EEF-CVE-2026-105963), and the
+  currency drift igniter 0.8.5, oban 2.24.2, spark 2.7.9, splode 0.3.3
+  (with their transitive closure). `mix hex.audit` and
+  `scripts/check-currency.sh` are clean against the new lock.
 
 ## 2.0.4 — October 9, 2026
 

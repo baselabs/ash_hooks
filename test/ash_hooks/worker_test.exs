@@ -550,7 +550,7 @@ if Code.ensure_loaded?(Oban) do
       assert delay >= 1
       final = Ash.get!(Delivery, row.id, authorize?: false)
       assert final.status == :failed_retryable
-      assert final.last_error == "unresolved_host"
+      assert final.last_error in ["nxdomain", "resolve_timeout"]
     end
 
     defp offset(source, needle) do
@@ -778,6 +778,43 @@ if Code.ensure_loaded?(Oban) do
         end
       after
         _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "a literal :http_opts validate_destination: false compiles in :test and refuses outside" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        http_opts: [validate_destination: false]"
+          )
+
+        # the documented seam: a loopback listener's worker compiles in :test
+        assert [{RuntimeWorker, _beam}] = Code.compile_string(source)
+
+        Mix.env(:dev)
+
+        assert_raise ArgumentError, ~r/validate_destination: false is the test seam/, fn ->
+          Code.compile_string(source)
+        end
+      after
+        Mix.env(:test)
+        :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "a literal :http_opts timeout below :attempt_timeout compiles clean" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        http_opts: [timeout: 5_000]"
+          )
+
+        assert [{module, _beam}] = Code.compile_string(source)
+        assert module == RuntimeWorker
+      after
+        :code.purge(RuntimeWorker)
         _ = :code.delete(RuntimeWorker)
       end
 

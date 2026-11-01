@@ -36,7 +36,10 @@ defmodule AshHooks.Http.Target do
       {:error, :unsafe} ->
         {:error, :unsafe_destination}
 
-      {:error, :unresolvable} ->
+      # the adapter contract keeps ONE umbrella atom for DNS failure; the
+      # resolver's nxdomain/resolve_timeout distinction belongs to the
+      # send-time preflight, not the adapter seam
+      {:error, _dns_error} ->
         {:error, :unresolved_host}
     end
   end
@@ -49,7 +52,7 @@ defmodule AshHooks.Http.Target do
       when scheme in ["http", "https"] and is_binary(host) and host != "" ->
         case lookup(host, opts) do
           {:ok, address} -> {:ok, %{uri: uri, addresses: [address]}}
-          {:error, _} -> {:error, :unresolvable}
+          {:error, reason} -> {:error, reason}
         end
 
       _other ->
@@ -66,6 +69,8 @@ defmodule AshHooks.Http.Target do
     end
   end
 
+  # the bypass returns the raw lookup result; the outer case folds any
+  # failure into the adapter's unresolved_host umbrella
   defp bounded_lookup(host, opts) do
     :inet.getaddr(String.to_charlist(host), :inet, remaining_timeout(opts))
   end

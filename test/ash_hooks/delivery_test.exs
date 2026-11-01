@@ -758,6 +758,20 @@ defmodule AshHooks.DeliveryTest do
     end
 
     @tag :ssrf_dns
+    test "the default check passes a public resolution through to the send" do
+      # real DNS: example.com resolves public, so the tri-state resolver's
+      # {:ok, _} arm drives a real send through the double (the ssrf
+      # suite's example.com precedent)
+      ep = endpoint!("https://example.com/hook")
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(ssrf_check: nil))
+
+      assert [%{url: "https://example.com/hook"}] = HttpDouble.calls()
+      assert row!(row.id).status == :succeeded
+    end
+
+    @tag :ssrf_dns
     test "the default check retries an unresolvable host under its honest label" do
       ep = endpoint!("https://no-such-host-ash-hooks.invalid/hook")
       row = pending_row!(ep)
@@ -768,7 +782,10 @@ defmodule AshHooks.DeliveryTest do
 
       final = row!(row.id)
       assert final.status == :failed_retryable
-      assert final.last_error == "unresolved_host"
+      # the live resolver's answer is environment-dependent: an
+      # authoritative negative is nxdomain, a blocked/slow resolver is
+      # resolve_timeout — the deterministic branches live in the ssrf suite
+      assert final.last_error in ["nxdomain", "resolve_timeout"]
     end
 
     @tag :ssrf_dns

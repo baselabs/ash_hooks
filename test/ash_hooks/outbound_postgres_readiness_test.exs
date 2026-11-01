@@ -1166,6 +1166,11 @@ if Code.ensure_loaded?(Oban) do
 
     # Hold Oban.Basic's actual uniqueness lock and inserted row in an open
     # PostgreSQL transaction. A second connection must get Oban's unsaved job.
+    # The windows are deadlock DETECTION, not part of the behavior under
+    # test — sized for the tunnel RTT of a maintainer-side ephemeral-area
+    # Postgres (~65ms/query, so the 21 contended attempts of the refusal
+    # test need several seconds) with CI's local service far inside them;
+    # a genuine deadlock still trips them.
     defp with_uncommitted_job(row, event, fun) do
       parent = self()
 
@@ -1178,17 +1183,17 @@ if Code.ensure_loaded?(Oban) do
             receive do
               :commit -> :ok
             after
-              5_000 -> raise "uniqueness transaction was not released"
+              30_000 -> raise "uniqueness transaction was not released"
             end
           end)
         end)
 
       try do
-        assert_receive :unique_job_uncommitted, 2_000
+        assert_receive :unique_job_uncommitted, 10_000
         fun.(holder.pid)
       after
         send(holder.pid, :commit)
-        assert {:ok, :ok} = Task.await(holder, 5_000)
+        assert {:ok, :ok} = Task.await(holder, 15_000)
       end
     end
 

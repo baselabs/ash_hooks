@@ -112,5 +112,47 @@ defmodule AshHooks.SsrfTest do
     test "a hostname with NO resolution is rejected (fail-closed)" do
       refute Ssrf.safe_url?("https://no-such-host-ash-hooks-test.invalid/x")
     end
+
+    @tag :ssrf_dns
+    test "a hostname with NO resolution carries the failure vocabulary" do
+      # the live resolver's answer is environment-dependent (authoritative
+      # negative vs blocked/slow resolver) — the deterministic branches are
+      # pinned below through the pure combiner
+      assert {:error, reason} =
+               Ssrf.resolve_public("https://no-such-host-ash-hooks-test.invalid/x")
+
+      assert reason in [:nxdomain, :resolve_timeout]
+    end
+
+    test "combine_family_results: any address wins over every failure" do
+      assert {:ok, [{1, 2, 3, 4}]} =
+               Ssrf.combine_family_results([{:ok, [{1, 2, 3, 4}]}, {:error, :nxdomain}])
+    end
+
+    test "combine_family_results: nxdomain requires EVERY family negative" do
+      assert {:error, :nxdomain} =
+               Ssrf.combine_family_results([{:error, :nxdomain}, {:error, :nxdomain}])
+    end
+
+    test "combine_family_results: timeout, temporary failure, or mixed evidence is the retryable label" do
+      assert {:error, :resolve_timeout} =
+               Ssrf.combine_family_results([
+                 {:error, :resolve_timeout},
+                 {:error, :resolve_timeout}
+               ])
+
+      # one authoritative negative + one unanswered question: not a verdict
+      assert {:error, :resolve_timeout} =
+               Ssrf.combine_family_results([{:error, :nxdomain}, {:error, :resolve_timeout}])
+    end
+
+    test "an expired deadline classifies as resolve_timeout, never nxdomain" do
+      # both family queries are killed at the shared deadline before any
+      # answer exists — the deterministic form of an outage
+      assert {:error, :resolve_timeout} =
+               Ssrf.resolve_public("https://example.com/hook",
+                 deadline: System.monotonic_time(:millisecond) - 1
+               )
+    end
   end
 end

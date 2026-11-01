@@ -13,6 +13,12 @@ defmodule AshHooks.Ssrf do
   IPv4-mapped and IPv4-compatible IPv6 addresses are classified using their
   embedded IPv4 address.
 
+  A hostname that fails to resolve fails as `:nxdomain` when every queried
+  family returned an authoritative negative answer, and as `:resolve_timeout`
+  otherwise (timeout, temporary resolver failure, or mixed evidence — the
+  conservative retryable label). `safe_url?/1` stays boolean: both are
+  `false` there.
+
   DNS resolution has a two-second ceiling, shortened by a supplied operation
   deadline. Both supplied HTTP adapters connect to an address from the
   validated result while retaining the original hostname for TLS and HTTP.
@@ -30,13 +36,13 @@ defmodule AshHooks.Ssrf do
   def safe_url?(url) when is_binary(url) do
     case URI.new(url) do
       # URI.new (RFC 3986 parser) carries the scheme as a BINARY, not an atom
-      {:ok, %URI{scheme: scheme, host: host} = uri} when scheme in ["http", "https"] ->
+      {:ok, %URI{scheme: scheme, host: host}} when scheme in ["http", "https"] ->
         host = host && String.downcase(host)
 
         cond do
           host in [nil, ""] -> false
           host in @metadata_hostnames -> false
-          true -> host_public?(uri, host)
+          true -> host_public?(host)
         end
 
       _other ->
@@ -49,9 +55,10 @@ defmodule AshHooks.Ssrf do
   @doc """
   Returns validated addresses behind a URL for connection pinning:
   `{:ok, %{uri: URI, addresses: [ip]}}` when every resolved address is
-  public, `{:error, :unsafe | :unresolvable}` otherwise. The connection
-  target must come from this same result to prevent DNS rebinding between
-  validation and connection.
+  public, `{:error, :unsafe}` when an answer is non-public, and
+  `{:error, :nxdomain | :resolve_timeout}` when the name does not resolve.
+  The connection target must come from this same result to prevent DNS
+  rebinding between validation and connection.
   """
   @spec resolve_public(term()) ::
           {:ok, %{uri: URI.t(), addresses: [:inet.ip_address()]}} | {:error, atom()}
@@ -73,14 +80,14 @@ defmodule AshHooks.Ssrf do
   defp check_host(_uri, host, _opts) when host in @metadata_hostnames, do: {:error, :unsafe}
 
   defp check_host(uri, host, opts) do
-    case resolve(uri, host, opts) do
+    case resolve(host, opts) do
       {:ok, addresses} ->
         if Enum.all?(addresses, &public_address?/1),
           do: {:ok, %{uri: uri, addresses: addresses}},
           else: {:error, :unsafe}
 
-      :error ->
-        {:error, :unresolvable}
+      {:error, dns_error} ->
+        {:error, dns_error}
     end
   end
 
@@ -115,16 +122,16 @@ defmodule AshHooks.Ssrf do
     end
   end
 
-  defp host_public?(uri, host) do
-    case resolve(uri, host, []) do
+  defp host_public?(host) do
+    case resolve(host, []) do
       {:ok, addresses} -> Enum.all?(addresses, &public_address?/1)
-      :error -> false
+      {:error, _dns_error} -> false
     end
   end
 
   # Literal IP hosts skip DNS; hostnames resolve — BOTH families, because
   # ANY answer class can carry the private address that must reject.
-  defp resolve(uri, host, opts) do
+  defp resolve(host, opts) do
     bare = host_without_brackets(host)
 
     case :inet.parse_address(String.to_charlist(bare)) do
@@ -132,24 +139,43 @@ defmodule AshHooks.Ssrf do
         {:ok, [address]}
 
       {:error, _} ->
-        case resolved_addresses(uri, String.to_charlist(bare), opts) do
-          [] -> :error
-          addresses -> {:ok, addresses}
-        end
+        resolve_hostname(String.to_charlist(bare), opts)
     end
   end
 
   # uri.host arrives bracketless — URI.new strips IPv6 brackets
   defp host_without_brackets(host), do: host
 
-  defp resolved_addresses(_uri, charlist, opts) do
+  defp resolve_hostname(charlist, opts) do
     now = System.monotonic_time(:millisecond)
     deadline = min(opts[:deadline] || now + @resolve_timeout_ms, now + @resolve_timeout_ms)
 
     # Query both families under one deadline. A family that returns no
     # addresses contributes nothing; the combined result must be nonempty,
     # and adapters connect only to an address validated from that result.
-    bounded_resolve(charlist, :inet, deadline) ++ bounded_resolve(charlist, :inet6, deadline)
+    [bounded_resolve(charlist, :inet, deadline), bounded_resolve(charlist, :inet6, deadline)]
+    |> combine_family_results()
+  end
+
+  @doc false
+  # Pure classification of the per-family resolution outcomes — public only
+  # as the deterministic test seam for the failure vocabulary (the live
+  # resolver's answer is environment-dependent). nxdomain requires EVERY
+  # family to have answered authoritatively negative; anything else —
+  # timeout, temporary failure, mixed evidence — is the conservative
+  # retryable label.
+  @spec combine_family_results([
+          {:ok, [:inet.ip_address()]}
+          | {:error, :nxdomain | :resolve_timeout}
+        ]) :: {:ok, [:inet.ip_address()]} | {:error, :nxdomain | :resolve_timeout}
+  def combine_family_results(results) do
+    addresses = for {:ok, family_addresses} <- results, address <- family_addresses, do: address
+
+    cond do
+      addresses != [] -> {:ok, addresses}
+      Enum.all?(results, &match?({:error, :nxdomain}, &1)) -> {:error, :nxdomain}
+      true -> {:error, :resolve_timeout}
+    end
   end
 
   # Bound send-time resolution by the shared DNS and operation deadlines.
@@ -158,8 +184,9 @@ defmodule AshHooks.Ssrf do
     timeout = max(deadline - System.monotonic_time(:millisecond), 0)
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, {:hostent, _, _, _, _, addresses}}} -> addresses
-      _failed_or_timeout -> []
+      {:ok, {:ok, {:hostent, _, _, _, _, addresses}}} -> {:ok, addresses}
+      {:ok, {:error, :nxdomain}} -> {:error, :nxdomain}
+      _timeout_or_temporary -> {:error, :resolve_timeout}
     end
   end
 

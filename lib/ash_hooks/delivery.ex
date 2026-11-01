@@ -36,9 +36,12 @@ defmodule AshHooks.Delivery do
     * transport error / secret-resolution failure → retryable
       backoff
     * unresolvable DNS at the send-time destination check → retryable
-      backoff under `unresolved_host` (a resolver outage is transport,
-      not a verdict on the destination; a permanently dead domain
-      dead-letters at the row ceiling carrying that label)
+      backoff under `nxdomain` (every family answered authoritatively
+      negative) or `resolve_timeout` (resolver outage, congestion, mixed
+      evidence — transport, not a verdict on the destination); a
+      permanently dead domain dead-letters at the row ceiling carrying
+      its label. The HTTP adapter's umbrella for the same failures is
+      `unresolved_host`
     * send-time SSRF refusal / disabled-or-gone endpoint → `:dead_letter`
 
   Backoff: `min(base · 2^min(attempts, 16), max_backoff)` seconds plus
@@ -589,9 +592,17 @@ defmodule AshHooks.Delivery do
     case config[:ssrf_check] do
       nil ->
         case AshHooks.Ssrf.resolve_public(endpoint.url) do
-          {:ok, _validated} -> send(row, endpoint, config, tenant)
-          {:error, :unsafe} -> dead_letter(row, "unsafe_destination", config, tenant)
-          {:error, :unresolvable} -> retry(row, "unresolved_host", config, tenant, nil)
+          {:ok, _validated} ->
+            send(row, endpoint, config, tenant)
+
+          {:error, :unsafe} ->
+            dead_letter(row, "unsafe_destination", config, tenant)
+
+          # nxdomain (authoritative negative) vs resolve_timeout (outage,
+          # congestion, mixed evidence) — both retry; the row ceiling
+          # terminalizes a dead domain carrying the honest label
+          {:error, dns_error} when dns_error in [:nxdomain, :resolve_timeout] ->
+            retry(row, Atom.to_string(dns_error), config, tenant, nil)
         end
 
       check ->

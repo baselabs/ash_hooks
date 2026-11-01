@@ -8,19 +8,25 @@ No schema or DSL changes. Two observable deltas:
   2.0.4 a hostname that failed to resolve (resolver outage, congestion past
   the 2-second resolution ceiling, or a dead domain) dead-lettered
   immediately as `unsafe_destination` at `attempts == 1`. In 2.0.5 it
-  retries as transport under `last_error` `unresolved_host` (also newly in
-  the telemetry reason vocabulary) and dead-letters at the row ceiling
-  carrying that label. A validated-unsafe answer (private/special-purpose
-  IP) still dead-letters immediately as `unsafe_destination`. If you
-  branched on the immediate dead-letter to detect DNS-dark endpoints, read
-  `unresolved_host` rows off the ceiling instead.
+  retries as transport and dead-letters at the row ceiling carrying an
+  honest label: `nxdomain` (every queried address family answered
+  authoritatively negative) or `resolve_timeout` (outage, congestion,
+  mixed evidence); the HTTP adapter's umbrella for the same failures is
+  `unresolved_host` (all three are in the telemetry reason vocabulary).
+  A validated-unsafe answer (private/special-purpose IP) still dead-letters
+  immediately as `unsafe_destination`. If you branched on the immediate
+  dead-letter to detect DNS-dark endpoints, read the labeled rows off the
+  ceiling instead.
 - **`use AshHooks.Worker` refuses misfit budgets at compile time.** Oban's
   `:max_attempts` must exceed `:delivery_max_attempts`; a literal
   `:http_opts` `timeout:` must stay below `:attempt_timeout`; budget
   options must be positive integers; `:max_backoff_seconds` must be at
-  least `:base_backoff_seconds`. Configs that compiled in 2.0.4 while
-  silently truncating the retry ladder or walling off slow sends now raise
-  `ArgumentError`.
+  least `:base_backoff_seconds`. A literal `:http_opts`
+  `validate_destination: false` refuses to compile outside `:test` (it is
+  the loopback-listener test seam; with it baked in, the driver's send-time
+  check is the only remaining SSRF layer). Configs that compiled in 2.0.4
+  while silently truncating the retry ladder, walling off slow sends, or
+  disabling adapter pinning now raise `ArgumentError`.
 
 ## 1.x → 2.0.1
 

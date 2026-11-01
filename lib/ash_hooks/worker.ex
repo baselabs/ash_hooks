@@ -50,7 +50,8 @@ defmodule AshHooks.Worker do
       must stay below `:attempt_timeout` (the macro refuses a larger one),
       and `validate_destination: false` — the test seam loopback listeners
       use — disables the adapter's resolve-and-pin defense, leaving only the
-      driver's send-time destination check. Never ship it to production.
+      driver's send-time destination check. The macro refuses to compile a
+      literal bypass outside `:test`; never ship it to production.
     * `:oban` — the Oban instance name (default the unnamed instance).
     * `:queue` (default `:ash_hooks`), `:timeout` (35,000 ms), and
       `:max_attempts` (20) — Oban Worker options. The job timeout must be
@@ -137,6 +138,20 @@ defmodule AshHooks.Worker do
 
       _absent_or_below ->
         :ok
+    end
+  end
+
+  # the destination-validation bypass is the TEST seam for loopback
+  # listeners; with it on, the driver's send-time check is the only
+  # remaining layer. Refuse to bake it outside :test — a dev/prod worker
+  # must not silently lose the adapter's resolve-and-pin. An {m, f, a}
+  # bundle resolves per-perform and cannot be compile-checked
+  defp validate_literal_destination_bypass!(literal) do
+    if Mix.env() != :test and literal[:validate_destination] == false do
+      raise ArgumentError,
+            "AshHooks.Worker :http_opts validate_destination: false is the test seam for " <>
+              "loopback listeners — the driver's send-time check would be the only remaining " <>
+              "layer. Refusing to compile it outside :test"
     end
   end
 
@@ -268,8 +283,12 @@ defmodule AshHooks.Worker do
       end
 
     case http_opts do
-      literal when is_list(literal) -> validate_literal_driver_timeout!(literal, attempt_timeout)
-      _mfa_or_nil -> :ok
+      literal when is_list(literal) ->
+        validate_literal_driver_timeout!(literal, attempt_timeout)
+        validate_literal_destination_bypass!(literal)
+
+      _mfa_or_nil ->
+        :ok
     end
 
     worker_module = caller.module
