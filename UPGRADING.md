@@ -1,6 +1,6 @@
 # Upgrading
 
-## 2.0.4 → 2.0.5
+## 2.0.4 → 2.1.0
 
 No schema or DSL changes. Two observable deltas:
 

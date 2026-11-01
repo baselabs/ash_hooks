@@ -312,12 +312,18 @@ if Code.ensure_loaded?(Oban) do
       IO.puts(
         "TENANT WORKER OK: Ash #{result.ash}; parent #{System.pid()}; peer #{result.os_pid}; " <>
           "Basic job completed; tenant victim -> VICTIM; attacker-first foreign args made zero attempts; " <>
-          "alias MFA HTTP options resolved; default Bounded POST https://httpbun.com/status/103 reached final 200; #{result.ash_info_path}"
+          "alias MFA HTTP options resolved; default Bounded POST https://httpbun.com/post reached 200; #{result.ash_info_path}" <>
+          " (the hosted service now rejects 1xx on /status — interim-103 consumption is qualified" <>
+          " against a local scripted listener in bounded_http_test)"
       )
     end
 
+    # /post, not the former /status/103: the hosted httpbun build now
+    # answers 400 "invalid status code ... must be between 200 and 599"
+    # for 1xx codes — the interim-response dance stays qualified against
+    # the local scripted server (bounded_http_test's 103 tests)
     defp endpoint!(tenant, reference) do
-      Ash.create!(Endpoint, %{url: "https://httpbun.com/status/103", secret_ref: reference},
+      Ash.create!(Endpoint, %{url: "https://httpbun.com/post", secret_ref: reference},
         tenant: tenant,
         authorize?: false
       )

@@ -27,7 +27,14 @@ with tarfile.open(archive) as outer:
     content = outer.extractfile('contents.tar.gz').read()
     metadata = outer.extractfile('metadata.config').read().decode()
 assert '{<<"version">>,<<"' + sys.argv[2] + '">>}' in metadata, 'package version mismatch'
-requirements = dict(re.findall(r'\[\{<<"name">>,<<"([^\"]+)">>\},(.*?)\}\]', metadata, re.S))
+# hex 2.5 emits each requirement entry with `name` first; hex 2.6
+# alphabetizes (`app` first) — parse field-order agnostic: take every
+# bracketed entry, keep those carrying a name field
+requirements = {}
+for entry in re.findall(r'\[\s*\{[^[\]]*?\}\s*\]', metadata, re.S):
+    matched = re.search(r'\{<<"name">>,<<"([^"]+)">>\}', entry)
+    if matched:
+        requirements[matched.group(1)] = entry
 for name in ['oban', 'plug']:
     assert name in requirements, f'optional requirement missing: {name}'
     assert '{<<"optional">>,true}' in requirements[name], f'requirement not optional: {name}'

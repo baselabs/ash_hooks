@@ -422,7 +422,11 @@ With no `enqueue:` the rows persist `:pending` (durable ledger only,
 nothing sends). With the worker seam wired, each row is delivered by
 `AshHooks.Delivery`: Standard-Webhooks signed, retried with bounded
 Retry-After and jittered backoff, dead-lettered at the ceiling, the
-endpoint durably disabled on 410.
+endpoint durably disabled on 410. A hostname that stops resolving is
+transport, not a verdict: it retries labeled `nxdomain` (the name is
+authoritatively gone) or `resolve_timeout` (resolver outage, congestion)
+and only a validated private/loopback answer dead-letters immediately as
+`unsafe_destination` — the labels a triage surface should key on.
 
 Signing modes: `:standard` (default) needs only `secret_ref`. Both
 `:legacy` and `:dual` require the endpoint to carry a

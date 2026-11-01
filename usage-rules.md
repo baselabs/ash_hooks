@@ -122,6 +122,8 @@ AshHooks 2.0.
 
 ## Common mistakes
 
+- Baking `validate_destination: false` or an `http_opts` `timeout:` above `:attempt_timeout`
+  into a worker module (the macro refuses both — the bypass is the `:test`-only loopback seam).
 - Decoding JSON before capturing the raw request body used by the provider signature.
 - Generating a new event ID each time the same source record is dispatched.
 - Calling `Delivery.run/2` without handling `{:snooze, seconds}`.

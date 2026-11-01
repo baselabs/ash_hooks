@@ -25,7 +25,10 @@ need no queue infrastructure at all.
   spec, so receivers verify with any conformant library. Key rotation
   and a legacy-envelope mode for receivers mid-migration are built in.
 - Retries honor `Retry-After`, back off with jitter, dead-letter at a
-  ceiling, and durably disable endpoints that return 410.
+  ceiling, and durably disable endpoints that return 410. DNS failures are
+  transport, not verdicts: a hostname that stops resolving retries under an
+  honest label (`nxdomain` vs `resolve_timeout`) and only a validated
+  private/loopback answer dead-letters immediately.
 - Safe defaults: inbound declarations use secret resolvers rather than literal
   binaries, and endpoint rows store secret references. Endpoint URLs are
   checked against server-side request forgery (SSRF) at
@@ -177,6 +180,13 @@ end
 The secret resolver maps an endpoint's secret reference to its value —
 generate values with `AshHooks.Signing.generate_secret/0`, store them
 whole in your secret store, and return them unchanged.
+
+Related budgets are checked at compile time: the macro refuses an Oban
+`:max_attempts` at or below `:delivery_max_attempts` (only the row's
+ceiling decides dead-letter), a literal `http_opts` `timeout:` at or above
+`:attempt_timeout`, non-positive budget values, and a literal
+`validate_destination: false` outside `:test` (it is the loopback test
+seam). See `AshHooks.Worker` for every relation and its rationale.
 
 Dispatch, wiring the worker's generated enqueue function:
 

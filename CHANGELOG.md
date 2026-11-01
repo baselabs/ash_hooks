@@ -6,7 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
-## 2.0.5 — November 1, 2026
+## 2.1.0 — November 1, 2026
+
+A minor under ADR-0010 rule 3, not a patch: `AshHooks.Ssrf.resolve_public/1`
+is covered surface and its documented DNS-failure vocabulary changed
+(`:unresolvable` → `:nxdomain` | `:resolve_timeout`), and `use
+AshHooks.Worker` now refuses previously-compiling misfit configurations at
+compile time. No schema, DSL, or success-path change; read
+[UPGRADING.md](UPGRADING.md) before adopting.
 
 ### Fixed
 
