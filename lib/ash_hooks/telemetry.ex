@@ -75,7 +75,8 @@ defmodule AshHooks.Telemetry do
     invalid_headers invalid_method invalid_response invalid_route invalid_url
     max_attempts no_secret nxdomain reconcile_pending secret_resolution
     signing_failed source_conflict stale_row timeout tls_alert
-    truncated_body unsafe_destination unresolved_route worker_route_mismatch)
+    truncated_body unsafe_destination unresolved_host unresolved_route
+    worker_route_mismatch)
 
   def classify_token(term) when is_atom(term), do: classify_token(Atom.to_string(term))
 

@@ -1,5 +1,27 @@
 # Upgrading
 
+## 2.0.4 → 2.0.5
+
+No schema or DSL changes. Two observable deltas:
+
+- **Unresolvable DNS at the send-time destination check now retries.** In
+  2.0.4 a hostname that failed to resolve (resolver outage, congestion past
+  the 2-second resolution ceiling, or a dead domain) dead-lettered
+  immediately as `unsafe_destination` at `attempts == 1`. In 2.0.5 it
+  retries as transport under `last_error` `unresolved_host` (also newly in
+  the telemetry reason vocabulary) and dead-letters at the row ceiling
+  carrying that label. A validated-unsafe answer (private/special-purpose
+  IP) still dead-letters immediately as `unsafe_destination`. If you
+  branched on the immediate dead-letter to detect DNS-dark endpoints, read
+  `unresolved_host` rows off the ceiling instead.
+- **`use AshHooks.Worker` refuses misfit budgets at compile time.** Oban's
+  `:max_attempts` must exceed `:delivery_max_attempts`; a literal
+  `:http_opts` `timeout:` must stay below `:attempt_timeout`; budget
+  options must be positive integers; `:max_backoff_seconds` must be at
+  least `:base_backoff_seconds`. Configs that compiled in 2.0.4 while
+  silently truncating the retry ladder or walling off slow sends now raise
+  `ArgumentError`.
+
 ## 1.x → 2.0.1
 
 2.0 changes the durable delivery schema and HubSpot's default event identity.

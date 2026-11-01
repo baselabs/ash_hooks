@@ -35,6 +35,10 @@ defmodule AshHooks.Delivery do
     * 3xx → `:dead_letter` (`redirect_refused` — never followed)
     * transport error / secret-resolution failure → retryable
       backoff
+    * unresolvable DNS at the send-time destination check → retryable
+      backoff under `unresolved_host` (a resolver outage is transport,
+      not a verdict on the destination; a permanently dead domain
+      dead-letters at the row ceiling carrying that label)
     * send-time SSRF refusal / disabled-or-gone endpoint → `:dead_letter`
 
   Backoff: `min(base · 2^min(attempts, 16), max_backoff)` seconds plus
@@ -576,13 +580,26 @@ defmodule AshHooks.Delivery do
   defp attempt_enabled(row, endpoint, config, tenant) do
     # send-time re-check: full DNS re-resolution by default (ADR-0005);
     # the seam is injectable so deterministic tests use the
-    # literal-only variant
-    check = config[:ssrf_check] || (&AshHooks.Ssrf.safe_url?/1)
+    # literal-only variant. The default runs the tri-state resolver so an
+    # UNRESOLVABLE host retries under its honest label — a resolver
+    # outage is transport, not a verdict on the destination — and only a
+    # validated-unsafe answer dead-letters. (The boolean `safe_url?/1`
+    # folded both into one `false`, dead-lettering DNS outages as
+    # "unsafe_destination" at attempts == 1.)
+    case config[:ssrf_check] do
+      nil ->
+        case AshHooks.Ssrf.resolve_public(endpoint.url) do
+          {:ok, _validated} -> send(row, endpoint, config, tenant)
+          {:error, :unsafe} -> dead_letter(row, "unsafe_destination", config, tenant)
+          {:error, :unresolvable} -> retry(row, "unresolved_host", config, tenant, nil)
+        end
 
-    if check.(endpoint.url) do
-      send(row, endpoint, config, tenant)
-    else
-      dead_letter(row, "unsafe_destination", config, tenant)
+      check ->
+        if check.(endpoint.url) do
+          send(row, endpoint, config, tenant)
+        else
+          dead_letter(row, "unsafe_destination", config, tenant)
+        end
     end
   end
 

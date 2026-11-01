@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.0.5 — November 1, 2026
+
+### Fixed
+
+- **Unresolvable DNS is transport, not a verdict on the destination.** The
+  default send-time destination check now runs the tri-state
+  `AshHooks.Ssrf.resolve_public/1` instead of the boolean `safe_url?/1`,
+  which folded *unresolvable* into *unsafe*: a resolver outage — or mere
+  congestion past the two-second resolution ceiling — permanently
+  dead-lettered healthy endpoints at `attempts == 1` under the
+  `unsafe_destination` label, while the same condition surfacing one layer
+  later (inside the HTTP adapter) retried as transport. Now a validated-unsafe
+  answer still dead-letters immediately as `unsafe_destination`; an
+  unresolvable host retries under its honest label `unresolved_host` (added
+  to the telemetry reason vocabulary — it previously collapsed to
+  `unclassified`), and a permanently dead domain dead-letters at the row
+  ceiling carrying that label. Consumer-observable: rows that would have
+  been terminal at attempts == 1 now climb the backoff ladder; consumers
+  branching on an immediate `unsafe_destination` for DNS-dark endpoints see
+  `failed_retryable`/`unresolved_host` rows instead. The injected
+  `:ssrf_check` boolean seam is unchanged (false still dead-letters as
+  `unsafe_destination`).
+- **Compiled worker-budget tripwires.** `use AshHooks.Worker` now refuses,
+  at compile time, related budgets whose silent misfit stalls rows or walls
+  off every slow send: Oban's `:max_attempts` must exceed
+  `:delivery_max_attempts` (error-class results — attempt timeout, driver
+  crash, endpoint read errors — consume Oban executions in step with row
+  attempts while snooze-class results consume none, so only the row ceiling
+  may decide dead-letter; a larger row ceiling against the default Oban
+  ceiling truncated the retry ladder mid-flight and stalled rows until a
+  recovery trigger), a literal `:http_opts` `timeout:` must stay below
+  `:attempt_timeout` (the runtime kills the attempt at the budget wall
+  before the driver's own deadline), every budget option must be a positive
+  integer, and `:max_backoff_seconds` must be at least
+  `:base_backoff_seconds`. Previously-compiling misfits now raise
+  `ArgumentError` at compile; `{m, f, a}` http_opts bundles resolve
+  per-perform and cannot be compile-checked.
+
+### Docs
+
+- The `:http_opts` option of `AshHooks.Worker` now states its trust posture:
+  `validate_destination: false` (the test seam loopback listeners use)
+  disables the adapter's resolve-and-pin defense and must never ship to
+  production. The `AshHooks.Delivery` classification table gains the
+  unresolvable-DNS row.
+- The send-time SSRF classification is now pinned end-to-end with real DNS
+  through the package's own driver — a registration-clean hostname whose
+  send-time answer is private is refused by `AshHooks.Http.Bounded`'s
+  resolve-and-pin and dead-letters through the runtime (no injected
+  refusal, no `validate_destination` bypass) — alongside the driver-side
+  unresolvable arm and the default-check arms for both classes.
+
 ## 2.0.4 — October 9, 2026
 
 ### Fixed

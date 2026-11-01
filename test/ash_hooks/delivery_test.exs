@@ -743,6 +743,70 @@ defmodule AshHooks.DeliveryTest do
       assert row!(row.id).status == :dead_letter
       assert row!(row.id).last_error =~ "destination"
     end
+
+    # real DNS both ways: localhost always resolves to loopback through
+    # /etc/hosts and .invalid never resolves (RFC 6761) — no network
+    @tag :ssrf_dns
+    test "the default check dead-letters a hostname whose DNS answer is private" do
+      ep = endpoint!("http://localhost:9/hook")
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(ssrf_check: nil))
+      assert HttpDouble.calls() == []
+      assert row!(row.id).status == :dead_letter
+      assert row!(row.id).last_error == "unsafe_destination"
+    end
+
+    @tag :ssrf_dns
+    test "the default check retries an unresolvable host under its honest label" do
+      ep = endpoint!("https://no-such-host-ash-hooks.invalid/hook")
+      row = pending_row!(ep)
+
+      assert {:snooze, delay} = DeliveryRuntime.run(args(row), config(ssrf_check: nil))
+      assert delay >= 1
+      assert HttpDouble.calls() == []
+
+      final = row!(row.id)
+      assert final.status == :failed_retryable
+      assert final.last_error == "unresolved_host"
+    end
+
+    @tag :ssrf_dns
+    test "the REAL adapter's pin-time refusal dead-letters a registration-clean hostname that resolves private" do
+      # the composed rebinding refusal: the injected boolean check passes the
+      # hostname, and the real Bounded adapter's resolve-and-pin refuses the
+      # loopback answer — classification runs end-to-end through the package's
+      # own driver, no injected refusal, no validate_destination bypass
+      ep = endpoint!("http://localhost:9/hook")
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), config(http: AshHooks.Http.Bounded))
+
+      final = row!(row.id)
+      assert final.status == :dead_letter
+      assert final.attempts == 1
+      assert final.last_error == "unsafe_destination"
+    end
+
+    @tag :ssrf_dns
+    test "a DRIVER-side unresolvable host retries through the same honest label" do
+      # preflight overridden permissive; the real adapter cannot resolve —
+      # the driver arm must classify identically to the preflight arm
+      ep = endpoint!("https://no-such-host-ash-hooks.invalid/hook")
+      row = pending_row!(ep)
+
+      assert {:snooze, delay} =
+               DeliveryRuntime.run(
+                 args(row),
+                 config(http: AshHooks.Http.Bounded, ssrf_check: fn _url -> true end)
+               )
+
+      assert delay >= 1
+
+      final = row!(row.id)
+      assert final.status == :failed_retryable
+      assert final.last_error == "unresolved_host"
+    end
   end
 
   describe "endpoint state at send" do

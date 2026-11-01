@@ -46,19 +46,32 @@ defmodule AshHooks.Worker do
     * `:http` — the `AshHooks.Http` adapter (default `AshHooks.Http.Bounded`).
     * `:http_opts` — adapter options as a literal keyword list or a
       `{module, function, args}` callback resolved inside each job's monitored
-      delivery deadline.
+      delivery deadline. Consumer-trusted config: a literal `timeout:` here
+      must stay below `:attempt_timeout` (the macro refuses a larger one),
+      and `validate_destination: false` — the test seam loopback listeners
+      use — disables the adapter's resolve-and-pin defense, leaving only the
+      driver's send-time destination check. Never ship it to production.
     * `:oban` — the Oban instance name (default the unnamed instance).
     * `:queue` (default `:ash_hooks`), `:timeout` (35,000 ms), and
       `:max_attempts` (20) — Oban Worker options. The job timeout must be
-      greater than `:attempt_timeout + :finalization_allowance`.
+      greater than `:attempt_timeout + :finalization_allowance`, and Oban's
+      `:max_attempts` must exceed `:delivery_max_attempts`: error-class
+      results (attempt timeout, driver crash, endpoint read errors) consume
+      Oban executions in step with row attempts while snooze-class results
+      consume none, so only the row ceiling may decide dead-letter.
     * `:attempt_timeout` (25,000 ms) and `:finalization_allowance` (5,000 ms)
       — the driver deadline and extra send-lease interval. The attempt budget
       includes endpoint lookup, secret resolution, signing, destination and
-      DNS checks, HTTP, and result persistence. Keep application clocks
+      DNS checks, HTTP, and result persistence. A literal `:http_opts`
+      `timeout:` must stay below `:attempt_timeout` (the macro refuses a
+      larger one; an `{m, f, a}` bundle resolves per-perform and cannot be
+      compile-checked). Keep application clocks
       synchronized because lease comparisons use the application clock.
     * `:delivery_max_attempts` (default 10), `:base_backoff_seconds` (2),
       `:max_backoff_seconds` (3600), `:retry_after_cap_seconds` (86_400) —
-      the row-driven retry policy. For direct `AshHooks.Delivery.run/2` calls,
+      the row-driven retry policy; every budget option must be a positive
+      integer and `:max_backoff_seconds` at least `:base_backoff_seconds`.
+      For direct `AshHooks.Delivery.run/2` calls,
       `:delivery_max_attempts` becomes `:max_attempts`; the other retry option
       names and defaults are unchanged. Omitted or `nil` retry options use
       these defaults. The `Retry-After` cap is
@@ -101,6 +114,31 @@ defmodule AshHooks.Worker do
   defp validate_redactor(m, f) when is_atom(m) and is_atom(f), do: {m, f}
 
   defp validate_redactor(m, f), do: raise(ArgumentError, redactor_error(m, f))
+
+  defp validate_positive_budgets!(budgets) do
+    Enum.each(budgets, fn {key, value} ->
+      unless is_integer(value) and value > 0 do
+        raise ArgumentError,
+              "AshHooks.Worker #{inspect(key)} must be a positive integer, got #{inspect(value)}"
+      end
+    end)
+  end
+
+  # a literal driver timeout at or above the attempt budget walls off every
+  # slow send at the runtime's kill line before the driver's own deadline
+  # fires — an {m, f, a} bundle is resolved per-perform and cannot be
+  # compile-checked
+  defp validate_literal_driver_timeout!(literal, attempt_timeout) do
+    case Keyword.get(literal, :timeout) do
+      driver_timeout when is_integer(driver_timeout) and driver_timeout >= attempt_timeout ->
+        raise ArgumentError,
+              "AshHooks.Worker :http_opts timeout (#{driver_timeout}ms) must stay below " <>
+                ":attempt_timeout (#{attempt_timeout}ms)"
+
+      _absent_or_below ->
+        :ok
+    end
+  end
 
   defp redactor_error(m, f) do
     "AshHooks.Worker :snippet_redactor must be {module, function} " <>
@@ -184,10 +222,41 @@ defmodule AshHooks.Worker do
     job_timeout = Keyword.get(opts, :timeout, 35_000)
     attempt_timeout = Keyword.get(opts, :attempt_timeout, 25_000)
     finalization_allowance = Keyword.get(opts, :finalization_allowance, 5_000)
+    oban_max_attempts = Keyword.get(opts, :max_attempts, 20)
+    delivery_max_attempts = Keyword.get(opts, :delivery_max_attempts, 10)
+    base_backoff = Keyword.get(opts, :base_backoff_seconds, 2)
+    max_backoff = Keyword.get(opts, :max_backoff_seconds, 3600)
+    retry_after_cap = Keyword.get(opts, :retry_after_cap_seconds, 86_400)
 
     if job_timeout <= attempt_timeout + finalization_allowance do
       raise ArgumentError,
             "AshHooks.Worker :timeout must exceed :attempt_timeout plus :finalization_allowance"
+    end
+
+    # compiled budget tripwires: these are related budgets, and a silent
+    # misfit either stalls rows or walls off every slow send — refuse at
+    # compile time, where every value but an MFA-resolved http_opts is
+    # in hand
+    validate_positive_budgets!(
+      attempt_timeout: attempt_timeout,
+      finalization_allowance: finalization_allowance,
+      base_backoff_seconds: base_backoff,
+      retry_after_cap_seconds: retry_after_cap
+    )
+
+    if max_backoff < base_backoff do
+      raise ArgumentError,
+            "AshHooks.Worker :max_backoff_seconds must be at least :base_backoff_seconds"
+    end
+
+    # error-class results (attempt timeout, driver crash, endpoint read
+    # errors) consume Oban executions in step with row attempts while
+    # snooze-class results consume none, so Oban's ceiling must sit above
+    # the row ceiling — only the row ceiling may decide dead-letter
+    if oban_max_attempts <= delivery_max_attempts do
+      raise ArgumentError,
+            "AshHooks.Worker :max_attempts (the Oban job ceiling) must exceed " <>
+              ":delivery_max_attempts (the row-owned retry ceiling)"
     end
 
     {resolver_m, resolver_f} = Keyword.fetch!(opts, :secret_resolver)
@@ -197,6 +266,11 @@ defmodule AshHooks.Worker do
         {:{}, _, [m, f, a]} when is_atom(f) and is_list(a) -> {expand.(m), f, a}
         other -> other
       end
+
+    case http_opts do
+      literal when is_list(literal) -> validate_literal_driver_timeout!(literal, attempt_timeout)
+      _mfa_or_nil -> :ok
+    end
 
     worker_module = caller.module
     dispatch_route = AshHooks.OutboundBinding.named_route(worker_module, :enqueue)
@@ -233,10 +307,10 @@ defmodule AshHooks.Worker do
         attempt_timeout: attempt_timeout,
         finalization_allowance: finalization_allowance,
         dispatch_route: dispatch_route,
-        max_attempts: Keyword.get(opts, :delivery_max_attempts, 10),
-        base_backoff_seconds: Keyword.get(opts, :base_backoff_seconds, 2),
-        max_backoff_seconds: Keyword.get(opts, :max_backoff_seconds, 3600),
-        retry_after_cap_seconds: Keyword.get(opts, :retry_after_cap_seconds, 86_400)
+        max_attempts: delivery_max_attempts,
+        base_backoff_seconds: base_backoff,
+        max_backoff_seconds: max_backoff,
+        retry_after_cap_seconds: retry_after_cap
       ]
       |> Macro.escape()
 

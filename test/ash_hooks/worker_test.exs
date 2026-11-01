@@ -542,12 +542,15 @@ if Code.ensure_loaded?(Oban) do
       [args] = job_args()
       job = %Oban.Job{args: args}
 
-      # a pending row against an unresolvable-but-registered url would
-      # send; here the row dead-letters at the send-time DNS check
-      assert :ok = Worker.perform(job)
+      # a pending row against an unresolvable-but-registered url hits the
+      # send-time DNS check: unresolvable is TRANSPORT, not a verdict on
+      # the destination — the row retries under its honest label (the
+      # ceiling dead-letters a permanently dead domain)
+      assert {:snooze, delay} = Worker.perform(job)
+      assert delay >= 1
       final = Ash.get!(Delivery, row.id, authorize?: false)
-      assert final.status == :dead_letter
-      assert final.last_error =~ "destination"
+      assert final.status == :failed_retryable
+      assert final.last_error == "unresolved_host"
     end
 
     defp offset(source, needle) do
@@ -740,6 +743,70 @@ if Code.ensure_loaded?(Oban) do
 
         assert_raise ArgumentError,
                      ~r/:timeout must exceed :attempt_timeout plus :finalization_allowance/,
+                     fn -> Code.compile_string(source) end
+      after
+        _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "Oban's :max_attempts at or below :delivery_max_attempts refuses to compile" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        max_attempts: 10,\n        delivery_max_attempts: 10"
+          )
+
+        assert_raise ArgumentError, ~r/:max_attempts.*must exceed.*:delivery_max_attempts/s, fn ->
+          Code.compile_string(source)
+        end
+      after
+        _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "a literal :http_opts timeout at or above :attempt_timeout refuses to compile" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        http_opts: [timeout: 25_000],\n        attempt_timeout: 25_000"
+          )
+
+        assert_raise ArgumentError, ~r/:http_opts timeout \(25000ms\) must stay below/, fn ->
+          Code.compile_string(source)
+        end
+      after
+        _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "a non-positive or non-integer budget option refuses to compile" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        attempt_timeout: 0"
+          )
+
+        assert_raise ArgumentError, ~r/:attempt_timeout must be a positive integer/, fn ->
+          Code.compile_string(source)
+        end
+      after
+        _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test ":max_backoff_seconds below :base_backoff_seconds refuses to compile" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        base_backoff_seconds: 60,\n        max_backoff_seconds: 30"
+          )
+
+        assert_raise ArgumentError,
+                     ~r/:max_backoff_seconds must be at least :base_backoff_seconds/,
                      fn -> Code.compile_string(source) end
       after
         _ = :code.purge(RuntimeWorker)
