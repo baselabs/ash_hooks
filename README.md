@@ -242,6 +242,16 @@ Each result belongs to a live, fenced attempt. Network delivery remains
 at-least-once: a receiver may accept a request before its sender dies. Receivers
 deduplicate by the stable `webhook-id`.
 
+**Delivery logs and attempt history.** Add the `AshHooks.OutboundAttempt`
+extension on a resource and pass `attempts:` to the worker: every attempt
+records one durable row (time, outcome, classified reason, HTTP status,
+latency, the signing key reference — never the secret), queryable by
+endpoint, outcome, event type, and time range with keyset pagination
+(`AshHooks.Delivery.list/2` and `AshHooks.OutboundAttempt.list/2`). Response
+bodies stay off unless an endpoint opts in per row
+(`response_capture_attributes :on` + `response_capture: true`): captured
+bytes are bounded, redacted, and only allowlisted response headers are kept.
+
 **Response bodies are never stored by default** — each delivery row keeps the
 status and a content-type summary. For a diagnostic run, enable capture on one
 row. The captured body is bounded, passes built-in redaction, and is marked

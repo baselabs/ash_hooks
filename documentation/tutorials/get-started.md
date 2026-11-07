@@ -108,7 +108,33 @@ create table(:webhook_endpoints, primary_key: false) do
   add :previous_secret_ref, :text
   add :legacy_secret_ref, :text
   add :legacy_previous_secret_ref, :text
+  # only when the endpoint declares `response_capture_attributes :on`:
+  add :response_capture, :boolean, null: false, default: false
+  add :response_capture_max_bytes, :integer, null: false, default: 2048
+  add :response_capture_retention_seconds, :integer, null: false, default: 2_592_000
+  add :response_header_allowlist, {:array, :text}, null: false, default: []
 end
+
+# the attempt history (optional; see "Delivery logs and attempt history"):
+# one row per delivery attempt, written by the runtime
+create table(:outbound_attempts, primary_key: false) do
+  add :id, :uuid, primary_key: true
+  add :delivery_pk, :map, null: false
+  add :endpoint_id, :uuid, null: false
+  add :event_uuid, :text, null: false
+  add :event_type, :text, null: false
+  add :attempt, :integer, null: false
+  add :outcome, :text, null: false
+  add :reason, :text
+  add :response_status, :integer
+  add :response_snippet, :text
+  add :response_headers, :map
+  add :latency_ms, :integer
+  add :signing_key_ref, :text
+  add :attempted_at, :utc_datetime_usec, null: false
+end
+
+create unique_index(:outbound_attempts, [:delivery_pk, :attempt])
 
 create table(:webhook_subscriptions, primary_key: false) do
   add :id, :uuid, primary_key: true
@@ -453,6 +479,43 @@ the generated write actions are yours to cover with action-specific policies,
 or keep these resources off actor-facing surfaces. The resource module docs list
 the full action set, including ownership binding, recovery claims, and pending
 endpoint disable. Broad application update actions must not expose machine fields.
+
+## Delivery logs and attempt history
+
+Add the `AshHooks.OutboundAttempt` extension on its own resource (the
+migration shape is above) and pass `attempts: MyApp.OutboundAttempt` to
+`use AshHooks.Worker` (or the direct-run config): every delivery attempt
+records one durable row — time, outcome, classified reason, HTTP status,
+latency in milliseconds, and the signing key REFERENCE (a secret-store
+reference string, never secret material). Rows are idempotent per
+`(delivery, attempt)`, and a history write failure never fails the send
+(`[:ash_hooks, :attempt, :record_failed]` telemetry carries it).
+
+Response capture stays OFF by default. To opt an endpoint in per row,
+declare `response_capture_attributes :on` on the endpoint resource
+(migrate the four columns) and set `response_capture: true` on rows that
+should capture: the bytes are bounded by the row's
+`response_capture_max_bytes`, pass the package's redaction floor, and
+only response header names listed in `response_header_allowlist` are
+kept.
+
+Query both ledgers with keyset pagination (newest first):
+
+```elixir
+{:ok, %{records: deliveries, next_cursor: cursor}} =
+  AshHooks.Delivery.list(MyApp.OutboundDelivery,
+    endpoint_id: endpoint.id,
+    status: [:succeeded, :dead_letter],
+    from: DateTime.add(DateTime.utc_now(), -7, :day)
+  )
+
+{:ok, %{records: attempts}} =
+  AshHooks.OutboundAttempt.list(MyApp.OutboundAttempt,
+    endpoint_id: endpoint.id,
+    outcome: [:failed_retryable, :dead_letter],
+    after: cursor_of_previous_page
+  )
+```
 
 Response snippets store NO body bytes by default (a status +
 content-type summary). For a one-row diagnostic capture, re-drive the

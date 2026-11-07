@@ -23,6 +23,13 @@ defmodule AshHooks.Worker do
     * `:deliveries`, `:endpoints` (required) — the consumer's resource
       modules carrying the `AshHooks.OutboundDelivery` / `AshHooks.Endpoint`
       extensions.
+    * `:attempts` (optional) — the consumer's resource module carrying
+      `AshHooks.OutboundAttempt`: when set, every delivery attempt records
+      a durable history row (time, outcome, classified reason, HTTP
+      status, latency, the signing key reference; per-endpoint-opt-in
+      response capture) beside the delivery row. A history write failure
+      never fails the send — it surfaces as
+      `[:ash_hooks, :attempt, :record_failed]` telemetry.
     * `:secret_resolver` (required, `{m, f}`) — resolves an endpoint's
       secret reference: `f(ref) :: {:ok, secret_binary} | {:error, term}`.
       The returned value signs the Standard Webhooks envelope
@@ -385,7 +392,6 @@ defmodule AshHooks.Worker do
   # callback failure's arbitrary term never rides the metadata
   defp classify_rejection({:unknown_key, _key}), do: "unknown_key"
   defp classify_rejection(reason) when is_atom(reason), do: Atom.to_string(reason)
-  defp classify_rejection(_other), do: "callback_failed"
 
   alias Ash.Resource.Info, as: ResourceInfo
 
@@ -582,6 +588,7 @@ defmodule AshHooks.Worker do
       [
         deliveries: expand.(Keyword.fetch!(opts, :deliveries)),
         endpoints: expand.(Keyword.fetch!(opts, :endpoints)),
+        attempts: maybe_expand(Keyword.get(opts, :attempts), expand),
         secret_resolver: {expand.(resolver_m), resolver_f},
         snippet_redactor: snippet_redactor,
         tenant_aware_secrets: Keyword.get(opts, :tenant_aware_secrets, false),

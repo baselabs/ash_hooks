@@ -119,6 +119,110 @@ defmodule AshHooks.Delivery do
                           ])
 
   @doc """
+  Lists delivery rows by filter with keyset pagination (newest first) —
+  the delivery-log view behind endpoint pages and resend UIs.
+
+  Options:
+
+    * `:endpoint_id` — one endpoint's deliveries.
+    * `:status` — a list of statuses (e.g. `[:failed_retryable, :dead_letter]`).
+    * `:event_type` — one event type's deliveries.
+    * `:from` / `:to` — `DateTime` bounds on `inserted_at` (inclusive).
+    * `:limit` — page size (default 50, max 500; anything else is
+      `{:error, :invalid_limit}`).
+    * `:after` — the cursor from a previous page's `:next_cursor` (a
+      malformed cursor is `{:error, :invalid_cursor}`).
+    * `:tenant` — required on multitenant resources (the named
+      `{:error, :tenant_required}` pre-flight otherwise).
+
+  The resource needs `inserted_at` (add `timestamps()`) and an `:id`
+  attribute (the keyset tiebreak); otherwise the call fails with the
+  named error before any data access.
+
+  Returns `{:ok, %{records: [row], next_cursor: binary | nil}}`.
+  """
+  @spec list(module(), keyword()) ::
+          {:ok, %{records: [struct()], next_cursor: binary() | nil}} | {:error, term()}
+  def list(deliv_mod, opts \\ []) do
+    alias AshHooks.{Keyset, Tenancy}
+
+    with {:ok, tenant} <- Tenancy.resolve([deliv_mod], opts[:tenant]),
+         :ok <- require_list_columns(deliv_mod) do
+      Keyset.read_page(deliv_mod, opts, :inserted_at, &list_filters(&1, opts), tenant)
+    end
+  end
+
+  defp require_list_columns(deliv_mod) do
+    cond do
+      is_nil(ResourceInfo.attribute(deliv_mod, :inserted_at)) ->
+        {:error,
+         UnknownError.exception(
+           error:
+             inspect(deliv_mod) <>
+               " has no :inserted_at — add `timestamps()` to its attributes " <>
+               "(and the columns to its migration) to use the list queries"
+         )}
+
+      is_nil(ResourceInfo.attribute(deliv_mod, :id)) ->
+        {:error,
+         UnknownError.exception(
+           error:
+             inspect(deliv_mod) <>
+               " has no :id attribute — keyset pagination's tiebreak requires it " <>
+               "(composite-key ledgers are not supported by the list queries)"
+         )}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp list_filters(query, opts) do
+    query
+    |> optional_list_eq(:endpoint_id, opts[:endpoint_id])
+    |> optional_list_eq(:event_type, opts[:event_type])
+    |> optional_list_in(:status, opts[:status])
+    |> list_time_range(opts[:from], opts[:to])
+  end
+
+  defp optional_list_eq(query, _field, nil), do: query
+
+  defp optional_list_eq(query, field, value) do
+    require Ash.Expr
+    ref = Ash.Expr.ref(field)
+    expression = Ash.Expr.expr(^ref == ^value)
+    Ash.Query.filter(query, ^expression)
+  end
+
+  defp optional_list_in(query, _field, nil), do: query
+
+  defp optional_list_in(query, field, values) when is_list(values) do
+    require Ash.Expr
+    ref = Ash.Expr.ref(field)
+    expression = Ash.Expr.expr(^ref in ^values)
+    Ash.Query.filter(query, ^expression)
+  end
+
+  defp list_time_range(query, nil, nil), do: query
+
+  defp list_time_range(query, from, to) do
+    require Ash.Expr
+    time = Ash.Expr.ref(:inserted_at)
+
+    lower = if from, do: Ash.Expr.expr(^time >= ^from)
+    upper = if to, do: Ash.Expr.expr(^time <= ^to)
+
+    expression =
+      case {lower, upper} do
+        {one, nil} -> one
+        {nil, one} -> one
+        {lower, upper} -> Ash.Expr.expr(^lower and ^upper)
+      end
+
+    if expression, do: Ash.Query.filter(query, ^expression), else: query
+  end
+
+  @doc """
   Retention hook: deletes TERMINAL delivery rows (`:succeeded`,
   `:dead_letter`) older than `older_than`, by the resource's
   `inserted_at` (add Ash `timestamps()` to the resource and its
@@ -705,9 +809,10 @@ defmodule AshHooks.Delivery do
     adapter_opts = config[:http_opts] || []
 
     with {:ok, headers} <- signing_headers(row, endpoint, config, tenant),
-         {:ok, response} <-
+         {:ok, response, started} <-
            send_request(request, endpoint, headers, row, adapter_opts) do
-      record(row, endpoint, response, config, tenant)
+      history = attempt_history(endpoint, response, started)
+      record(row, endpoint, response, config, tenant, history)
     else
       # a pin-time SSRF refusal is a caught rebinding flip — terminal, per
       # the classification table (never burn the retry ceiling on it)
@@ -722,18 +827,155 @@ defmodule AshHooks.Delivery do
   # an adapter RAISE must not crash the job out of the row-owned policy —
   # classify it as a retryable transport failure
   defp send_request(request, endpoint, headers, row, adapter_opts) do
-    request.(:post, endpoint.url, headers, payload_bytes(row), adapter_opts)
+    started = System.monotonic_time(:millisecond)
+
+    case request.(:post, endpoint.url, headers, payload_bytes(row), adapter_opts) do
+      {:ok, response} -> {:ok, response, started}
+      {:error, reason} -> {:error, reason}
+    end
   rescue
     reason -> {:error, {:adapter_crash, error_string(reason)}}
   end
+
+  # ────────────────────────── attempt history ──────────────────────────
+
+  # The per-attempt audit record: latency, the signing key REFERENCE (the
+  # endpoint's secret store reference string — never secret material), and
+  # the per-endpoint-opt-in response capture (bounded bytes, redaction
+  # floor, allowlisted headers only). Without an :attempts resource
+  # configured, none of this work happens.
+  defp attempt_history(endpoint, response, started) do
+    %{
+      latency_ms: max(System.monotonic_time(:millisecond) - started, 0),
+      signing_key_ref: endpoint.secret_ref,
+      response_snippet: captured_attempt_snippet(endpoint, response),
+      response_headers: captured_attempt_headers(endpoint, response)
+    }
+  end
+
+  # capture is per-endpoint-row opt-in: the resource declared
+  # `response_capture_attributes :on` AND the row set response_capture
+  defp capture_enabled?(endpoint) do
+    resource = endpoint.__struct__
+
+    ResourceInfo.attribute(resource, :response_capture) != nil and
+      Map.get(endpoint, :response_capture) == true
+  end
+
+  defp captured_attempt_snippet(endpoint, %{status: status} = response) do
+    headers = response[:headers]
+    body = response[:body]
+
+    if capture_enabled?(endpoint) and is_binary(body) do
+      body
+      |> utf8_byte_cap(Map.get(endpoint, :response_capture_max_bytes, @snippet_max))
+      |> redact()
+      |> then(&AshHooks.BoundedText.cap(@captured_prefix <> &1, @snippet_max))
+    else
+      summarize(status, headers)
+    end
+  end
+
+  defp captured_attempt_headers(endpoint, response) do
+    headers = response[:headers]
+
+    if capture_enabled?(endpoint) and is_list(headers) do
+      allowlist = Map.get(endpoint, :response_header_allowlist, [])
+      captured = allowlisted_headers(headers, allowlist)
+      if captured == %{}, do: nil, else: captured
+    end
+  end
+
+  defp allowlisted_headers(headers, allowlist) do
+    headers
+    |> Enum.flat_map(fn
+      {name, value} when is_binary(name) and is_binary(value) ->
+        normalized = String.downcase(name)
+
+        if normalized in allowlist, do: [{normalized, value}], else: []
+
+      _malformed ->
+        []
+    end)
+    |> Map.new()
+  end
+
+  # a BYTE cap that still lands on a UTF-8 boundary — a raw binary_part
+  # can split a codepoint and collapse the whole capture to [binary]
+  defp utf8_byte_cap(binary, max_bytes) when byte_size(binary) <= max_bytes, do: binary
+
+  defp utf8_byte_cap(binary, max_bytes),
+    do: binary_part(binary, 0, utf8_boundary(binary, max_bytes))
+
+  defp utf8_boundary(binary, n) do
+    if String.valid?(binary_part(binary, 0, n)), do: n, else: utf8_boundary(binary, n - 1)
+  end
+
+  # One history row per attempt, written AFTER the fenced result succeeds.
+  # The unique (delivery_pk, attempt) identity makes re-drives idempotent;
+  # a history write failure NEVER fails the send — it surfaces as
+  # [:ash_hooks, :attempt, :record_failed] telemetry and the delivery row
+  # remains the contract.
+  defp record_attempt(row, outcome, reason, summary, history, config, tenant) do
+    case config[:attempts] do
+      nil ->
+        :ok
+
+      attempts_mod ->
+        write_attempt(attempts_mod, row, outcome, reason, summary, history || %{}, tenant)
+    end
+  end
+
+  defp write_attempt(attempts_mod, row, outcome, reason, summary, history, tenant) do
+    input = %{
+      delivery_pk: PrimaryKey.encode(row),
+      endpoint_id: row.endpoint_id,
+      event_uuid: row.event_uuid,
+      event_type: row.event_type,
+      attempt: row.attempts,
+      outcome: outcome,
+      reason: reason,
+      response_status: summary_status(summary),
+      response_snippet: attempt_snippet(summary, history),
+      response_headers: history[:response_headers],
+      latency_ms: history[:latency_ms],
+      signing_key_ref: history[:signing_key_ref]
+    }
+
+    case Ash.create(attempts_mod, input, action: :record, authorize?: false, tenant: tenant) do
+      {:ok, _attempt} ->
+        :ok
+
+      {:error, write_reason} ->
+        :telemetry.execute(
+          [:ash_hooks, :attempt, :record_failed],
+          %{},
+          %{
+            endpoint_id: row.endpoint_id,
+            event_uuid: row.event_uuid,
+            reason: AshHooks.Telemetry.classify_token(write_reason)
+          }
+        )
+
+        :ok
+    end
+  end
+
+  # the attempt row prefers the history's captured snippet (per-endpoint
+  # capture) over the delivery row's summary tuple
+  defp attempt_snippet(_summary, %{response_snippet: captured}) when is_binary(captured),
+    do: captured
+
+  defp attempt_snippet({_status, snippet}, _history), do: snippet
+  defp attempt_snippet(nil, _history), do: nil
 
   # the exact-bytes column's name is consumer-configurable (`payload_attribute`,
   # H1) — every runtime read goes through the row's own resource config
   defp payload_bytes(row), do: Map.get(row, AshHooks.Info.payload_attribute(row.__struct__))
 
-  defp record(row, _endpoint, %{status: status} = response, config, tenant)
+  defp record(row, _endpoint, %{status: status} = response, config, tenant, history)
        when status in 200..299 do
-    mark_succeeded(row, response, config, tenant)
+    mark_succeeded(row, response, config, tenant, history)
   end
 
   # The 410 disable rides the ROW's tenant: a cross-tenant 410 (org_b's
@@ -743,7 +985,7 @@ defmodule AshHooks.Delivery do
   # count is checked — a zero-match "success" (the endpoint vanished
   # between fetch and write) is surfaced, never counted as a completed
   # circuit-break.
-  defp record(row, endpoint, %{status: 410} = response, config, tenant) do
+  defp record(row, endpoint, %{status: 410} = response, config, tenant, _history) do
     {status, snippet} = failure_summary(response)
 
     case fenced_update(
@@ -764,7 +1006,7 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  defp record(row, _endpoint, %{status: status} = response, config, tenant)
+  defp record(row, _endpoint, %{status: status} = response, config, tenant, history)
        when status in [408, 429] do
     retry(
       row,
@@ -772,21 +1014,29 @@ defmodule AshHooks.Delivery do
       config,
       tenant,
       retry_after(response, config),
-      failure_summary(response)
+      failure_summary(response),
+      history
     )
   end
 
-  defp record(row, _endpoint, %{status: status} = response, config, tenant)
+  defp record(row, _endpoint, %{status: status} = response, config, tenant, history)
        when status in 300..399 do
-    dead_letter(row, "redirect_refused_#{status}", config, tenant, failure_summary(response))
+    dead_letter(
+      row,
+      "redirect_refused_#{status}",
+      config,
+      tenant,
+      failure_summary(response),
+      history
+    )
   end
 
-  defp record(row, _endpoint, %{status: status} = response, config, tenant)
+  defp record(row, _endpoint, %{status: status} = response, config, tenant, history)
        when status in 400..499 do
-    dead_letter(row, "http_#{status}", config, tenant, failure_summary(response))
+    dead_letter(row, "http_#{status}", config, tenant, failure_summary(response), history)
   end
 
-  defp record(row, _endpoint, %{status: status} = response, config, tenant) do
+  defp record(row, _endpoint, %{status: status} = response, config, tenant, history) do
     # The retryable 5xx class: Retry-After is honored here exactly as on 408/429 —
     # a 503 carrying the header names the receiver's own recovery window, and the
     # parser/clamp path is shared (absent/malformed header → nil → backoff).
@@ -796,7 +1046,8 @@ defmodule AshHooks.Delivery do
       config,
       tenant,
       retry_after(response, config),
-      failure_summary(response)
+      failure_summary(response),
+      history
     )
   end
 
@@ -1103,6 +1354,8 @@ defmodule AshHooks.Delivery do
         summary = {final.response_status, final.response_snippet}
         emit_result(final, summary, :dead_letter, error)
 
+        record_attempt(final, :dead_letter, error, summary, nil, config, tenant)
+
         :telemetry.execute(
           [:ash_hooks, :delivery, :dead_letter],
           %{},
@@ -1284,7 +1537,7 @@ defmodule AshHooks.Delivery do
   # Reconcile writes are NEVER swallowed. A lost terminal write leaves the
   # row recoverable as an expired :sending lease, and the worker must surface
   # the error so Oban can re-drive it.
-  defp mark_succeeded(row, response, config, tenant) do
+  defp mark_succeeded(row, response, config, tenant, history) do
     case fenced_update(
            row,
            config,
@@ -1309,6 +1562,8 @@ defmodule AshHooks.Delivery do
           }
         )
 
+        record_attempt(row, :succeeded, nil, {response.status, nil}, history, config, tenant)
+
         :ok
 
       {:ok, []} ->
@@ -1319,9 +1574,9 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  defp retry(row, error, config, tenant, retry_after, summary \\ nil) do
+  defp retry(row, error, config, tenant, retry_after, summary \\ nil, history \\ nil) do
     if row.attempts >= config[:max_attempts] do
-      dead_letter(row, error, config, tenant, summary)
+      dead_letter(row, error, config, tenant, summary, history)
     else
       delay = delay_seconds(row, config, retry_after)
       next_at = DateTime.add(now(config), delay, :second)
@@ -1340,6 +1595,8 @@ defmodule AshHooks.Delivery do
            ) do
         {:ok, [_]} ->
           emit_result(row, summary, :failed_retryable, error)
+
+          record_attempt(row, :failed_retryable, error, summary, history, config, tenant)
 
           :telemetry.execute(
             [:ash_hooks, :delivery, :backoff],
@@ -1363,7 +1620,7 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  defp dead_letter(row, error, config, tenant, summary \\ nil) do
+  defp dead_letter(row, error, config, tenant, summary \\ nil, history \\ nil) do
     case fenced_update(
            row,
            config,
@@ -1374,6 +1631,8 @@ defmodule AshHooks.Delivery do
          ) do
       {:ok, [_]} ->
         emit_result(row, summary, :dead_letter, error)
+
+        record_attempt(row, :dead_letter, error, summary, history, config, tenant)
 
         :telemetry.execute(
           [:ash_hooks, :delivery, :dead_letter],

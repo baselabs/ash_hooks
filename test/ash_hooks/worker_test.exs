@@ -500,6 +500,8 @@ if Code.ensure_loaded?(Oban) do
         def call(_args), do: Application.get_env(:ash_hooks, :runtime_overrides, [])
         def crash(_args), do: raise("runtime config failed")
         def bad(_args), do: :not_a_keyword
+        def exit_(_args), do: exit(:config_exit)
+        def throw_(_args), do: throw(:config_throw)
       end
 
       defmodule RuntimeWorker do
@@ -653,6 +655,43 @@ if Code.ensure_loaded?(Oban) do
 
         assert {:error, {:invalid_runtime_config, :callback_failed}} =
                  BadReturnRuntimeWorker.perform(job)
+      end
+
+      test "a runtime-config seam with an invalid baked shape is rejected" do
+        assert {:error, {:invalid_runtime_config, :callback_failed}} =
+                 AshHooks.Worker.resolve_config([runtime_config: "garbage"], %{})
+      end
+
+      defmodule ExitRuntimeWorker do
+        @moduledoc false
+        use AshHooks.Worker,
+          deliveries: AshHooks.WorkerTest.Delivery,
+          endpoints: AshHooks.WorkerTest.Endpoint,
+          secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+          runtime_config: {AshHooks.WorkerTest.RuntimePolicy, :exit_},
+          queue: :ash_hooks_test,
+          oban: AshHooks.WorkerTest.Oban
+      end
+
+      defmodule ThrowRuntimeWorker do
+        @moduledoc false
+        use AshHooks.Worker,
+          deliveries: AshHooks.WorkerTest.Delivery,
+          endpoints: AshHooks.WorkerTest.Endpoint,
+          secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+          runtime_config: {AshHooks.WorkerTest.RuntimePolicy, :throw_},
+          queue: :ash_hooks_test,
+          oban: AshHooks.WorkerTest.Oban
+      end
+
+      test "a runtime-config callback that exits or throws is contained" do
+        job = runtime_job!("msg_runtime_exit_throw")
+
+        assert {:error, {:invalid_runtime_config, :callback_failed}} =
+                 ExitRuntimeWorker.perform(job)
+
+        assert {:error, {:invalid_runtime_config, :callback_failed}} =
+                 ThrowRuntimeWorker.perform(job)
       end
 
       test "an empty override list resolves the baked config unchanged" do
@@ -1053,10 +1092,58 @@ if Code.ensure_loaded?(Oban) do
           String.replace(
             @worker_base,
             "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        runtime_config: \"nope\""
+          )
+
+        assert_raise ArgumentError, ~r/:runtime_config must be \{module, function\}/, fn ->
+          Code.compile_string(source)
+        end
+      after
+        _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "an {m, f} :runtime_config whose halves are not modules refuses to compile" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
             "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        runtime_config: {\"not-a-module\", :call}"
           )
 
         assert_raise ArgumentError, ~r/:runtime_config must be \{module, function\}/, fn ->
+          Code.compile_string(source)
+        end
+      after
+        _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "an {m, f} :destination_policy whose function half is not an atom refuses to compile" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        destination_policy: {AshHooks.WorkerTest.Secrets, 123}"
+          )
+
+        assert_raise ArgumentError, ~r/:destination_policy must be \{module, function\}/, fn ->
+          Code.compile_string(source)
+        end
+      after
+        _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "a non-tuple :destination_policy refuses to compile" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        destination_policy: :not_a_policy"
+          )
+
+        assert_raise ArgumentError, ~r/:destination_policy must be \{module, function\}/, fn ->
           Code.compile_string(source)
         end
       after
@@ -1077,6 +1164,21 @@ if Code.ensure_loaded?(Oban) do
         end
       after
         _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "a valid {module, function} :destination_policy compiles clean" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        destination_policy: {AshHooks.WorkerTest.Secrets, :webhook_secret}"
+          )
+
+        assert [{module, _beam}] = Code.compile_string(source)
+        assert module == RuntimeWorker
+      after
+        :code.purge(RuntimeWorker)
         _ = :code.delete(RuntimeWorker)
       end
 

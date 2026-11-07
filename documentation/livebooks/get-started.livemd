@@ -138,6 +138,12 @@ defmodule Tour.Endpoint do
     defaults([:read, :create, :update])
     default_accept(:*)
   end
+
+  endpoint do
+    # per-endpoint response capture: the four columns exist only when
+    # declared (a migration is required to adopt them)
+    response_capture_attributes(:on)
+  end
 end
 
 defmodule Tour.Subscription do
@@ -181,6 +187,26 @@ defmodule Tour.Delivery do
   end
 end
 
+defmodule Tour.Attempt do
+  # The attempt history: one durable row per delivery attempt (time,
+  # outcome, classified reason, HTTP status, latency, the signing key
+  # REFERENCE). Written by the delivery runtime when the worker config
+  # carries `attempts:` — the audit trail behind delivery logs and health.
+  use Ash.Resource,
+    domain: Tour.Domain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks.OutboundAttempt]
+
+  sqlite do
+    table("tour_attempts")
+    repo(Tour.Repo)
+  end
+
+  actions do
+    defaults([:read])
+  end
+end
+
 defmodule Tour.Order do
   use Ash.Resource,
     domain: Tour.Domain,
@@ -216,6 +242,7 @@ defmodule Tour.Domain do
     resource(Tour.Endpoint)
     resource(Tour.Subscription)
     resource(Tour.Delivery)
+    resource(Tour.Attempt)
     resource(Tour.Order)
     resource(Tour.TenantEndpoint)
     resource(Tour.TenantSubscription)
@@ -254,7 +281,11 @@ Tour.Repo.query!("""
 CREATE TABLE tour_endpoints (
   id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
   secret_ref TEXT NOT NULL, previous_secret_ref TEXT, legacy_secret_ref TEXT,
-  legacy_previous_secret_ref TEXT)
+  legacy_previous_secret_ref TEXT,
+  response_capture INTEGER NOT NULL DEFAULT 0,
+  response_capture_max_bytes INTEGER NOT NULL DEFAULT 2048,
+  response_capture_retention_seconds INTEGER NOT NULL DEFAULT 2592000,
+  response_header_allowlist TEXT)
 """)
 
 Tour.Repo.query!("""
@@ -279,6 +310,19 @@ CREATE TABLE tour_deliveries (
 
 Tour.Repo.query!(
   "CREATE UNIQUE INDEX tour_deliveries_unique ON tour_deliveries (endpoint_id, event_uuid)"
+)
+
+Tour.Repo.query!("""
+CREATE TABLE tour_attempts (
+  id TEXT PRIMARY KEY, delivery_pk TEXT NOT NULL, endpoint_id TEXT NOT NULL,
+  event_uuid TEXT NOT NULL, event_type TEXT NOT NULL, attempt INTEGER NOT NULL,
+  outcome TEXT NOT NULL, reason TEXT, response_status INTEGER,
+  response_snippet TEXT, response_headers TEXT, latency_ms INTEGER,
+  signing_key_ref TEXT, attempted_at TEXT NOT NULL)
+""")
+
+Tour.Repo.query!(
+  "CREATE UNIQUE INDEX tour_attempts_unique ON tour_attempts (delivery_pk, attempt)"
 )
 
 Tour.Repo.query!("CREATE TABLE IF NOT EXISTS tour_orders (id TEXT PRIMARY KEY)")
@@ -362,7 +406,16 @@ IO.puts("using the existing receiver on #{port}")
 # repoint the stored row for this local inspection; production
 # endpoints keep their public URLs.
 endpoint =
-  Ash.create!(Tour.Endpoint, %{url: "https://partner.example.test/hook", secret_ref: "tour-endpoint"},
+  Ash.create!(
+    Tour.Endpoint,
+    %{
+      url: "https://partner.example.test/hook",
+      secret_ref: "tour-endpoint",
+      # this endpoint opts IN to response capture per row (bounded bytes,
+      # redaction floor, allowlisted headers only)
+      response_capture: true,
+      response_header_allowlist: ["content-type"]
+    },
     authorize?: false
   )
 
@@ -393,6 +446,7 @@ outbound_secret = AshHooks.Signing.generate_secret()
 config = [
   deliveries: Tour.Delivery,
   endpoints: Tour.Endpoint,
+  attempts: Tour.Attempt,
   secret_resolver: fn "tour-endpoint" ->
     {:ok, outbound_secret}
   end,
@@ -438,10 +492,33 @@ IO.puts("receiver retained exact bytes and a valid signature")
 1 = length(Jason.decode!(captures_after))
 IO.puts("terminal redrive retained exactly one receiver request")
 
+# One attempt row was recorded beside the delivery: outcome, HTTP status,
+# latency, the signing key REFERENCE — and, because this endpoint opted in
+# per row, the redacted body and only allowlisted response headers.
+[attempt] = Ash.read!(Tour.Attempt, authorize?: false)
+:succeeded = attempt.outcome
+200 = attempt.response_status
+true = is_integer(attempt.latency_ms) and attempt.latency_ms >= 0
+"tour-endpoint" = attempt.signing_key_ref
+true = String.starts_with?(attempt.response_snippet, "[captured] ")
+%{"content-type" => "application/json"} = attempt.response_headers
+IO.puts("attempt history recorded the send")
+
+# The delivery log answers from the rows, keyset-paginated.
+{:ok, %{records: [logged], next_cursor: nil}} =
+  AshHooks.Delivery.list(Tour.Delivery, endpoint_id: endpoint.id)
+
+^row = logged
+{:ok, %{records: [history], next_cursor: nil}} =
+  AshHooks.OutboundAttempt.list(Tour.Attempt, endpoint_id: endpoint.id)
+
+:succeeded = history.outcome
+IO.puts("delivery log and attempt history answer from the rows")
+
 IO.puts("""
-Note the response_snippet: a status + content-type summary — response
-bodies are never stored by default (opt-in diagnostic capture exists
-under the package's redaction pipeline).
+Response bodies stay off by default everywhere: without the endpoint's
+per-row opt-in, attempt rows carry the status + content-type summary only
+(the delivery row's response_snippet stays that summary in all cases).
 """)
 ```
 

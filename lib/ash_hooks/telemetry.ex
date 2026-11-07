@@ -35,6 +35,10 @@ defmodule AshHooks.Telemetry do
       `unknown_key`, `not_positive_integer`, `backoff_inversion`,
       `envelope_exceeded`, `oban_ceiling_exceeded`); the job failed before
       any delivery work and the delivery row is untouched
+    * `[:ash_hooks, :attempt, :record_failed]` — `%{endpoint_id,
+      event_uuid, reason}` (classified): an attempt-history row could not
+      be written; the delivery result itself succeeded and remains the
+      contract
 
   `:telemetry.execute/3` matches exact event names, so consume the
   whole surface with one `attach_many`:
@@ -49,7 +53,8 @@ defmodule AshHooks.Telemetry do
         [:ash_hooks, :delivery, :backoff],
         [:ash_hooks, :delivery, :dead_letter],
         [:ash_hooks, :delivery, :disable],
-        [:ash_hooks, :worker, :invalid_runtime_config]
+        [:ash_hooks, :worker, :invalid_runtime_config],
+        [:ash_hooks, :attempt, :record_failed]
       ], fn event, measurements, metadata, _ ->
         # Forward these measurements and identifiers to your metrics system.
       end, nil)

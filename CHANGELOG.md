@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Attempt history.** The new `AshHooks.OutboundAttempt` extension turns a
+  consumer resource into the per-attempt audit ledger: one durable row per
+  delivery attempt (time, outcome, classified reason, HTTP status, latency
+  in milliseconds, and the signing key REFERENCE — never secret material),
+  written by the runtime beside its fenced result transitions and idempotent
+  per `(delivery, attempt)`. Wire it with `attempts:` on the worker macro or
+  the direct-run config. A history write failure never fails the send — it
+  surfaces as `[:ash_hooks, :attempt, :record_failed]` telemetry.
+- **Per-endpoint response capture.** `response_capture_attributes :on` on
+  the endpoint resource injects per-row capture columns; an endpoint that
+  sets `response_capture: true` records bounded (`response_capture_max_bytes`),
+  redacted response bodies and only `response_header_allowlist`-named
+  response headers in its attempt rows. Capture stays off by default
+  everywhere.
+- **Delivery-log queries.** `AshHooks.Delivery.list/2` and
+  `AshHooks.OutboundAttempt.list/2`: filter by endpoint, status/outcome,
+  event type, and time range with keyset pagination (newest-first,
+  `(time, id)` cursors), tenant pre-flighted like every package entry
+  point.
+
 - **A public send-time destination policy seam.** `AshHooks.DestinationPolicy`
   is the supported way to carry your own allow and deny rules without forking
   the packaged SSRF check: a `{module, function}` callback (worker option

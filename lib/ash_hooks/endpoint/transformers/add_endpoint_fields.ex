@@ -22,9 +22,39 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
 
   def transform(dsl_state) do
     with {:ok, dsl_state, status_attribute} <- check_status_attribute(dsl_state),
-         {:ok, dsl_state} <- add_primary_key(dsl_state) do
+         {:ok, dsl_state} <- add_primary_key(dsl_state),
+         {:ok, dsl_state} <- add_capture_attributes(dsl_state) do
       add_attributes(dsl_state, status_attribute)
     end
+  end
+
+  # The per-endpoint response-capture opt-in (default :off): declaring
+  # `response_capture_attributes :on` injects the capture columns — an
+  # EXISTING schema is never silently widened; the consumer migrates the
+  # four columns when they adopt the seam.
+  defp add_capture_attributes(dsl_state) do
+    case Extension.get_opt(dsl_state, [:endpoint], :response_capture_attributes, :off) do
+      :off ->
+        {:ok, dsl_state}
+
+      :on ->
+        Enum.reduce_while(capture_attributes_spec(), {:ok, dsl_state}, fn {name, type, opts},
+                                                                          {:ok, dsl_state} ->
+          {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
+        end)
+    end
+  end
+
+  defp capture_attributes_spec do
+    [
+      {:response_capture, :boolean, [allow_nil?: false, default: false, public?: true]},
+      {:response_capture_max_bytes, :integer,
+       [allow_nil?: false, default: 2_048, constraints: [min: 1, max: 65_536], public?: true]},
+      {:response_capture_retention_seconds, :integer,
+       [allow_nil?: false, default: 2_592_000, constraints: [min: 1], public?: true]},
+      {:response_header_allowlist, {:array, :string},
+       [allow_nil?: false, default: [], public?: true]}
+    ]
   end
 
   defp check_status_attribute(dsl_state) do
@@ -35,7 +65,9 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
     attributes =
       dsl_state |> Transformer.get_entities([:attributes]) |> Map.new(&{&1.name, &1})
 
-    reserved = Enum.map(attributes_spec(), &elem(&1, 0)) -- [:status]
+    reserved =
+      (Enum.map(attributes_spec(), &elem(&1, 0)) -- [:status]) ++
+        Enum.map(capture_attributes_spec(), &elem(&1, 0))
 
     cond do
       is_nil(status_attribute) ->

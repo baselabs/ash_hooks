@@ -72,6 +72,23 @@ defmodule AshHooks.TransformersTest do
   end
   """
 
+  @attempt_resource """
+  defmodule AshHooks.TfAttempt do
+    use Ash.Resource,
+      domain: AshHooks.TfDomain,
+      data_layer: Ash.DataLayer.Ets,
+      extensions: [AshHooks.OutboundAttempt]
+
+    attributes do
+      uuid_primary_key(:custom_id)
+    end
+
+    actions do
+      defaults([:read])
+    end
+  end
+  """
+
   @delivery_resource """
   defmodule AshHooks.TfDelivery do
     use Ash.Resource,
@@ -95,6 +112,7 @@ defmodule AshHooks.TransformersTest do
         resource(AshHooks.TfSubscription)
         resource(AshHooks.TfLedger)
         resource(AshHooks.TfDelivery)
+        resource(AshHooks.TfAttempt)
       end
     end
     """)
@@ -105,6 +123,7 @@ defmodule AshHooks.TransformersTest do
             AshHooks.TfSubscription,
             AshHooks.TfLedger,
             AshHooks.TfDelivery,
+            AshHooks.TfAttempt,
             AshHooks.TfDomain
           ] do
         :code.purge(mod)
@@ -120,7 +139,8 @@ defmodule AshHooks.TransformersTest do
           {@endpoint_resource, AshHooks.TfEndpoint},
           {@subscription_resource, AshHooks.TfSubscription},
           {@ledger_resource, AshHooks.TfLedger},
-          {@delivery_resource, AshHooks.TfDelivery}
+          {@delivery_resource, AshHooks.TfDelivery},
+          {@attempt_resource, AshHooks.TfAttempt}
         ] do
       assert Enum.any?(Code.compile_string(source), fn {m, _} -> m == mod end)
     end
@@ -147,7 +167,13 @@ defmodule AshHooks.TransformersTest do
       {AshHooks.InboundDelivery.Transformers.AddLedgerFields,
        Ash.Resource.Transformers.AttributesByName},
       {AshHooks.OutboundDelivery.Transformers.AddDeliveryFields,
-       Ash.Resource.Transformers.AttributesByName}
+       Ash.Resource.Transformers.AttributesByName},
+      {AshHooks.OutboundAttempt.Transformers.AddAttemptFields,
+       Ash.Resource.Transformers.AttributesByName},
+      {AshHooks.OutboundAttempt.Transformers.AddAttemptActions,
+       Ash.Resource.Transformers.CacheActionInputs},
+      {AshHooks.OutboundAttempt.Transformers.AddAttemptIdentity,
+       Ash.Resource.Transformers.CacheUniqueKeys}
     ]
 
     for {transformer, cached} <- pairs do

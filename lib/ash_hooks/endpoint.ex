@@ -106,6 +106,24 @@ defmodule AshHooks.Endpoint do
         must be spelled out explicitly — fail-closed at compile.
         """
       ],
+      response_capture_attributes: [
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc: """
+        Whether the per-endpoint response-capture columns are injected
+        (default `:off` — existing schemas stay untouched). With `:on`,
+        the extension injects `response_capture` (boolean, default
+        `false`), `response_capture_max_bytes` (integer, default 2048),
+        `response_capture_retention_seconds` (integer, default 30 days),
+        and `response_header_allowlist` (string array, default none).
+        Capture is still per ROW: an endpoint records response bodies in
+        its attempt history only when its `response_capture` value is
+        `true`. The captured bytes are bounded by the row's cap, pass the
+        package's redaction floor, and only allowlisted response header
+        names are kept. Declaring `:on` requires a migration for the four
+        new columns.
+        """
+      ],
       enabled_values: [
         type: {:list, :any},
         doc: """

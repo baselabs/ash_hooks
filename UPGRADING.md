@@ -1,5 +1,31 @@
 # Upgrading
 
+## 2.1.x → 2.2.0
+
+New OPTIONAL surface — nothing changes for an install that adopts none of
+it: no existing column, action, event, or default behavior moves.
+
+- **Attempt history (opt-in).** To record every delivery attempt (time,
+  outcome, classified reason, HTTP status, latency, the signing key
+  reference), create a resource with the new `AshHooks.OutboundAttempt`
+  extension, migrate its table (the tutorial carries the DDL, including the
+  `unique_attempt` index on `[:delivery_pk, :attempt]`), and pass
+  `attempts: MyApp.OutboundAttempt` to `use AshHooks.Worker` (or the direct
+  `AshHooks.Delivery.run/2` config). The runtime writes rows through the
+  injected `:record` action; cover it with an action-specific policy like
+  every other injected write action.
+- **Per-endpoint response capture (opt-in).** Declaring
+  `response_capture_attributes :on` on the endpoint resource injects four
+  columns (`response_capture`, `response_capture_max_bytes`,
+  `response_capture_retention_seconds`, `response_header_allowlist`) —
+  migrate them when you declare it. Capture remains per-row opt-in
+  (`response_capture: true`); captured bytes are bounded, redacted, and
+  header capture is allowlist-only.
+- **Delivery-log queries.** `AshHooks.Delivery.list/2` and
+  `AshHooks.OutboundAttempt.list/2` filter by endpoint, status/outcome,
+  event type, and time range with keyset pagination; the delivery resource
+  needs `timestamps()` and an `:id` attribute for them.
+
 ## 2.0.4 → 2.1.0
 
 No schema or DSL changes. Two observable deltas:
