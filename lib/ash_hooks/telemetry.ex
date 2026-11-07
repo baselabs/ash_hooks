@@ -30,6 +30,11 @@ defmodule AshHooks.Telemetry do
       event_uuid, reason, response_status}`
     * `[:ash_hooks, :delivery, :disable]` — `%{endpoint_id, reason:
       :gone_410}`
+    * `[:ash_hooks, :worker, :invalid_runtime_config]` — `%{reason:
+      binary}` (the fixed validation vocabulary: `callback_failed`,
+      `unknown_key`, `not_positive_integer`, `backoff_inversion`,
+      `envelope_exceeded`, `oban_ceiling_exceeded`); the job failed before
+      any delivery work and the delivery row is untouched
 
   `:telemetry.execute/3` matches exact event names, so consume the
   whole surface with one `attach_many`:
@@ -43,7 +48,8 @@ defmodule AshHooks.Telemetry do
         [:ash_hooks, :delivery, :result],
         [:ash_hooks, :delivery, :backoff],
         [:ash_hooks, :delivery, :dead_letter],
-        [:ash_hooks, :delivery, :disable]
+        [:ash_hooks, :delivery, :disable],
+        [:ash_hooks, :worker, :invalid_runtime_config]
       ], fn event, measurements, metadata, _ ->
         # Forward these measurements and identifiers to your metrics system.
       end, nil)

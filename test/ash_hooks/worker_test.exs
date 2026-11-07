@@ -492,6 +492,204 @@ if Code.ensure_loaded?(Oban) do
       assert job_count() == 2
     end
 
+    describe "the runtime-config seam (budgets resolve per perform)" do
+      defmodule RuntimePolicy do
+        @moduledoc false
+        # cross-process (perform spawns the driver): read overrides from
+        # the app env the test controls
+        def call(_args), do: Application.get_env(:ash_hooks, :runtime_overrides, [])
+        def crash(_args), do: raise("runtime config failed")
+        def bad(_args), do: :not_a_keyword
+      end
+
+      defmodule RuntimeWorker do
+        @moduledoc false
+        use AshHooks.Worker,
+          deliveries: AshHooks.WorkerTest.Delivery,
+          endpoints: AshHooks.WorkerTest.Endpoint,
+          secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+          runtime_config: {AshHooks.WorkerTest.RuntimePolicy, :call},
+          queue: :ash_hooks_test,
+          oban: AshHooks.WorkerTest.Oban
+      end
+
+      defp runtime_job!(event_uuid) do
+        ep = endpoint!()
+        row = delivery_row!(ep, event_uuid)
+        assert :ok = RuntimeWorker.enqueue(row, nil)
+        [args] = job_args()
+        %Oban.Job{args: args}
+      end
+
+      setup do
+        Application.put_env(:ash_hooks, :runtime_overrides, [])
+        on_exit(fn -> Application.delete_env(:ash_hooks, :runtime_overrides) end)
+      end
+
+      test "valid overrides take effect: a raised base backoff widens the snooze" do
+        job = runtime_job!("msg_runtime_backoff")
+
+        # the row's URL is unresolvable at send time → retryable under
+        # nxdomain/resolve_timeout; the runtime base backoff (5s) must
+        # floor the delay above the compiled default (2s)
+        Application.put_env(:ash_hooks, :runtime_overrides, base_backoff_seconds: 5)
+
+        assert {:snooze, delay} = RuntimeWorker.perform(job)
+        assert delay >= 5
+      end
+
+      test "a lowered delivery ceiling dead-letters the row sooner" do
+        job = runtime_job!("msg_runtime_ceiling")
+        Application.put_env(:ash_hooks, :runtime_overrides, delivery_max_attempts: 1)
+
+        assert :ok = RuntimeWorker.perform(job)
+        row_id = job.args["delivery_pk"]["id"]
+
+        assert Ash.get!(Delivery, row_id, authorize?: false).status == :dead_letter
+      end
+
+      test "an override raising attempt_timeout past the baked job envelope is refused" do
+        job = runtime_job!("msg_runtime_envelope")
+
+        # baked job timeout is the default 35_000; 35_000 attempt budget +
+        # the default 5_000 allowance overruns it
+        Application.put_env(:ash_hooks, :runtime_overrides, attempt_timeout: 35_000)
+
+        assert {:error, {:invalid_runtime_config, :envelope_exceeded}} =
+                 RuntimeWorker.perform(job)
+
+        assert Ash.get!(Delivery, job.args["delivery_pk"]["id"], authorize?: false).status ==
+                 :pending
+      end
+
+      test "a delivery ceiling at or above the baked Oban ceiling is refused" do
+        job = runtime_job!("msg_runtime_oban_ceiling")
+
+        # baked Oban max_attempts is the default 20
+        Application.put_env(:ash_hooks, :runtime_overrides, delivery_max_attempts: 20)
+
+        assert {:error, {:invalid_runtime_config, :oban_ceiling_exceeded}} =
+                 RuntimeWorker.perform(job)
+      end
+
+      test "a non-positive budget override is refused" do
+        job = runtime_job!("msg_runtime_not_positive")
+        Application.put_env(:ash_hooks, :runtime_overrides, base_backoff_seconds: 0)
+
+        assert {:error, {:invalid_runtime_config, :not_positive_integer}} =
+                 RuntimeWorker.perform(job)
+      end
+
+      test "a max backoff below the effective base backoff is refused" do
+        job = runtime_job!("msg_runtime_backoff_inversion")
+        Application.put_env(:ash_hooks, :runtime_overrides, max_backoff_seconds: 1)
+
+        assert {:error, {:invalid_runtime_config, :backoff_inversion}} =
+                 RuntimeWorker.perform(job)
+      end
+
+      test "a lowered attempt_timeout beneath a baked literal http timeout is refused" do
+        # literal timeout 20_000 sits below the compiled attempt budget
+        # (25_000) and compiles; lowering the budget beneath it at runtime
+        # walls slow sends off at the runtime kill line — refused
+        defmodule LiteralHttpRuntimeWorker do
+          @moduledoc false
+          use AshHooks.Worker,
+            deliveries: AshHooks.WorkerTest.Delivery,
+            endpoints: AshHooks.WorkerTest.Endpoint,
+            secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+            runtime_config: {AshHooks.WorkerTest.RuntimePolicy, :call},
+            http_opts: [timeout: 20_000],
+            queue: :ash_hooks_test,
+            oban: AshHooks.WorkerTest.Oban
+        end
+
+        job = runtime_job!("msg_runtime_http_misfit")
+        Application.put_env(:ash_hooks, :runtime_overrides, attempt_timeout: 10_000)
+
+        assert {:error, {:invalid_runtime_config, :envelope_exceeded}} =
+                 LiteralHttpRuntimeWorker.perform(job)
+      end
+
+      test "an unknown override key is refused" do
+        job = runtime_job!("msg_runtime_unknown_key")
+        Application.put_env(:ash_hooks, :runtime_overrides, http: NotAModule)
+
+        assert {:error, {:invalid_runtime_config, {:unknown_key, :http}}} =
+                 RuntimeWorker.perform(job)
+      end
+
+      test "a crashing runtime-config callback is contained as an invalid config" do
+        job = runtime_job!("msg_runtime_crash")
+
+        defmodule CrashingRuntimeWorker do
+          @moduledoc false
+          use AshHooks.Worker,
+            deliveries: AshHooks.WorkerTest.Delivery,
+            endpoints: AshHooks.WorkerTest.Endpoint,
+            secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+            runtime_config: {AshHooks.WorkerTest.RuntimePolicy, :crash},
+            queue: :ash_hooks_test,
+            oban: AshHooks.WorkerTest.Oban
+        end
+
+        assert {:error, {:invalid_runtime_config, :callback_failed}} =
+                 CrashingRuntimeWorker.perform(job)
+      end
+
+      test "a non-keyword callback return is contained as an invalid config" do
+        job = runtime_job!("msg_runtime_bad_return")
+
+        defmodule BadReturnRuntimeWorker do
+          @moduledoc false
+          use AshHooks.Worker,
+            deliveries: AshHooks.WorkerTest.Delivery,
+            endpoints: AshHooks.WorkerTest.Endpoint,
+            secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+            runtime_config: {AshHooks.WorkerTest.RuntimePolicy, :bad},
+            queue: :ash_hooks_test,
+            oban: AshHooks.WorkerTest.Oban
+        end
+
+        assert {:error, {:invalid_runtime_config, :callback_failed}} =
+                 BadReturnRuntimeWorker.perform(job)
+      end
+
+      test "an empty override list resolves the baked config unchanged" do
+        baked = [
+          deliveries: Delivery,
+          endpoints: Endpoint,
+          secret_resolver: {Secrets, :webhook_secret},
+          runtime_config: {RuntimePolicy, :call},
+          attempt_timeout: 25_000,
+          finalization_allowance: 5_000,
+          max_attempts: 10,
+          base_backoff_seconds: 2,
+          max_backoff_seconds: 3_600,
+          retry_after_cap_seconds: 86_400,
+          job_timeout: 35_000,
+          oban_max_attempts: 20
+        ]
+
+        assert {:ok, resolved} = AshHooks.Worker.resolve_config(baked, %{})
+        assert resolved[:max_attempts] == 10
+        assert resolved[:base_backoff_seconds] == 2
+        assert resolved[:attempt_timeout] == 25_000
+      end
+
+      test "a worker without :runtime_config resolves its config verbatim" do
+        baked = [
+          deliveries: Delivery,
+          endpoints: Endpoint,
+          secret_resolver: {Secrets, :webhook_secret},
+          job_timeout: 35_000,
+          oban_max_attempts: 20
+        ]
+
+        assert {:ok, ^baked} = AshHooks.Worker.resolve_config(baked, %{})
+      end
+    end
+
     test "perform/1 delegates to the driver (terminal row → :ok, no send)" do
       ep = endpoint!()
       row = delivery_row!(ep, "msg_worker_terminal")
@@ -845,6 +1043,22 @@ if Code.ensure_loaded?(Oban) do
         assert_raise ArgumentError,
                      ~r/:max_backoff_seconds must be at least :base_backoff_seconds/,
                      fn -> Code.compile_string(source) end
+      after
+        _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "a non-{module, function} :runtime_config refuses to compile" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        runtime_config: {\"not-a-module\", :call}"
+          )
+
+        assert_raise ArgumentError, ~r/:runtime_config must be \{module, function\}/, fn ->
+          Code.compile_string(source)
+        end
       after
         _ = :code.purge(RuntimeWorker)
         _ = :code.delete(RuntimeWorker)

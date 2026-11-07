@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **Runtime-configurable worker timing.** `use AshHooks.Worker` accepts
+  `runtime_config: {module, function}` — the callback receives the Oban
+  job's args (tenant included) on every perform and returns a keyword of
+  overrides for `:delivery_max_attempts`, `:base_backoff_seconds`,
+  `:max_backoff_seconds`, `:retry_after_cap_seconds`, `:attempt_timeout`,
+  and `:finalization_allowance`, merged over the compiled defaults. Every
+  compiled-budget misfit check re-runs at runtime against the resolved
+  set (positive integers, backoff ordering, the baked Oban job-timeout
+  envelope including a literal `http_opts` `timeout:` collision, and the
+  Oban-ceiling relation — only the row ceiling may decide dead-letter): a
+  violation fails the job with `{:error, {:invalid_runtime_config, reason}}`
+  before any delivery work, leaves the row untouched, and emits
+  `[:ash_hooks, :worker, :invalid_runtime_config]` (the reason vocabulary is
+  fixed; a contained callback crash is `callback_failed`). The public
+  resolver `AshHooks.Worker.resolve_config/2` backs the seam.
+
 ## 2.1.0 — November 1, 2026
 
 A minor under ADR-0010 rule 3, not a patch: `AshHooks.Ssrf.resolve_public/1`

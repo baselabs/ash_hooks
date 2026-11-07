@@ -84,6 +84,26 @@ defmodule AshHooks.Worker do
       exhaust-fast (a wedged receiver dead-letters at the ceiling instead
       of holding state). The cap clamps `Retry-After`; it does not alter the
       backoff ladder.
+    * `:runtime_config` (`{module, function}`, optional) — resolves the
+      worker-timing options PER PERFORM: `f(job_args) :: keyword()` returns
+      overrides for `:delivery_max_attempts`, `:base_backoff_seconds`,
+      `:max_backoff_seconds`, `:retry_after_cap_seconds`, `:attempt_timeout`,
+      and `:finalization_allowance`, merged over the compiled defaults (the
+      compiled values remain the floor the macro validated). The Oban job
+      `:timeout` and `:max_attempts` stay compile-time (they are Oban Worker
+      options baked into the generated module), so the compile-time misfit
+      checks re-run at runtime against every resolved set: an override that
+      overruns the baked job envelope, meets or exceeds the Oban attempt
+      ceiling, is not a positive integer, inverts the backoff ladder,
+      collides a literal `:http_opts` `timeout:` with a lowered
+      `:attempt_timeout`, or names an unknown key fails
+      `perform/1` with `{:error, {:invalid_runtime_config, reason}}` BEFORE
+      any delivery work — the row is untouched, Oban re-drives the job, and
+      a `[:ash_hooks, :worker, :invalid_runtime_config]` telemetry event
+      carries the reason. A callback that raises or returns a non-keyword
+      is contained the same way (`:callback_failed`). Raise the compiled
+      `:timeout`/`:max_attempts` ceilings to the maximum you will ever
+      resolve at runtime, then lower per run.
 
   The generated enqueue uses `fields: [:args]` with the complete delivery
   key, delivery and endpoint resource names, source, route, endpoint/event,
@@ -159,6 +179,197 @@ defmodule AshHooks.Worker do
     "AshHooks.Worker :snippet_redactor must be {module, function} " <>
       "(a 1-arity fn is accepted in the delivery config) — got {#{inspect(m)}, #{inspect(f)}}"
   end
+
+  defp runtime_config_error(other) do
+    "AshHooks.Worker :runtime_config must be {module, function} " <>
+      "(f receives the job args and returns a keyword of timing overrides) — " <>
+      "got #{inspect(other)}"
+  end
+
+  # ──────────────── the per-perform runtime-config seam ────────────────
+
+  @doc """
+  Resolves a worker's delivery config for one perform: when the worker
+  declared `:runtime_config: {module, function}`, the callback runs with
+  the job's args map (string keys, tenant included when the row carries
+  one) and its overrides are merged over the compiled defaults — after
+  the compiled-budget misfit checks re-run as runtime validation.
+
+  Returns `{:ok, config}` (the driver-ready keyword list) or
+  `{:error, {:invalid_runtime_config, reason}}`, where `reason` is
+  `:callback_failed` (a crash or a non-keyword return — contained, never
+  raised through), `{:unknown_key, key}`, `:not_positive_integer`,
+  `:backoff_inversion`, `:envelope_exceeded` (the resolved attempt
+  deadline overruns the baked Oban job timeout, or a literal
+  `:http_opts` `timeout:` collides with a lowered `:attempt_timeout`),
+  or `:oban_ceiling_exceeded` (the resolved delivery ceiling reaches the
+  baked Oban job ceiling — only the row ceiling may decide dead-letter).
+  A rejection emits `[:ash_hooks, :worker, :invalid_runtime_config]` and
+  leaves the delivery row untouched.
+  """
+  @spec resolve_config(keyword(), map()) ::
+          {:ok, keyword()} | {:error, {:invalid_runtime_config, term()}}
+  def resolve_config(config, args) do
+    case config[:runtime_config] do
+      nil ->
+        {:ok, config}
+
+      {module, function} = seam when is_atom(module) and is_atom(function) ->
+        resolve_runtime_seam(seam, config, args)
+
+      _invalid ->
+        reject_runtime_config({:error, :callback_failed})
+    end
+  end
+
+  defp resolve_runtime_seam(seam, config, args) do
+    with {:ok, overrides} <- runtime_overrides(seam, args),
+         :ok <- check_unknown_keys(overrides) do
+      merged = merge_runtime_overrides(config, overrides)
+      resolve_merged_config(merged)
+    else
+      {:error, reason} -> reject_runtime_config({:error, reason})
+    end
+  end
+
+  defp resolve_merged_config(merged) do
+    case validate_runtime_budgets(merged) do
+      :ok -> {:ok, merged}
+      {:error, _reason} = error -> reject_runtime_config(error)
+    end
+  end
+
+  # the callback runs OUTSIDE the driver's monitor (it must not consume the
+  # attempt budget); a raise/exit/throw is contained as an invalid config —
+  # the row is untouched and Oban re-drives the trigger
+  defp runtime_overrides(seam, args) do
+    overrides = apply(elem(seam, 0), elem(seam, 1), [args])
+
+    if Keyword.keyword?(overrides) do
+      {:ok, overrides}
+    else
+      {:error, :callback_failed}
+    end
+  rescue
+    _reason -> {:error, :callback_failed}
+  catch
+    :exit, _reason -> {:error, :callback_failed}
+    :throw, _value -> {:error, :callback_failed}
+  end
+
+  # the overridable set, in the WORKER'S option vocabulary; the delivery
+  # ceiling maps onto the driver's :max_attempts key
+  @runtime_budget_keys ~w(delivery_max_attempts base_backoff_seconds max_backoff_seconds
+     retry_after_cap_seconds attempt_timeout finalization_allowance)a
+
+  defp merge_runtime_overrides(config, overrides) do
+    Enum.reduce(overrides, config, fn
+      {:delivery_max_attempts, value}, config ->
+        Keyword.put(config, :max_attempts, value)
+
+      {key, value}, config ->
+        Keyword.put(config, key, value)
+    end)
+  end
+
+  # The compiled tripwires re-run at runtime over the EFFECTIVE values:
+  # every overridable key is now runtime data, and a silent misfit here
+  # has the same failure class the compile gate closes (stalled rows, a
+  # budget wall ahead of the driver deadline, an Oban ceiling deciding
+  # dead-letter). The Oban job timeout and ceiling stay the compiled
+  # envelope the overrides must fit inside.
+  defp validate_runtime_budgets(config) do
+    with :ok <- check_runtime_positive(config),
+         :ok <- check_runtime_backoff(config),
+         :ok <- check_runtime_envelope(config) do
+      check_runtime_oban_ceiling(config)
+    end
+  end
+
+  defp check_unknown_keys(overrides) do
+    case Enum.find(overrides, fn {key, _} -> key not in @runtime_budget_keys end) do
+      nil -> :ok
+      {key, _} -> {:error, {:unknown_key, key}}
+    end
+  end
+
+  defp check_runtime_positive(config) do
+    budgets = [
+      attempt_timeout: config[:attempt_timeout],
+      finalization_allowance: config[:finalization_allowance],
+      max_attempts: config[:max_attempts],
+      base_backoff_seconds: config[:base_backoff_seconds],
+      max_backoff_seconds: config[:max_backoff_seconds],
+      retry_after_cap_seconds: config[:retry_after_cap_seconds]
+    ]
+
+    case Enum.find(budgets, fn {_key, value} ->
+           not (is_integer(value) and value > 0)
+         end) do
+      nil -> :ok
+      {_key, _value} -> {:error, :not_positive_integer}
+    end
+  end
+
+  defp check_runtime_backoff(config) do
+    if config[:max_backoff_seconds] >= config[:base_backoff_seconds] do
+      :ok
+    else
+      {:error, :backoff_inversion}
+    end
+  end
+
+  defp check_runtime_envelope(config) do
+    attempt_timeout = config[:attempt_timeout]
+    allowance = config[:finalization_allowance]
+
+    cond do
+      attempt_timeout + allowance >= config[:job_timeout] ->
+        {:error, :envelope_exceeded}
+
+      literal_http_timeout(config) >= attempt_timeout ->
+        {:error, :envelope_exceeded}
+
+      true ->
+        :ok
+    end
+  end
+
+  # the compile-time literal check re-runs against the EFFECTIVE attempt
+  # budget: a runtime override may lower :attempt_timeout beneath a baked
+  # literal driver timeout, walling slow sends off at the runtime's kill
+  # line. An {m, f, a} bundle resolves later and stays unchecked (the
+  # compiled posture's documented caveat).
+  defp literal_http_timeout(config) do
+    case config[:http_opts] do
+      literal when is_list(literal) -> Keyword.get(literal, :timeout, 0)
+      _mfa_or_nil -> 0
+    end
+  end
+
+  defp check_runtime_oban_ceiling(config) do
+    if config[:oban_max_attempts] > config[:max_attempts] do
+      :ok
+    else
+      {:error, :oban_ceiling_exceeded}
+    end
+  end
+
+  defp reject_runtime_config({:error, reason}) do
+    :telemetry.execute(
+      [:ash_hooks, :worker, :invalid_runtime_config],
+      %{},
+      %{reason: classify_rejection(reason)}
+    )
+
+    {:error, {:invalid_runtime_config, reason}}
+  end
+
+  # the event's reason is the fixed validation vocabulary; a contained
+  # callback failure's arbitrary term never rides the metadata
+  defp classify_rejection({:unknown_key, _key}), do: "unknown_key"
+  defp classify_rejection(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp classify_rejection(_other), do: "callback_failed"
 
   alias Ash.Resource.Info, as: ResourceInfo
 
@@ -276,6 +487,27 @@ defmodule AshHooks.Worker do
 
     {resolver_m, resolver_f} = Keyword.fetch!(opts, :secret_resolver)
 
+    runtime_config =
+      case Keyword.get(opts, :runtime_config) do
+        nil ->
+          nil
+
+        # the module half arrives as alias AST — expand against the caller
+        # (the secret_resolver precedent); anything that does not resolve
+        # to a module atom is the malformed shape, fail-closed at compile
+        {m, f} = pair ->
+          case {expand.(m), f} do
+            {module, function} when is_atom(module) and is_atom(function) ->
+              {module, function}
+
+            _malformed ->
+              raise ArgumentError, runtime_config_error(pair)
+          end
+
+        other ->
+          raise ArgumentError, runtime_config_error(other)
+      end
+
     http_opts =
       case Keyword.get(opts, :http_opts) do
         {:{}, _, [m, f, a]} when is_atom(f) and is_list(a) -> {expand.(m), f, a}
@@ -326,6 +558,12 @@ defmodule AshHooks.Worker do
         attempt_timeout: attempt_timeout,
         finalization_allowance: finalization_allowance,
         dispatch_route: dispatch_route,
+        # the runtime-config seam (per-perform overrides) and the baked
+        # envelope those overrides must fit inside — the compile-time misfit
+        # checks re-run against every resolved set
+        runtime_config: runtime_config,
+        job_timeout: job_timeout,
+        oban_max_attempts: oban_max_attempts,
         max_attempts: delivery_max_attempts,
         base_backoff_seconds: base_backoff,
         max_backoff_seconds: max_backoff,
@@ -355,7 +593,10 @@ defmodule AshHooks.Worker do
 
       @impl Oban.Worker
       def perform(%Oban.Job{args: args}) do
-        AshHooks.Delivery.run(args, @ash_hooks_delivery_config)
+        case AshHooks.Worker.resolve_config(@ash_hooks_delivery_config, args) do
+          {:ok, config} -> AshHooks.Delivery.run(args, config)
+          {:error, reason} -> {:error, reason}
+        end
       end
 
       # The enqueue seam (`enqueue: {__MODULE__, :enqueue}`) suppresses a

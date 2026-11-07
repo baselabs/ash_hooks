@@ -186,7 +186,13 @@ Related budgets are checked at compile time: the macro refuses an Oban
 ceiling decides dead-letter), a literal `http_opts` `timeout:` at or above
 `:attempt_timeout`, non-positive budget values, and a literal
 `validate_destination: false` outside `:test` (it is the loopback test
-seam). See `AshHooks.Worker` for every relation and its rationale.
+seam). Timing is also configurable at runtime: pass
+`runtime_config: {MyApp.Config, :webhook_runtime}` and the callback
+resolves `:delivery_max_attempts`, the backoff ladder, the `Retry-After`
+cap, `:attempt_timeout`, and `:finalization_allowance` per perform — every
+compile-time misfit check re-runs against the resolved set, so an override
+that overruns the baked job envelope fails the job before any delivery
+work. See `AshHooks.Worker` for every relation and its rationale.
 
 Dispatch, wiring the worker's generated enqueue function:
 
