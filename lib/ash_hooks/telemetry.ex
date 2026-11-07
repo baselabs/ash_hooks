@@ -75,6 +75,7 @@ defmodule AshHooks.Telemetry do
   """
   @spec classify_token(term()) :: binary()
   @reason_tokens ~w(adapter_crash closed connect_timeout deadline_exceeded
+    destination_denied destination_policy_failed
     eacces econnrefused econnreset ehostunreach einval enetunreach enoent
     etimedout endpoint_disabled endpoint_gone endpoint_replaced gone_410
     invalid_destination invalid_event invalid_enqueue_result invalid_enqueuer

@@ -164,6 +164,7 @@ defmodule AshHooks.MixProject do
         Core: [
           AshHooks,
           AshHooks.Info,
+          AshHooks.DestinationPolicy,
           AshHooks.PrimaryKey,
           AshHooks.Ssrf,
           AshHooks.Telemetry,

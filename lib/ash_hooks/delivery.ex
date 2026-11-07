@@ -43,6 +43,11 @@ defmodule AshHooks.Delivery do
       its label. The HTTP adapter's umbrella for the same failures is
       `unresolved_host`
     * send-time SSRF refusal / disabled-or-gone endpoint → `:dead_letter`
+    * a configured `:destination_policy` decides ahead of the packaged SSRF
+      gate (`AshHooks.DestinationPolicy`): `:deny` → `:dead_letter`
+      (`destination_denied`), `:allow` → the send proceeds without the
+      packaged gate, `:default` → the gate runs unchanged; a contained
+      callback failure retries under `destination_policy_failed`
 
   Backoff: `min(base · 2^min(attempts, 16), max_backoff)` seconds plus
   `:rand.uniform(delay)` jitter, re-clamped — always ≥ 1 second.
@@ -224,8 +229,9 @@ defmodule AshHooks.Delivery do
   2-second base backoff, 3,600-second maximum backoff, and an 86,400-second
   `Retry-After` cap. Omitted or `nil` retry options use these defaults.
   `:http`, `:http_opts`, `:tenant_aware_secrets`,
-  `:snippet_capture`, `:snippet_redactor`, and `:now` customize the documented
-  seams.
+  `:snippet_capture`, `:snippet_redactor`, `:destination_policy`
+  (`{module, function}` or a 2-arity fn — `AshHooks.DestinationPolicy`), and
+  `:now` customize the documented seams.
 
   Set `:max_attempts` here to configure the delivery row's ceiling. The worker
   macro calls this option `:delivery_max_attempts`; its own `:max_attempts`
@@ -581,6 +587,66 @@ defmodule AshHooks.Delivery do
   end
 
   defp attempt_enabled(row, endpoint, config, tenant) do
+    # the public destination-policy seam first: a consumer policy decides
+    # allow/deny/default per URL ahead of the packaged gate, so an app can
+    # carry its own allow and deny rules without forking the default
+    # check. A configured policy TAKES PRECEDENCE over the boolean
+    # :ssrf_check seam.
+    case config[:destination_policy] do
+      nil ->
+        attempt_under_default_policy(row, endpoint, config, tenant)
+
+      policy ->
+        case run_destination_policy(policy, endpoint, tenant) do
+          :allow ->
+            send(row, endpoint, config, tenant)
+
+          :deny ->
+            dead_letter(row, "destination_denied", config, tenant)
+
+          :default ->
+            attempt_under_default_policy(row, endpoint, config, tenant)
+
+          {:error, :policy_failed} ->
+            retry(row, "destination_policy_failed", config, tenant, nil)
+        end
+    end
+  end
+
+  # the policy callback runs inside the driver's containment: a crash or a
+  # term outside the decision vocabulary is a RETRYABLE failure (the row
+  # climbs the ladder while the app fixes its policy — a policy defect
+  # must not dead-letter deliveries)
+  defp run_destination_policy({m, f}, endpoint, tenant) when is_atom(m) and is_atom(f),
+    do:
+      safe_destination_policy(fn ->
+        apply(m, f, [endpoint.url, policy_context(endpoint, tenant)])
+      end)
+
+  defp run_destination_policy(policy, endpoint, tenant) when is_function(policy, 2),
+    do: safe_destination_policy(fn -> policy.(endpoint.url, policy_context(endpoint, tenant)) end)
+
+  defp run_destination_policy(_invalid_shape, _endpoint, _tenant),
+    do: {:error, :policy_failed}
+
+  defp safe_destination_policy(fun) do
+    classify_destination_decision(fun.())
+  rescue
+    _reason -> {:error, :policy_failed}
+  catch
+    :exit, _reason -> {:error, :policy_failed}
+    :throw, _value -> {:error, :policy_failed}
+  end
+
+  defp policy_context(endpoint, tenant),
+    do: %{endpoint_id: PrimaryKey.scalar!(endpoint), tenant: tenant}
+
+  defp classify_destination_decision(decision) when decision in [:allow, :deny, :default],
+    do: decision
+
+  defp classify_destination_decision(_invalid), do: {:error, :policy_failed}
+
+  defp attempt_under_default_policy(row, endpoint, config, tenant) do
     # send-time re-check: full DNS re-resolution by default (ADR-0005);
     # the seam is injectable so deterministic tests use the
     # literal-only variant. The default runs the tri-state resolver so an

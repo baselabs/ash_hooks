@@ -43,6 +43,16 @@ defmodule AshHooks.Worker do
       flag itself is deliberately not a macro option (ADR-0005's snippet
       amendment: compile-time knobs are broad and quiet) — pass it in the
       `AshHooks.Delivery.run/2` config for a one-row diagnostic re-drive.
+    * `:destination_policy` (`{module, function}`, optional) — the public
+      send-time destination policy seam (`AshHooks.DestinationPolicy`):
+      the callback receives the endpoint's URL and a context map
+      (`%{endpoint_id:, tenant:}`) and returns `:allow` (skip the packaged
+      SSRF gate — pair it with the adapter's validation override for
+      destinations that check would refuse), `:deny` (terminal
+      `destination_denied`), or `:default` (the packaged tri-state check
+      runs unchanged). A crashing or out-of-vocabulary callback is
+      contained as a retryable `destination_policy_failed`. A configured
+      policy takes precedence over the boolean `:ssrf_check` seam.
     * `:http` — the `AshHooks.Http` adapter (default `AshHooks.Http.Bounded`).
     * `:http_opts` — adapter options as a literal keyword list or a
       `{module, function, args}` callback resolved inside each job's monitored
@@ -183,6 +193,12 @@ defmodule AshHooks.Worker do
   defp runtime_config_error(other) do
     "AshHooks.Worker :runtime_config must be {module, function} " <>
       "(f receives the job args and returns a keyword of timing overrides) — " <>
+      "got #{inspect(other)}"
+  end
+
+  defp destination_policy_error(other) do
+    "AshHooks.Worker :destination_policy must be {module, function} " <>
+      "(f receives the URL and a context map; see AshHooks.DestinationPolicy) — " <>
       "got #{inspect(other)}"
   end
 
@@ -487,6 +503,26 @@ defmodule AshHooks.Worker do
 
     {resolver_m, resolver_f} = Keyword.fetch!(opts, :secret_resolver)
 
+    destination_policy =
+      case Keyword.get(opts, :destination_policy) do
+        nil ->
+          nil
+
+        # the module half arrives as alias AST — expand against the caller
+        # (the secret_resolver precedent)
+        {m, f} = pair ->
+          case {expand.(m), f} do
+            {module, function} when is_atom(module) and is_atom(function) ->
+              {module, function}
+
+            _malformed ->
+              raise ArgumentError, destination_policy_error(pair)
+          end
+
+        other ->
+          raise ArgumentError, destination_policy_error(other)
+      end
+
     runtime_config =
       case Keyword.get(opts, :runtime_config) do
         nil ->
@@ -562,6 +598,7 @@ defmodule AshHooks.Worker do
         # envelope those overrides must fit inside — the compile-time misfit
         # checks re-run against every resolved set
         runtime_config: runtime_config,
+        destination_policy: destination_policy,
         job_timeout: job_timeout,
         oban_max_attempts: oban_max_attempts,
         max_attempts: delivery_max_attempts,

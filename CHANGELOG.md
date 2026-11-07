@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A public send-time destination policy seam.** `AshHooks.DestinationPolicy`
+  is the supported way to carry your own allow and deny rules without forking
+  the packaged SSRF check: a `{module, function}` callback (worker option
+  `:destination_policy`, or the same key in a direct
+  `AshHooks.Delivery.run/2` config) receives the endpoint's URL and a
+  `%{endpoint_id:, tenant:}` context and decides `:allow` (skip the packaged
+  gate — pair it with the HTTP adapter's validation override for destinations
+  that check would refuse), `:deny` (terminal `destination_denied`), or
+  `:default` (the packaged tri-state check runs unchanged). A callback that
+  crashes or returns a term outside the vocabulary is contained as a
+  retryable `destination_policy_failed` — a policy defect never dead-letters
+  deliveries. A configured policy takes precedence over the boolean
+  `:ssrf_check` seam; with no policy configured, behavior is unchanged.
+
 - **Runtime-configurable worker timing.** `use AshHooks.Worker` accepts
   `runtime_config: {module, function}` — the callback receives the Oban
   job's args (tenant included) on every perform and returns a keyword of

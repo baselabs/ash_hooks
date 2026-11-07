@@ -67,6 +67,11 @@ the reporter.
   Metadata hosts and non-global IPv4 and IPv6 ranges are rejected. DNS validation is
   fail-closed: every returned address must be public, and the connection is pinned to a
   validated address while TLS and the `Host` header continue to use the original host.
+  A consumer `:destination_policy` (`AshHooks.DestinationPolicy`) may allow or deny
+  ahead of this check: an `:allow` is an explicit consumer trust decision that replaces
+  the packaged send-time gate for that URL (the HTTP adapter's resolve-and-pin remains
+  the transport's own boundary), a `:deny` is terminal, and a contained callback
+  failure retries — a policy defect never dead-letters deliveries.
 - TLS uses the OTP trust store unless the host supplies a CA bundle. Hostnames use the
   normal certificate hostname check. Literal HTTPS addresses must match an `iPAddress`
   subject alternative name.

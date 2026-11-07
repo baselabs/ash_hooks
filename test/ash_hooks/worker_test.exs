@@ -1064,6 +1064,22 @@ if Code.ensure_loaded?(Oban) do
         _ = :code.delete(RuntimeWorker)
       end
 
+      test "a non-{module, function} :destination_policy refuses to compile" do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        destination_policy: \"not-a-policy\""
+          )
+
+        assert_raise ArgumentError, ~r/:destination_policy must be \{module, function\}/, fn ->
+          Code.compile_string(source)
+        end
+      after
+        _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
       test "defaults (no :oban, no :snippet_redactor, no :http) compile clean" do
         assert [{module, _beam}] = Code.compile_string(@worker_base)
         assert module == RuntimeWorker
