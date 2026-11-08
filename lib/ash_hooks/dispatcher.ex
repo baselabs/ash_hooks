@@ -476,11 +476,18 @@ defmodule AshHooks.Dispatcher do
     with {:ok, subscriptions} <- read_subscriptions(subs_mod, tenant) do
       {matches, error_entries} =
         subscriptions
-        |> Enum.filter(&Subscription.matches?(&1, event.type))
+        |> Enum.filter(&matched?(&1, event))
         |> resolve_endpoints(endpoint_mod, tenant)
 
       {:ok, matches, error_entries}
     end
+  end
+
+  # the full match: the type leg, then the attribute-filter leg, BEFORE
+  # any delivery row exists
+  defp matched?(subscription, event) do
+    Subscription.matches?(subscription, event.type) and
+      Subscription.matches_filters?(subscription, event.metadata)
   end
 
   defp read_subscriptions(subs_mod, tenant) do

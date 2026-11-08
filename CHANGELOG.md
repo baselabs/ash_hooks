@@ -37,6 +37,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[:ash_hooks, :delivery, :test]` beside the normal lifecycle, drives the
   row synchronously (default one attempt), requires a live endpoint, and
   returns `{:ok, %{status:, delivery:}}`.
+- **Subscription filters on declared event attributes.** The
+  subscription DSL's `filter_attributes([:order_id, :region])` declares
+  the closed set of attribute names subscriptions may filter on and
+  injects the `event_filters` column (`:map`): a subscription whose
+  filters all equal the dispatching event's metadata values receives the
+  delivery — multiple filters AND together, a list value matches any-of.
+  Evaluated in the dispatcher BEFORE any delivery row is created; a
+  filter key outside the declared set (or a malformed filter value) never
+  matches, fail closed. Attribute values ride the event's `metadata`.
 - **The event catalog and payload-version pinning.** The `outbound` DSL
   declares each event type's metadata — `description`, `payload_schema`
   (any term your docs renderer understands), `version` (default 1), and

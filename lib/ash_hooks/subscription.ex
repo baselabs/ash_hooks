@@ -46,6 +46,8 @@ defmodule AshHooks.Subscription do
   precedent (ADR-0005's consumer-governed posture).
   """
 
+  alias Spark.Dsl.Extension
+
   @signing_modes [:legacy, :dual, :standard]
 
   @doc """
@@ -56,10 +58,11 @@ defmodule AshHooks.Subscription do
   def signing_modes, do: @signing_modes
 
   @doc """
-  Whether a subscription row (`event_types`) matches an event `type` (a
-  canonical string): the bare `"*"` entry matches everything; any other
-  entry matches exactly — no glob interpretation. Works on any resource
-  row carrying the injected `event_types` attribute.
+  Whether a subscription row matches an event `type` (a canonical string):
+  the bare `"*"` entry matches everything; any other entry matches exactly
+  — no glob interpretation. Works on any resource row carrying the
+  injected `event_types` attribute. The attribute-filter leg is separate:
+  `matches_filters?/2`.
 
   Entries are normalized before comparing: atoms to strings (a
   consumer-typed register — `{:array, :atom}`, a closed enum — H8), a
@@ -78,6 +81,38 @@ defmodule AshHooks.Subscription do
 
     "*" in types or type in types
   end
+
+  @doc """
+  The FILTER leg of matching, on its own: every `event_filters` entry must
+  name a declared `filter_attributes` attribute and equal the dispatching
+  event's metadata value (list values match any-of). Rows without filters
+  match.
+  """
+  @spec matches_filters?(map(), map()) :: boolean()
+  def matches_filters?(subscription, metadata) when is_map(subscription) and is_map(metadata) do
+    declared =
+      subscription.__struct__
+      |> Extension.get_opt([:subscription], :filter_attributes, [])
+      |> MapSet.new(&to_string/1)
+
+    subscription
+    |> Map.get(:event_filters)
+    |> case do
+      nil -> %{}
+      filters when is_map(filters) -> filters
+      _not_a_map -> %{__invalid__: true}
+    end
+    |> Enum.all?(fn {key, expected} ->
+      Map.has_key?(metadata, to_string(key)) and to_string(key) in declared and
+        value_matches?(Map.fetch!(metadata, to_string(key)), expected)
+    end)
+  end
+
+  defp value_matches?(actual, expected) when is_list(expected),
+    do: actual in expected
+
+  defp value_matches?(actual, expected),
+    do: actual == expected
 
   defp normalize_type(entry) when is_binary(entry), do: entry
   defp normalize_type(entry) when is_atom(entry), do: Atom.to_string(entry)
@@ -98,6 +133,20 @@ defmodule AshHooks.Subscription do
         The resource module carrying `AshHooks.Endpoint` that
         `endpoint_id` references — the dispatcher loads endpoints through
         it to check `status` and reachability.
+        """
+      ],
+      filter_attributes: [
+        type: {:list, :atom},
+        default: [],
+        doc: """
+        The closed set of EVENT ATTRIBUTE names subscriptions may filter
+        on (e.g. `[:order_id, :region]`). Declaring a nonempty list
+        injects the `event_filters` column (`:map`, nullable): a
+        subscription whose filters all match the dispatching event's
+        metadata receives the delivery — evaluated BEFORE any delivery row
+        is created. A filter key outside this set never matches (fail
+        closed); a list value matches any-of. Requires a migration for the
+        column.
         """
       ]
     ]

@@ -63,6 +63,7 @@ Configuration of this resource as the outbound subscription.
 | Name | Type | Default | Docs |
 |------|------|---------|------|
 | [`endpoint_resource`](#subscription-endpoint_resource){: #subscription-endpoint_resource .spark-required} | `atom` |  | The resource module carrying `AshHooks.Endpoint` that `endpoint_id` references — the dispatcher loads endpoints through it to check `status` and reachability. |
+| [`filter_attributes`](#subscription-filter_attributes){: #subscription-filter_attributes } | `list(atom)` | `[]` | The closed set of EVENT ATTRIBUTE names subscriptions may filter on (e.g. `[:order_id, :region]`). Declaring a nonempty list injects the `event_filters` column (`:map`, nullable): a subscription whose filters all match the dispatching event's metadata receives the delivery — evaluated BEFORE any delivery row is created. A filter key outside this set never matches (fail closed); a list value matches any-of. Requires a migration for the column. |
 
 
 

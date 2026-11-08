@@ -5,7 +5,7 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
   use Spark.Dsl.Transformer
 
   alias Ash.Resource.Builder
-  alias Spark.Dsl.Transformer
+  alias Spark.Dsl.{Extension, Transformer}
 
   def before?(Ash.Resource.Transformers.DefaultAccept), do: true
   def before?(Ash.Resource.Transformers.CachePrimaryKey), do: true
@@ -13,8 +13,19 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
   def before?(_), do: false
 
   def transform(dsl_state) do
-    with {:ok, dsl_state} <- add_primary_key(dsl_state) do
+    with {:ok, dsl_state} <- add_primary_key(dsl_state),
+         {:ok, dsl_state} <- add_filter_attribute(dsl_state) do
       add_attributes(dsl_state)
+    end
+  end
+
+  # Declaring filter_attributes injects the event_filters column — an
+  # EXISTING schema is never silently widened; the consumer migrates the
+  # column when adopting attribute filters.
+  defp add_filter_attribute(dsl_state) do
+    case Extension.get_opt(dsl_state, [:subscription], :filter_attributes, []) do
+      [] -> {:ok, dsl_state}
+      _declared -> Builder.add_new_attribute(dsl_state, :event_filters, :map, public?: true)
     end
   end
 

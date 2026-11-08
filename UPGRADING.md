@@ -25,6 +25,9 @@ it: no existing column, action, event, or default behavior moves.
   `AshHooks.OutboundAttempt.list/2` filter by endpoint, status/outcome,
   event type, and time range with keyset pagination; the delivery resource
   needs `timestamps()` and an `:id` attribute for them.
+- **Subscription attribute filters (opt-in).** Declaring a nonempty
+  `filter_attributes` list on the subscription resource injects the
+  `event_filters` column — migrate it when you declare it.
 - **Payload-version pinning (opt-in).** Declaring `version_pinning :on`
   on the endpoint resource injects the `pinned_payload_version` column —
   migrate it when you declare it. Dispatch then resolves each endpoint's
