@@ -37,6 +37,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[:ash_hooks, :delivery, :test]` beside the normal lifecycle, drives the
   row synchronously (default one attempt), requires a live endpoint, and
   returns `{:ok, %{status:, delivery:}}`.
+- **Tenancy across the new surface.** Every new entry point — attempt
+  history reads and writes, delivery-log queries, resend and replay, test
+  sends, health stats and the disable sweep, key rolling and expiry, the
+  event log's list/prune/replay — takes `:tenant`, resolves the tenancy
+  pre-flight first, and fails closed with `{:error, :tenant_required}` on
+  multitenant resources without one. Multitenant attempt tables carry the
+  tenant-partitioned `unique_attempt` index (the delivery ledger's
+  pattern); `AshHooks.Endpoint.expire_previous_secret/2` gained its
+  `:tenant` option.
 - **The event log.** The new `AshHooks.OutboundEvent` extension records
   each dispatched event ONCE — id, type, declared payload version, time,
   exact payload bytes — whether or not any endpoint was enabled (wire it

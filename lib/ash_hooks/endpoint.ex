@@ -169,35 +169,43 @@ defmodule AshHooks.Endpoint do
   Retires one endpoint's previous signing key at once: the old reference
   leaves the row and its retirement time stands as the record. A row with
   no previous key is returned unchanged.
+
+  `:tenant` applies to the gated write (required on multitenant
+  resources — the tenancy pre-flight runs before it).
   """
-  @spec expire_previous_secret(struct()) :: {:ok, struct()} | {:error, term()}
-  def expire_previous_secret(endpoint) do
+  @spec expire_previous_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
+  def expire_previous_secret(endpoint, opts \\ []) do
     resource = endpoint.__struct__
 
-    cond do
-      not lifecycle?(resource) ->
-        {:error, lifecycle_error(resource)}
+    with :ok <- require_lifecycle(resource),
+         {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
+      expire_previous_secret_gated(endpoint, tenant)
+    end
+  end
 
-      is_nil(endpoint.previous_secret_ref) ->
-        {:ok, endpoint}
+  defp expire_previous_secret_gated(endpoint, tenant) do
+    resource = endpoint.__struct__
 
-      true ->
-        result =
-          resource
-          |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-          |> Ash.Query.filter(previous_secret_ref == ^endpoint.previous_secret_ref)
-          |> Ash.bulk_update(:retire_previous_secret, %{},
-            authorize?: false,
-            return_records?: true,
-            return_errors?: true,
-            strategy: [:atomic]
-          )
+    if is_nil(endpoint.previous_secret_ref) do
+      {:ok, endpoint}
+    else
+      result =
+        resource
+        |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+        |> Ash.Query.filter(previous_secret_ref == ^endpoint.previous_secret_ref)
+        |> Ash.bulk_update(:retire_previous_secret, %{},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
 
-        case result do
-          %Ash.BulkResult{status: :success, records: [retired]} -> {:ok, retired}
-          %Ash.BulkResult{status: :success, records: []} -> {:ok, endpoint}
-          %Ash.BulkResult{} = result -> {:error, List.first(result.errors || []) || result}
-        end
+      case result do
+        %Ash.BulkResult{status: :success, records: [retired]} -> {:ok, retired}
+        %Ash.BulkResult{status: :success, records: []} -> {:ok, endpoint}
+        %Ash.BulkResult{} = result -> {:error, List.first(result.errors || []) || result}
+      end
     end
   end
 
