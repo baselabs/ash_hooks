@@ -286,6 +286,11 @@ redacted binary, or nil to leave the body uncaptured). It runs before
 the built-in redaction; a crashing redactor leaves the body
 uncaptured. See `AshHooks.Worker` for the worker-macro form.
 
+**Test events.** `AshHooks.Delivery.test_send/2` sends a signed synthetic
+event of a chosen type to one endpoint, outside subscriptions — a fresh
+webhook id each time, a payload that marks itself as a test, and the
+normal attempt/telemetry lifecycle behind it (see `AshHooks.Delivery`).
+
 **Signing modes.** `:standard` (default) needs only the endpoint's
 `secret_ref`. `:dual` and `:legacy` additionally require a
 `legacy_secret_ref` — `:dual` emits both envelopes so receivers can

@@ -781,6 +781,146 @@ defmodule AshHooks.Delivery do
     end)
   end
 
+  @doc """
+  Sends one signed synthetic TEST event of a chosen type to ONE endpoint,
+  OUTSIDE subscriptions — no subscription row is consulted or needed, and
+  the delivery lands in your ledger like any other (the delivery log is
+  the record).
+
+  The event gets a fresh `msg_` id (every test send is a new event — no
+  dedup suppression), the chosen type verbatim, and the endpoint's normal
+  signing mode. The default payload marks itself:
+
+      {"test": true, "type": "invoice.paid", "timestamp": "..."}
+
+  A caller-supplied `:payload` (exact bytes) is used VERBATIM — wrap your
+  own test marker into it; the package never rewrites caller bytes.
+
+  Options: `:type` (required — atom or nonempty binary), `:payload`,
+  `:deliveries` (the delivery resource, required), `:secret_resolver`
+  (required, the driver contract), `:max_attempts` (default 1 — a test
+  send reports one attempt's outcome; raise it for a retried test),
+  plus the driver passthroughs (`:http`, `:http_opts`,
+  `:destination_policy`, `:ssrf_check`, `:tenant_aware_secrets`,
+  `:attempts`, `:tenant`, `:now`). The endpoint must be live
+  (`{:error, :endpoint_not_live}` otherwise); the tenancy pre-flight
+  applies across the delivery and endpoint resources.
+
+  Emits `[:ash_hooks, :delivery, :test]` (`%{endpoint_id, type}`) beside
+  the normal attempt/result lifecycle, then drives the row synchronously:
+  `{:ok, %{status: final_status, delivery: row}}` (the row is the record)
+  or `{:error, reason}` for pre-send failures.
+  """
+  @spec test_send(struct(), keyword()) ::
+          {:ok, %{status: atom(), delivery: struct()}} | {:error, term()}
+  def test_send(endpoint, opts \\ []) do
+    endpoints = endpoint.__struct__
+
+    with {:ok, type} <- validate_test_type(opts[:type]),
+         {:ok, deliveries} <- require_deliveries_module(opts[:deliveries]),
+         {:ok, tenant} <- Tenancy.resolve([deliveries, endpoints], opts[:tenant]),
+         :ok <- live_endpoint(endpoints, PrimaryKey.scalar!(endpoint), tenant),
+         {:ok, event} <-
+           AshHooks.Event.new(
+             type: type,
+             payload: test_payload(type, opts),
+             id: Signing.generate_msg_id()
+           ),
+         {:ok, row} <- create_test_row(deliveries, endpoint, event, opts, tenant) do
+      :telemetry.execute(
+        [:ash_hooks, :delivery, :test],
+        %{},
+        %{endpoint_id: row.endpoint_id, type: type}
+      )
+
+      drive_test_row(row, opts, endpoints, tenant)
+    end
+  end
+
+  defp validate_test_type(type) when is_atom(type) and not is_nil(type),
+    do: validate_test_type(Atom.to_string(type))
+
+  defp validate_test_type(type) when is_binary(type) and type != "" and byte_size(type) <= 255,
+    do: {:ok, type}
+
+  defp validate_test_type(_invalid), do: {:error, :type_required}
+
+  defp test_payload(_type, opts) do
+    case opts[:payload] do
+      payload when is_binary(payload) and payload != "" ->
+        payload
+
+      _synthetic ->
+        Jason.encode!(%{
+          "test" => true,
+          "type" => opts[:type] |> to_string(),
+          "timestamp" => DateTime.to_iso8601(synthetic_now(opts))
+        })
+    end
+  end
+
+  # a fresh event id per send keeps the {endpoint, event} identity unique —
+  # test sends never collide with (or suppress) each other
+  # a broken application clock must not break payload synthesis — the
+  # marker's timestamp falls back to the wall clock (the driver still
+  # enforces the clock contract where it governs durable state)
+  defp synthetic_now(opts) do
+    now(opts)
+  rescue
+    _reason -> DateTime.utc_now()
+  end
+
+  defp create_test_row(deliveries, endpoint, event, opts, tenant) do
+    input =
+      %{
+        event_uuid: event.id,
+        event_type: event.type,
+        endpoint_id: PrimaryKey.scalar!(endpoint),
+        subscription_id: nil,
+        signing_mode: opts[:signing_mode] || :standard
+      }
+      |> Map.put(AshHooks.Info.payload_attribute(deliveries), event.payload)
+
+    Ash.create(deliveries, input, action: :dispatch, authorize?: false, tenant: tenant)
+  end
+
+  defp drive_test_row(row, opts, endpoints, tenant) do
+    config =
+      opts
+      |> Keyword.put(:deliveries, row.__struct__)
+      |> Keyword.put(:endpoints, endpoints)
+      |> Keyword.put_new(:max_attempts, 1)
+
+    args = %{
+      "delivery_pk" => PrimaryKey.encode(row),
+      "delivery_resource" => Atom.to_string(row.__struct__),
+      "endpoint_resource" => Atom.to_string(endpoints),
+      "endpoint_id" => row.endpoint_id,
+      "event_uuid" => row.event_uuid,
+      "dispatch_source" => row.dispatch_source,
+      "dispatch_route" => row.dispatch_route
+    }
+
+    args = if tenant, do: Map.put(args, "tenant", tenant), else: args
+
+    case run(args, config) do
+      :ok -> final_test_row(row, tenant)
+      {:snooze, _delay} -> final_test_row(row, tenant)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp final_test_row(row, tenant) do
+    final = Ash.get!(row.__struct__, row.id, authorize?: false, tenant: tenant)
+    {:ok, %{status: final.status, delivery: final}}
+  end
+
+  defp require_deliveries_module(module) when is_atom(module) and not is_nil(module),
+    do: {:ok, module}
+
+  defp require_deliveries_module(_invalid),
+    do: {:error, UnknownError.exception(error: "test_send requires the :deliveries resource")}
+
   # ────────────────────────── gating ──────────────────────────
 
   defp maybe_wait(row, config, tenant) do

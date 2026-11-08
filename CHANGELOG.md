@@ -27,6 +27,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   event type, and time range with keyset pagination (newest-first,
   `(time, id)` cursors), tenant pre-flighted like every package entry
   point.
+- **Test events.** `AshHooks.Delivery.test_send/2` sends one signed
+  synthetic test event of a chosen type to ONE endpoint, OUTSIDE
+  subscriptions — no subscription row is consulted, and the delivery lands
+  in the ledger like any other. Each send carries a fresh `msg_` id (never
+  dedup-suppressed), the chosen type verbatim, and a self-marking default
+  payload (`{"test": true, "type": ..., "timestamp": ...}`; a
+  caller-supplied payload is used verbatim). Emits
+  `[:ash_hooks, :delivery, :test]` beside the normal lifecycle, drives the
+  row synchronously (default one attempt), requires a live endpoint, and
+  returns `{:ok, %{status:, delivery:}}`.
 - **Resend and bulk replay.** `AshHooks.Delivery.resend/2` re-arms one
   terminal delivery row (`:succeeded`/`:dead_letter`) with the SAME event
   id — a Standard Webhooks receiver deduplicates the repeat POST — while

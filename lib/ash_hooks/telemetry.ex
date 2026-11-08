@@ -41,6 +41,9 @@ defmodule AshHooks.Telemetry do
       contract
     * `[:ash_hooks, :delivery, :resend]` — `%{endpoint_id, event_uuid,
       requested_by}`: a terminal row was re-armed (resend or replay)
+    * `[:ash_hooks, :delivery, :test]` — `%{endpoint_id, type}`: a signed
+      synthetic test event is about to send (outside subscriptions; the
+      payload marks itself when synthesized)
 
   `:telemetry.execute/3` matches exact event names, so consume the
   whole surface with one `attach_many`:
@@ -57,7 +60,8 @@ defmodule AshHooks.Telemetry do
         [:ash_hooks, :delivery, :disable],
         [:ash_hooks, :worker, :invalid_runtime_config],
         [:ash_hooks, :attempt, :record_failed],
-        [:ash_hooks, :delivery, :resend]
+        [:ash_hooks, :delivery, :resend],
+        [:ash_hooks, :delivery, :test]
       ], fn event, measurements, metadata, _ ->
         # Forward these measurements and identifiers to your metrics system.
       end, nil)
