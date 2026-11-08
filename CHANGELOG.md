@@ -37,6 +37,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[:ash_hooks, :delivery, :test]` beside the normal lifecycle, drives the
   row synchronously (default one attempt), requires a live endpoint, and
   returns `{:ok, %{status:, delivery:}}`.
+- **The event log.** The new `AshHooks.OutboundEvent` extension records
+  each dispatched event ONCE — id, type, declared payload version, time,
+  exact payload bytes — whether or not any endpoint was enabled (wire it
+  with `events:` on the outbound declaration). Idempotent on the event
+  id; a failed log write never stops the fanout
+  (`[:ash_hooks, :event, :record_failed]`). Its own retention
+  (`AshHooks.OutboundEvent.prune/2`), keyset queries by type and time
+  range (`list/2`), and replay: `AshHooks.OutboundEvent.replay/3` sends
+  one event or a filtered set to a CHOSEN endpoint — including one that
+  was off at the time or added later — keeping the event id (receivers
+  dedup), re-arming terminal rows through resend, and recording who
+  asked everywhere.
 - **The delivery transport behavior.** `AshHooks.Transport` is the
   behavior for routing ONE endpoint's deliveries to your own transport —
   a developer's local forwarder behind a CLI "listen" command — instead of

@@ -25,6 +25,11 @@ it: no existing column, action, event, or default behavior moves.
   `AshHooks.OutboundAttempt.list/2` filter by endpoint, status/outcome,
   event type, and time range with keyset pagination; the delivery resource
   needs `timestamps()` and an `:id` attribute for them.
+- **The event log (opt-in).** Create a resource with the new
+  `AshHooks.OutboundEvent` extension (needs `timestamps()`; the migration
+  carries the table plus the `unique_event` index on `[:event_uuid]`),
+  then declare `events YourResource` on each outbound declaration that
+  should record. Nothing records without the declaration.
 - **Subscription attribute filters (opt-in).** Declaring a nonempty
   `filter_attributes` list on the subscription resource injects the
   `event_filters` column — migrate it when you declare it.

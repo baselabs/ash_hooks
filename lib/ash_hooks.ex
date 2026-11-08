@@ -165,6 +165,17 @@ defmodule AshHooks do
         Endpoints without a pin receive this version's bytes.
         """
       ],
+      events: [
+        type: :atom,
+        doc: """
+        The consumer's OutboundEvent resource module (carrying
+        `AshHooks.OutboundEvent`): when set, every dispatch records the
+        event ONCE — id, type, declared version, time, exact payload
+        bytes — whether or not any endpoint was enabled. The log has its
+        own retention (`AshHooks.OutboundEvent.prune/2`) and answers
+        replays (`AshHooks.OutboundEvent.replay/3`).
+        """
+      ],
       payload_versions: [
         type: :any,
         doc: """

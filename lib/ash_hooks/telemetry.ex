@@ -46,6 +46,9 @@ defmodule AshHooks.Telemetry do
       payload marks itself when synthesized)
     * `[:ash_hooks, :endpoint, :roll]` — `%{endpoint_id}`: an endpoint's
       signing secret reference was rolled (the overlap window began)
+    * `[:ash_hooks, :event, :record_failed]` — `%{event_uuid, reason}`
+      (classified): the event log could not record a dispatched event;
+      the fanout was unaffected
     * `[:ash_hooks, :endpoint, :disable_warning]` — `%{endpoint_id,
       failure_share, attempts}`: the sustained-failure policy sees an
       endpoint failing at the warning thresholds — notify before the
@@ -73,7 +76,8 @@ defmodule AshHooks.Telemetry do
         [:ash_hooks, :delivery, :test],
         [:ash_hooks, :endpoint, :roll],
         [:ash_hooks, :endpoint, :disable_warning],
-        [:ash_hooks, :endpoint, :disable]
+        [:ash_hooks, :endpoint, :disable],
+        [:ash_hooks, :event, :record_failed]
       ], fn event, measurements, metadata, _ ->
         # Forward these measurements and identifiers to your metrics system.
       end, nil)

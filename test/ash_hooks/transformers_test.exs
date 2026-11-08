@@ -89,6 +89,23 @@ defmodule AshHooks.TransformersTest do
   end
   """
 
+  @event_resource """
+  defmodule AshHooks.TfEvent do
+    use Ash.Resource,
+      domain: AshHooks.TfDomain,
+      data_layer: Ash.DataLayer.Ets,
+      extensions: [AshHooks.OutboundEvent]
+
+    attributes do
+      uuid_primary_key(:custom_id)
+    end
+
+    actions do
+      defaults([:read])
+    end
+  end
+  """
+
   @delivery_resource """
   defmodule AshHooks.TfDelivery do
     use Ash.Resource,
@@ -113,6 +130,7 @@ defmodule AshHooks.TransformersTest do
         resource(AshHooks.TfLedger)
         resource(AshHooks.TfDelivery)
         resource(AshHooks.TfAttempt)
+        resource(AshHooks.TfEvent)
       end
     end
     """)
@@ -124,6 +142,7 @@ defmodule AshHooks.TransformersTest do
             AshHooks.TfLedger,
             AshHooks.TfDelivery,
             AshHooks.TfAttempt,
+            AshHooks.TfEvent,
             AshHooks.TfDomain
           ] do
         :code.purge(mod)
@@ -140,7 +159,8 @@ defmodule AshHooks.TransformersTest do
           {@subscription_resource, AshHooks.TfSubscription},
           {@ledger_resource, AshHooks.TfLedger},
           {@delivery_resource, AshHooks.TfDelivery},
-          {@attempt_resource, AshHooks.TfAttempt}
+          {@attempt_resource, AshHooks.TfAttempt},
+          {@event_resource, AshHooks.TfEvent}
         ] do
       assert Enum.any?(Code.compile_string(source), fn {m, _} -> m == mod end)
     end
@@ -173,6 +193,12 @@ defmodule AshHooks.TransformersTest do
       {AshHooks.OutboundAttempt.Transformers.AddAttemptActions,
        Ash.Resource.Transformers.CacheActionInputs},
       {AshHooks.OutboundAttempt.Transformers.AddAttemptIdentity,
+       Ash.Resource.Transformers.CacheUniqueKeys},
+      {AshHooks.OutboundEvent.Transformers.AddEventFields,
+       Ash.Resource.Transformers.AttributesByName},
+      {AshHooks.OutboundEvent.Transformers.AddEventActions,
+       Ash.Resource.Transformers.CacheActionInputs},
+      {AshHooks.OutboundEvent.Transformers.AddEventIdentity,
        Ash.Resource.Transformers.CacheUniqueKeys}
     ]
 

@@ -14,6 +14,7 @@ defmodule AshHooks.Outbound do
     :payload_schema,
     :version,
     :payload_versions,
+    :events,
     entities: [],
     __spark_metadata__: nil
   ]
@@ -27,6 +28,7 @@ defmodule AshHooks.Outbound do
           payload_schema: term() | nil,
           version: pos_integer(),
           payload_versions: %{optional(pos_integer()) => {module(), atom()}} | nil,
+          events: module() | nil,
           entities: list(),
           __spark_metadata__: term()
         }

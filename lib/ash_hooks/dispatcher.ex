@@ -119,6 +119,8 @@ defmodule AshHooks.Dispatcher do
          {:ok, matches, error_entries} <-
            match_subscriptions(subs_mod, endpoint_mod, event, tenant),
          :ok <- check_conflicts(matches, entity) do
+      record_dispatched_event(entity, event, tenant)
+
       binding = %{
         source: OutboundBinding.source(resource, name, endpoint_mod),
         route: route
@@ -129,6 +131,41 @@ defmodule AshHooks.Dispatcher do
          (matches
           |> dedupe_by_endpoint()
           |> Enum.map(&dispatch_one(deliv_mod, event, &1, opts, entity, binding, tenant)))}
+    end
+  end
+
+  # The event log: exactly one row per dispatched event, best-effort — a
+  # failed log write never stops the fanout (the delivery ledger remains
+  # the delivery contract); it surfaces as telemetry instead.
+  defp record_dispatched_event(entity, event, tenant) do
+    case Map.get(entity, :events) do
+      nil ->
+        :ok
+
+      events_mod ->
+        input = %{
+          event_uuid: event.id,
+          event_type: event.type,
+          version: entity.version || 1,
+          payload: event.payload
+        }
+
+        case Ash.create(events_mod, input, action: :record, authorize?: false, tenant: tenant) do
+          {:ok, _logged} ->
+            :ok
+
+          {:error, reason} ->
+            :telemetry.execute(
+              [:ash_hooks, :event, :record_failed],
+              %{},
+              %{
+                event_uuid: event.id,
+                reason: AshHooks.Telemetry.classify_token(reason)
+              }
+            )
+
+            :ok
+        end
     end
   end
 
