@@ -199,6 +199,7 @@ defmodule AshHooks.MixProject do
           AshHooks.Provider.HubSpotV3
         ],
         "HTTP adapters": [
+          AshHooks.Transport,
           AshHooks.Http,
           AshHooks.Http.Bounded,
           AshHooks.Http.Httpc,

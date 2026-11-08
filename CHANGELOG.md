@@ -37,6 +37,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[:ash_hooks, :delivery, :test]` beside the normal lifecycle, drives the
   row synchronously (default one attempt), requires a live endpoint, and
   returns `{:ok, %{status:, delivery:}}`.
+- **The delivery transport behavior.** `AshHooks.Transport` is the
+  behavior for routing ONE endpoint's deliveries to your own transport —
+  a developer's local forwarder behind a CLI "listen" command — instead of
+  HTTP: an adapter-shaped `request/5` receiving the SAME signed request
+  the wire would, with the runtime's attempts, attempt history,
+  classification, backoff, and telemetry applying unchanged. Route per
+  endpoint with `transport: {module, function}` / a 2-arity fn (worker
+  option or direct-run config) returning the transport module or `nil` to
+  keep the HTTP adapter; a routed endpoint skips the packaged send-time
+  destination gate (the transport owns destination semantics), and a
+  crashing resolver or non-module return falls back to HTTP contained.
 - **Subscription filters on declared event attributes.** The
   subscription DSL's `filter_attributes([:order_id, :region])` declares
   the closed set of attribute names subscriptions may filter on and

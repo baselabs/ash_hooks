@@ -60,6 +60,13 @@ defmodule AshHooks.Worker do
       runs unchanged). A crashing or out-of-vocabulary callback is
       contained as a retryable `destination_policy_failed`. A configured
       policy takes precedence over the boolean `:ssrf_check` seam.
+    * `:transport` — the per-endpoint delivery transport resolver
+      (`{module, function}` or a 2-arity fn of the endpoint record and
+      tenant) returning an `AshHooks.Transport` module for one endpoint's
+      deliveries — a developer's local forwarder behind a CLI "listen"
+      command — or `nil` to keep the HTTP adapter. The same signing,
+      attempts, and telemetry apply; a crashing resolver or non-module
+      return falls back to the HTTP adapter.
     * `:http` — the `AshHooks.Http` adapter (default `AshHooks.Http.Bounded`).
     * `:http_opts` — adapter options as a literal keyword list or a
       `{module, function, args}` callback resolved inside each job's monitored
@@ -589,6 +596,22 @@ defmodule AshHooks.Worker do
         deliveries: expand.(Keyword.fetch!(opts, :deliveries)),
         endpoints: expand.(Keyword.fetch!(opts, :endpoints)),
         attempts: maybe_expand(Keyword.get(opts, :attempts), expand),
+        transport:
+          case Keyword.get(opts, :transport) do
+            # the module half arrives as alias AST — expand, then check both
+            {m, f} = pair ->
+              case {expand.(m), f} do
+                {module, function} when is_atom(module) and is_atom(function) ->
+                  {module, function}
+
+                _malformed ->
+                  raise ArgumentError,
+                        "AshHooks.Worker :transport must be {module, function} or a 2-arity fn — got #{inspect(pair)}"
+              end
+
+            other ->
+              other
+          end,
         secret_resolver: {expand.(resolver_m), resolver_f},
         snippet_redactor: snippet_redactor,
         tenant_aware_secrets: Keyword.get(opts, :tenant_aware_secrets, false),

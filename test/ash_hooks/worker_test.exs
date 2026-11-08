@@ -493,6 +493,8 @@ if Code.ensure_loaded?(Oban) do
     end
 
     describe "the runtime-config seam (budgets resolve per perform)" do
+      def transport_for(_endpoint, _tenant), do: nil
+
       defmodule RuntimePolicy do
         @moduledoc false
         # cross-process (perform spawns the driver): read overrides from
@@ -1179,6 +1181,32 @@ if Code.ensure_loaded?(Oban) do
         assert module == RuntimeWorker
       after
         :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
+      test "a valid {module, function} :transport compiles; a malformed pair refuses" do
+        valid =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        transport: {AshHooks.WorkerTest, :transport_for}"
+          )
+
+        assert [{module, _beam}] = Code.compile_string(valid)
+        assert module == RuntimeWorker
+
+        invalid =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        transport: {AshHooks.WorkerTest.Secrets, 123}"
+          )
+
+        assert_raise ArgumentError, ~r/:transport must be/, fn ->
+          Code.compile_string(invalid)
+        end
+      after
+        _ = :code.purge(RuntimeWorker)
         _ = :code.delete(RuntimeWorker)
       end
 

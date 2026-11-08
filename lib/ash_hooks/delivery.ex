@@ -1138,6 +1138,18 @@ defmodule AshHooks.Delivery do
   end
 
   defp attempt_enabled(row, endpoint, config, tenant) do
+    transport = resolve_transport(endpoint, config, tenant)
+
+    if transport do
+      # a routed transport OWNS destination semantics: the packaged
+      # send-time gate (and the policy seam) describe HTTP destinations
+      send(row, endpoint, config, tenant, transport)
+    else
+      attempt_gated(row, endpoint, config, tenant)
+    end
+  end
+
+  defp attempt_gated(row, endpoint, config, tenant) do
     # the public destination-policy seam first: a consumer policy decides
     # allow/deny/default per URL ahead of the packaged gate, so an app can
     # carry its own allow and deny rules without forking the default
@@ -1233,7 +1245,7 @@ defmodule AshHooks.Delivery do
 
   # ────────────────────────── the send ──────────────────────────
 
-  defp send(row, endpoint, config, tenant) do
+  defp send(row, endpoint, config, tenant, transport \\ nil) do
     :telemetry.execute(
       [:ash_hooks, :delivery, :attempt],
       %{},
@@ -1244,7 +1256,7 @@ defmodule AshHooks.Delivery do
       }
     )
 
-    adapter = config[:http] || AshHooks.Http.Bounded
+    adapter = transport || config[:http] || AshHooks.Http.Bounded
 
     request = if is_function(adapter, 5), do: adapter, else: &adapter.request/5
 
@@ -1349,6 +1361,41 @@ defmodule AshHooks.Delivery do
     end
   rescue
     reason -> {:error, {:adapter_crash, error_string(reason)}}
+  end
+
+  # ────────────────────────── the per-endpoint transport ──────────────────────────
+
+  # The transport resolver (`transport: {m, f}` or a 2-arity fn of the
+  # endpoint record and tenant) routes ONE endpoint's deliveries to the
+  # app's own transport module instead of the HTTP adapter. It runs inside
+  # the send path's containment: a crash or a non-module return falls back
+  # to the HTTP adapter — HTTP's guarantees are the default posture.
+  defp resolve_transport(endpoint, config, tenant) do
+    case config[:transport] do
+      nil ->
+        nil
+
+      {m, f} when is_atom(m) and is_atom(f) ->
+        contained_transport(fn -> apply(m, f, [endpoint, tenant]) end)
+
+      resolver when is_function(resolver, 2) ->
+        contained_transport(fn -> resolver.(endpoint, tenant) end)
+
+      _invalid ->
+        nil
+    end
+  end
+
+  defp contained_transport(fun) do
+    case fun.() do
+      module when is_atom(module) and not is_nil(module) -> module
+      _falls_back -> nil
+    end
+  rescue
+    _reason -> nil
+  catch
+    :exit, _reason -> nil
+    :throw, _value -> nil
   end
 
   # ────────────────────────── attempt history ──────────────────────────
