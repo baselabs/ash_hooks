@@ -37,6 +37,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[:ash_hooks, :delivery, :test]` beside the normal lifecycle, drives the
   row synchronously (default one attempt), requires a live endpoint, and
   returns `{:ok, %{status:, delivery:}}`.
+- **Secret rolling with an overlap window.** `key_lifecycle :on` on the
+  endpoint resource injects the six signing-key lifecycle columns
+  (created / first-used / retired for the current key and its predecessor
+  — timestamps only, never secret material) and unlocks
+  `AshHooks.Endpoint.roll_secret/2`: the incumbent reference moves to
+  `previous_secret_ref` — the Standard Webhooks zero-downtime seam, both
+  keys sign every delivery until the window ends (multi-signature on the
+  wire) — the new reference takes its place, and the old key's retirement
+  is scheduled (`:overlap_seconds`, default 24h).
+  `expire_previous_secrets/2` is the scheduled sweep;
+  `expire_previous_secret/1` retires at once on request. The delivery
+  runtime stamps each key's first use at signing time (nil-gated, only on
+  lifecycle resources).
 - **Resend and bulk replay.** `AshHooks.Delivery.resend/2` re-arms one
   terminal delivery row (`:succeeded`/`:dead_letter`) with the SAME event
   id — a Standard Webhooks receiver deduplicates the repeat POST — while

@@ -44,6 +44,8 @@ defmodule AshHooks.Telemetry do
     * `[:ash_hooks, :delivery, :test]` — `%{endpoint_id, type}`: a signed
       synthetic test event is about to send (outside subscriptions; the
       payload marks itself when synthesized)
+    * `[:ash_hooks, :endpoint, :roll]` — `%{endpoint_id}`: an endpoint's
+      signing secret reference was rolled (the overlap window began)
 
   `:telemetry.execute/3` matches exact event names, so consume the
   whole surface with one `attach_many`:
@@ -61,7 +63,8 @@ defmodule AshHooks.Telemetry do
         [:ash_hooks, :worker, :invalid_runtime_config],
         [:ash_hooks, :attempt, :record_failed],
         [:ash_hooks, :delivery, :resend],
-        [:ash_hooks, :delivery, :test]
+        [:ash_hooks, :delivery, :test],
+        [:ash_hooks, :endpoint, :roll]
       ], fn event, measurements, metadata, _ ->
         # Forward these measurements and identifiers to your metrics system.
       end, nil)

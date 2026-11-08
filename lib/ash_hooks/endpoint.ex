@@ -87,6 +87,190 @@ defmodule AshHooks.Endpoint do
     end
   end
 
+  require Ash.Query
+
+  alias AshHooks.Errors.Unknown.UnknownError
+  alias AshHooks.{PrimaryKey, Tenancy}
+
+  @doc """
+  Rolls the endpoint's signing secret reference with an overlap window:
+  the incumbent reference moves to `previous_secret_ref` — the Standard
+  Webhooks zero-downtime seam: BOTH keys sign every delivery until the
+  window ends — the new reference takes its place, and the old key's
+  retirement is scheduled.
+
+      {:ok, rolled} =
+        AshHooks.Endpoint.roll_secret(endpoint,
+          # your store already holds the new secret under this reference
+          new_secret_ref: "acme-2026-11",
+          overlap_seconds: 24 * 3_600
+        )
+
+  Options: `:new_secret_ref` (required — a fresh store reference; rolling
+  onto the incumbent is `{:error, :same_reference}`), `:overlap_seconds`
+  (default 86,400), `:now` (the application clock), `:tenant`. Emits
+  `[:ash_hooks, :endpoint, :roll]` with the endpoint id. The row carries
+  references and lifecycle timestamps only — never secret material. The
+  gated write fences concurrent rolls
+  (`{:error, :rolled_underneath}` when the incumbent moved first); a
+  resource without `key_lifecycle :on` fails with a named error.
+  """
+  @spec roll_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
+  def roll_secret(endpoint, opts \\ []) do
+    resource = endpoint.__struct__
+
+    with {:ok, new_ref} <- validate_new_secret_ref(endpoint, opts[:new_secret_ref]),
+         :ok <- require_lifecycle(resource),
+         {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
+      rolled_at = opts[:now] || DateTime.utc_now()
+      rolled_at = DateTime.truncate(rolled_at, :microsecond)
+      retired_at = DateTime.add(rolled_at, opts[:overlap_seconds] || 86_400, :second)
+
+      result =
+        resource
+        |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+        |> Ash.Query.filter(secret_ref == ^endpoint.secret_ref)
+        |> Ash.bulk_update(
+          :roll_secret,
+          %{
+            new_secret_ref: new_ref,
+            old_ref: endpoint.secret_ref,
+            old_created_at: endpoint.secret_created_at,
+            retired_at: retired_at,
+            rolled_at: rolled_at
+          },
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
+
+      case result do
+        %Ash.BulkResult{status: :success, records: [rolled]} ->
+          :telemetry.execute(
+            [:ash_hooks, :endpoint, :roll],
+            %{},
+            %{endpoint_id: PrimaryKey.scalar!(endpoint)}
+          )
+
+          {:ok, rolled}
+
+        %Ash.BulkResult{status: :success, records: []} ->
+          {:error, :rolled_underneath}
+
+        %Ash.BulkResult{} = result ->
+          {:error, List.first(result.errors || []) || result}
+      end
+    end
+  end
+
+  @doc """
+  Retires one endpoint's previous signing key at once: the old reference
+  leaves the row and its retirement time stands as the record. A row with
+  no previous key is returned unchanged.
+  """
+  @spec expire_previous_secret(struct()) :: {:ok, struct()} | {:error, term()}
+  def expire_previous_secret(endpoint) do
+    resource = endpoint.__struct__
+
+    cond do
+      not lifecycle?(resource) ->
+        {:error, lifecycle_error(resource)}
+
+      is_nil(endpoint.previous_secret_ref) ->
+        {:ok, endpoint}
+
+      true ->
+        result =
+          resource
+          |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+          |> Ash.Query.filter(previous_secret_ref == ^endpoint.previous_secret_ref)
+          |> Ash.bulk_update(:retire_previous_secret, %{},
+            authorize?: false,
+            return_records?: true,
+            return_errors?: true,
+            strategy: [:atomic]
+          )
+
+        case result do
+          %Ash.BulkResult{status: :success, records: [retired]} -> {:ok, retired}
+          %Ash.BulkResult{status: :success, records: []} -> {:ok, endpoint}
+          %Ash.BulkResult{} = result -> {:error, List.first(result.errors || []) || result}
+        end
+    end
+  end
+
+  @doc """
+  The scheduled retirement sweep: expires every endpoint whose previous
+  key's overlap window has ended (`previous_secret_retired_at <= now`).
+  Schedule it alongside your retention sweeps; the window an endpoint
+  never outlives is the one `roll_secret/2` set. Returns
+  `{:ok, retired_count}`.
+
+  Options: `:now` (the application clock) and `:tenant` (required on
+  multitenant resources).
+  """
+  @spec expire_previous_secrets(module(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def expire_previous_secrets(resource, opts \\ []) do
+    now = opts |> Keyword.get(:now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
+
+    with :ok <- require_lifecycle(resource),
+         {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
+      result =
+        resource
+        |> Ash.Query.filter(
+          not is_nil(previous_secret_ref) and previous_secret_retired_at <= ^now
+        )
+        |> Ash.bulk_update(:retire_previous_secret, %{},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
+
+      case result do
+        %Ash.BulkResult{status: :success, records: records} -> {:ok, length(records)}
+        %Ash.BulkResult{} = result -> {:error, List.first(result.errors || []) || result}
+      end
+    end
+  end
+
+  defp validate_new_secret_ref(endpoint, ref) do
+    cond do
+      not (is_binary(ref) and ref != "") ->
+        {:error, :new_secret_ref_required}
+
+      ref == endpoint.secret_ref ->
+        {:error, :same_reference}
+
+      true ->
+        {:ok, ref}
+    end
+  end
+
+  defp require_lifecycle(resource) do
+    if lifecycle?(resource) do
+      :ok
+    else
+      {:error, lifecycle_error(resource)}
+    end
+  end
+
+  defp lifecycle?(resource), do: ResourceInfo.attribute(resource, :secret_created_at) != nil
+
+  defp lifecycle_error(resource) do
+    UnknownError.exception(
+      error:
+        inspect(resource) <>
+          " does not carry the key-lifecycle columns (key_lifecycle :off) — " <>
+          "declare `key_lifecycle :on` under `endpoint` and migrate the six " <>
+          "columns to roll signing secrets"
+    )
+  end
+
   @status_section %Spark.Dsl.Section{
     name: :endpoint,
     describe: """
@@ -104,6 +288,22 @@ defmodule AshHooks.Endpoint do
         declared in the resource's own `attributes` block (not another
         extension's injection), and `enabled_values`/`disabled_value`
         must be spelled out explicitly — fail-closed at compile.
+        """
+      ],
+      key_lifecycle: [
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc: """
+        Whether the signing-key lifecycle columns are injected (default
+        `:off` — existing schemas stay untouched). With `:on`, the
+        extension injects `secret_created_at`, `secret_first_used_at`,
+        `secret_retired_at`, `previous_secret_created_at`,
+        `previous_secret_first_used_at`, and `previous_secret_retired_at`
+        (the scheduled — then actual — retirement of the old key), and
+        `AshHooks.Endpoint.roll_secret/2` /
+        `expire_previous_secret(s)/1,2` become available. Declaring `:on`
+        requires a migration for the six columns. Timestamps only — never
+        secret material.
         """
       ],
       response_capture_attributes: [

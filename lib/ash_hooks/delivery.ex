@@ -1255,12 +1255,24 @@ defmodule AshHooks.Delivery do
     # check above is the residual guarantee, not a full replacement
     adapter_opts = config[:http_opts] || []
 
-    with {:ok, headers} <- signing_headers(row, endpoint, config, tenant),
-         {:ok, response, started} <-
-           send_request(request, endpoint, headers, row, adapter_opts) do
-      history = attempt_history(endpoint, response, started)
-      record(row, endpoint, response, config, tenant, history)
-    else
+    case signing_headers(row, endpoint, config, tenant) do
+      {:ok, headers} ->
+        stamp_key_first_used(endpoint, config, tenant)
+        send_signed(request, endpoint, headers, row, adapter_opts, config, tenant)
+
+      # secret-resolution and signing failures are RETRYABLE (the
+      # classification table): config is fixable while the row climbs
+      {:error, reason} ->
+        retry(row, error_string(reason), config, tenant, nil)
+    end
+  end
+
+  defp send_signed(request, endpoint, headers, row, adapter_opts, config, tenant) do
+    case send_request(request, endpoint, headers, row, adapter_opts) do
+      {:ok, response, started} ->
+        history = attempt_history(endpoint, response, started)
+        record(row, endpoint, response, config, tenant, history)
+
       # a pin-time SSRF refusal is a caught rebinding flip — terminal, per
       # the classification table (never burn the retry ceiling on it)
       {:error, :unsafe_destination} ->
@@ -1268,6 +1280,61 @@ defmodule AshHooks.Delivery do
 
       {:error, reason} ->
         retry(row, error_string(reason), config, tenant, nil)
+    end
+  end
+
+  # First-use stamps for the key lifecycle (key_lifecycle :on resources):
+  # written at signing time — a key that signed was used, whatever the
+  # receiver said. WHERE-gated on the stamp still being nil, so
+  # steady-state sends stop writing; failures never break the send.
+  defp stamp_key_first_used(endpoint, config, tenant) do
+    resource = endpoint.__struct__
+
+    if ResourceInfo.attribute(resource, :secret_first_used_at) do
+      used_at = now(config)
+
+      stamp_first_used(
+        resource,
+        endpoint,
+        :mark_current_secret_used,
+        :secret_first_used_at,
+        used_at,
+        tenant
+      )
+
+      if endpoint.previous_secret_ref do
+        stamp_first_used(
+          resource,
+          endpoint,
+          :mark_previous_secret_used,
+          :previous_secret_first_used_at,
+          used_at,
+          tenant
+        )
+      end
+    end
+  end
+
+  defp stamp_first_used(resource, endpoint, action, field, used_at, tenant) do
+    if Map.get(endpoint, field) do
+      :ok
+    else
+      require Ash.Expr
+      nil_stamp = Ash.Expr.expr(is_nil(^Ash.Expr.ref(field)))
+
+      _ =
+        resource
+        |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+        |> Ash.Query.filter(^nil_stamp)
+        |> Ash.bulk_update(action, %{used_at: used_at},
+          authorize?: false,
+          return_records?: false,
+          return_errors?: false,
+          strategy: [:atomic],
+          tenant: tenant
+        )
+
+      :ok
     end
   end
 

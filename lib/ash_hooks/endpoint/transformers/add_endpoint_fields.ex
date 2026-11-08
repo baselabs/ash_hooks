@@ -23,9 +23,38 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
   def transform(dsl_state) do
     with {:ok, dsl_state, status_attribute} <- check_status_attribute(dsl_state),
          {:ok, dsl_state} <- add_primary_key(dsl_state),
-         {:ok, dsl_state} <- add_capture_attributes(dsl_state) do
+         {:ok, dsl_state} <- add_capture_attributes(dsl_state),
+         {:ok, dsl_state} <- add_lifecycle_attributes(dsl_state) do
       add_attributes(dsl_state, status_attribute)
     end
+  end
+
+  # The signing-key lifecycle opt-in (default :on? no — :off): declaring
+  # `key_lifecycle :on` injects the created/first-used/retired timestamps
+  # behind roll_secret/expire — an EXISTING schema is never silently
+  # widened; the consumer migrates the six columns when adopting.
+  defp add_lifecycle_attributes(dsl_state) do
+    case Extension.get_opt(dsl_state, [:endpoint], :key_lifecycle, :off) do
+      :off ->
+        {:ok, dsl_state}
+
+      :on ->
+        Enum.reduce_while(lifecycle_attributes_spec(), {:ok, dsl_state}, fn {name, type, opts},
+                                                                            {:ok, dsl_state} ->
+          {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
+        end)
+    end
+  end
+
+  defp lifecycle_attributes_spec do
+    [
+      {:secret_created_at, :utc_datetime_usec, []},
+      {:secret_first_used_at, :utc_datetime_usec, []},
+      {:secret_retired_at, :utc_datetime_usec, []},
+      {:previous_secret_created_at, :utc_datetime_usec, []},
+      {:previous_secret_first_used_at, :utc_datetime_usec, []},
+      {:previous_secret_retired_at, :utc_datetime_usec, []}
+    ]
   end
 
   # The per-endpoint response-capture opt-in (default :off): declaring
@@ -67,7 +96,8 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
 
     reserved =
       (Enum.map(attributes_spec(), &elem(&1, 0)) -- [:status]) ++
-        Enum.map(capture_attributes_spec(), &elem(&1, 0))
+        Enum.map(capture_attributes_spec(), &elem(&1, 0)) ++
+        Enum.map(lifecycle_attributes_spec(), &elem(&1, 0))
 
     cond do
       is_nil(status_attribute) ->

@@ -25,6 +25,14 @@ it: no existing column, action, event, or default behavior moves.
   `AshHooks.OutboundAttempt.list/2` filter by endpoint, status/outcome,
   event type, and time range with keyset pagination; the delivery resource
   needs `timestamps()` and an `:id` attribute for them.
+- **Secret rolling (opt-in).** Declaring `key_lifecycle :on` on the
+  endpoint resource injects six timestamp columns
+  (`secret_created_at`, `secret_first_used_at`, `secret_retired_at`,
+  `previous_secret_created_at`, `previous_secret_first_used_at`,
+  `previous_secret_retired_at`) — migrate them when you declare it, and
+  backfill `secret_created_at` for incumbent keys whose creation time you
+  know. Rolling then works through `AshHooks.Endpoint.roll_secret/2` and
+  the expiry sweeps.
 - **Resend and bulk replay (opt-in).** Declaring `resend_tracking :on`
   under `outbound_delivery` injects four machine columns
   (`resend_baseline`, `resend_count`, `last_resend_by`, `last_resend_at`)
