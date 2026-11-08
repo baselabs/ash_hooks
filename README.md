@@ -296,6 +296,55 @@ normal attempt/telemetry lifecycle behind it (see `AshHooks.Delivery`).
 `legacy_secret_ref` — `:dual` emits both envelopes so receivers can
 migrate, `:legacy` emits only the old one.
 
+**Secret rolling.** Roll an endpoint's signing secret with an overlap
+window (`AshHooks.Endpoint.roll_secret/2` + `key_lifecycle :on`): the
+incumbent reference moves to `previous_secret_ref`, BOTH keys sign every
+delivery until the window ends (Standard Webhooks multi-signature), the
+scheduled sweep retires the old key on time, and the row exposes each
+key's created / first-used / retired times — never secret material.
+
+**Endpoint health and auto-disable.** `AshHooks.EndpointHealth.stats/2`
+computes one endpoint's trailing-window success rate, latency
+percentiles, and first-attempt vs eventual successes from the attempt
+history; the endpoint's `auto_disable` policy (a duration and failure
+share beside the existing 410 rule) disables sustained failures through
+the same durable switch, warning first
+(`[:ash_hooks, :endpoint, :disable_warning]`) so your notify surface can
+reach people before the breaker opens. Re-enabling is explicit.
+
+**The event catalog and version pinning.** The `outbound` DSL declares
+each event type's `description`, `payload_schema`, `example`, and
+`version`; `AshHooks.Catalog` reads the catalog back for event pickers
+and doc generation. An endpoint that pins a payload version
+(`version_pinning :on`) receives that variant builder's exact bytes —
+per-endpoint rows carry their own version.
+
+**The event log.** `AshHooks.OutboundEvent` records each dispatched event
+once (id, type, version, exact bytes) whether or not any endpoint was
+enabled, with its own retention — and `replay/3` delivers one event or a
+filtered set to any chosen endpoint, including one added later, keeping
+the event id so receivers deduplicate.
+
+**Subscription attribute filters.** `filter_attributes([:order_id,
+:region])` on the subscription resource lets a subscription match on
+declared event attributes (values ride the event's `metadata`), evaluated
+before any delivery row exists — multiple filters AND, list values
+any-of, unknown keys never match.
+
+**Transports.** `AshHooks.Transport` routes one endpoint's deliveries to
+your own transport (a developer's local forwarder behind a CLI `listen`
+command) instead of HTTP — the same signing, attempts, and telemetry. A
+destination policy (`AshHooks.DestinationPolicy`) adds your own allow and
+deny rules around the packaged SSRF check.
+
+**Inbound parity.** `AshHooks.Ingress.list/2` queries inbound deliveries
+by source, status, event type, and time range; `counts/2` answers a
+window's received / duplicates / failed verifications / handler failures
+(`ingress_tracking :on`); an inbound source's `previous_secret` rotates
+with an overlap window (both keys verify until it ends); `paused`
+refuses requests with `{:error, :source_paused}` — answer 5xx and the
+provider retries, nothing is lost.
+
 ## Fitting the extensions to your domain
 
 The injected fields and actions carry opinionated names by default;

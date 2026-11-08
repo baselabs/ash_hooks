@@ -364,8 +364,39 @@ defmodule AshHooks.AttemptHistoryTest do
     [attempt] = attempts_for(row)
     assert attempt.outcome == :failed_retryable
     assert attempt.reason == "secret_resolution"
+    # a PRE-SEND failure made no request: no latency, no key used
     assert attempt.latency_ms == nil
     assert attempt.signing_key_ref == nil
+  end
+
+  test "a FAILED REQUEST records its latency and the key that signed it" do
+    # a real request attempt against a dead loopback port: the connection
+    # is refused mid-flight — the attempt row must carry how long the
+    # request ran and which signing key signed it
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, {:active, false}, {:ip, {127, 0, 0, 1}}])
+    {:ok, port} = :inet.port(listen)
+    :gen_tcp.close(listen)
+
+    id = Ash.UUID.generate()
+
+    Repo.query!(
+      "INSERT INTO #{@endpoints} (id, url, status, secret_ref) VALUES (?, ?, 'enabled', 'hist-main')",
+      [id, "http://127.0.0.1:#{port}/hook"]
+    )
+
+    endpoint = Ash.get!(Endpoint, id, authorize?: false)
+    row = pending_row!(endpoint, "msg_hist_failed_request")
+
+    assert {:snooze, _} = run!(endpoint, row)
+
+    [attempt] = attempts_for(row)
+    assert attempt.outcome == :failed_retryable
+    assert attempt.reason == "econnrefused"
+    # the request WAS made: its duration and signing key are recorded
+    assert is_integer(attempt.latency_ms) and attempt.latency_ms >= 0
+    assert attempt.signing_key_ref == "hist-main"
+    assert attempt.response_status == nil
+    assert attempt.response_snippet == nil
   end
 
   test "a dead-letter records its reason and response" do

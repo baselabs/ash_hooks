@@ -13,8 +13,13 @@ defmodule AshHooks.OutboundAttempt do
   attempt number (`attempt`), the outcome (`:succeeded | :failed_retryable |
   :dead_letter`), the classified `reason`, `response_status`,
   `response_snippet`, `response_headers` (allowlisted capture only),
-  `latency_ms`, the signing key REFERENCE (`signing_key_ref` — a secret
-  store reference string, never secret material), and `attempted_at` —
+  `latency_ms` — the request's duration, recorded whenever a request was
+  ATTEMPTED, including one that failed at transport, at destination
+  pinning, or in a crashing adapter; `nil` only when no request was ever
+  made (destination-policy refusal, DNS failure at the send gate, secret
+  resolution) — the signing key REFERENCE (`signing_key_ref` — a secret
+  store reference string, never secret material, carried on every
+  request-bearing attempt), and `attempted_at` —
   plus the `unique_attempt` identity on `[:delivery_pk, :attempt]`, which
   makes the runtime's history writes idempotent per attempt. Your
   migration carries the matching unique index.

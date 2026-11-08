@@ -1320,12 +1320,29 @@ defmodule AshHooks.Delivery do
         record(row, endpoint, response, config, tenant, history)
 
       # a pin-time SSRF refusal is a caught rebinding flip — terminal, per
-      # the classification table (never burn the retry ceiling on it)
-      {:error, :unsafe_destination} ->
-        dead_letter(row, "unsafe_destination", config, tenant)
+      # the classification table (never burn the retry ceiling on it).
+      # The request WAS attempted (the refusal came from inside it), so
+      # its duration and signing key ride the history row.
+      {:error, :unsafe_destination, started} ->
+        dead_letter(
+          row,
+          "unsafe_destination",
+          config,
+          tenant,
+          nil,
+          failed_request_history(endpoint, started)
+        )
 
-      {:error, reason} ->
-        retry(row, error_string(reason), config, tenant, nil)
+      {:error, reason, started} ->
+        retry(
+          row,
+          error_string(reason),
+          config,
+          tenant,
+          nil,
+          nil,
+          failed_request_history(endpoint, started)
+        )
     end
   end
 
@@ -1385,16 +1402,36 @@ defmodule AshHooks.Delivery do
   end
 
   # an adapter RAISE must not crash the job out of the row-owned policy —
-  # classify it as a retryable transport failure
+  # classify it as a retryable transport failure. The start stamp rides
+  # EVERY outcome: a request that failed still RAN for a measurable time,
+  # and the attempt history records it (failed_request_history). The try
+  # is explicit so the stamp (bound before it) stays visible in rescue.
   defp send_request(request, endpoint, headers, row, adapter_opts) do
     started = System.monotonic_time(:millisecond)
 
-    case request.(:post, endpoint.url, headers, payload_bytes(row), adapter_opts) do
-      {:ok, response} -> {:ok, response, started}
-      {:error, reason} -> {:error, reason}
+    try do
+      case request.(:post, endpoint.url, headers, payload_bytes(row), adapter_opts) do
+        {:ok, response} -> {:ok, response, started}
+        {:error, reason} -> {:error, reason, started}
+      end
+    rescue
+      reason -> {:error, {:adapter_crash, error_string(reason)}, started}
     end
-  rescue
-    reason -> {:error, {:adapter_crash, error_string(reason)}}
+  end
+
+  # The failed-request history: the request was ATTEMPTED (transport
+  # error, pin-time refusal, adapter crash) — its duration and the
+  # signing key that signed it are facts; no response exists to
+  # summarize, so the response-derived fields stay nil. Pre-send failures
+  # (destination policy, DNS at the gate, secret resolution) never reach
+  # here and keep latency nil — no request, no duration.
+  defp failed_request_history(endpoint, started) do
+    %{
+      latency_ms: max(System.monotonic_time(:millisecond) - started, 0),
+      signing_key_ref: endpoint.secret_ref,
+      response_snippet: nil,
+      response_headers: nil
+    }
   end
 
   # ────────────────────────── the per-endpoint transport ──────────────────────────

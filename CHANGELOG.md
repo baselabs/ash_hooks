@@ -20,7 +20,12 @@ need; each block names its DSL declaration and migration. Read
   delivery attempt (time, outcome, classified reason, HTTP status, latency
   in milliseconds, and the signing key REFERENCE — never secret material),
   written by the runtime beside its fenced result transitions and idempotent
-  per `(delivery, attempt)`. Wire it with `attempts:` on the worker macro or
+  per `(delivery, attempt)`. Latency is the REQUEST's duration, recorded
+  whenever a request was attempted — including one that failed at
+  transport, at destination pinning, or in a crashing adapter — and `nil`
+  only when no request was ever made (destination-policy refusal, DNS
+  failure at the send gate, secret resolution), where the signing key is
+  `nil` too. Wire it with `attempts:` on the worker macro or
   the direct-run config. A history write failure never fails the send — it
   surfaces as `[:ash_hooks, :attempt, :record_failed]` telemetry.
 - **Per-endpoint response capture.** `response_capture_attributes :on` on
