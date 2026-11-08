@@ -54,7 +54,10 @@ defmodule AshHooks.InboundDelivery do
     :processed,
     :failed_retryable,
     :failed_permanent,
-    :superseded
+    :superseded,
+    # ingress_tracking :on only: the pre-verification rejection row (no
+    # payload, digest identity) behind Ingress.counts/2
+    :failed_verification
   ]
 
   @doc """
@@ -70,6 +73,20 @@ defmodule AshHooks.InboundDelivery do
     Configuration of this resource as the inbound webhook ledger.
     """,
     schema: [
+      ingress_tracking: [
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc: """
+        Whether the ingress-counting columns are injected (default `:off`
+        — existing schemas stay untouched). With `:on`, the extension
+        injects the `duplicates` counter column (bumped on every duplicate
+        ingest) and `AshHooks.Ingress` persists a payload-less
+        `:failed_verification` rejection row (digest identity) for every
+        request that fails signature verification — the two numbers
+        `AshHooks.Ingress.counts/2` answers besides its row-derived ones.
+        Requires a migration for the column.
+        """
+      ],
       scope_identity: [
         type: {:list, :atom},
         default: [],
@@ -97,6 +114,7 @@ defmodule AshHooks.InboundDelivery do
     sections: [@scope],
     transformers: [
       AshHooks.InboundDelivery.Transformers.AddLedgerFields,
+      AshHooks.InboundDelivery.Transformers.AddTrackingActions,
       AshHooks.InboundDelivery.Transformers.AddLedgerIdentity,
       AshHooks.InboundDelivery.Transformers.AddFencedActions
     ],

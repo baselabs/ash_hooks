@@ -25,6 +25,11 @@ it: no existing column, action, event, or default behavior moves.
   `AshHooks.OutboundAttempt.list/2` filter by endpoint, status/outcome,
   event type, and time range with keyset pagination; the delivery resource
   needs `timestamps()` and an `:id` attribute for them.
+- **Inbound tracking (opt-in).** Declaring `ingress_tracking :on` on an
+  inbound ledger injects the `duplicates` counter column and the
+  `failed_verification` status row (payload-less) — migrate the column
+  when you declare it. `previous_secret`/`paused` are declaration-level
+  options (no migration).
 - **The event log (opt-in).** Create a resource with the new
   `AshHooks.OutboundEvent` extension (needs `timestamps()`; the migration
   carries the table plus the `unique_event` index on `[:event_uuid]`),

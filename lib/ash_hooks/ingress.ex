@@ -100,6 +100,179 @@ defmodule AshHooks.Ingress do
   # ────────────────────────── sync pipeline ──────────────────────────
 
   @doc """
+  Lists inbound deliveries by filter with keyset pagination (newest
+  first) — the inbound delivery log.
+
+  Options: `:source` (the inbound declaration's name, e.g. `:stripe`),
+  `:status` (a list of `AshHooks.InboundDelivery.statuses/0`),
+  `:event_type`, `:from` / `:to` (`DateTime` bounds on `inserted_at`),
+  `:limit` (default 50, max 500), `:after` (the previous page's cursor),
+  and `:tenant`. The resource needs `timestamps()` and an `:id`.
+  Returns `{:ok, %{records:, next_cursor:}}`.
+  """
+  @spec list(module(), keyword()) ::
+          {:ok, %{records: [struct()], next_cursor: binary() | nil}} | {:error, term()}
+  def list(resource, opts \\ []) do
+    alias AshHooks.{Keyset, Tenancy}
+
+    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
+         :ok <- require_list_columns(resource) do
+      Keyset.read_page(resource, opts, :inserted_at, &list_filters(&1, opts), tenant)
+    end
+  end
+
+  defp require_list_columns(resource) do
+    cond do
+      is_nil(Ash.Resource.Info.attribute(resource, :inserted_at)) ->
+        {:error,
+         UnknownError.exception(
+           error:
+             inspect(resource) <>
+               " has no :inserted_at — add `timestamps()` to its attributes " <>
+               "(and the columns to its migration) to use the list queries"
+         )}
+
+      is_nil(Ash.Resource.Info.attribute(resource, :id)) ->
+        {:error,
+         UnknownError.exception(
+           error:
+             inspect(resource) <>
+               " has no :id attribute — keyset pagination's tiebreak requires it"
+         )}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp list_filters(query, opts) do
+    query
+    |> ingress_eq(:provider, opts[:source])
+    |> ingress_eq(:external_event_type, opts[:event_type])
+    |> ingress_status(opts[:status])
+    |> ingress_time_range(opts[:from], opts[:to])
+  end
+
+  defp ingress_eq(query, _field, nil), do: query
+
+  defp ingress_eq(query, field, value) do
+    require Ash.Expr
+    ref = Ash.Expr.ref(field)
+    expression = Ash.Expr.expr(^ref == ^value)
+    Ash.Query.filter(query, ^expression)
+  end
+
+  defp ingress_status(query, nil), do: query
+
+  defp ingress_status(query, statuses) when is_list(statuses) do
+    require Ash.Expr
+    ref = Ash.Expr.ref(:status)
+    expression = Ash.Expr.expr(^ref in ^statuses)
+    Ash.Query.filter(query, ^expression)
+  end
+
+  defp ingress_time_range(query, nil, nil), do: query
+
+  defp ingress_time_range(query, from, to) do
+    require Ash.Expr
+    time = Ash.Expr.ref(:inserted_at)
+
+    lower = if from, do: Ash.Expr.expr(^time >= ^from)
+    upper = if to, do: Ash.Expr.expr(^time <= ^to)
+
+    expression =
+      case {lower, upper} do
+        {one, nil} -> one
+        {nil, one} -> one
+        {lower, upper} -> Ash.Expr.expr(^lower and ^upper)
+      end
+
+    Ash.Query.filter(query, ^expression)
+  end
+
+  @doc """
+  Counts the inbound story over a window (`:from` / `:to` on
+  `inserted_at`, inclusive; `:source` optional; `:tenant` applies):
+
+      {:ok, %{received: 120, processed: 100, duplicates: 18,
+              failed_verification: 2, handler_failures: 3}} =
+        AshHooks.Ingress.counts(MyApp.Ledger, from: an_hour_ago)
+
+  `received` counts the window's accepted rows (rejection rows excluded —
+  a refused request was never received); `processed` and
+  `handler_failures` (`:failed_retryable` + `:failed_permanent`) come off
+  the statuses. `duplicates` and `failed_verification` require
+  `ingress_tracking :on` on the ledger (the `duplicates` counter column
+  and the payload-less `:failed_verification` rejection rows); without
+  them both report 0.
+  """
+  @spec counts(module(), keyword()) ::
+          {:ok,
+           %{
+             received: non_neg_integer(),
+             processed: non_neg_integer(),
+             duplicates: non_neg_integer(),
+             failed_verification: non_neg_integer(),
+             handler_failures: non_neg_integer()
+           }}
+          | {:error, term()}
+  def counts(resource, opts \\ []) do
+    alias AshHooks.Tenancy
+
+    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
+         :ok <- require_timestamps(resource) do
+      rows = window_rows(resource, opts, tenant)
+      accepted = Enum.reject(rows, &(&1.status == :failed_verification))
+
+      {:ok,
+       %{
+         received: length(accepted),
+         processed: Enum.count(rows, &(&1.status == :processed)),
+         duplicates: sum_duplicates(rows),
+         failed_verification: Enum.count(rows, &(&1.status == :failed_verification)),
+         handler_failures:
+           Enum.count(rows, &(&1.status in [:failed_retryable, :failed_permanent]))
+       }}
+    end
+  end
+
+  defp require_timestamps(resource) do
+    if Ash.Resource.Info.attribute(resource, :inserted_at) do
+      :ok
+    else
+      {:error,
+       UnknownError.exception(
+         error:
+           inspect(resource) <>
+             " has no :inserted_at — add `timestamps()` to its attributes " <>
+             "(and the columns to its migration) to use the window counts"
+       )}
+    end
+  end
+
+  defp window_rows(resource, opts, tenant) do
+    now = Keyword.get(opts, :now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
+
+    from = Keyword.get(opts, :from) || DateTime.add(now, -86_400, :second)
+    to = Keyword.get(opts, :to) || now
+
+    resource
+    |> Ash.Query.filter(inserted_at >= ^from and inserted_at <= ^to)
+    |> then(fn query ->
+      if opts[:source], do: ingress_eq(query, :provider, opts[:source]), else: query
+    end)
+    |> Ash.read(authorize?: false, tenant: tenant)
+    |> case do
+      {:ok, rows} -> rows
+      {:error, _reason} -> []
+    end
+  end
+
+  defp sum_duplicates(rows) do
+    rows |> Enum.map(&(Map.get(&1, :duplicates) || 0)) |> Enum.sum()
+  end
+
+  @doc """
   Drives one inbound delivery through the full sync pipeline. The tenant
   rides the ctx (`ctx[:tenant]`) and threads every ledger call — the
   dedup identity, the claim fence, and every mark are per-tenant.
@@ -126,9 +299,44 @@ defmodule AshHooks.Ingress do
         ok
 
       {:error, reason} ->
-        emit_verify(name, :invalid, error_class(reason), started)
+        emit_verify(name, :invalid, verify_error_class(reason), started)
+        record_rejection(resource, name, raw_body, ctx, reason)
         {:error, reason}
     end
+  end
+
+  # a paused source is an operator state, not a failed verification — the
+  # verify telemetry keeps its honest label and no rejection row records
+  defp verify_error_class(:source_paused), do: :source_paused
+  defp verify_error_class(error), do: error_class(error)
+
+  # The failed-verification rejection row (ingress_tracking :on): the
+  # digest identity (repeated bad deliveries dedup), a CONSTANT payload
+  # marker — never the unverified request bytes — and the count surface
+  # behind counts/2. Failures here never change the refusal outcome.
+  defp record_rejection(_resource, _name, _raw_body, _ctx, :source_paused), do: :ok
+
+  defp record_rejection(resource, name, raw_body, ctx, _reason) do
+    if Ash.Resource.Info.action(resource, :record_rejection) do
+      input =
+        %{
+          provider: name,
+          external_event_id: "verify:" <> content_digest(raw_body || ""),
+          external_event_type: nil,
+          payload: Jason.encode!(%{"rejected" => true}),
+          payload_digest: content_digest(raw_body || "")
+        }
+        |> Map.merge(Map.new(ctx[:scope] || %{}))
+
+      _ =
+        Ash.create(resource, input,
+          action: :record_rejection,
+          authorize?: false,
+          tenant: ctx[:tenant]
+        )
+    end
+
+    :ok
   end
 
   defp emit_verify(source, outcome, reason, started) do
@@ -148,6 +356,26 @@ defmodule AshHooks.Ingress do
   defp error_class(error) do
     [_ash_hooks, _errors, _invalid, class] = error.__struct__ |> Module.split()
     Macro.underscore(class) |> String.to_atom()
+  end
+
+  # The duplicate counter (ingress_tracking :on): bumped on every
+  # duplicate ingest through the gated machine action; failures never
+  # change the duplicate outcome
+  defp count_duplicate(resource, delivery, tenant) do
+    if Ash.Resource.Info.action(resource, :count_duplicate) do
+      _ =
+        resource
+        |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(delivery))
+        |> Ash.bulk_update(:count_duplicate, %{},
+          authorize?: false,
+          return_records?: false,
+          return_errors?: false,
+          strategy: [:atomic],
+          tenant: tenant
+        )
+
+      :ok
+    end
   end
 
   @doc """
@@ -245,6 +473,8 @@ defmodule AshHooks.Ingress do
   end
 
   defp classify_and_emit(env, created?, delivery) do
+    if created? == false, do: count_duplicate(delivery.__struct__, delivery, env[:tenant])
+
     :telemetry.execute(
       [:ash_hooks, :ingress, :dedup],
       %{},
@@ -820,6 +1050,7 @@ defmodule AshHooks.Ingress do
   # callback error.
   defp resolve(resource, name, raw_body, ctx) do
     with {:ok, inbound} <- fetch_inbound(resource, name),
+         :ok <- check_paused(inbound, name),
          {:ok, provider} <- resolve_provider(inbound, name),
          :ok <- check_replay_window(inbound, provider, name),
          {:ok, secret} <- resolve_secret(provider, inbound, name, ctx),
@@ -848,6 +1079,28 @@ defmodule AshHooks.Ingress do
       end
     end
   end
+
+  # The pause switch: while the declared source resolves true, every
+  # request is refused BEFORE verification, persistence, or handling —
+  # the controller answers 5xx and the provider retries; nothing is lost.
+  defp check_paused(inbound, _name) do
+    if inbound.paused && resolve_paused(inbound.paused) == true do
+      {:error, :source_paused}
+    else
+      :ok
+    end
+  end
+
+  defp resolve_paused({m, f, a}), do: apply(m, f, a)
+
+  defp resolve_paused({:app_env, [app | keys]}),
+    do: keys |> env_walk(Application.get_all_env(app)) |> truthy()
+
+  defp resolve_paused(fun) when is_function(fun, 0), do: truthy(fun.())
+  defp resolve_paused(_other), do: false
+
+  defp truthy(true), do: true
+  defp truthy(_other), do: false
 
   # Batch vendors (HubSpot) deliver top-level JSON ARRAYS; providers that
   # only accept maps fail lists closed through their own catch-all clauses
@@ -986,14 +1239,70 @@ defmodule AshHooks.Ingress do
       |> maybe_put_replay_window(inbound)
 
     case provider.verify_signature(raw_body, verify_ctx, secret) do
-      :ok -> :ok
-      {:error, reason} -> {:error, Errors.from_reason(reason, provider: name)}
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        verify_with_previous(provider, raw_body, verify_ctx, inbound, reason, name)
     end
   end
 
   defp verify(_provider, _raw_body, _ctx, _inbound, _secret, name) do
     {:error, Errors.from_reason(:invalid_signature, provider: name)}
   end
+
+  # The rotation overlap: when the declaration carries a previous_secret
+  # source, a failing current-key verification retries the rotated-out key
+  # — both keys verify until the option is removed (the window's end)
+  defp verify_with_previous(
+         _provider,
+         _raw_body,
+         _verify_ctx,
+         %{previous_secret: nil},
+         reason,
+         name
+       ) do
+    {:error, Errors.from_reason(reason, provider: name)}
+  end
+
+  defp verify_with_previous(provider, raw_body, verify_ctx, inbound, reason, name) do
+    case resolve_previous_secret(inbound, %{tenant: verify_ctx[:tenant]}) do
+      {:ok, previous} ->
+        case provider.verify_signature(raw_body, verify_ctx, previous) do
+          :ok -> :ok
+          {:error, _previous_reason} -> {:error, Errors.from_reason(reason, provider: name)}
+        end
+
+      _no_previous ->
+        {:error, Errors.from_reason(reason, provider: name)}
+    end
+  end
+
+  defp resolve_previous_secret(%{previous_secret: source}, _ctx) do
+    case source do
+      {m, f, a} ->
+        apply(m, f, a) |> as_secret()
+
+      {:app_env, [app | keys]} ->
+        keys |> env_walk(Application.get_all_env(app)) |> as_secret()
+
+      fun when is_function(fun, 0) ->
+        fun.() |> as_secret()
+
+      _ ->
+        {:error, :no_webhook_secret}
+    end
+  end
+
+  defp as_secret({:ok, secret}) when is_binary(secret) and secret != "", do: {:ok, secret}
+  defp as_secret(_), do: {:error, :no_webhook_secret}
+
+  # an app_env walk that steps off the tree (a missing intermediate key)
+  # resolves nothing — never a crash on operator config
+  defp env_walk(_keys, nil), do: nil
+  defp env_walk([], acc), do: acc
+  defp env_walk([key | rest], acc) when is_list(acc), do: env_walk(rest, Keyword.get(acc, key))
+  defp env_walk(_keys, _not_a_keyword), do: nil
 
   defp maybe_put_replay_window(verify_ctx, %{replay_window_seconds: nil}), do: verify_ctx
 

@@ -199,7 +199,9 @@ defmodule AshHooks.TransformersTest do
       {AshHooks.OutboundEvent.Transformers.AddEventActions,
        Ash.Resource.Transformers.CacheActionInputs},
       {AshHooks.OutboundEvent.Transformers.AddEventIdentity,
-       Ash.Resource.Transformers.CacheUniqueKeys}
+       Ash.Resource.Transformers.CacheUniqueKeys},
+      {AshHooks.InboundDelivery.Transformers.AddTrackingActions,
+       Ash.Resource.Transformers.CacheActionInputs}
     ]
 
     for {transformer, cached} <- pairs do

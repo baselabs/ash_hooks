@@ -87,6 +87,27 @@ defmodule AshHooks do
         closed rather than falling back to the digest.
         """
       ],
+      previous_secret: [
+        type: {:custom, AshHooks, :validate_secret_source, []},
+        doc: """
+        The ROTATED-OUT signing secret source for this inbound declaration
+        (the same source shapes as `secret`): during a rotation's overlap
+        window, verification falls back to this key when the current one
+        does not match — both keys verify until you remove the option
+        (the end of your overlap window).
+        """
+      ],
+      paused: [
+        type: {:custom, AshHooks, :validate_pause_source, []},
+        doc: """
+        The pause switch source (`{m, f, a}`, `{:app_env, path}`, or a
+        0-arity fn resolving to a boolean): while it resolves `true`,
+        every request to this source is REFUSED with
+        `{:error, :source_paused}` before verification or any write —
+        answer 5xx from your controller so the provider retries. Unpause
+        by resolving `false` again; nothing is lost while paused.
+        """
+      ],
       replay_window_seconds: [
         type: :pos_integer,
         doc: """
@@ -328,6 +349,13 @@ defmodule AshHooks do
   rescue
     reason -> {:error, {:sweep_crashed, reason}}
   end
+
+  @doc """
+  Schema validator for the `paused` option — the same source shapes as
+  `secret`, resolving to a boolean at ingest time.
+  """
+  @spec validate_pause_source(term()) :: {:ok, term()} | {:error, String.t()}
+  def validate_pause_source(source), do: validate_secret_source(source)
 
   @doc """
   Schema validator for the `secret` option — accepts only secret SOURCES,

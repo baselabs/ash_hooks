@@ -64,6 +64,7 @@ Configuration of this resource as the inbound webhook ledger.
 
 | Name | Type | Default | Docs |
 |------|------|---------|------|
+| [`ingress_tracking`](#inbound_delivery-ingress_tracking){: #inbound_delivery-ingress_tracking } | `:off \| :on` | `:off` | Whether the ingress-counting columns are injected (default `:off` — existing schemas stay untouched). With `:on`, the extension injects the `duplicates` counter column (bumped on every duplicate ingest) and `AshHooks.Ingress` persists a payload-less `:failed_verification` rejection row (digest identity) for every request that fails signature verification — the two numbers `AshHooks.Ingress.counts/2` answers besides its row-derived ones. Requires a migration for the column. |
 | [`scope_identity`](#inbound_delivery-scope_identity){: #inbound_delivery-scope_identity } | `list(atom)` | `[]` | Consumer-declared attributes extending the unique-ingest identity. Provider event ids are not globally unique (across accounts etc.), so the identity is `[:provider, :external_event_id \| scope_identity]`. Each slot must be a non-nullable attribute on this resource (verifier rejects otherwise) and its value must be supplied on every ingest. |
 | [`lease_seconds`](#inbound_delivery-lease_seconds){: #inbound_delivery-lease_seconds } | `pos_integer` | `30` | Default claim lease duration. When a claim's lease expires the row becomes claimable again (reaper path) — the stale owner can no longer mark it. |
 

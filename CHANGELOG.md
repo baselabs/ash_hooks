@@ -37,6 +37,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[:ash_hooks, :delivery, :test]` beside the normal lifecycle, drives the
   row synchronously (default one attempt), requires a live endpoint, and
   returns `{:ok, %{status:, delivery:}}`.
+- **Inbound parity.** `AshHooks.Ingress.list/2` queries inbound
+  deliveries by source, status, event type, and time range with keyset
+  pagination; `counts/2` answers the window's story — received,
+  duplicates ignored, failed verifications, handler failures — with
+  `ingress_tracking :on` on the ledger (the `duplicates` counter column
+  and payload-less `:failed_verification` rejection rows, digest
+  identity). The inbound DSL's `previous_secret` source rotates a source
+  with an overlap window (both keys verify until the option is removed),
+  and `paused` (any secret-source shape resolving a boolean) refuses
+  every request with `{:error, :source_paused}` — answer 5xx so the
+  provider retries; nothing is lost while paused.
 - **Tenancy across the new surface.** Every new entry point — attempt
   history reads and writes, delivery-log queries, resend and replay, test
   sends, health stats and the disable sweep, key rolling and expiry, the

@@ -26,8 +26,24 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
     with :ok <- check_scope_slots(dsl_state),
          {:ok, dsl_state} <- add_primary_key(dsl_state),
          {:ok, dsl_state} <- add_attributes(dsl_state),
+         {:ok, dsl_state} <- add_tracking_attributes(dsl_state),
          :ok <- validate_primary_key_sources(dsl_state) do
       {:ok, dsl_state}
+    end
+  end
+
+  # The ingress-counting opt-in (default :off): `duplicates` bumps on
+  # every duplicate ingest — an EXISTING schema is never silently widened.
+  defp add_tracking_attributes(dsl_state) do
+    case Extension.get_opt(dsl_state, [:inbound_delivery], :ingress_tracking, :off) do
+      :off ->
+        {:ok, dsl_state}
+
+      :on ->
+        Builder.add_new_attribute(dsl_state, :duplicates, :integer,
+          allow_nil?: false,
+          default: 0
+        )
     end
   end
 
