@@ -238,6 +238,12 @@ defmodule AshHooks.Endpoint do
     end
   end
 
+  # the warning share defaults to the disable share when unset
+  defp warning_share(resource) do
+    Extension.get_opt(resource, [:endpoint, :auto_disable], :warning_share, nil) ||
+      Extension.get_opt(resource, [:endpoint, :auto_disable], :failure_share, 0.95)
+  end
+
   defp validate_new_secret_ref(endpoint, ref) do
     cond do
       not (is_binary(ref) and ref != "") ->
@@ -271,8 +277,53 @@ defmodule AshHooks.Endpoint do
     )
   end
 
+  @auto_disable %Spark.Dsl.Section{
+    name: :auto_disable,
+    describe: """
+    The sustained-failure auto-disable policy, beside the 410 rule: the
+    health sweep (`AshHooks.EndpointHealth.sweep/3`) disables an endpoint
+    whose trailing failure window meets the configured failure share with
+    at least `min_attempts` of evidence, warning first at the warning
+    thresholds. Re-enabling is an explicit application action.
+    """,
+    schema: [
+      failure_window_seconds: [
+        type: :pos_integer,
+        default: 3_600,
+        doc: "The trailing window the failure share is computed over."
+      ],
+      failure_share: [
+        type: {:custom, AshHooks.Endpoint, :validate_share, []},
+        default: 0.95,
+        doc: """
+        The failed-attempt share (0 < share <= 1) at or above which the
+        window counts as sustained failure.
+        """
+      ],
+      min_attempts: [
+        type: :pos_integer,
+        default: 10,
+        doc: "Minimum attempts in the window before the policy may disable."
+      ],
+      warning_share: [
+        type: {:custom, AshHooks.Endpoint, :validate_share, []},
+        doc: """
+        The warning threshold's failure share (default: `failure_share`).
+        """
+      ],
+      warning_min_attempts: [
+        type: :pos_integer,
+        doc: """
+        Minimum attempts before a warning fires (default: half of
+        `min_attempts`, at least 1).
+        """
+      ]
+    ]
+  }
+
   @status_section %Spark.Dsl.Section{
     name: :endpoint,
+    sections: [@auto_disable],
     describe: """
     Configuration of this resource as the outbound webhook endpoint.
     """,
@@ -344,6 +395,42 @@ defmodule AshHooks.Endpoint do
       ]
     ]
   }
+
+  @doc false
+  def validate_share(share) when is_number(share) and share > 0 and share <= 1,
+    do: {:ok, share}
+
+  def validate_share(_invalid),
+    do: {:error, "must be a number in (0, 1] — a share of the window's attempts"}
+
+  @doc """
+  The resolved auto-disable policy for an endpoint resource, or nil when
+  the resource declares no `auto_disable` section: a map with
+  `:failure_window_seconds`, `:failure_share`, `:min_attempts`,
+  `:warning_share`, and `:warning_min_attempts` (defaults applied).
+  """
+  @spec auto_disable_policy(module()) :: map() | nil
+  def auto_disable_policy(resource) do
+    alias Spark.Dsl.Extension
+
+    if Extension.get_opt(resource, [:endpoint, :auto_disable], :failure_share, :__missing__) !=
+         :__missing__ do
+      %{
+        failure_window_seconds:
+          Extension.get_opt(resource, [:endpoint, :auto_disable], :failure_window_seconds, 3_600),
+        failure_share:
+          Extension.get_opt(resource, [:endpoint, :auto_disable], :failure_share, 0.95),
+        min_attempts: Extension.get_opt(resource, [:endpoint, :auto_disable], :min_attempts, 10),
+        warning_share: warning_share(resource),
+        warning_min_attempts:
+          Extension.get_opt(resource, [:endpoint, :auto_disable], :warning_min_attempts, nil) ||
+            max(
+              div(Extension.get_opt(resource, [:endpoint, :auto_disable], :min_attempts, 10), 2),
+              1
+            )
+      }
+    end
+  end
 
   use Spark.Dsl.Extension,
     sections: [@status_section],

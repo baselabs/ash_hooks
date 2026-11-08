@@ -51,6 +51,8 @@ delivery ledger's action policy requirements.
 Configuration of this resource as the outbound webhook endpoint.
 
 
+### Nested DSLs
+ * [auto_disable](#endpoint-auto_disable)
 
 
 
@@ -65,6 +67,32 @@ Configuration of this resource as the outbound webhook endpoint.
 | [`response_capture_attributes`](#endpoint-response_capture_attributes){: #endpoint-response_capture_attributes } | `:off \| :on` | `:off` | Whether the per-endpoint response-capture columns are injected (default `:off` — existing schemas stay untouched). With `:on`, the extension injects `response_capture` (boolean, default `false`), `response_capture_max_bytes` (integer, default 2048), `response_capture_retention_seconds` (integer, default 30 days), and `response_header_allowlist` (string array, default none). Capture is still per ROW: an endpoint records response bodies in its attempt history only when its `response_capture` value is `true`. The captured bytes are bounded by the row's cap, pass the package's redaction floor, and only allowlisted response header names are kept. Declaring `:on` requires a migration for the four new columns. |
 | [`enabled_values`](#endpoint-enabled_values){: #endpoint-enabled_values } | `list(any)` |  | Required with `status_attribute`: the mapped attribute's values that make the endpoint deliverable (e.g. `[true]`). A defaulted list against a boolean or custom-enum switch would silently match nothing — zero deliveries, no error — so the mapping refuses to compile without it. |
 | [`disabled_value`](#endpoint-disabled_value){: #endpoint-disabled_value } | `any` |  | REQUIRED with `status_attribute`: the value the injected `:disable` action (and the 410 auto-disable) writes to the mapped attribute (e.g. `false`). |
+
+
+### endpoint.auto_disable
+The sustained-failure auto-disable policy, beside the 410 rule: the
+health sweep (`AshHooks.EndpointHealth.sweep/3`) disables an endpoint
+whose trailing failure window meets the configured failure share with
+at least `min_attempts` of evidence, warning first at the warning
+thresholds. Re-enabling is an explicit application action.
+
+
+
+
+
+
+
+### Options
+
+| Name | Type | Default | Docs |
+|------|------|---------|------|
+| [`failure_window_seconds`](#endpoint-auto_disable-failure_window_seconds){: #endpoint-auto_disable-failure_window_seconds } | `pos_integer` | `3600` | The trailing window the failure share is computed over. |
+| [`failure_share`](#endpoint-auto_disable-failure_share){: #endpoint-auto_disable-failure_share } | `any` | `0.95` | The failed-attempt share (0 < share <= 1) at or above which the window counts as sustained failure. |
+| [`min_attempts`](#endpoint-auto_disable-min_attempts){: #endpoint-auto_disable-min_attempts } | `pos_integer` | `10` | Minimum attempts in the window before the policy may disable. |
+| [`warning_share`](#endpoint-auto_disable-warning_share){: #endpoint-auto_disable-warning_share } | `any` |  | The warning threshold's failure share (default: `failure_share`). |
+| [`warning_min_attempts`](#endpoint-auto_disable-warning_min_attempts){: #endpoint-auto_disable-warning_min_attempts } | `pos_integer` |  | Minimum attempts before a warning fires (default: half of `min_attempts`, at least 1). |
+
+
 
 
 

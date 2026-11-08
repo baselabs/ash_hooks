@@ -37,6 +37,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[:ash_hooks, :delivery, :test]` beside the normal lifecycle, drives the
   row synchronously (default one attempt), requires a live endpoint, and
   returns `{:ok, %{status:, delivery:}}`.
+- **Endpoint health and sustained-failure auto-disable.**
+  `AshHooks.EndpointHealth.stats/2` computes one endpoint's trailing-window
+  health from its attempt history — success rate and nearest-rank latency
+  percentiles (p50/p90/p99 ms). The new `auto_disable` section on the
+  endpoint resource declares the policy beside the existing 410 rule
+  (`failure_window_seconds`, `failure_share`, `min_attempts`, and warning
+  thresholds); `AshHooks.EndpointHealth.sweep/3` disables an endpoint whose
+  window meets the share with the minimum evidence (through the same
+  durable switch the 410 rule uses) and emits
+  `[:ash_hooks, :endpoint, :disable_warning]` BEFORE it disables — the
+  notify surface gets its chance at the warning thresholds.
+  Re-enabling stays an explicit application action.
 - **Secret rolling with an overlap window.** `key_lifecycle :on` on the
   endpoint resource injects the six signing-key lifecycle columns
   (created / first-used / retired for the current key and its predecessor

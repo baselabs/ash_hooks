@@ -46,6 +46,13 @@ defmodule AshHooks.Telemetry do
       payload marks itself when synthesized)
     * `[:ash_hooks, :endpoint, :roll]` — `%{endpoint_id}`: an endpoint's
       signing secret reference was rolled (the overlap window began)
+    * `[:ash_hooks, :endpoint, :disable_warning]` — `%{endpoint_id,
+      failure_share, attempts}`: the sustained-failure policy sees an
+      endpoint failing at the warning thresholds — notify before the
+      breaker opens
+    * `[:ash_hooks, :endpoint, :disable]` — `%{endpoint_id, reason}`:
+      `reason: :gone_410` (the 410 rule) or `:sustained_failure` (the
+      auto-disable policy); the endpoint was durably disabled
 
   `:telemetry.execute/3` matches exact event names, so consume the
   whole surface with one `attach_many`:
@@ -64,7 +71,9 @@ defmodule AshHooks.Telemetry do
         [:ash_hooks, :attempt, :record_failed],
         [:ash_hooks, :delivery, :resend],
         [:ash_hooks, :delivery, :test],
-        [:ash_hooks, :endpoint, :roll]
+        [:ash_hooks, :endpoint, :roll],
+        [:ash_hooks, :endpoint, :disable_warning],
+        [:ash_hooks, :endpoint, :disable]
       ], fn event, measurements, metadata, _ ->
         # Forward these measurements and identifiers to your metrics system.
       end, nil)
