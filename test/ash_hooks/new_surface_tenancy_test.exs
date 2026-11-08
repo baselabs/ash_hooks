@@ -264,7 +264,8 @@ defmodule AshHooks.NewSurfaceTenancyTest do
       event_uuid TEXT NOT NULL, event_type TEXT NOT NULL, attempt INTEGER NOT NULL,
       outcome TEXT NOT NULL, reason TEXT, response_status INTEGER,
       response_snippet TEXT, response_headers TEXT, latency_ms INTEGER,
-      signing_key_ref TEXT, attempted_at TEXT NOT NULL,
+      signing_key_ref TEXT, test INTEGER NOT NULL DEFAULT 0,
+      attempted_at TEXT NOT NULL,
       org_id TEXT NOT NULL
     )
     """)

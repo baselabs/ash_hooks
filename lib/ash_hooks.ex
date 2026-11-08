@@ -170,6 +170,16 @@ defmodule AshHooks do
         and generated docs.
         """
       ],
+      example: [
+        type: :string,
+        doc: """
+        A catalog example payload for this event type — the exact bytes
+        (or a representative JSON document) shown in event pickers and
+        generated docs, and sent by nothing (test sends synthesize their
+        own payloads; wire your own sample through `test_send`'s
+        `:payload` when you want this one on the wire).
+        """
+      ],
       payload_schema: [
         type: :any,
         doc: """

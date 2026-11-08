@@ -64,6 +64,8 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptFields do
       {:latency_ms, :integer, [constraints: [min: 0]]},
       # a secret STORE REFERENCE string — never secret material
       {:signing_key_ref, :string, [constraints: [max_length: 255]]},
+      # test sends flag their history rows (test_tracking deliveries)
+      {:test, :boolean, [allow_nil?: false, default: false]},
       {:attempted_at, :utc_datetime_usec, [allow_nil?: false, default: &DateTime.utc_now/0]}
     ]
   end

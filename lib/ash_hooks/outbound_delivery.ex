@@ -101,6 +101,19 @@ defmodule AshHooks.OutboundDelivery do
         injected delivery field (fail-closed at compile).
         """
       ],
+      test_tracking: [
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc: """
+        Whether the `test` flag column is injected (default `:off` —
+        existing schemas stay untouched). With `:on`, the extension
+        injects `test` (boolean, default `false`): rows created by
+        `AshHooks.Delivery.test_send/2` carry `test: true`, attempt
+        history rows flag themselves the same way, and both list queries
+        filter on `test:` — test sends appear in the delivery log,
+        clearly marked. Requires a migration for the column.
+        """
+      ],
       resend_tracking: [
         type: {:in, [:off, :on]},
         default: :off,

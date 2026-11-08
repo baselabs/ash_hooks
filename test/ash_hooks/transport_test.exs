@@ -256,6 +256,25 @@ defmodule AshHooks.TransportTest do
     end
   end
 
+  test "a test send can target the transport (the CLI listen trigger)" do
+    # the "trigger" a CLI listens for: a test send routed to the
+    # forwarder, payload marked as a test, signature verifiable
+    endpoint = endpoint!()
+
+    assert {:ok, %{status: :succeeded, delivery: row}} =
+             AshHooks.Delivery.test_send(endpoint,
+               type: "cli.trigger",
+               deliveries: Delivery,
+               secret_resolver: fn "tr-main" -> {:ok, @secret} end,
+               transport: {__MODULE__, :transport_for}
+             )
+
+    assert [call] = ForwarderTransport.calls()
+    assert Jason.decode!(call.body)["test"] == true
+    {:ok, %{id: id}} = AshHooks.Signing.verify(call.body, call.headers, @secret)
+    assert id == row.event_uuid
+  end
+
   test "a test send routes through the transport too" do
     endpoint = endpoint!()
 

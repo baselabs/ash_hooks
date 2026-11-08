@@ -170,7 +170,8 @@ defmodule AshHooks.AttemptHistoryTest do
       event_uuid TEXT NOT NULL, event_type TEXT NOT NULL, attempt INTEGER NOT NULL,
       outcome TEXT NOT NULL, reason TEXT, response_status INTEGER,
       response_snippet TEXT, response_headers TEXT, latency_ms INTEGER,
-      signing_key_ref TEXT, attempted_at TEXT NOT NULL
+      signing_key_ref TEXT, test INTEGER NOT NULL DEFAULT 0,
+      attempted_at TEXT NOT NULL
     )
     """)
 
@@ -754,6 +755,27 @@ defmodule AshHooks.AttemptHistoryTest do
       assert Ash.get!(Endpoint, endpoint.id, authorize?: false).status == :disabled
     end
 
+    test "prune deletes the attempts WITH their delivery rows" do
+      endpoint = receiver_endpoint!(1)
+      row = pending_row!(endpoint, "msg_hist_prune")
+      assert :ok = run!(endpoint, row)
+
+      # a terminal row + its history, both older than the cutoff
+      Repo.query!(
+        "UPDATE #{@deliveries} SET status = 'succeeded', inserted_at = '2020-01-01T00:00:00Z' WHERE id = ?",
+        [row.id]
+      )
+
+      assert {:ok, 1} =
+               AshHooks.Delivery.prune(Delivery,
+                 older_than: DateTime.utc_now(),
+                 attempts: Attempt
+               )
+
+      assert Ash.read!(Delivery, authorize?: false) == []
+      assert Ash.read!(Attempt, authorize?: false) == []
+    end
+
     test "an out-of-band limit or malformed cursor is a named error" do
       assert {:error, :invalid_limit} = AshHooks.Delivery.list(Delivery, limit: 0)
       assert {:error, :invalid_limit} = AshHooks.OutboundAttempt.list(Attempt, limit: 501)
@@ -773,7 +795,8 @@ defmodule AshHooks.AttemptHistoryTest do
       event_uuid TEXT NOT NULL, event_type TEXT NOT NULL, attempt INTEGER NOT NULL,
       outcome TEXT NOT NULL, reason TEXT, response_status INTEGER,
       response_snippet TEXT, response_headers TEXT, latency_ms INTEGER,
-      signing_key_ref TEXT, attempted_at TEXT NOT NULL
+      signing_key_ref TEXT, test INTEGER NOT NULL DEFAULT 0,
+      attempted_at TEXT NOT NULL
     )
     """)
 

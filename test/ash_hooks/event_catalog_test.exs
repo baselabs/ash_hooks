@@ -101,6 +101,8 @@ defmodule AshHooks.EventCatalogTest do
 
         description("An order reached the paid state.")
 
+        example(~s({"order_id": "ord_123", "amount": 4200}))
+
         payload_schema(%{
           "type" => "object",
           "required" => ["order_id", "amount"],
@@ -229,6 +231,7 @@ defmodule AshHooks.EventCatalogTest do
     assert entry.description == "An order reached the paid state."
     assert entry.version == 2
     assert entry.payload_schema["required"] == ["order_id", "amount"]
+    assert entry.example == ~s({"order_id": "ord_123", "amount": 4200})
 
     assert {:ok, found} = AshHooks.Catalog.entry(Emitter, :order_paid)
     assert found.version == 2

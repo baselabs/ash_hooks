@@ -25,6 +25,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
          {:ok, dsl_state} <- add_primary_key(dsl_state),
          {:ok, dsl_state} <- add_attributes(dsl_state, payload_attribute),
          {:ok, dsl_state} <- add_resend_attributes(dsl_state),
+         {:ok, dsl_state} <- add_test_attributes(dsl_state),
          :ok <- validate_primary_key_sources(dsl_state, payload_attribute) do
       {:ok, dsl_state}
     end
@@ -58,6 +59,21 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
     ]
   end
 
+  # The test-flag opt-in (default :off): `test` marks test_send rows
+  defp add_test_attributes(dsl_state) do
+    case Extension.get_opt(dsl_state, [:outbound_delivery], :test_tracking, :off) do
+      :off ->
+        {:ok, dsl_state}
+
+      :on ->
+        Builder.add_new_attribute(dsl_state, :test, :boolean,
+          allow_nil?: false,
+          default: false,
+          public?: true
+        )
+    end
+  end
+
   # The configured name replaces :payload in the injected spec; every
   # other spec name is reserved against it (the scope_identity pattern).
   defp check_payload_attribute(dsl_state) do
@@ -68,7 +84,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
 
     reserved =
       (Enum.map(attributes_spec(payload_attribute), &elem(&1, 0)) -- [payload_attribute]) ++
-        Enum.map(resend_attributes_spec(), &elem(&1, 0))
+        Enum.map(resend_attributes_spec(), &elem(&1, 0)) ++ [:test]
 
     if payload_attribute in [:id | reserved] do
       {:error,

@@ -32,6 +32,7 @@ defmodule AshHooks.Catalog do
           name: atom(),
           description: String.t() | nil,
           payload_schema: term() | nil,
+          example: String.t() | nil,
           version: pos_integer(),
           payload_versions: %{optional(pos_integer()) => {module(), atom()}} | nil
         }
@@ -52,6 +53,7 @@ defmodule AshHooks.Catalog do
           name: outbound.name,
           description: outbound.description,
           payload_schema: outbound.payload_schema,
+          example: outbound.example,
           version: outbound.version || 1,
           payload_versions: outbound.payload_versions
         }

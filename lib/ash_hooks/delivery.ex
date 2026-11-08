@@ -127,6 +127,8 @@ defmodule AshHooks.Delivery do
     * `:endpoint_id` — one endpoint's deliveries.
     * `:status` — a list of statuses (e.g. `[:failed_retryable, :dead_letter]`).
     * `:event_type` — one event type's deliveries.
+    * `:test` — `true`/`false` on `test_tracking :on` resources: filter
+      the delivery log to (or exclude) test sends.
     * `:from` / `:to` — `DateTime` bounds on `inserted_at` (inclusive).
     * `:limit` — page size (default 50, max 500; anything else is
       `{:error, :invalid_limit}`).
@@ -182,6 +184,7 @@ defmodule AshHooks.Delivery do
     |> optional_list_eq(:endpoint_id, opts[:endpoint_id])
     |> optional_list_eq(:event_type, opts[:event_type])
     |> optional_list_in(:status, opts[:status])
+    |> optional_list_eq(:test, opts[:test])
     |> list_time_range(opts[:from], opts[:to])
   end
 
@@ -235,6 +238,11 @@ defmodule AshHooks.Delivery do
   `{:error, :tenant_required}` before any data access).
   `:batch_size` defaults to 500 and accepts integers from 1 through 5,000;
   invalid values return `{:error, :invalid_batch_size}`.
+
+  `:attempts` (an `AshHooks.OutboundAttempt` resource) prunes the
+  pruned rows' attempt history WITH them — every batch's delivery rows
+  delete first, then their attempt rows by `delivery_pk`, so history
+  never outlives its delivery (and never orphans).
   """
   @spec prune(module(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def prune(deliv_mod, opts) do
@@ -255,7 +263,7 @@ defmodule AshHooks.Delivery do
            )}
 
         ResourceInfo.attribute(deliv_mod, :inserted_at) ->
-          prune!(deliv_mod, older_than, tenant, Keyword.get(opts, :batch_size, 500))
+          prune!(deliv_mod, older_than, tenant, Keyword.get(opts, :batch_size, 500), opts)
 
         true ->
           {:error,
@@ -269,15 +277,15 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  defp prune!(deliv_mod, older_than, tenant, batch_size)
+  defp prune!(deliv_mod, older_than, tenant, batch_size, opts)
        when is_integer(batch_size) and batch_size > 0 and batch_size <= 5_000 do
-    prune_batch(deliv_mod, older_than, tenant, batch_size, 0)
+    prune_batch(deliv_mod, older_than, tenant, batch_size, 0, opts)
   end
 
-  defp prune!(_deliv_mod, _older_than, _tenant, _batch_size),
+  defp prune!(_deliv_mod, _older_than, _tenant, _batch_size, _opts),
     do: {:error, :invalid_batch_size}
 
-  defp prune_batch(deliv_mod, older_than, tenant, batch_size, total) do
+  defp prune_batch(deliv_mod, older_than, tenant, batch_size, total, opts) do
     require Ash.Query
 
     result =
@@ -297,14 +305,37 @@ defmodule AshHooks.Delivery do
         {:ok, total}
 
       %Ash.BulkResult{status: :success, records: rows} when length(rows) < batch_size ->
+        prune_attempt_history(opts[:attempts], rows, tenant)
         {:ok, total + length(rows)}
 
       %Ash.BulkResult{status: :success, records: rows} ->
-        prune_batch(deliv_mod, older_than, tenant, batch_size, total + length(rows))
+        prune_attempt_history(opts[:attempts], rows, tenant)
+        prune_batch(deliv_mod, older_than, tenant, batch_size, total + length(rows), opts)
 
       %Ash.BulkResult{} = result ->
         bulk_failure(result)
     end
+  end
+
+  # the pruned rows' history goes with them: batch-by-batch, keyed on the
+  # complete encoded delivery keys — history never outlives its row
+  defp prune_attempt_history(nil, _rows, _tenant), do: :ok
+
+  defp prune_attempt_history(attempts_mod, rows, tenant) do
+    keys = Enum.map(rows, &PrimaryKey.encode(&1))
+
+    _ =
+      attempts_mod
+      |> Ash.Query.filter(delivery_pk in ^keys)
+      |> Ash.bulk_destroy(:prune, %{},
+        authorize?: false,
+        return_records?: false,
+        return_errors?: false,
+        strategy: [:atomic],
+        tenant: tenant
+      )
+
+    :ok
   end
 
   @doc """
@@ -872,14 +903,17 @@ defmodule AshHooks.Delivery do
 
   defp create_test_row(deliveries, endpoint, event, opts, tenant) do
     input =
-      %{
+      %{test: true}
+      |> Map.merge(%{
         event_uuid: event.id,
         event_type: event.type,
         endpoint_id: PrimaryKey.scalar!(endpoint),
         subscription_id: nil,
         signing_mode: opts[:signing_mode] || :standard
-      }
+      })
       |> Map.put(AshHooks.Info.payload_attribute(deliveries), event.payload)
+      # the flag rides only resources that carry the column
+      |> Map.drop(if ResourceInfo.attribute(deliveries, :test), do: [], else: [:test])
 
     Ash.create(deliveries, input, action: :dispatch, authorize?: false, tenant: tenant)
   end
@@ -1487,21 +1521,25 @@ defmodule AshHooks.Delivery do
     end
   end
 
+  # the flag rides history rows: the extension ships the column, and the
+  # delivery's own value (absent on test_tracking :off rows → false) is
+  # the truth for the attempt
   defp write_attempt(attempts_mod, row, outcome, reason, summary, history, tenant) do
-    input = %{
-      delivery_pk: PrimaryKey.encode(row),
-      endpoint_id: row.endpoint_id,
-      event_uuid: row.event_uuid,
-      event_type: row.event_type,
-      attempt: row.attempts,
-      outcome: outcome,
-      reason: reason,
-      response_status: summary_status(summary),
-      response_snippet: attempt_snippet(summary, history),
-      response_headers: history[:response_headers],
-      latency_ms: history[:latency_ms],
-      signing_key_ref: history[:signing_key_ref]
-    }
+    input =
+      Map.merge(%{test: Map.get(row, :test) == true}, %{
+        delivery_pk: PrimaryKey.encode(row),
+        endpoint_id: row.endpoint_id,
+        event_uuid: row.event_uuid,
+        event_type: row.event_type,
+        attempt: row.attempts,
+        outcome: outcome,
+        reason: reason,
+        response_status: summary_status(summary),
+        response_snippet: attempt_snippet(summary, history),
+        response_headers: history[:response_headers],
+        latency_ms: history[:latency_ms],
+        signing_key_ref: history[:signing_key_ref]
+      })
 
     case Ash.create(attempts_mod, input, action: :record, authorize?: false, tenant: tenant) do
       {:ok, _attempt} ->

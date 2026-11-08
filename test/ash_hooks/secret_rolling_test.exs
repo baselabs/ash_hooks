@@ -267,12 +267,6 @@ defmodule AshHooks.SecretRollingTest do
         http_opts: [validate_destination: false]
       )
 
-    IO.inspect(run_result, label: "RUN")
-
-    IO.inspect(Repo.query!("SELECT status, last_error, response_status FROM #{@deliveries}").rows,
-      label: "ROW"
-    )
-
     assert :ok = run_result
 
     # the real receiver saw one POST whose webhook-signature carries BOTH v1

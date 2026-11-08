@@ -29,7 +29,8 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
 
     prune_action = Extension.get_opt(dsl_state, [:outbound_delivery], :prune_action, :destroy)
 
-    with {:ok, dispatch} <- build_dispatch(payload_attribute, writable_id_pk?(dsl_state)),
+    with {:ok, dispatch} <-
+           build_dispatch(dsl_state, payload_attribute, writable_id_pk?(dsl_state)),
          {:ok, mark_enqueue_failed} <- build_mark_enqueue_failed(),
          {:ok, requeue} <- build_requeue(),
          {:ok, bind_dispatch_source} <- build_bind_dispatch_source(),
@@ -77,22 +78,31 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
   # PK is writable; otherwise the Dispatcher pre-reads the identity — H2).
   # Retrying deliveries mutate rows only through the runtime's gated
   # updates.
-  defp build_dispatch(payload_attribute, id_accepted) do
+  defp build_dispatch(dsl_state, payload_attribute, id_accepted) do
+    accept =
+      maybe_accept_id(id_accepted, [
+        :event_uuid,
+        :event_type,
+        payload_attribute,
+        :endpoint_id,
+        :subscription_id,
+        :signing_mode,
+        :dispatch_source,
+        :dispatch_route
+      ])
+
+    accept =
+      if Extension.get_opt(dsl_state, [:outbound_delivery], :test_tracking, :off) == :on do
+        accept ++ [:test]
+      else
+        accept
+      end
+
     Builder.build_action(:create, :dispatch,
       upsert?: true,
       upsert_identity: :unique_delivery,
       upsert_fields: [],
-      accept:
-        maybe_accept_id(id_accepted, [
-          :event_uuid,
-          :event_type,
-          payload_attribute,
-          :endpoint_id,
-          :subscription_id,
-          :signing_mode,
-          :dispatch_source,
-          :dispatch_route
-        ])
+      accept: accept
     )
   end
 

@@ -62,6 +62,7 @@ defmodule AshHooks.OutboundAttempt do
     * `:endpoint_id` — one endpoint's attempts.
     * `:outcome` — a list of outcomes (e.g. `[:failed_retryable, :dead_letter]`).
     * `:event_type` / `:event_uuid` — the event's type or exact identity.
+    * `:test` — `true`/`false`: filter attempts to (or exclude) test sends.
     * `:delivery_pk` — attempts of one delivery (the row's encoded key map).
     * `:from` / `:to` — `DateTime` bounds on `attempted_at` (inclusive).
     * `:limit` — page size (default 50, max 500; anything else is
@@ -87,6 +88,7 @@ defmodule AshHooks.OutboundAttempt do
     |> optional_eq(:event_type, opts[:event_type])
     |> optional_eq(:event_uuid, opts[:event_uuid])
     |> optional_eq(:delivery_pk, opts[:delivery_pk])
+    |> optional_eq(:test, opts[:test])
     |> optional_in(:outcome, opts[:outcome])
     |> time_range(opts[:from], opts[:to])
   end

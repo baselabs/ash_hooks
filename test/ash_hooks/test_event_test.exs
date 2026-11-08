@@ -25,6 +25,49 @@ defmodule AshHooks.TestEventTest do
     end
   end
 
+  defmodule FlaggedDelivery do
+    @moduledoc false
+    # test_tracking :on — the delivery log can filter test sends
+    use Ash.Resource,
+      domain: AshHooks.TestEventTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.OutboundDelivery]
+
+    sqlite do
+      table("test_event_flagged")
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      timestamps()
+    end
+
+    actions do
+      defaults([:read])
+    end
+
+    outbound_delivery do
+      test_tracking(:on)
+    end
+  end
+
+  defmodule Attempt do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.TestEventTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.OutboundAttempt]
+
+    sqlite do
+      table("test_event_attempts")
+      repo(AshHooks.Test.Repo)
+    end
+
+    actions do
+      defaults([:read])
+    end
+  end
+
   defmodule Delivery do
     @moduledoc false
     use Ash.Resource,
@@ -53,6 +96,8 @@ defmodule AshHooks.TestEventTest do
     resources do
       resource(AshHooks.TestEventTest.Endpoint)
       resource(AshHooks.TestEventTest.Delivery)
+      resource(AshHooks.TestEventTest.FlaggedDelivery)
+      resource(AshHooks.TestEventTest.Attempt)
     end
   end
 
@@ -93,7 +138,44 @@ defmodule AshHooks.TestEventTest do
       "CREATE UNIQUE INDEX IF NOT EXISTS #{@deliveries}_unique_delivery_index ON #{@deliveries} (endpoint_id, event_uuid)"
     )
 
+    Repo.query!("""
+    CREATE TABLE IF NOT EXISTS test_event_flagged (
+      id TEXT PRIMARY KEY, event_uuid TEXT NOT NULL, event_type TEXT NOT NULL,
+      payload BLOB NOT NULL, endpoint_id TEXT NOT NULL, subscription_id TEXT,
+      signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
+      response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot TEXT, test INTEGER NOT NULL DEFAULT 0,
+      inserted_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )
+    """)
+
+    Repo.query!(
+      "CREATE UNIQUE INDEX IF NOT EXISTS test_event_flagged_unique ON test_event_flagged (endpoint_id, event_uuid)"
+    )
+
+    Repo.query!("""
+    CREATE TABLE IF NOT EXISTS test_event_attempts (
+      id TEXT PRIMARY KEY, delivery_pk TEXT NOT NULL, endpoint_id TEXT NOT NULL,
+      event_uuid TEXT NOT NULL, event_type TEXT NOT NULL, attempt INTEGER NOT NULL,
+      outcome TEXT NOT NULL, reason TEXT, response_status INTEGER,
+      response_snippet TEXT, response_headers TEXT, latency_ms INTEGER,
+      signing_key_ref TEXT, test INTEGER NOT NULL DEFAULT 0,
+      attempted_at TEXT NOT NULL
+    )
+    """)
+
+    Repo.query!(
+      "CREATE UNIQUE INDEX IF NOT EXISTS test_event_attempts_unique ON test_event_attempts (delivery_pk, attempt)"
+    )
+
     on_exit(fn ->
+      Repo.query!("DROP TABLE IF EXISTS test_event_attempts")
+      Repo.query!("DROP TABLE IF EXISTS test_event_flagged")
       Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
       Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
     end)
@@ -103,6 +185,8 @@ defmodule AshHooks.TestEventTest do
 
   setup do
     Repo.query!("DELETE FROM #{@deliveries}")
+    Repo.query!("DELETE FROM test_event_flagged")
+    Repo.query!("DELETE FROM test_event_attempts")
     Repo.query!("DELETE FROM #{@endpoints}")
 
     test_pid = self()
@@ -356,5 +440,74 @@ defmodule AshHooks.TestEventTest do
              )
 
     assert row.last_error in ["nxdomain", "resolve_timeout"]
+  end
+
+  test "test sends are flagged in the delivery log AND the attempt history" do
+    endpoint = receiver_endpoint!(2)
+
+    # an ORDINARY dispatched row (the flag defaults false)
+    real =
+      Ash.create!(
+        FlaggedDelivery,
+        %{
+          event_uuid: "evt_not_a_test",
+          event_type: "real.event",
+          payload: "{}",
+          endpoint_id: endpoint.id
+        },
+        action: :dispatch,
+        authorize?: false
+      )
+
+    # and a test send: flagged end to end
+    assert {:ok, %{status: :succeeded, delivery: test_row}} =
+             AshHooks.Delivery.test_send(endpoint,
+               type: "flagged.event",
+               deliveries: FlaggedDelivery,
+               attempts: Attempt,
+               secret_resolver: fn "te-main" -> {:ok, @secret} end,
+               destination_policy: fn _url, _ctx -> :allow end,
+               http_opts: [validate_destination: false]
+             )
+
+    assert real.test == false
+    assert test_row.test == true
+
+    # the delivery log filters on the flag
+    {:ok, %{records: only_tests}} =
+      AshHooks.Delivery.list(FlaggedDelivery, test: true)
+
+    assert [%{id: id}] = only_tests
+    assert id == test_row.id
+
+    {:ok, %{records: no_tests}} = AshHooks.Delivery.list(FlaggedDelivery, test: false)
+    assert [%{id: real_id}] = no_tests
+    assert real_id == real.id
+
+    # attempt history carries the flag and filters on it
+    {:ok, %{records: test_attempts}} = AshHooks.OutboundAttempt.list(Attempt, test: true)
+    assert [%{event_type: "flagged.event", test: true, event_uuid: id}] = test_attempts
+    assert id == test_row.event_uuid
+
+    # no non-test attempts exist (the ordinary row never sent)
+    {:ok, %{records: []}} = AshHooks.OutboundAttempt.list(Attempt, test: false)
+  end
+
+  test "a per-delivery diagnostic capture rides a test send (snippet_capture)" do
+    endpoint = receiver_endpoint!(1)
+
+    assert {:ok, %{delivery: row}} =
+             AshHooks.Delivery.test_send(endpoint,
+               type: "captured.test",
+               deliveries: FlaggedDelivery,
+               secret_resolver: fn "te-main" -> {:ok, @secret} end,
+               destination_policy: fn _url, _ctx -> :allow end,
+               http_opts: [validate_destination: false],
+               snippet_capture: true
+             )
+
+    # the delivery row keeps the marked, redacted capture (the per-delivery
+    # diagnostic beside the per-endpoint setting)
+    assert String.starts_with?(row.response_snippet, "[captured] ")
   end
 end

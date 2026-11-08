@@ -108,7 +108,8 @@ defmodule AshHooks.EndpointHealthTest do
       event_uuid TEXT NOT NULL, event_type TEXT NOT NULL, attempt INTEGER NOT NULL,
       outcome TEXT NOT NULL, reason TEXT, response_status INTEGER,
       response_snippet TEXT, response_headers TEXT, latency_ms INTEGER,
-      signing_key_ref TEXT, attempted_at TEXT NOT NULL
+      signing_key_ref TEXT, test INTEGER NOT NULL DEFAULT 0,
+      attempted_at TEXT NOT NULL
     )
     """)
 
@@ -194,6 +195,12 @@ defmodule AshHooks.EndpointHealthTest do
     assert stats.attempts == 4
     assert stats.succeeded == 3
     assert_in_delta stats.success_rate, 0.75, 1.0e-9
+    # every seed is attempt 1 with a distinct delivery_pk: all three
+    # successes are FIRST-attempt successes, and eventual == the same
+    # three (no retries in this window)
+    assert stats.first_attempt_successes == 3
+    assert stats.eventual_successes == 3
+    assert stats.deliveries == 4
     # nearest-rank percentiles over [10, 20, 30, 300]
     assert stats.latency_p50_ms == 20
     assert stats.latency_p90_ms == 300
@@ -367,7 +374,8 @@ defmodule AshHooks.EndpointHealthTest do
       event_uuid TEXT NOT NULL, event_type TEXT NOT NULL, attempt INTEGER NOT NULL,
       outcome TEXT NOT NULL, reason TEXT, response_status INTEGER,
       response_snippet TEXT, response_headers TEXT, latency_ms INTEGER,
-      signing_key_ref TEXT, attempted_at TEXT NOT NULL
+      signing_key_ref TEXT, test INTEGER NOT NULL DEFAULT 0,
+      attempted_at TEXT NOT NULL
     )
     """)
 

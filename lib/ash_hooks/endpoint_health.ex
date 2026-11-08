@@ -6,7 +6,9 @@ defmodule AshHooks.EndpointHealth do
   `stats/2` computes one endpoint's trailing-window health from its
   attempt rows: the success rate and nearest-rank latency percentiles
   (p50/p90/p99, in milliseconds, over the attempts that reached the
-  wire). `sweep/3` applies the endpoint resource's `auto_disable` policy
+  wire), with FIRST-ATTEMPT success reported separately from EVENTUAL
+  success (a delivery whose first attempt succeeded vs. one that
+  succeeded after retries). `sweep/3` applies the endpoint resource's `auto_disable` policy
   (a configurable duration and failure share, beside the existing 410
   rule): an endpoint whose window meets the failure share with the
   minimum evidence is DISABLED through the same durable switch the 410
@@ -28,6 +30,9 @@ defmodule AshHooks.EndpointHealth do
           succeeded: non_neg_integer(),
           failed: non_neg_integer(),
           success_rate: float() | nil,
+          first_attempt_successes: non_neg_integer(),
+          eventual_successes: non_neg_integer(),
+          deliveries: non_neg_integer(),
           latency_p50_ms: non_neg_integer() | nil,
           latency_p90_ms: non_neg_integer() | nil,
           latency_p99_ms: non_neg_integer() | nil
@@ -206,15 +211,44 @@ defmodule AshHooks.EndpointHealth do
     succeeded = Enum.count(rows, &(&1.outcome == :succeeded))
     latencies = rows |> Enum.map(& &1.latency_ms) |> Enum.reject(&is_nil/1) |> Enum.sort()
 
+    deliveries =
+      rows
+      |> Enum.map(& &1.delivery_pk)
+      |> Enum.uniq()
+      |> length()
+
     %{
       attempts: length(rows),
       succeeded: succeeded,
       failed: length(rows) - succeeded,
       success_rate: share(succeeded, length(rows)) |> presence(length(rows)),
+      first_attempt_successes: first_attempt_successes(rows),
+      eventual_successes: eventual_successes(rows),
+      deliveries: deliveries,
       latency_p50_ms: percentile(latencies, 0.50),
       latency_p90_ms: percentile(latencies, 0.90),
       latency_p99_ms: percentile(latencies, 0.99)
     }
+  end
+
+  # FIRST-ATTEMPT success: the delivery's attempt 1 succeeded — the
+  # number a "how healthy is this endpoint right now" dashboard wants
+  defp first_attempt_successes(rows) do
+    rows
+    |> Enum.filter(&(&1.attempt == 1 and &1.outcome == :succeeded))
+    |> Enum.map(& &1.delivery_pk)
+    |> Enum.uniq()
+    |> length()
+  end
+
+  # EVENTUAL success: the delivery succeeded on ANY attempt (the last
+  # one for a retried delivery) — the receiver-side experience
+  defp eventual_successes(rows) do
+    rows
+    |> Enum.filter(&(&1.outcome == :succeeded))
+    |> Enum.map(& &1.delivery_pk)
+    |> Enum.uniq()
+    |> length()
   end
 
   # 0/0 is no evidence, not certainty: an empty window reports nil rates

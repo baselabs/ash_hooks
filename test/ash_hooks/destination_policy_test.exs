@@ -139,10 +139,12 @@ defmodule AshHooks.DestinationPolicyTest do
   setup do
     Repo.query!("DELETE FROM #{@deliveries}")
     Repo.query!("DELETE FROM #{@endpoints}")
+
     start_supervised!(%{
       id: ContextCapturingPolicy,
       start: {Agent, :start_link, [fn -> nil end, [name: ContextCapturingPolicy]]}
     })
+
     :ok
   end
 

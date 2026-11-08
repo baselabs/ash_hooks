@@ -25,6 +25,10 @@ it: no existing column, action, event, or default behavior moves.
   `AshHooks.OutboundAttempt.list/2` filter by endpoint, status/outcome,
   event type, and time range with keyset pagination; the delivery resource
   needs `timestamps()` and an `:id` attribute for them.
+- **Test-send flagging (opt-in).** Declaring `test_tracking :on` under
+  `outbound_delivery` injects the `test` boolean column — migrate it when
+  you declare it. Attempt-history resources gain the `test` column in
+  this release (the extension itself is new in 2.2).
 - **Inbound tracking (opt-in).** Declaring `ingress_tracking :on` on an
   inbound ledger injects the `duplicates` counter column and the
   `failed_verification` status row (payload-less) — migrate the column

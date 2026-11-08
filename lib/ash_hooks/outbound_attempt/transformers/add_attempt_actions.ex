@@ -45,6 +45,7 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptActions do
         :response_headers,
         :latency_ms,
         :signing_key_ref,
+        :test,
         :attempted_at
       ]
     )

@@ -37,6 +37,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[:ash_hooks, :delivery, :test]` beside the normal lifecycle, drives the
   row synchronously (default one attempt), requires a live endpoint, and
   returns `{:ok, %{status:, delivery:}}`.
+- **The finishing details.** Test sends are now FLAGGED end to end:
+  `test_tracking :on` on the delivery ledger injects the `test` column,
+  `AshHooks.Delivery.test_send/2` rows carry `test: true`, attempt
+  history rows flag themselves, and both list queries filter on `test:`
+  — test sends appear in the delivery log, clearly marked. The
+  per-delivery diagnostic capture (`snippet_capture: true`) rides every
+  driver call including test sends, beside the per-endpoint setting.
+  Catalog entries carry an `example` payload. Health stats report
+  FIRST-ATTEMPT successes separately from EVENTUAL successes (and the
+  delivery count). Attempt history prunes WITH its delivery rows
+  (`prune/2`'s `:attempts` option). And a test send can target the
+  transport — a CLI "listen" command's trigger arrives as a signed,
+  test-marked payload on the developer's forwarder.
 - **Inbound parity.** `AshHooks.Ingress.list/2` queries inbound
   deliveries by source, status, event type, and time range with keyset
   pagination; `counts/2` answers the window's story — received,
