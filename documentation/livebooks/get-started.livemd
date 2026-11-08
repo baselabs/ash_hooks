@@ -185,6 +185,11 @@ defmodule Tour.Delivery do
   actions do
     defaults([:read])
   end
+
+  outbound_delivery do
+    # resend/replay bookkeeping (migrate the four columns when you adopt)
+    resend_tracking(:on)
+  end
 end
 
 defmodule Tour.Attempt do
@@ -305,6 +310,9 @@ CREATE TABLE tour_deliveries (
   attempt_token TEXT, send_lease_expires_at TEXT,
   enqueue_token TEXT, enqueue_lease_expires_at TEXT,
   endpoint_snapshot JSONB,
+  resend_baseline INTEGER NOT NULL DEFAULT 0,
+  resend_count INTEGER NOT NULL DEFAULT 0,
+  last_resend_by TEXT, last_resend_at TEXT,
   inserted_at TEXT, updated_at TEXT)
 """)
 
@@ -520,6 +528,46 @@ Response bodies stay off by default everywhere: without the endpoint's
 per-row opt-in, attempt rows carry the status + content-type summary only
 (the delivery row's response_snippet stays that summary in all cases).
 """)
+```
+
+<!-- livebook:{"break_marks":true} -->
+
+## Resend and replay: the same event id, again
+
+```elixir
+# A resend re-arms the TERMINAL row: same webhook-id (the receiver
+# deduplicates), a fresh retry ladder, and who asked recorded on the row.
+{:ok, %{status: :resent, delivery: re_armed}} =
+  AshHooks.Delivery.resend(final,
+    requested_by: "tour-operator",
+    endpoints: Tour.Endpoint
+  )
+
+:pending = re_armed.status
+0 = re_armed.attempts - re_armed.resend_baseline
+"tour-operator" = re_armed.last_resend_by
+1 = re_armed.resend_count
+
+# Bulk replay counts before it touches anything...
+{:ok, %{count: 1}} =
+  AshHooks.Delivery.replay(Tour.Delivery,
+    endpoints: Tour.Endpoint,
+    status: [:succeeded],
+    requested_by: "tour-operator",
+    dry_run: true
+  )
+
+# ...and re-arms at a bounded rate when it does (the row is live: it
+# re-arms again here because a resend leaves the row pending).
+{:ok, %{resent: 0, skipped: 1}} =
+  AshHooks.Delivery.replay(Tour.Delivery,
+    endpoints: Tour.Endpoint,
+    status: [:dead_letter],
+    requested_by: "tour-operator",
+    per_second: 10
+  )
+
+IO.puts("resend recorded who asked; replay counted and rate-limited")
 ```
 
 <!-- livebook:{"break_marks":true} -->

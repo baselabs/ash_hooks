@@ -27,6 +27,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   event type, and time range with keyset pagination (newest-first,
   `(time, id)` cursors), tenant pre-flighted like every package entry
   point.
+- **Resend and bulk replay.** `AshHooks.Delivery.resend/2` re-arms one
+  terminal delivery row (`:succeeded`/`:dead_letter`) with the SAME event
+  id — a Standard Webhooks receiver deduplicates the repeat POST — while
+  the lifetime attempt counter keeps climbing (attempt-history rows stay
+  unique) and a fresh retry ladder starts at `resend_baseline`.
+  `AshHooks.Delivery.replay/2` re-arms a filtered set (endpoint, event
+  type, status list, time range) with `dry_run: true` counting matches
+  and `:per_second`/`:limit` bounding the rate. Both record who asked
+  (`last_resend_by`/`last_resend_at`, `resend_count`), refuse anything
+  but live endpoints (`{:error, :endpoint_not_live}` / counted skips),
+  and require the new `resend_tracking :on` DSL (four migrated columns)
+  — existing schemas are untouched. Every re-arm emits
+  `[:ash_hooks, :delivery, :resend]`.
 
 - **A public send-time destination policy seam.** `AshHooks.DestinationPolicy`
   is the supported way to carry your own allow and deny rules without forking

@@ -25,6 +25,15 @@ it: no existing column, action, event, or default behavior moves.
   `AshHooks.OutboundAttempt.list/2` filter by endpoint, status/outcome,
   event type, and time range with keyset pagination; the delivery resource
   needs `timestamps()` and an `:id` attribute for them.
+- **Resend and bulk replay (opt-in).** Declaring `resend_tracking :on`
+  under `outbound_delivery` injects four machine columns
+  (`resend_baseline`, `resend_count`, `last_resend_by`, `last_resend_at`)
+  — migrate them when you declare it — and unlocks
+  `AshHooks.Delivery.resend/2` / `replay/2`. Attempt ceilings are now
+  series ceilings: a resent row's ladder restarts at its baseline while
+  the lifetime `attempts` counter never resets (attempt-history identity
+  stays sound). Resources without the columns keep the exact pre-2.2
+  ceiling semantics.
 
 ## 2.0.4 → 2.1.0
 

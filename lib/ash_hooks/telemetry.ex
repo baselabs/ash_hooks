@@ -39,6 +39,8 @@ defmodule AshHooks.Telemetry do
       event_uuid, reason}` (classified): an attempt-history row could not
       be written; the delivery result itself succeeded and remains the
       contract
+    * `[:ash_hooks, :delivery, :resend]` — `%{endpoint_id, event_uuid,
+      requested_by}`: a terminal row was re-armed (resend or replay)
 
   `:telemetry.execute/3` matches exact event names, so consume the
   whole surface with one `attach_many`:
@@ -54,7 +56,8 @@ defmodule AshHooks.Telemetry do
         [:ash_hooks, :delivery, :dead_letter],
         [:ash_hooks, :delivery, :disable],
         [:ash_hooks, :worker, :invalid_runtime_config],
-        [:ash_hooks, :attempt, :record_failed]
+        [:ash_hooks, :attempt, :record_failed],
+        [:ash_hooks, :delivery, :resend]
       ], fn event, measurements, metadata, _ ->
         # Forward these measurements and identifiers to your metrics system.
       end, nil)

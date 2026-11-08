@@ -24,9 +24,38 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
     with {:ok, payload_attribute} <- check_payload_attribute(dsl_state),
          {:ok, dsl_state} <- add_primary_key(dsl_state),
          {:ok, dsl_state} <- add_attributes(dsl_state, payload_attribute),
+         {:ok, dsl_state} <- add_resend_attributes(dsl_state),
          :ok <- validate_primary_key_sources(dsl_state, payload_attribute) do
       {:ok, dsl_state}
     end
+  end
+
+  # The resend-tracking opt-in (default :off): declaring :on injects the
+  # machine columns resend/2 and replay/2 write — an EXISTING schema is
+  # never silently widened; the consumer migrates the four columns.
+  defp add_resend_attributes(dsl_state) do
+    case Extension.get_opt(dsl_state, [:outbound_delivery], :resend_tracking, :off) do
+      :off ->
+        {:ok, dsl_state}
+
+      :on ->
+        Enum.reduce_while(resend_attributes_spec(), {:ok, dsl_state}, fn {name, type, opts},
+                                                                         {:ok, dsl_state} ->
+          {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
+        end)
+    end
+  end
+
+  defp resend_attributes_spec do
+    [
+      # unconstrained: the atomic resend bump composes on every supported
+      # data layer (a min constraint's expr-error guard is sqlite-atomic-
+      # incompatible); the runtime is the only writer
+      {:resend_baseline, :integer, [allow_nil?: false, default: 0]},
+      {:resend_count, :integer, [allow_nil?: false, default: 0]},
+      {:last_resend_by, :string, [constraints: [max_length: 255]]},
+      {:last_resend_at, :utc_datetime_usec, []}
+    ]
   end
 
   # The configured name replaces :payload in the injected spec; every
@@ -37,7 +66,9 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
     payload_attribute =
       Extension.get_opt(dsl_state, [:outbound_delivery], :payload_attribute, :payload)
 
-    reserved = Enum.map(attributes_spec(payload_attribute), &elem(&1, 0)) -- [payload_attribute]
+    reserved =
+      (Enum.map(attributes_spec(payload_attribute), &elem(&1, 0)) -- [payload_attribute]) ++
+        Enum.map(resend_attributes_spec(), &elem(&1, 0))
 
     if payload_attribute in [:id | reserved] do
       {:error,

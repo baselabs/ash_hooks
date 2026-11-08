@@ -629,6 +629,158 @@ defmodule AshHooks.Delivery do
 
   defp bind_direct_source(row, _config, _tenant), do: {:ok, row}
 
+  @doc """
+  Bulk replay: re-arms every matching TERMINAL delivery row for a resend
+  (same contract as `resend/2` — same event ids, fresh ladders, who asked
+  recorded per row) with a dry-run count and a rate limit.
+
+  Filters: `:endpoint_id`, `:event_type`, `:status` (a list; required),
+  and `:from` / `:to` `DateTime` bounds on `inserted_at`. The resource
+  needs `inserted_at`.
+
+  Options: `:endpoints` and `:requested_by` (required, as `resend/2`),
+  `:enqueue` (per-row seam), `:tenant`, `:now`, `:dry_run` (count the
+  matching rows and touch nothing — `{:ok, %{count: n}}`), `:limit` (max
+  rows this call; default 100, max 1,000, applied after the dry-run
+  filter), and `:per_second` (the rate limit — rows re-armed per second,
+  default 50; the call sleeps between second-sized batches, so page larger
+  replays through repeated calls).
+
+  Rows whose endpoint is gone or disabled are skipped and counted (never
+  re-armed): `{:ok, %{resent: n, skipped: n}}`.
+  """
+  @spec replay(module(), keyword()) ::
+          {:ok, %{resent: non_neg_integer(), skipped: non_neg_integer()}}
+          | {:ok, %{count: non_neg_integer()}}
+          | {:error, term()}
+  def replay(deliv_mod, opts \\ []) do
+    with {:ok, requested_by} <- validate_requested_by(opts[:requested_by]),
+         :ok <- require_resend_tracking(deliv_mod),
+         {:ok, endpoints} <- require_endpoint_module(opts[:endpoints]),
+         {:ok, tenant} <- Tenancy.resolve([deliv_mod, endpoints], opts[:tenant]),
+         {:ok, candidates} <- replay_candidates(deliv_mod, opts, tenant) do
+      if opts[:dry_run] do
+        {:ok, %{count: length(candidates)}}
+      else
+        replay_rows(candidates, requested_by, opts, endpoints, tenant)
+      end
+    end
+  end
+
+  defp replay_candidates(deliv_mod, opts, tenant) do
+    statuses = opts[:status]
+    limit = replay_limit(opts[:limit])
+
+    if is_nil(limit) do
+      {:error, :invalid_limit}
+    else
+      replay_candidates_query(deliv_mod, statuses, limit, opts, tenant)
+    end
+  end
+
+  defp replay_candidates_query(deliv_mod, statuses, limit, opts, tenant) do
+    if is_list(statuses) and statuses != [] do
+      if ResourceInfo.attribute(deliv_mod, :inserted_at) do
+        query =
+          deliv_mod
+          |> Ash.Query.filter(status in ^statuses)
+          |> replay_optional_filters(opts)
+          |> Ash.Query.sort(inserted_at: :asc)
+          |> Ash.Query.limit(limit)
+
+        Ash.read(query, authorize?: false, tenant: tenant)
+      else
+        {:error,
+         UnknownError.exception(
+           error:
+             inspect(deliv_mod) <>
+               " has no :inserted_at — add `timestamps()` to its attributes " <>
+               "(and the columns to its migration) to use replay"
+         )}
+      end
+    else
+      {:error, :status_filter_required}
+    end
+  end
+
+  defp replay_optional_filters(query, opts) do
+    query
+    |> replay_eq(:endpoint_id, opts[:endpoint_id])
+    |> replay_eq(:event_type, opts[:event_type])
+    |> replay_time_range(opts[:from], opts[:to])
+  end
+
+  defp replay_eq(query, _field, nil), do: query
+
+  defp replay_eq(query, field, value) do
+    require Ash.Expr
+    ref = Ash.Expr.ref(field)
+    expression = Ash.Expr.expr(^ref == ^value)
+    Ash.Query.filter(query, ^expression)
+  end
+
+  defp replay_time_range(query, nil, nil), do: query
+
+  defp replay_time_range(query, from, to) do
+    require Ash.Expr
+    time = Ash.Expr.ref(:inserted_at)
+
+    lower = if from, do: Ash.Expr.expr(^time >= ^from)
+    upper = if to, do: Ash.Expr.expr(^time <= ^to)
+
+    expression =
+      case {lower, upper} do
+        {one, nil} -> one
+        {nil, one} -> one
+        {lower, upper} -> Ash.Expr.expr(^lower and ^upper)
+      end
+
+    Ash.Query.filter(query, ^expression)
+  end
+
+  defp replay_limit(nil), do: 100
+
+  defp replay_limit(n) when is_integer(n) and n in 1..1_000, do: n
+
+  defp replay_limit(_invalid), do: nil
+
+  defp replay_rows([], _requested_by, _opts, _endpoints, _tenant),
+    do: {:ok, %{resent: 0, skipped: 0}}
+
+  defp replay_rows(candidates, requested_by, opts, endpoints, tenant) do
+    per_second = opts[:per_second] || 50
+
+    candidates
+    |> Enum.chunk_every(per_second)
+    |> Enum.with_index()
+    |> Enum.reduce({0, 0}, fn {batch, index}, counts ->
+      # the rate limit: one second between second-sized batches
+      if index > 0, do: Process.sleep(1_000)
+      merge_counts(counts, replay_batch(batch, requested_by, opts, endpoints, tenant))
+    end)
+    |> then(fn {resent, skipped} -> {:ok, %{resent: resent, skipped: skipped}} end)
+  end
+
+  defp merge_counts({r1, s1}, {r2, s2}), do: {r1 + r2, s1 + s2}
+
+  # a row is skipped when its endpoint is not live OR its re-arm lost a
+  # race (a concurrent writer moved the row) — both are counted, never
+  # fatal to the sweep
+  defp replay_batch(batch, requested_by, opts, endpoints, tenant) do
+    Enum.reduce(batch, {0, 0}, fn row, counts ->
+      cond do
+        live_endpoint(endpoints, row.endpoint_id, tenant) != :ok ->
+          merge_counts(counts, {0, 1})
+
+        match?({:ok, _}, rearm_row(row, requested_by, opts, tenant)) ->
+          merge_counts(counts, {1, 0})
+
+        true ->
+          merge_counts(counts, {0, 1})
+      end
+    end)
+  end
+
   # ────────────────────────── gating ──────────────────────────
 
   defp maybe_wait(row, config, tenant) do
@@ -642,11 +794,166 @@ defmodule AshHooks.Delivery do
   end
 
   defp attempt(row, config, tenant) do
-    if row.attempts >= config[:max_attempts] do
+    if series_attempts(row) >= config[:max_attempts] do
       terminalize_exhausted(row, config, tenant)
     else
       claim_then_attempt(row, config, tenant)
     end
+  end
+
+  # The row's attempt series: monotonic lifetime attempts minus the ladder
+  # baseline a resend set. Without resend tracking (no column) the series
+  # IS the lifetime count — the pre-2.2 gate unchanged.
+  defp series_attempts(row), do: row.attempts - Map.get(row, :resend_baseline, 0)
+
+  @doc """
+  Re-arms one TERMINAL delivery row (`:succeeded` / `:dead_letter`) for a
+  resend: the row keeps its id and `event_uuid` (a Standard Webhooks
+  receiver deduplicates the repeat POST by webhook-id), its lifetime
+  `attempts` counter keeps climbing (attempt-history rows stay unique),
+  and a fresh retry ladder starts at the current count
+  (`resend_baseline`).
+
+  Options:
+
+    * `:endpoints` (required) — the endpoint resource, for the live check.
+    * `:requested_by` (required, nonempty binary ≤ 255) — recorded on the
+      row (`last_resend_by`/`last_resend_at`, `resend_count` bumps).
+    * `:enqueue` — the same enqueue seam dispatch uses (`{module, function}`
+      or a 2-arity fn); `nil` re-arms the row and leaves driving to your
+      worker/recovery.
+    * `:tenant` — the tenancy pre-flight applies.
+    * `:now` — the application clock for `last_resend_at`.
+
+  Only live endpoints resend: gone or disabled endpoints return
+  `{:error, :endpoint_not_live}` before any write; a non-terminal row is
+  `{:error, :not_resendable}`; a resource without `resend_tracking :on`
+  fails with a named error (the columns are its migration). Every resend
+  emits `[:ash_hooks, :delivery, :resend]` carrying the ids and
+  `requested_by`. Returns `{:ok, %{status: :resent, delivery: row}}`.
+  """
+  @spec resend(struct(), keyword()) ::
+          {:ok, %{status: :resent, delivery: struct()}} | {:error, term()}
+  def resend(row, opts \\ []) do
+    resource = row.__struct__
+
+    with {:ok, requested_by} <- validate_requested_by(opts[:requested_by]),
+         :ok <- require_resend_tracking(resource),
+         {:ok, endpoints} <- require_endpoint_module(opts[:endpoints]),
+         {:ok, tenant} <- Tenancy.resolve([resource, endpoints], opts[:tenant]),
+         :ok <- resendable(row),
+         :ok <- live_endpoint(endpoints, row.endpoint_id, tenant) do
+      rearm_row(row, requested_by, opts, tenant)
+    end
+  end
+
+  defp validate_requested_by(requested_by)
+       when is_binary(requested_by) and requested_by != "" and byte_size(requested_by) <= 255,
+       do: {:ok, requested_by}
+
+  defp validate_requested_by(_invalid), do: {:error, :requested_by_required}
+
+  defp require_resend_tracking(resource) do
+    if ResourceInfo.action(resource, :resend) do
+      :ok
+    else
+      {:error,
+       UnknownError.exception(
+         error:
+           inspect(resource) <>
+             " does not carry the resend-tracking columns (resend_tracking :off) — " <>
+             "declare `resend_tracking :on` under `outbound_delivery` and migrate the " <>
+             "four columns to use resend/replay"
+       )}
+    end
+  end
+
+  defp require_endpoint_module(nil),
+    do: {:error, UnknownError.exception(error: "resend/replay require the :endpoints resource")}
+
+  defp require_endpoint_module(module) when is_atom(module), do: {:ok, module}
+
+  defp resendable(%{status: status}) when status in [:succeeded, :dead_letter], do: :ok
+  defp resendable(_other_status), do: {:error, :not_resendable}
+
+  defp live_endpoint(endpoints, endpoint_id, tenant) do
+    case Ash.get(endpoints, endpoint_id, authorize?: false, tenant: tenant) do
+      {:ok, endpoint} ->
+        if AshHooks.Endpoint.enabled?(endpoint), do: :ok, else: {:error, :endpoint_not_live}
+
+      {:error, _reason} ->
+        {:error, :endpoint_not_live}
+    end
+  end
+
+  defp rearm_row(row, requested_by, opts, tenant) do
+    requested_at = now(opts)
+
+    result =
+      row.__struct__
+      |> Ash.Query.do_filter(PrimaryKey.filter(row))
+      |> Ash.Query.filter(
+        dispatch_source == ^row.dispatch_source and status in [:succeeded, :dead_letter]
+      )
+      |> Ash.bulk_update(
+        :resend,
+        %{
+          resend_baseline: row.attempts,
+          requested_by: requested_by,
+          requested_at: requested_at
+        },
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
+
+    case result do
+      %Ash.BulkResult{status: :success, records: [updated]} ->
+        :telemetry.execute(
+          [:ash_hooks, :delivery, :resend],
+          %{},
+          %{
+            endpoint_id: updated.endpoint_id,
+            event_uuid: updated.event_uuid,
+            requested_by: requested_by
+          }
+        )
+
+        case enqueue_seam_result(opts[:enqueue], updated) do
+          :ok ->
+            {:ok, %{status: :resent, delivery: updated}}
+
+          {:error, reason} ->
+            {:ok, %{status: :resent, delivery: updated, enqueue: {:error, reason}}}
+        end
+
+      %Ash.BulkResult{status: :success, records: []} ->
+        {:error, :not_resendable}
+
+      %Ash.BulkResult{} = result ->
+        bulk_failure(result)
+    end
+  end
+
+  # the enqueue seam, contained like the dispatcher's (a raise/exit/throw
+  # is an enqueue failure, never a resend failure — the re-arm is durable)
+  defp enqueue_seam_result(nil, _row), do: :ok
+
+  defp enqueue_seam_result({m, f}, row) when is_atom(m) and is_atom(f),
+    do: enqueue_seam_result(&apply(m, f, [&1, &2]), row)
+
+  defp enqueue_seam_result(enqueuer, row) when is_function(enqueuer, 2) do
+    case enqueuer.(row, nil) do
+      :ok -> :ok
+      {:error, _reason} = error -> error
+      _other -> {:error, :invalid_enqueue_result}
+    end
+  rescue
+    reason -> {:error, {:raised, reason}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   defp claim_then_attempt(row, config, tenant) do
@@ -1404,7 +1711,8 @@ defmodule AshHooks.Delivery do
       config[:deliveries]
       |> Ash.Query.do_filter(PrimaryKey.filter(row))
       |> Ash.Query.filter(
-        dispatch_source == ^row.dispatch_source and attempts >= ^config[:max_attempts]
+        dispatch_source == ^row.dispatch_source and
+          ^exhausted_ceiling(row, config[:max_attempts])
       )
       |> eligible_exhausted_query(row.status, now)
 
@@ -1483,9 +1791,10 @@ defmodule AshHooks.Delivery do
       config[:deliveries]
       |> Ash.Query.do_filter(PrimaryKey.filter(row))
       |> Ash.Query.filter(
-        dispatch_source == ^row.dispatch_source and attempts < ^config[:max_attempts]
+        dispatch_source == ^row.dispatch_source and ^series_ceiling(row, config[:max_attempts])
       )
       |> claimable_state_query(row.status, row.attempt_token, now)
+      |> maybe_baseline_fence(row)
 
     result =
       Ash.bulk_update(
@@ -1503,6 +1812,47 @@ defmodule AshHooks.Delivery do
       %Ash.BulkResult{status: :success, records: [updated]} -> {:ok, updated}
       %Ash.BulkResult{status: :success, records: []} -> :contended
       %Ash.BulkResult{} = result -> bulk_failure(result)
+    end
+  end
+
+  defp series_ceiling(row, max_attempts) do
+    require Ash.Expr
+
+    if ResourceInfo.attribute(row.__struct__, :resend_baseline) do
+      attempts = Ash.Expr.ref(:attempts)
+      baseline = Ash.Expr.ref(:resend_baseline)
+
+      Ash.Expr.expr(
+        ^attempts - ^baseline < ^max_attempts and ^baseline == ^Map.get(row, :resend_baseline, 0)
+      )
+    else
+      Ash.Expr.expr(^Ash.Expr.ref(:attempts) < ^max_attempts)
+    end
+  end
+
+  defp exhausted_ceiling(row, max_attempts) do
+    require Ash.Expr
+
+    if ResourceInfo.attribute(row.__struct__, :resend_baseline) do
+      attempts = Ash.Expr.ref(:attempts)
+      baseline = Ash.Expr.ref(:resend_baseline)
+
+      Ash.Expr.expr(
+        ^attempts - ^baseline >= ^max_attempts and
+          ^baseline == ^Map.get(row, :resend_baseline, 0)
+      )
+    else
+      Ash.Expr.expr(^Ash.Expr.ref(:attempts) >= ^max_attempts)
+    end
+  end
+
+  # a resend BETWEEN claim and result changes the baseline: the fence must
+  # invalidate the stale claim (the same CAS discipline as the token)
+  defp maybe_baseline_fence(query, row) do
+    if ResourceInfo.attribute(row.__struct__, :resend_baseline) do
+      Ash.Query.filter(query, resend_baseline == ^Map.get(row, :resend_baseline, 0))
+    else
+      query
     end
   end
 
@@ -1575,7 +1925,7 @@ defmodule AshHooks.Delivery do
   end
 
   defp retry(row, error, config, tenant, retry_after, summary \\ nil, history \\ nil) do
-    if row.attempts >= config[:max_attempts] do
+    if series_attempts(row) >= config[:max_attempts] do
       dead_letter(row, error, config, tenant, summary, history)
     else
       delay = delay_seconds(row, config, retry_after)

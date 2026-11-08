@@ -10,7 +10,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
 
   alias Ash.Resource.Builder
   alias Ash.Resource.Change.Builtins
-  alias Spark.Dsl.Transformer
+  alias Spark.Dsl.{Extension, Transformer}
 
   def before?(Ash.Resource.Transformers.DefaultAccept), do: true
   def before?(Ash.Resource.Transformers.CacheActionInputs), do: true
@@ -19,6 +19,13 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
   def before?(_), do: false
 
   def transform(dsl_state) do
+    resend =
+      if Extension.get_opt(dsl_state, [:outbound_delivery], :resend_tracking, :off) == :on do
+        [build_resend()]
+      else
+        []
+      end
+
     with {:ok, mark_sending} <- build_mark_sending(),
          {:ok, mark_succeeded} <- build_mark_succeeded(),
          {:ok, mark_send_failed} <- build_mark_send_failed(),
@@ -27,9 +34,85 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
          {:ok, dsl_state} <- add(dsl_state, mark_sending),
          {:ok, dsl_state} <- add(dsl_state, mark_succeeded),
          {:ok, dsl_state} <- add(dsl_state, mark_send_failed),
-         {:ok, dsl_state} <- add(dsl_state, mark_disable_pending) do
+         {:ok, dsl_state} <- add(dsl_state, mark_disable_pending),
+         {:ok, dsl_state} <- add_all(dsl_state, resend) do
       add(dsl_state, finalize_disable)
     end
+  end
+
+  defp add_all(dsl_state, entities) do
+    Enum.reduce_while(entities, {:ok, dsl_state}, fn entity, {:ok, dsl_state} ->
+      {:cont, add(dsl_state, entity)}
+    end)
+  end
+
+  # The resend re-arm (the resend_tracking :on shape): one gated machine
+  # write moves a TERMINAL row back to :pending with a fresh retry ladder
+  # (resend_baseline freezes the old series), records who asked, and
+  # clears the terminal diagnostics. The runtime's WHERE gate (terminal
+  # statuses) is the fence; attempts stay monotonic so attempt-history
+  # rows stay unique.
+  defp build_resend do
+    {:ok, count} =
+      Builder.build_action_change(Builtins.atomic_update(:resend_count, expr(resend_count + 1)))
+
+    {:ok, baseline} =
+      Builder.build_action_change(Builtins.set_attribute(:resend_baseline, arg(:resend_baseline)))
+
+    {:ok, requested_by} =
+      Builder.build_action_change(Builtins.set_attribute(:last_resend_by, arg(:requested_by)))
+
+    {:ok, requested_at} =
+      Builder.build_action_change(Builtins.set_attribute(:last_resend_at, arg(:requested_at)))
+
+    {:ok, status} = Builder.build_action_change(Builtins.set_attribute(:status, :pending))
+    {:ok, error} = Builder.build_action_change(Builtins.set_attribute(:last_error, nil))
+
+    {:ok, next} =
+      Builder.build_action_change(Builtins.set_attribute(:next_attempt_at, nil))
+
+    {:ok, code} =
+      Builder.build_action_change(Builtins.set_attribute(:response_status, nil))
+
+    {:ok, snippet} =
+      Builder.build_action_change(Builtins.set_attribute(:response_snippet, nil))
+
+    {:ok, lease} =
+      Builder.build_action_change(Builtins.set_attribute(:send_lease_expires_at, nil))
+
+    {:ok, enqueue_token} =
+      Builder.build_action_change(Builtins.set_attribute(:enqueue_token, nil))
+
+    {:ok, enqueue_lease} =
+      Builder.build_action_change(Builtins.set_attribute(:enqueue_lease_expires_at, nil))
+
+    changes = [
+      status,
+      error,
+      next,
+      code,
+      snippet,
+      lease,
+      enqueue_token,
+      enqueue_lease,
+      count,
+      baseline,
+      requested_by,
+      requested_at
+    ]
+
+    {:ok, action} =
+      Builder.build_action(:update, :resend,
+        accept: [],
+        arguments: [
+          argument(:resend_baseline, :integer, allow_nil?: false),
+          argument(:requested_by, :string, allow_nil?: false),
+          argument(:requested_at, :utc_datetime_usec, allow_nil?: false)
+        ],
+        changes: changes
+      )
+
+    action
   end
 
   defp add(dsl_state, entity) do

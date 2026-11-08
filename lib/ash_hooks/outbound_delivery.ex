@@ -101,6 +101,20 @@ defmodule AshHooks.OutboundDelivery do
         injected delivery field (fail-closed at compile).
         """
       ],
+      resend_tracking: [
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc: """
+        Whether the resend-tracking columns are injected (default `:off` —
+        existing schemas stay untouched). With `:on`, the extension injects
+        `resend_baseline` (the attempt number where the current retry
+        ladder started), `resend_count`, `last_resend_by`, and
+        `last_resend_at` — machine-written columns behind
+        `AshHooks.Delivery.resend/2` and `replay/2` (both fail closed with
+        a named error on resources without them). Declaring `:on` requires
+        a migration for the four columns.
+        """
+      ],
       prune_action: [
         type: {:in, [:destroy, :none]},
         default: :destroy,
