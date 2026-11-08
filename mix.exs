@@ -1,7 +1,7 @@
 defmodule AshHooks.MixProject do
   use Mix.Project
 
-  @version "2.1.0"
+  @version "2.2.0"
   @source_url "https://github.com/baselabs/ash_hooks"
 
   def project do

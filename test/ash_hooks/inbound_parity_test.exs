@@ -323,10 +323,6 @@ defmodule AshHooks.InboundParityTest do
     # app_env pause refuses while true, admits when false
     Application.put_env(:ash_hooks, :inbound_parity_paused, true)
 
-    IO.inspect(AshHooks.Info.inbound(AshHooks.FnPausedLedger, :appenv_paused).paused,
-      label: "PAUSED OPT"
-    )
-
     {env_body, env_ctx} = signed_body(:appenv_paused, "evt_env_paused", @current)
 
     assert {:error, :source_paused} =

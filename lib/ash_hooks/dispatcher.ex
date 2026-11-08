@@ -146,7 +146,7 @@ defmodule AshHooks.Dispatcher do
         input = %{
           event_uuid: event.id,
           event_type: event.type,
-          version: entity.version || 1,
+          version: entity.version,
           payload: event.payload
         }
 

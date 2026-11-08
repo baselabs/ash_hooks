@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.2.0 — November 8, 2026
+
+A minor under ADR-0010: everything new is additive opt-in surface — no
+existing column, action, default, or event changes shape. Adopt what you
+need; each block names its DSL declaration and migration. Read
+[UPGRADING.md](UPGRADING.md) before adopting.
+
 ### Added
 
 - **Attempt history.** The new `AshHooks.OutboundAttempt` extension turns a

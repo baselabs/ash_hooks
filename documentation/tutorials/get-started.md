@@ -517,6 +517,21 @@ Query both ledgers with keyset pagination (newest first):
   )
 ```
 
+**The full product surface** (each opt-in, each documented at its module):
+attempt history and delivery-log queries (above), resend and bulk replay
+(`AshHooks.Delivery.resend/2` / `replay/2`), test sends
+(`AshHooks.Delivery.test_send/2`), secret rolling
+(`AshHooks.Endpoint.roll_secret/2` with the Standard Webhooks
+multi-signature overlap), endpoint health and the sustained-failure
+auto-disable (`AshHooks.EndpointHealth`), the event catalog and
+payload-version pinning (`AshHooks.Catalog`), subscription attribute
+filters (`filter_attributes`), the event log
+(`AshHooks.OutboundEvent`), the delivery transport behavior
+(`AshHooks.Transport`), inbound parity
+(`AshHooks.Ingress.list/2` / `counts/2`, `previous_secret`, `paused`),
+and the send-time destination policy seam
+(`AshHooks.DestinationPolicy`).
+
 Response snippets store NO body bytes by default (a status +
 content-type summary). For a one-row diagnostic capture, re-drive the
 row with `AshHooks.Delivery.run/2` — it takes the same configuration
