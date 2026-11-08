@@ -24,8 +24,21 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
     with {:ok, dsl_state, status_attribute} <- check_status_attribute(dsl_state),
          {:ok, dsl_state} <- add_primary_key(dsl_state),
          {:ok, dsl_state} <- add_capture_attributes(dsl_state),
-         {:ok, dsl_state} <- add_lifecycle_attributes(dsl_state) do
+         {:ok, dsl_state} <- add_lifecycle_attributes(dsl_state),
+         {:ok, dsl_state} <- add_pinning_attributes(dsl_state) do
       add_attributes(dsl_state, status_attribute)
+    end
+  end
+
+  # The payload-version pinning opt-in (default :off): declaring
+  # `version_pinning :on` injects the pin column dispatch consults
+  defp add_pinning_attributes(dsl_state) do
+    case Extension.get_opt(dsl_state, [:endpoint], :version_pinning, :off) do
+      :off ->
+        {:ok, dsl_state}
+
+      :on ->
+        Builder.add_new_attribute(dsl_state, :pinned_payload_version, :integer, public?: true)
     end
   end
 
@@ -97,7 +110,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
     reserved =
       (Enum.map(attributes_spec(), &elem(&1, 0)) -- [:status]) ++
         Enum.map(capture_attributes_spec(), &elem(&1, 0)) ++
-        Enum.map(lifecycle_attributes_spec(), &elem(&1, 0))
+        Enum.map(lifecycle_attributes_spec(), &elem(&1, 0)) ++ [:pinned_payload_version]
 
     cond do
       is_nil(status_attribute) ->

@@ -10,6 +10,10 @@ defmodule AshHooks.Outbound do
     :signing_mode,
     :subscriptions,
     :deliveries,
+    :description,
+    :payload_schema,
+    :version,
+    :payload_versions,
     entities: [],
     __spark_metadata__: nil
   ]
@@ -19,6 +23,10 @@ defmodule AshHooks.Outbound do
           signing_mode: :legacy | :dual | :standard,
           subscriptions: module() | nil,
           deliveries: module() | nil,
+          description: String.t() | nil,
+          payload_schema: term() | nil,
+          version: pos_integer(),
+          payload_versions: %{optional(pos_integer()) => {module(), atom()}} | nil,
           entities: list(),
           __spark_metadata__: term()
         }

@@ -37,6 +37,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[:ash_hooks, :delivery, :test]` beside the normal lifecycle, drives the
   row synchronously (default one attempt), requires a live endpoint, and
   returns `{:ok, %{status:, delivery:}}`.
+- **The event catalog and payload-version pinning.** The `outbound` DSL
+  declares each event type's metadata — `description`, `payload_schema`
+  (any term your docs renderer understands), `version` (default 1), and
+  optional `payload_versions` (a map of `version => {module, function}`
+  variant builders) — read back through `AshHooks.Catalog.entries/1` and
+  `entry/2` for event pickers and doc generation. Declaring
+  `version_pinning :on` on the endpoint resource injects
+  `pinned_payload_version`: an endpoint pinning a DECLARED version
+  receives that variant builder's exact bytes instead of the dispatch
+  payload (per-endpoint rows carry their own bytes); a pin on an
+  undeclared version, or a failing/crashing builder, fails that endpoint
+  closed before any row is written — the fanout continues.
 - **Endpoint health and sustained-failure auto-disable.**
   `AshHooks.EndpointHealth.stats/2` computes one endpoint's trailing-window
   health from its attempt history — success rate and nearest-rank latency

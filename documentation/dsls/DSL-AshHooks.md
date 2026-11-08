@@ -120,6 +120,10 @@ retry/backoff/dead-letter semantics.
 | [`signing_mode`](#webhooks-outbound-signing_mode){: #webhooks-outbound-signing_mode } | `:legacy \| :dual \| :standard` | `:standard` | Signature envelope: `:standard` (SW canon), `:dual` (SW canon + legacy envelope for migrating receivers), `:legacy` (ADR-0002). |
 | [`subscriptions`](#webhooks-outbound-subscriptions){: #webhooks-outbound-subscriptions } | `atom` |  | The consumer's Subscription resource module (carrying `AshHooks.Subscription`) this event fans out through — the dispatcher matches its rows against the event type. |
 | [`deliveries`](#webhooks-outbound-deliveries){: #webhooks-outbound-deliveries } | `atom` |  | The consumer's OutboundDelivery resource module (carrying `AshHooks.OutboundDelivery`) the dispatcher writes the durable per-endpoint rows into. |
+| [`description`](#webhooks-outbound-description){: #webhooks-outbound-description } | `String.t` |  | The catalog description of this event type — what it means, when it fires. Read back through `AshHooks.Catalog` for event pickers and generated docs. |
+| [`payload_schema`](#webhooks-outbound-payload_schema){: #webhooks-outbound-payload_schema } | `any` |  | The catalog's payload contract for this event type — a JSON-Schema map, a types module, or any term your docs renderer understands. Data for tooling only; the dispatcher never validates against it. |
+| [`version`](#webhooks-outbound-version){: #webhooks-outbound-version } | `pos_integer` | `1` | The CURRENT payload version of this event type (default 1). Endpoints without a pin receive this version's bytes. |
+| [`payload_versions`](#webhooks-outbound-payload_versions){: #webhooks-outbound-payload_versions } | `any` |  | The declared variant builders older pins resolve to: a map of `version => {module, function}` where `f(event) :: {:ok, payload_bytes} \| {:error, reason}`. An endpoint pinning a version in this map receives that builder's bytes instead of the dispatch payload; a pin on an undeclared version fails that endpoint closed (`:unknown_pinned_version`) before any row is written. |
 
 
 

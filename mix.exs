@@ -184,6 +184,7 @@ defmodule AshHooks.MixProject do
           AshHooks.OutboundDelivery,
           AshHooks.OutboundAttempt,
           AshHooks.EndpointHealth,
+          AshHooks.Catalog,
           AshHooks.OutboundBinding,
           AshHooks.Outbound,
           AshHooks.Dispatcher,

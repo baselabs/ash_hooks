@@ -268,25 +268,29 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp upsert_row(deliv_mod, event, subscription, endpoint, entity, binding, tenant) do
-    input =
-      %{
-        event_uuid: event.id,
-        event_type: event.type,
-        endpoint_id: PrimaryKey.scalar!(endpoint),
-        subscription_id: PrimaryKey.scalar!(subscription),
-        # the EFFECTIVE mode is frozen onto the row at creation — the
-        # delivery runtime signs from the row, never re-derives it
-        signing_mode: subscription.signing_mode || entity.signing_mode || :standard,
-        dispatch_source: binding.source,
-        dispatch_route: binding.route
-      }
-      # the exact-bytes column's name is consumer-configurable (H1)
-      |> Map.put(AshHooks.Info.payload_attribute(deliv_mod), event.payload)
+    with {:ok, payload} <- AshHooks.Catalog.payload(event, entity, endpoint) do
+      input =
+        %{
+          event_uuid: event.id,
+          event_type: event.type,
+          endpoint_id: PrimaryKey.scalar!(endpoint),
+          subscription_id: PrimaryKey.scalar!(subscription),
+          # the EFFECTIVE mode is frozen onto the row at creation — the
+          # delivery runtime signs from the row, never re-derives it
+          signing_mode: subscription.signing_mode || entity.signing_mode || :standard,
+          dispatch_source: binding.source,
+          dispatch_route: binding.route
+        }
+        # the exact-bytes column's name is consumer-configurable (H1);
+        # the bytes are the endpoint's OWN — its pinned variant when it
+        # pinned a declared payload version
+        |> Map.put(AshHooks.Info.payload_attribute(deliv_mod), payload)
 
-    if Info.writable_id?(deliv_mod) and Ash.Resource.Info.primary_key(deliv_mod) == [:id] do
-      dispatch_with_supplied_id(deliv_mod, input, tenant)
-    else
-      upsert_with_pre_read(deliv_mod, input, tenant)
+      if Info.writable_id?(deliv_mod) and Ash.Resource.Info.primary_key(deliv_mod) == [:id] do
+        dispatch_with_supplied_id(deliv_mod, input, tenant)
+      else
+        upsert_with_pre_read(deliv_mod, input, tenant)
+      end
     end
   end
 

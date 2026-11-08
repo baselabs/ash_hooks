@@ -140,6 +140,42 @@ defmodule AshHooks do
         `AshHooks.OutboundDelivery`) the dispatcher writes the durable
         per-endpoint rows into.
         """
+      ],
+      description: [
+        type: :string,
+        doc: """
+        The catalog description of this event type — what it means, when
+        it fires. Read back through `AshHooks.Catalog` for event pickers
+        and generated docs.
+        """
+      ],
+      payload_schema: [
+        type: :any,
+        doc: """
+        The catalog's payload contract for this event type — a JSON-Schema
+        map, a types module, or any term your docs renderer understands.
+        Data for tooling only; the dispatcher never validates against it.
+        """
+      ],
+      version: [
+        type: :pos_integer,
+        default: 1,
+        doc: """
+        The CURRENT payload version of this event type (default 1).
+        Endpoints without a pin receive this version's bytes.
+        """
+      ],
+      payload_versions: [
+        type: :any,
+        doc: """
+        The declared variant builders older pins resolve to: a map of
+        `version => {module, function}` where `f(event) ::
+        {:ok, payload_bytes} | {:error, reason}`. An endpoint pinning a
+        version in this map receives that builder's bytes instead of the
+        dispatch payload; a pin on an undeclared version fails that
+        endpoint closed (`:unknown_pinned_version`) before any row is
+        written.
+        """
       ]
     ]
   }

@@ -341,6 +341,20 @@ defmodule AshHooks.Endpoint do
         must be spelled out explicitly — fail-closed at compile.
         """
       ],
+      version_pinning: [
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc: """
+        Whether the payload-version pinning column is injected (default
+        `:off` — existing schemas stay untouched). With `:on`, the
+        extension injects `pinned_payload_version` (integer, nullable):
+        an endpoint pinning a version its event's declaration carries (in
+        `payload_versions`) receives THAT variant builder's bytes instead
+        of the dispatch payload; a pin on an undeclared version fails the
+        endpoint closed at dispatch. Declaring `:on` requires a migration
+        for the column.
+        """
+      ],
       key_lifecycle: [
         type: {:in, [:off, :on]},
         default: :off,
