@@ -92,15 +92,21 @@ defmodule AshHooks.EndpointHealthTest do
   @attempts "health_attempts"
 
   setup_all do
-    for table <- [@endpoints, @plain] do
-      Repo.query!("""
-      CREATE TABLE IF NOT EXISTS #{table} (
-        id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
-        secret_ref TEXT NOT NULL, previous_secret_ref TEXT, legacy_secret_ref TEXT,
-        legacy_previous_secret_ref TEXT
-      )
-      """)
-    end
+    Repo.query!("""
+    CREATE TABLE IF NOT EXISTS #{@endpoints} (
+      id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
+      secret_ref TEXT NOT NULL, previous_secret_ref TEXT, legacy_secret_ref TEXT,
+      legacy_previous_secret_ref TEXT, disable_warned_at TEXT
+    )
+    """)
+
+    Repo.query!("""
+    CREATE TABLE IF NOT EXISTS #{@plain} (
+      id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
+      secret_ref TEXT NOT NULL, previous_secret_ref TEXT, legacy_secret_ref TEXT,
+      legacy_previous_secret_ref TEXT
+    )
+    """)
 
     Repo.query!("""
     CREATE TABLE IF NOT EXISTS #{@attempts} (
@@ -217,12 +223,12 @@ defmodule AshHooks.EndpointHealthTest do
     assert stats.latency_p50_ms == nil
   end
 
-  test "the sweep disables sustained failure and warns before it disables" do
+  test "a disable always follows an EARLIER warning sweep — never the first observation" do
     failing = endpoint!()
     thin = endpoint!()
     healthy = endpoint!()
 
-    # failing: 4/4 dead — meets share AND min_attempts → DISABLE
+    # failing: 4/4 dead — meets share AND min_attempts on the FIRST sweep
     for n <- 1..4, do: seed_attempt!(failing.id, "f#{n}", :dead_letter, 100)
 
     # thin evidence: 2/2 dead — meets share and WARNING threshold only
@@ -232,10 +238,34 @@ defmodule AshHooks.EndpointHealthTest do
     # healthy: all succeeded
     for n <- 1..5, do: seed_attempt!(healthy.id, "h#{n}", :succeeded, 40)
 
+    # Sweep 1: NOBODY disables — the failing endpoint WARNED (durably),
+    # the thin endpoint warned, the healthy one untouched
+    assert {:ok, %{disabled: 0, warned: 2}} =
+             AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
+
+    assert Ash.get!(Endpoint, failing.id, authorize?: false).status == :enabled
+    assert Ash.get!(Endpoint, failing.id, authorize?: false).disable_warned_at != nil
+
+    refute_received {[:ash_hooks, :endpoint, :disable], _}
+
+    assert_receive {[:ash_hooks, :endpoint, :disable_warning],
+                    %{endpoint_id: failing_id, failure_share: failing_share}}
+
+    assert failing_id == failing.id
+    assert_in_delta failing_share, 1.0, 1.0e-9
+
+    assert_receive {[:ash_hooks, :endpoint, :disable_warning], %{endpoint_id: thin_id}}
+
+    assert thin_id == thin.id
+
+    # Sweep 2: the failure held — NOW the breaker opens, and the warned
+    # stamp clears with it
     assert {:ok, %{disabled: 1, warned: 1}} =
              AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
 
-    assert Ash.get!(Endpoint, failing.id, authorize?: false).status == :disabled
+    disabled = Ash.get!(Endpoint, failing.id, authorize?: false)
+    assert disabled.status == :disabled
+    assert disabled.disable_warned_at == nil
     assert Ash.get!(Endpoint, thin.id, authorize?: false).status == :enabled
     assert Ash.get!(Endpoint, healthy.id, authorize?: false).status == :enabled
 
@@ -243,12 +273,40 @@ defmodule AshHooks.EndpointHealthTest do
                     %{endpoint_id: id, reason: :sustained_failure}}
 
     assert id == failing.id
+  end
 
-    assert_receive {[:ash_hooks, :endpoint, :disable_warning],
-                    %{endpoint_id: warned_id, failure_share: share}}
+  test "recovery below the warning band clears the warned stamp — a later degradation warns again" do
+    flaky = endpoint!()
 
-    assert warned_id == thin.id
-    assert_in_delta share, 1.0, 1.0e-9
+    for n <- 1..4, do: seed_attempt!(flaky.id, "r#{n}", :dead_letter, 100)
+
+    # degrade: warned on the first sweep
+    assert {:ok, %{disabled: 0, warned: 1}} =
+             AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
+
+    assert Ash.get!(Endpoint, flaky.id, authorize?: false).disable_warned_at != nil
+
+    # recover: the window empties — the stamp clears (a healthy endpoint
+    # carries no standing warning)
+    Repo.query!("DELETE FROM #{@attempts}")
+
+    assert {:ok, %{disabled: 0, warned: 0}} =
+             AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
+
+    assert Ash.get!(Endpoint, flaky.id, authorize?: false).disable_warned_at == nil
+
+    # degrade again: a FRESH warning cycle — sweep warns, the next disables
+    for n <- 1..4, do: seed_attempt!(flaky.id, "d#{n}", :dead_letter, 100)
+
+    assert {:ok, %{disabled: 0, warned: 1}} =
+             AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
+
+    assert Ash.get!(Endpoint, flaky.id, authorize?: false).status == :enabled
+
+    assert {:ok, %{disabled: 1, warned: 0}} =
+             AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
+
+    assert Ash.get!(Endpoint, flaky.id, authorize?: false).status == :disabled
   end
 
   test "the auto_disable DSL rejects out-of-band shares" do
@@ -358,11 +416,12 @@ defmodule AshHooks.EndpointHealthTest do
 
     assert Ash.get!(PlainEndpoint, plain.id, authorize?: false).status == :enabled
 
-    # and a second sweep over the failing endpoint finds it already
-    # disabled — no double warning or write
+    # warn sweep, disable sweep, then nothing more — a disabled endpoint
+    # is out of the sweep's consideration set
     failing = endpoint!()
     for n <- 1..4, do: seed_attempt!(failing.id, "s#{n}", :dead_letter, 10)
 
+    assert {:ok, %{disabled: 0, warned: 1}} = AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
     assert {:ok, %{disabled: 1, warned: 0}} = AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
     assert {:ok, %{disabled: 0, warned: 0}} = AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
   end
@@ -389,7 +448,7 @@ defmodule AshHooks.EndpointHealthTest do
     CREATE TABLE IF NOT EXISTS #{@endpoints} (
       id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
       secret_ref TEXT NOT NULL, previous_secret_ref TEXT, legacy_secret_ref TEXT,
-      legacy_previous_secret_ref TEXT
+      legacy_previous_secret_ref TEXT, disable_warned_at TEXT
     )
     """)
   end

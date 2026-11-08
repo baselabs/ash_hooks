@@ -291,8 +291,11 @@ defmodule AshHooks.Endpoint do
     The sustained-failure auto-disable policy, beside the 410 rule: the
     health sweep (`AshHooks.EndpointHealth.sweep/3`) disables an endpoint
     whose trailing failure window meets the configured failure share with
-    at least `min_attempts` of evidence, warning first at the warning
-    thresholds. Re-enabling is an explicit application action.
+    at least `min_attempts` of evidence — only on the sweep AFTER one
+    that warned (the declaration injects the `disable_warned_at` marker
+    column the warning sweep stamps; migrate it with the declaration).
+    Recovery below the warning band clears the marker. Re-enabling is an
+    explicit application action.
     """,
     schema: [
       failure_window_seconds: [

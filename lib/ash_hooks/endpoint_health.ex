@@ -21,6 +21,7 @@ defmodule AshHooks.EndpointHealth do
   """
 
   require Ash.Expr
+  require Ash.Query
 
   alias AshHooks.{Endpoint, Tenancy}
 
@@ -63,15 +64,21 @@ defmodule AshHooks.EndpointHealth do
   Applies the endpoint resource's `auto_disable` policy to every enabled
   endpoint, from the attempt history:
 
-    * an endpoint whose trailing window meets `:failure_share` with at
-      least `:min_attempts` of evidence is disabled through the same
-      durable switch the 410 rule uses, and
-      `[:ash_hooks, :endpoint, :disable]` fires with
-      `reason: :sustained_failure`;
+    * the FIRST sweep that sees an endpoint meeting `:failure_share`
+      with at least `:min_attempts` of evidence WARNED: it emits
+      `[:ash_hooks, :endpoint, :disable_warning]` (`failure_share` and
+      `attempts` in the metadata), durably stamps `disable_warned_at`
+      (the marker column the `auto_disable` declaration injects), and
+      leaves the endpoint enabled — the notify surface gets at least one
+      full sweep interval before the breaker can open;
+    * the NEXT sweep that still sees qualifying failure disables through
+      the same durable switch the 410 rule uses, emits
+      `[:ash_hooks, :endpoint, :disable]` with
+      `reason: :sustained_failure`, and clears the stamp;
     * an endpoint that meets the share with less evidence (the warning
-      thresholds) emits `[:ash_hooks, :endpoint, :disable_warning]`
-      (`failure_share` in the metadata) and stays enabled — the notify
-      surface gets its chance before the breaker opens.
+      thresholds) warns the same way and stays enabled;
+    * an endpoint that drops below the warning band has its stamp
+      cleared — a later degradation warns afresh.
 
   Resources without an `auto_disable` section are skipped wholesale.
   Options: `:now`, `:tenant`. Returns `{:ok, %{disabled: n, warned: n}}`.
@@ -99,6 +106,12 @@ defmodule AshHooks.EndpointHealth do
     end)
   end
 
+  # The warning-first contract: a disable lands only on a sweep AFTER one
+  # that warned. The warned state is DURABLE (`disable_warned_at`, stamped
+  # by the warning sweep): the first sweep that sees a qualifying failure
+  # warns and stamps — the breaker opens on the next sweep that still
+  # sees it. Recovery below the warning band clears the stamp, so a later
+  # degradation gets a fresh warning cycle.
   defp sweep_one(endpoint, attempts_mod, policy, now, tenant, {disabled, warned}) do
     from = DateTime.add(now, -policy.failure_window_seconds, :second)
 
@@ -106,35 +119,104 @@ defmodule AshHooks.EndpointHealth do
       {:ok, rows} ->
         total = length(rows)
         failed = count_failed(rows)
+        share = share(failed, total)
 
         cond do
           total < policy.warning_min_attempts ->
+            clear_warned(endpoint, tenant)
             {disabled, warned}
 
-          total >= policy.min_attempts and share(failed, total) >= policy.failure_share ->
-            disable_sustained(endpoint, tenant)
-            {disabled + 1, warned}
+          total >= policy.min_attempts and share >= policy.failure_share ->
+            sustain_failure(endpoint, share, total, now, tenant, {disabled, warned})
 
-          share(failed, total) >= policy.warning_share ->
-            :telemetry.execute(
-              [:ash_hooks, :endpoint, :disable_warning],
-              %{},
-              %{
-                endpoint_id: endpoint_id_of(endpoint),
-                failure_share: share(failed, total),
-                attempts: total
-              }
-            )
-
+          share >= policy.warning_share ->
+            warn(endpoint, share, total, now, tenant)
             {disabled, warned + 1}
 
           true ->
+            clear_warned(endpoint, tenant)
             {disabled, warned}
         end
 
       {:error, _reason} ->
         # one endpoint's history read failing never stops the sweep
         {disabled, warned}
+    end
+  end
+
+  # The disable arm: ONLY a previously-warned endpoint opens the breaker
+  # — a first qualifying observation warns and stamps; the next sweep
+  # that still qualifies disables and clears
+  defp sustain_failure(endpoint, share, total, now, tenant, {disabled, warned}) do
+    if warned_previously?(endpoint) do
+      disable_sustained(endpoint, tenant)
+      clear_warned(endpoint, tenant)
+      {disabled + 1, warned}
+    else
+      warn(endpoint, share, total, now, tenant)
+      {disabled, warned + 1}
+    end
+  end
+
+  defp warned_previously?(endpoint), do: Map.get(endpoint, :disable_warned_at) != nil
+
+  defp warn(endpoint, share, total, now, tenant) do
+    stamp_warned(endpoint, now, tenant)
+
+    :telemetry.execute(
+      [:ash_hooks, :endpoint, :disable_warning],
+      %{},
+      %{
+        endpoint_id: endpoint_id_of(endpoint),
+        failure_share: share,
+        attempts: total
+      }
+    )
+  end
+
+  # first warning wins: gated WHERE still nil, so concurrent sweeps
+  # single-winner the stamp (the loser's telemetry is advisory, never a
+  # second disable ticket)
+  defp stamp_warned(endpoint, now, tenant) do
+    if warned_previously?(endpoint) do
+      :ok
+    else
+      _ =
+        endpoint.__struct__
+        |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(endpoint))
+        |> Ash.Query.filter(is_nil(disable_warned_at))
+        |> Ash.bulk_update(:mark_disable_warned, %{warned_at: now},
+          authorize?: false,
+          return_records?: false,
+          return_errors?: false,
+          strategy: [:atomic],
+          tenant: tenant
+        )
+
+      :ok
+    end
+  end
+
+  # the marker clears on disable and on recovery below the warning band —
+  # gated on the value this sweep read, so a concurrent sweeper's stamp
+  # is never wiped by stale knowledge. Unstamped endpoints write nothing.
+  defp clear_warned(endpoint, tenant) do
+    if warned_previously?(endpoint) do
+      stamped_at = endpoint.disable_warned_at
+
+      _ =
+        endpoint.__struct__
+        |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(endpoint))
+        |> Ash.Query.filter(disable_warned_at == ^stamped_at)
+        |> Ash.bulk_update(:mark_disable_warned, %{warned_at: nil},
+          authorize?: false,
+          return_records?: false,
+          return_errors?: false,
+          strategy: [:atomic],
+          tenant: tenant
+        )
+
+      :ok
     end
   end
 

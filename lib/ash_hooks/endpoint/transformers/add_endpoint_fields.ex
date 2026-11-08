@@ -25,7 +25,8 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
          {:ok, dsl_state} <- add_primary_key(dsl_state),
          {:ok, dsl_state} <- add_capture_attributes(dsl_state),
          {:ok, dsl_state} <- add_lifecycle_attributes(dsl_state),
-         {:ok, dsl_state} <- add_pinning_attributes(dsl_state) do
+         {:ok, dsl_state} <- add_pinning_attributes(dsl_state),
+         {:ok, dsl_state} <- add_warning_attributes(dsl_state) do
       add_attributes(dsl_state, status_attribute)
     end
   end
@@ -57,6 +58,29 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
           {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
         end)
     end
+  end
+
+  # The auto-disable policy's warned marker: `disable_warned_at` carries
+  # the standing "a warning sweep has fired" fact between sweeps — a
+  # disable lands only after it (the warning-first contract). Injected
+  # WITH the policy declaration itself; the migration rides the same one.
+  defp add_warning_attributes(dsl_state) do
+    if auto_disable_declared?(dsl_state) do
+      Builder.add_new_attribute(dsl_state, :disable_warned_at, :utc_datetime_usec,
+        public?: true,
+        writable?: false
+      )
+    else
+      {:ok, dsl_state}
+    end
+  end
+
+  # presence detection mirrors Endpoint.auto_disable_policy/1: a declared
+  # section carries failure_share's default; an absent one reports the
+  # sentinel
+  defp auto_disable_declared?(dsl_state) do
+    Extension.get_opt(dsl_state, [:endpoint, :auto_disable], :failure_share, :__missing__) !=
+      :__missing__
   end
 
   defp lifecycle_attributes_spec do
@@ -110,7 +134,8 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
     reserved =
       (Enum.map(attributes_spec(), &elem(&1, 0)) -- [:status]) ++
         Enum.map(capture_attributes_spec(), &elem(&1, 0)) ++
-        Enum.map(lifecycle_attributes_spec(), &elem(&1, 0)) ++ [:pinned_payload_version]
+        Enum.map(lifecycle_attributes_spec(), &elem(&1, 0)) ++
+        [:pinned_payload_version, :disable_warned_at]
 
     cond do
       is_nil(status_attribute) ->

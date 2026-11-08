@@ -40,9 +40,19 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
         []
       end
 
+    # the warned-marker write ships WITH the auto_disable policy that
+    # reads it — declaring the policy is declaring the column + action
+    warning =
+      if Extension.get_opt(dsl_state, [:endpoint, :auto_disable], :failure_share, :__missing__) !=
+           :__missing__ do
+        [build_mark_disable_warned()]
+      else
+        []
+      end
+
     with {:ok, change} <-
            Builder.build_action_change(Builtins.set_attribute(switch, disabled_value)),
-         {:ok, dsl_state} <- add_all(dsl_state, lifecycle) do
+         {:ok, dsl_state} <- add_all(dsl_state, lifecycle ++ warning) do
       with {:ok, disable} <-
              Builder.build_action(:update, :disable, accept: [], changes: [change]) do
         {:ok, Transformer.add_entity(dsl_state, [:actions], disable)}
@@ -133,6 +143,25 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
   # Two actions, one per key slot: the runtime WHERE-gates each on the
   # stamp still being nil (and, for the previous slot, the reference still
   # being the one that signed), so steady-state sends stop writing.
+  # The warned-marker machine write: the sweep stamps `disable_warned_at`
+  # on its first warning (gated WHERE still nil — concurrent sweeps
+  # single-winner) and clears it on disable or recovery (gated on the
+  # value the sweep read). The runtime's WHERE gates are the fence, the
+  # same portable pattern as every other machine write.
+  defp build_mark_disable_warned do
+    {:ok, stamp} =
+      Builder.build_action_change(Builtins.set_attribute(:disable_warned_at, arg(:warned_at)))
+
+    {:ok, action} =
+      Builder.build_action(:update, :mark_disable_warned,
+        accept: [],
+        arguments: [argument(:warned_at, :utc_datetime_usec, allow_nil?: true, default: nil)],
+        changes: [stamp]
+      )
+
+    action
+  end
+
   defp build_first_used_actions do
     for {action_name, attribute} <- [
           {:mark_current_secret_used, :secret_first_used_at},
