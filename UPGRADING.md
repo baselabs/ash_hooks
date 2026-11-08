@@ -1,5 +1,15 @@
 # Upgrading
 
+## 2.2.0 → 2.2.1
+
+- **`auto_disable` declarants gain the `disable_warned_at` column.** The
+  warning-first fix stores the standing "a warning sweep has fired" fact
+  on the endpoint; declaring `auto_disable` now injects the marker column
+  and its machine action — add the column to the endpoint table's
+  migration when you upgrade. A disable lands one sweep after the first
+  qualifying warning, which is the behavior 2.2.0's moduledoc already
+  described.
+
 ## 2.1.x → 2.2.0
 
 New OPTIONAL surface — nothing changes for an install that adopts none of

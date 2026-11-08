@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.2.1 — November 8, 2026
+
+### Fixed
+
+- **A sustained-failure disable now always follows an earlier WARNING
+  sweep.** In 2.2.0, the first `AshHooks.EndpointHealth.sweep/3` that saw
+  an endpoint already meeting the disable thresholds
+  (`failure_share` + `min_attempts`) disabled it immediately — the
+  `[:ash_hooks, :endpoint, :disable_warning]` the moduledoc promised
+  never fired, and the notify surface got no chance to reach anyone
+  before the breaker opened. The warned state is now durable: declaring
+  `auto_disable` injects the `disable_warned_at` marker column (migrate
+  it with the declaration), the first qualifying sweep warns and stamps,
+  and the disable lands on the next sweep that still qualifies, clearing
+  the stamp. Recovery below the warning band clears the stamp, so a
+  later degradation gets a fresh warning cycle. (Found by Agent Access,
+  reports/aa-webhooks.md "ash_hooks gap".)
+
 ## 2.2.0 — November 8, 2026
 
 A minor under ADR-0010: everything new is additive opt-in surface — no
