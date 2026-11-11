@@ -64,6 +64,16 @@ defmodule AshHooks do
         behavior.
         """
       ],
+      body_format: [
+        type: {:in, [:json, :form]},
+        doc: """
+        Opt-in payload decoding for this route. `:form` decodes
+        application/x-www-form-urlencoded names and values without interpreting
+        bracket notation. Verification still receives the exact raw bytes.
+        When unset, use the provider's `decode_payload/1` callback or JSON.
+        The request Content-Type never enables a decoder implicitly.
+        """
+      ],
       secret: [
         type: {:custom, AshHooks, :validate_secret_source, []},
         required: true,
@@ -101,7 +111,7 @@ defmodule AshHooks do
         type: {:custom, AshHooks, :validate_pause_source, []},
         doc: """
         The pause switch source (`{m, f, a}`, `{:app_env, path}`, or a
-        0-arity fn resolving to a boolean): while it resolves `true`,
+        0-arity fn, or tenant-aware 1-arity fn resolving to a boolean): while it resolves `true`,
         every request to this source is REFUSED with
         `{:error, :source_paused}` before verification or any write —
         answer 5xx from your controller so the provider retries. Unpause

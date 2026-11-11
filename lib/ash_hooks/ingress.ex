@@ -1050,7 +1050,7 @@ defmodule AshHooks.Ingress do
   # callback error.
   defp resolve(resource, name, raw_body, ctx) do
     with {:ok, inbound} <- fetch_inbound(resource, name),
-         :ok <- check_paused(inbound, name),
+         :ok <- check_paused(inbound, name, ctx[:tenant]),
          {:ok, provider} <- resolve_provider(inbound, name),
          :ok <- check_replay_window(inbound, provider, name),
          {:ok, secret} <- resolve_secret(provider, inbound, name, ctx),
@@ -1059,7 +1059,7 @@ defmodule AshHooks.Ingress do
          :ok <- check_scope(resource, ctx) do
       digest = content_digest(raw_body)
 
-      {payload, parsed_type} = decode_and_parse(provider, raw_body)
+      {payload, parsed_type} = decode_and_parse(provider, raw_body, inbound.body_format)
 
       with {:ok, external_event_id} <-
              external_event_id(inbound, provider, payload, digest, name) do
@@ -1083,21 +1083,25 @@ defmodule AshHooks.Ingress do
   # The pause switch: while the declared source resolves true, every
   # request is refused BEFORE verification, persistence, or handling —
   # the controller answers 5xx and the provider retries; nothing is lost.
-  defp check_paused(inbound, _name) do
-    if inbound.paused && resolve_paused(inbound.paused) == true do
+  defp check_paused(inbound, _name, tenant) do
+    if inbound.paused && resolve_paused(inbound.paused, tenant) == true do
       {:error, :source_paused}
     else
       :ok
     end
   end
 
-  defp resolve_paused({m, f, a}), do: apply(m, f, a)
+  defp resolve_paused({m, f, a}, _tenant), do: apply(m, f, a)
 
-  defp resolve_paused({:app_env, [app | keys]}),
+  defp resolve_paused({:app_env, [app | keys]}, _tenant),
     do: keys |> env_walk(Application.get_all_env(app)) |> truthy()
 
-  defp resolve_paused(fun) when is_function(fun, 0), do: truthy(fun.())
-  defp resolve_paused(_other), do: false
+  defp resolve_paused(fun, _tenant) when is_function(fun, 0), do: truthy(fun.())
+
+  defp resolve_paused(fun, tenant) when is_function(fun, 1) and not is_nil(tenant),
+    do: truthy(fun.(tenant))
+
+  defp resolve_paused(_other, _tenant), do: false
 
   defp truthy(true), do: true
   defp truthy(_other), do: false
@@ -1106,8 +1110,8 @@ defmodule AshHooks.Ingress do
   # only accept maps fail lists closed through their own catch-all clauses
   # ({:error, :malformed_payload}) — the shape decision belongs to the
   # provider, not the pipeline.
-  defp decode_and_parse(provider, raw_body) do
-    case Jason.decode(raw_body) do
+  defp decode_and_parse(provider, raw_body, format) do
+    case Provider.decode_payload(provider, raw_body, format) do
       {:ok, payload} when is_map(payload) or is_list(payload) ->
         {payload, provider.parse_event_type(payload)}
 
@@ -1247,8 +1251,12 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  defp verify(_provider, _raw_body, _ctx, _inbound, _secret, name) do
-    {:error, Errors.from_reason(:invalid_signature, provider: name)}
+  defp verify(provider, raw_body, ctx, inbound, secret, name) do
+    if Provider.signature_source(provider) == :body do
+      verify(provider, raw_body, Map.put(ctx, :signature, raw_body), inbound, secret, name)
+    else
+      {:error, Errors.from_reason(:invalid_signature, provider: name)}
+    end
   end
 
   # The rotation overlap: when the declaration carries a previous_secret
@@ -1278,16 +1286,22 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  defp resolve_previous_secret(%{previous_secret: source}, _ctx) do
+  defp resolve_previous_secret(%{previous_secret: source}, ctx) do
+    tenant = ctx[:tenant]
+
     case source do
       {m, f, a} ->
         apply(m, f, a) |> as_secret()
 
       {:app_env, [app | keys]} ->
-        keys |> env_walk(Application.get_all_env(app)) |> as_secret()
+        value = env_walk(keys, Application.get_all_env(app))
+        as_secret(if is_binary(value), do: {:ok, value}, else: value)
 
       fun when is_function(fun, 0) ->
         fun.() |> as_secret()
+
+      fun when is_function(fun, 1) and not is_nil(tenant) ->
+        fun.(tenant) |> as_secret()
 
       _ ->
         {:error, :no_webhook_secret}

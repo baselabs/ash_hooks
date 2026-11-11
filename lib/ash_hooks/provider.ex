@@ -167,6 +167,58 @@ defmodule AshHooks.Provider do
   @optional_callbacks event_identity: 1
 
   @doc """
+  Optional payload decoder, called only after signature verification succeeds.
+  Returns a map or list. Providers without it retain JSON decoding. A route's
+  explicit `body_format` takes precedence. Custom decoders must return an error
+  for malformed input; the ledger then records a permanent malformed payload.
+  """
+  @callback decode_payload(raw_body()) :: {:ok, map() | list()} | {:error, term()}
+
+  @doc "Optional payload format, defaulting to JSON; `:form` opts into flat form decoding."
+  @callback body_format() :: :json | :form
+
+  @optional_callbacks decode_payload: 1, body_format: 0
+
+  @doc "Optional signature location. `:body` admits signed body envelopes such as Wix JWTs."
+  @callback signature_source() :: :header | :body
+  @optional_callbacks signature_source: 0
+
+  @doc false
+  def signature_source(provider) do
+    if function_exported?(provider, :signature_source, 0),
+      do: provider.signature_source(),
+      else: :header
+  end
+
+  @doc false
+  def decode_payload(provider, raw_body, format) do
+    cond do
+      format ->
+        decode_body(raw_body, format)
+
+      function_exported?(provider, :decode_payload, 1) ->
+        provider.decode_payload(raw_body)
+
+      function_exported?(provider, :body_format, 0) ->
+        decode_body(raw_body, provider.body_format())
+
+      true ->
+        decode_body(raw_body, :json)
+    end
+  end
+
+  @doc false
+  def decode_body(raw_body, :json), do: Jason.decode(raw_body)
+
+  def decode_body(raw_body, :form) do
+    payload = URI.decode_query(raw_body)
+
+    if Enum.all?(payload, fn {name, value} -> String.valid?(name) and String.valid?(value) end),
+      do: {:ok, payload},
+      else: {:error, :malformed_payload}
+  end
+
+  @doc """
   Resolves a provider's webhook secret scope, defaulting to `:app_level` when
   the optional `webhook_secret_scope/0` callback is not implemented.
 

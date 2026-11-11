@@ -10,6 +10,7 @@ defmodule AshHooks.Inbound do
   defstruct [
     :name,
     :provider,
+    :body_format,
     :secret,
     :previous_secret,
     :paused,
@@ -23,6 +24,7 @@ defmodule AshHooks.Inbound do
   @type t :: %__MODULE__{
           name: atom(),
           provider: module() | nil,
+          body_format: :json | :form | nil,
           secret: term(),
           previous_secret: term(),
           paused: term(),

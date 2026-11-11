@@ -5,6 +5,7 @@ spark_locals_without_parens = [
   inbound: 1,
   outbound: 1,
   secret: 1,
+  body_format: 1,
   event_id: 1,
   replay_window_seconds: 1,
   signing_mode: 1,

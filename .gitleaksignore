@@ -3,3 +3,8 @@
 # issue #22 — localhost-only, CN=ash-hooks-test-ca / CN=localhost, 10y expiry).
 test/fixtures/tls/local-ca.key
 test/fixtures/tls/server.key
+
+# Public RFC 7515 A.2 JWT and deliberately malformed JWT, never credentials.
+# Exact rule/line fingerprints preserve scanning of the rest of these tests.
+test/ash_hooks/provider/rsa_verifiers_test.exs:jwt:11
+test/ash_hooks/provider/verifier_contract_test.exs:generic-api-key:69
