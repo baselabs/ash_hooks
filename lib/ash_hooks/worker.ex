@@ -68,6 +68,18 @@ defmodule AshHooks.Worker do
       attempts, and telemetry apply; a crashing resolver or non-module
       return falls back to the HTTP adapter.
     * `:http` — the `AshHooks.Http` adapter (default `AshHooks.Http.Bounded`).
+    * `:retryable_statuses` — optional literal list of HTTP statuses/ranges;
+      replaces the ordinary retry set. Omit it for 408/429/5xx. 2xx success,
+      redirect refusal, and 410 disablement stay fixed.
+    * `:delivery_headers` — optional `{module, function}` called with
+      `(delivery, endpoint, tenant)` before each send. Return binary header
+      pairs. Package signing, content-type, and framing headers cannot be
+      overridden. Callback/validation failures retry without sending.
+    * `:certificate_pin` — optional `{module, function}` called with
+      `(endpoint, tenant)` each attempt. Return a pin supported by
+      `AshHooks.Http.Bounded` or `nil` for off. Pin failure is non-retryable;
+      a configured pin requires the bounded adapter and HTTPS. Computed
+      host-wide pins can also be returned in `:http_opts`.
     * `:http_opts` — adapter options as a literal keyword list or a
       `{module, function, args}` callback resolved inside each job's monitored
       delivery deadline. Consumer-trusted config: a literal `timeout:` here
@@ -613,6 +625,17 @@ defmodule AshHooks.Worker do
               other
           end,
         secret_resolver: {expand.(resolver_m), resolver_f},
+        retryable_statuses: retryable_statuses!(Keyword.get(opts, :retryable_statuses)),
+        delivery_headers:
+          case Keyword.get(opts, :delivery_headers) do
+            {m, f} when is_atom(f) -> {expand.(m), f}
+            other -> other
+          end,
+        certificate_pin:
+          case Keyword.get(opts, :certificate_pin) do
+            {m, f} when is_atom(f) -> {expand.(m), f}
+            other -> other
+          end,
         snippet_redactor: snippet_redactor,
         tenant_aware_secrets: Keyword.get(opts, :tenant_aware_secrets, false),
         http: maybe_expand(Keyword.get(opts, :http), expand),
@@ -769,6 +792,30 @@ defmodule AshHooks.Worker do
             apply(m, f, [Map.get(delivery, attribute) | a])
         end
       end
+    end
+  end
+
+  defp retryable_statuses!(statuses) do
+    resolved =
+      if is_list(statuses) do
+        Enum.map(statuses, fn
+          {:.., _, [first, last]} when is_integer(first) and is_integer(last) ->
+            Range.new(first, last)
+
+          value ->
+            value
+        end)
+      else
+        statuses
+      end
+
+    case AshHooks.Delivery.validate_retryable_statuses(resolved) do
+      :ok ->
+        resolved
+
+      {:error, _} ->
+        raise ArgumentError,
+              "AshHooks.Worker :retryable_statuses must be a literal list of HTTP status integers or ranges"
     end
   end
 end

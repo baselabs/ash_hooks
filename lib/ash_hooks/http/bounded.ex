@@ -24,10 +24,19 @@ defmodule AshHooks.Http.Bounded do
   bundle through the adapter options or worker's `http_opts`. Literal HTTPS IP
   addresses must also match the certificate's IP subject alternative name.
   See `AshHooks.Http.Httpc` for the alternative adapter's buffering limitations.
+
+  Optional `certificate_pin` adds a leaf identity constraint after normal TLS
+  verification and before any HTTP bytes are sent: `{:certificate, der}`,
+  `{:sha256, digest}`, or `{:spki_sha256, digest}`. SHA-256 digests are 32 raw
+  bytes; the SPKI digest covers DER SubjectPublicKeyInfo. `nil` is off (default).
+  A pin never replaces CA, hostname, or IP-SAN checks. Invalid pins and non-HTTPS
+  pin use fail closed; a mismatch returns `{:error, :certificate_pin_mismatch}`.
+  The delivery runtime records these as non-retryable failures.
   """
 
   @behaviour AshHooks.Http
 
+  alias AshHooks.Http.CertificatePin
   alias AshHooks.Http.CertSan
   alias AshHooks.Http.Headers
   alias AshHooks.Http.Target
@@ -60,7 +69,8 @@ defmodule AshHooks.Http.Bounded do
 
     with {:ok, method} <- normalize_method(method),
          {:ok, headers} <- Headers.validate(headers),
-         {:ok, target} <- Target.resolve(url, Keyword.put(opts, :deadline, deadline)) do
+         {:ok, target} <- Target.resolve(url, Keyword.put(opts, :deadline, deadline)),
+         :ok <- CertificatePin.validate(opts[:certificate_pin], target.uri.scheme) do
       send_request(method, target, headers, body || "", opts, deadline)
     end
   end
@@ -166,7 +176,7 @@ defmodule AshHooks.Http.Bounded do
       {:ok, socket} ->
         # IP-SAN verification runs HERE — the ssl socket must reach
         # :ssl.peercert/1 as a direct opaque binding (see verify_ip_san)
-        case verify_ip_san(socket, target) do
+        case verify_peer(socket, target, opts[:certificate_pin]) do
           :ok ->
             :ok = :ssl.setopts(socket, send_timeout: remaining_timeout(deadline))
             {:ok, {:ssl, socket}}
@@ -206,6 +216,10 @@ defmodule AshHooks.Http.Bounded do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp verify_peer(socket, target, pin) do
+    with :ok <- verify_ip_san(socket, target), do: CertificatePin.verify(socket, pin)
   end
 
   defp send_all({:tcp, socket}, data), do: send_all(:gen_tcp, socket, data)

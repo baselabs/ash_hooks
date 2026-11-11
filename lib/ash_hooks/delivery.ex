@@ -68,6 +68,7 @@ defmodule AshHooks.Delivery do
 
   alias Ash.Resource.Info, as: ResourceInfo
   alias AshHooks.Errors.Unknown.UnknownError
+  alias AshHooks.Http.Headers
   alias AshHooks.{OutboundBinding, PrimaryKey, Signing, Tenancy}
   alias Spark.Dsl.Extension
 
@@ -368,12 +369,51 @@ defmodule AshHooks.Delivery do
   (`{module, function}` or a 2-arity fn — `AshHooks.DestinationPolicy`), and
   `:now` customize the documented seams.
 
+  Optional `:retryable_statuses` replaces the retry set with a list of HTTP
+  status integers/ranges. `nil` preserves the default; `[]` retries no ordinary
+  HTTP failures. 2xx success, redirect refusal, and 410 disablement remain fixed.
+  Invalid sets return `{:error, :invalid_retryable_statuses}` before any claim.
+
+  `:delivery_headers` is a map/list, `{module, function}`, or three-argument
+  function `(delivery, endpoint, tenant) -> headers`. Package signature,
+  content-type, and framing headers are reserved case-insensitively. Invalid
+  headers or callback failure retry without sending.
+
+  `:certificate_pin` is a pin or `(endpoint, tenant)` resolver (`{module,
+  function}` or function). It overrides `http_opts[:certificate_pin]`, including
+  a `nil` result. Pins require `AshHooks.Http.Bounded` and HTTPS; resolver/config
+  failures and mismatches are non-retryable. See `AshHooks.Http.Bounded` for pin
+  formats. No configuration is cached in process-local state.
+
   Set `:max_attempts` here to configure the delivery row's ceiling. The worker
   macro calls this option `:delivery_max_attempts`; its own `:max_attempts`
   configures Oban's job attempts. Other retry option names are the same.
   """
   @spec run(map(), keyword()) :: :ok | {:snooze, pos_integer()} | {:error, term()}
   def run(args, config) when is_map(args) do
+    with :ok <- validate_retryable_statuses(config[:retryable_statuses]),
+         do: run_configured(args, config)
+  end
+
+  @doc false
+  def validate_retryable_statuses(nil), do: :ok
+
+  def validate_retryable_statuses(statuses) when is_list(statuses) do
+    if Enum.all?(statuses, &valid_retry_status?/1),
+      do: :ok,
+      else: {:error, :invalid_retryable_statuses}
+  end
+
+  def validate_retryable_statuses(_), do: {:error, :invalid_retryable_statuses}
+
+  defp valid_retry_status?(code) when is_integer(code), do: code in 100..599
+
+  defp valid_retry_status?(%Range{first: first, last: last}),
+    do: first in 100..599 and last in 100..599
+
+  defp valid_retry_status?(_), do: false
+
+  defp run_configured(args, config) do
     config =
       Enum.reduce(
         [
@@ -1301,16 +1341,82 @@ defmodule AshHooks.Delivery do
     # check above is the residual guarantee, not a full replacement
     adapter_opts = config[:http_opts] || []
 
-    case signing_headers(row, endpoint, config, tenant) do
-      {:ok, headers} ->
-        stamp_key_first_used(endpoint, config, tenant)
-        send_signed(request, endpoint, headers, row, adapter_opts, config, tenant)
+    with {:ok, adapter_opts} <- endpoint_http_opts(adapter_opts, endpoint, config, tenant),
+         :ok <- pin_adapter(adapter, adapter_opts),
+         {:ok, headers} <- signing_headers(row, endpoint, config, tenant),
+         {:ok, headers} <- delivery_headers(headers, row, endpoint, config, tenant) do
+      stamp_key_first_used(endpoint, config, tenant)
+      send_signed(request, endpoint, headers, row, adapter_opts, config, tenant)
+    else
+      {:error, reason}
+      when reason in [:certificate_pin_resolution_failed, :certificate_pin_requires_bounded] ->
+        dead_letter(row, error_string(reason), config, tenant)
 
       # secret-resolution and signing failures are RETRYABLE (the
       # classification table): config is fixable while the row climbs
       {:error, reason} ->
         retry(row, error_string(reason), config, tenant, nil)
     end
+  end
+
+  defp endpoint_http_opts(opts, endpoint, config, tenant) do
+    case config[:certificate_pin] do
+      nil ->
+        {:ok, opts}
+
+      {m, f} when is_atom(m) and is_atom(f) ->
+        {:ok, Keyword.put(opts, :certificate_pin, apply(m, f, [endpoint, tenant]))}
+
+      fun when is_function(fun, 2) ->
+        {:ok, Keyword.put(opts, :certificate_pin, fun.(endpoint, tenant))}
+
+      pin ->
+        {:ok, Keyword.put(opts, :certificate_pin, pin)}
+    end
+  rescue
+    _ -> {:error, :certificate_pin_resolution_failed}
+  catch
+    _, _ -> {:error, :certificate_pin_resolution_failed}
+  end
+
+  defp pin_adapter(AshHooks.Http.Bounded, _opts), do: :ok
+
+  defp pin_adapter(_adapter, opts) do
+    if is_nil(opts[:certificate_pin]), do: :ok, else: {:error, :certificate_pin_requires_bounded}
+  end
+
+  @reserved_delivery_headers ~w(host connection content-length content-type transfer-encoding
+    te trailer upgrade proxy-connection keep-alive webhook-id webhook-timestamp
+    webhook-signature x-webhook-signature)
+
+  defp delivery_headers(signed, row, endpoint, config, tenant) do
+    source = config[:delivery_headers]
+
+    extra =
+      case source do
+        nil -> %{}
+        {m, f} when is_atom(m) and is_atom(f) -> apply(m, f, [row, endpoint, tenant])
+        fun when is_function(fun, 3) -> fun.(row, endpoint, tenant)
+        headers -> headers
+      end
+
+    with {:ok, headers} <- Headers.validate(extra) do
+      normalized = Map.new(headers, fn {name, value} -> {String.downcase(name), value} end)
+
+      if Enum.any?(Map.keys(normalized), &reserved_delivery_header?/1) do
+        {:error, :reserved_delivery_header}
+      else
+        {:ok, Map.merge(normalized, signed)}
+      end
+    end
+  rescue
+    _ -> {:error, :delivery_headers_failed}
+  catch
+    _, _ -> {:error, :delivery_headers_failed}
+  end
+
+  defp reserved_delivery_header?(name) do
+    name in @reserved_delivery_headers
   end
 
   defp send_signed(request, endpoint, headers, row, adapter_opts, config, tenant) do
@@ -1323,10 +1429,16 @@ defmodule AshHooks.Delivery do
       # the classification table (never burn the retry ceiling on it).
       # The request WAS attempted (the refusal came from inside it), so
       # its duration and signing key ride the history row.
-      {:error, :unsafe_destination, started} ->
+      {:error, reason, started}
+      when reason in [
+             :unsafe_destination,
+             :certificate_pin_mismatch,
+             :invalid_certificate_pin,
+             :certificate_pin_requires_https
+           ] ->
         dead_letter(
           row,
-          "unsafe_destination",
+          error_string(reason),
           config,
           tenant,
           nil,
@@ -1643,19 +1755,6 @@ defmodule AshHooks.Delivery do
   end
 
   defp record(row, _endpoint, %{status: status} = response, config, tenant, history)
-       when status in [408, 429] do
-    retry(
-      row,
-      "http_#{status}",
-      config,
-      tenant,
-      retry_after(response, config),
-      failure_summary(response),
-      history
-    )
-  end
-
-  defp record(row, _endpoint, %{status: status} = response, config, tenant, history)
        when status in 300..399 do
     dead_letter(
       row,
@@ -1667,24 +1766,32 @@ defmodule AshHooks.Delivery do
     )
   end
 
-  defp record(row, _endpoint, %{status: status} = response, config, tenant, history)
-       when status in 400..499 do
-    dead_letter(row, "http_#{status}", config, tenant, failure_summary(response), history)
-  end
-
   defp record(row, _endpoint, %{status: status} = response, config, tenant, history) do
     # The retryable 5xx class: Retry-After is honored here exactly as on 408/429 —
     # a 503 carrying the header names the receiver's own recovery window, and the
     # parser/clamp path is shared (absent/malformed header → nil → backoff).
-    retry(
-      row,
-      "http_#{status}",
-      config,
-      tenant,
-      retry_after(response, config),
-      failure_summary(response),
-      history
-    )
+    if retryable_status?(status, config[:retryable_statuses]) do
+      retry(
+        row,
+        "http_#{status}",
+        config,
+        tenant,
+        retry_after(response, config),
+        failure_summary(response),
+        history
+      )
+    else
+      dead_letter(row, "http_#{status}", config, tenant, failure_summary(response), history)
+    end
+  end
+
+  defp retryable_status?(status, nil), do: status in [408, 429] or status not in 200..499
+
+  defp retryable_status?(status, statuses) when is_list(statuses) do
+    Enum.any?(statuses, fn
+      %Range{} = range -> status in range
+      code -> status == code
+    end)
   end
 
   # failed rows keep the story-1 half of the snippet policy: status + kind,
