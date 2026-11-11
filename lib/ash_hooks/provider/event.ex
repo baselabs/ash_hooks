@@ -1,10 +1,11 @@
 defmodule AshHooks.Provider.Event do
   @moduledoc """
-  A verified webhook from a signature-only built-in provider.
+  A verified webhook returned by a configured provider's default handler.
 
-  Its `type` is the fixed atom `:webhook`; vendor event names remain in the
-  payload, never converted into atoms. Wrap the provider with your own
-  `AshHooks.Provider` to classify events and perform idempotent business actions.
+  Its `type` is the fixed atom `:webhook`; the sender's event names remain in the
+  payload, never converted into atoms. Override `parse_event_type/1` and
+  `handle_event/2` in your provider to classify events and perform idempotent
+  business actions.
   """
 
   defstruct [:type, :payload]

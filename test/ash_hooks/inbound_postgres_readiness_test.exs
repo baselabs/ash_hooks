@@ -1,7 +1,7 @@
 defmodule AshHooks.InboundPostgresReadinessTest do
   @moduledoc """
   Real-Postgres qualification for inbound composite keys, parsed attribute
-  tenancy, multi-writer claim fencing, and legacy HubSpot identity adoption.
+  tenancy, multi-writer claim fencing, and legacy batch identity adoption.
 
   The HubSpot lifecycle uses the vendor-published signed vector. Its fixed
   timestamp is checked against the vector timestamp through the provider's
@@ -57,13 +57,13 @@ defmodule AshHooks.InboundPostgresReadinessTest do
     end
 
     webhooks do
-      inbound :hub_spot_v3 do
-        provider(AshHooks.Provider.HubSpotV3)
+      inbound :batch do
+        provider(AshHooks.TestBatchProvider)
         secret {AshHooks.InboundPostgresReadinessTest, :hubspot_secret, []}
       end
 
-      inbound :hub_spot_v3_wide do
-        provider(AshHooks.Provider.HubSpotV3)
+      inbound :batch_wide do
+        provider(AshHooks.TestBatchProvider)
         secret {AshHooks.InboundPostgresReadinessTest, :hubspot_secret, []}
 
         replay_window_seconds(
@@ -88,7 +88,7 @@ defmodule AshHooks.InboundPostgresReadinessTest do
   use ExUnit.Case, async: false
 
   alias AshHooks.{Ingress, PrimaryKey}
-  alias AshHooks.Provider.HubSpotV3
+  alias AshHooks.TestBatchProvider
   alias AshHooks.TestPostgres.Repo
 
   @moduletag :postgres
@@ -243,7 +243,7 @@ defmodule AshHooks.InboundPostgresReadinessTest do
              read!(victim_key, "victim")
   end
 
-  test "an authenticated malformed HubSpot batch is rejected before a ledger write" do
+  test "an authenticated malformed event batch is rejected before a ledger write" do
     # Locally signed negative input exercises ingress validation, not vendor conformance.
     raw_body = "[]"
     timestamp = Integer.to_string(System.system_time(:millisecond))
@@ -254,7 +254,7 @@ defmodule AshHooks.InboundPostgresReadinessTest do
 
     context = %{
       signature: signature,
-      headers: %{"x-hubspot-request-timestamp" => timestamp},
+      headers: %{"x-batch-timestamp" => timestamp, "x-batch-signature" => signature},
       method: @method,
       request_uri: @uri,
       tenant: "victim",
@@ -262,19 +262,19 @@ defmodule AshHooks.InboundPostgresReadinessTest do
     }
 
     assert {:error, %AshHooks.Errors.Invalid.MalformedPayload{detail: detail}} =
-             Ingress.ingest(Ledger, :hub_spot_v3, raw_body, context)
+             Ingress.ingest(Ledger, :batch, raw_body, context)
 
     assert detail =~ "event identity callback"
     assert [[0]] = Repo.query!("SELECT count(*) FROM #{@table}").rows
   end
 
-  test "published HubSpot vector adopts legacy digest identity and terminal dedup cannot repeat handling" do
+  test "published method/URI/body/timestamp vector adopts legacy digest identity and terminal dedup cannot repeat handling" do
     assert :ok =
-             HubSpotV3.verify_signature(
+             TestBatchProvider.verify_signature(
                @body,
                %{
                  signature: @signature,
-                 headers: %{"x-hubspot-request-timestamp" => @timestamp},
+                 headers: %{"x-batch-timestamp" => @timestamp, "x-batch-signature" => @signature},
                  method: @method,
                  request_uri: @uri,
                  now_ms: @now_ms
@@ -283,17 +283,17 @@ defmodule AshHooks.InboundPostgresReadinessTest do
              )
 
     assert {:error, %AshHooks.Errors.Invalid.StaleTimestamp{}} =
-             Ingress.ingest(Ledger, :hub_spot_v3, @body, vector_context("victim"))
+             Ingress.ingest(Ledger, :batch, @body, vector_context("victim"))
 
     payload = Jason.decode!(@body)
     digest = digest(@body)
-    {:ok, canonical_id} = HubSpotV3.event_identity(payload)
+    {:ok, canonical_id} = TestBatchProvider.event_identity(payload)
 
     legacy =
       insert_legacy!(%{
         account_id: "published-account",
         tenant: "victim",
-        provider: :hub_spot_v3_wide,
+        provider: :batch_wide,
         external_event_id: digest,
         payload: payload,
         payload_digest: digest,
@@ -302,7 +302,7 @@ defmodule AshHooks.InboundPostgresReadinessTest do
       })
 
     assert {:ok, plan} =
-             Ingress.plan_legacy_identity_adoption(Ledger, :hub_spot_v3_wide,
+             Ingress.plan_legacy_identity_adoption(Ledger, :batch_wide,
                tenant: "victim",
                scope: %{account_id: "published-account"}
              )
@@ -319,7 +319,7 @@ defmodule AshHooks.InboundPostgresReadinessTest do
     assert audit.payload_digest == digest
 
     assert {:ok, applied} =
-             Ingress.adopt_legacy_identity(Ledger, :hub_spot_v3_wide,
+             Ingress.adopt_legacy_identity(Ledger, :batch_wide,
                tenant: "victim",
                scope: %{account_id: "published-account"},
                quiesced?: true
@@ -331,14 +331,14 @@ defmodule AshHooks.InboundPostgresReadinessTest do
     audit_count_before = audit_count()
 
     assert {:ok, :duplicate, duplicate} =
-             Ingress.ingest(Ledger, :hub_spot_v3_wide, @body, vector_context("victim"))
+             Ingress.ingest(Ledger, :batch_wide, @body, vector_context("victim"))
 
     assert duplicate.status == :processed
     assert duplicate.attempts == 3
     assert audit_count() == audit_count_before
 
     env = %{
-      name: :hub_spot_v3_wide,
+      name: :batch_wide,
       payload: payload,
       digest: digest,
       external_event_id: canonical_id,
@@ -358,7 +358,7 @@ defmodule AshHooks.InboundPostgresReadinessTest do
              read!(key, "victim")
 
     assert {:ok, rerun} =
-             Ingress.adopt_legacy_identity(Ledger, :hub_spot_v3_wide,
+             Ingress.adopt_legacy_identity(Ledger, :batch_wide,
                tenant: "victim",
                scope: %{account_id: "published-account"},
                quiesced?: true
@@ -377,7 +377,7 @@ defmodule AshHooks.InboundPostgresReadinessTest do
       insert_legacy!(%{
         account_id: "retention-account",
         tenant: "retention",
-        provider: :hub_spot_v3_wide,
+        provider: :batch_wide,
         external_event_id: "retention-terminal-#{sequence}",
         payload: payload,
         payload_digest: digest("retention-terminal-#{sequence}"),
@@ -389,7 +389,7 @@ defmodule AshHooks.InboundPostgresReadinessTest do
     insert_legacy!(%{
       account_id: "retention-account",
       tenant: "retention",
-      provider: :hub_spot_v3_wide,
+      provider: :batch_wide,
       external_event_id: "retention-received",
       payload: payload,
       payload_digest: digest("retention-received"),
@@ -443,7 +443,7 @@ defmodule AshHooks.InboundPostgresReadinessTest do
       Ledger,
       %{
         id: id,
-        provider: :hub_spot_v3,
+        provider: :batch,
         external_event_id: external_event_id,
         external_event_type: "contact_creation",
         payload: [%{"subscriptionType" => "contact.creation", "marker" => marker}],
@@ -502,7 +502,7 @@ defmodule AshHooks.InboundPostgresReadinessTest do
   defp vector_context(tenant) do
     %{
       signature: @signature,
-      headers: %{"x-hubspot-request-timestamp" => @timestamp},
+      headers: %{"x-batch-timestamp" => @timestamp, "x-batch-signature" => @signature},
       method: @method,
       request_uri: @uri,
       scope: %{account_id: "published-account"},

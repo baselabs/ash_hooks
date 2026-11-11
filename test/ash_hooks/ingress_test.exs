@@ -52,6 +52,7 @@ defmodule AshHooks.IngressTest do
       # provider module is NOT resolvable at compile time — the verifier
       # skips it; the runtime backstop must still reject the window
       inbound :neverloaded do
+        provider(AshHooks.Provider.Neverloaded)
         secret {AshHooks.IngressTest, :secret, []}
         replay_window_seconds(300)
       end
@@ -443,6 +444,11 @@ defmodule AshHooks.IngressTest do
     end
 
     test "a replay window on a timestamp-less provider is rejected at RUNTIME (verifier blind spot)" do
+      defmodule Elixir.AshHooks.Provider.Neverloaded do
+        use AshHooks.Provider,
+          verify: [algorithm: :hmac_sha256, signature: {:header, "x-signature"}]
+      end
+
       raw = body("evt_window")
 
       assert {:error, %AshHooks.Errors.Unknown.UnknownError{}} =

@@ -19,7 +19,7 @@ examples below refer to your existing `MyApp.Domain` and `MyApp.Repo`
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 2.0"},
+    {:ash_hooks, "~> 3.0"},
     # for outbound delivery only:
     {:oban, "~> 2.20"}
   ]
@@ -164,6 +164,52 @@ plug Plug.Parsers,
   json_decoder: Phoenix.json_library()
 ```
 
+Describe the sender in a provider module. This one verifies a lowercase-hex
+HMAC-SHA256 of the raw body sent in `x-orders-signature`, and maps the sender's
+event names to atoms your handler understands:
+
+```elixir
+defmodule MyApp.Webhooks.Orders do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:header, "x-orders-signature"},
+      encoding: :hex
+    ]
+
+  @types %{"order.paid" => :order_paid}
+
+  @impl true
+  def parse_event_type(%{"type" => type}) do
+    case Map.fetch(@types, type) do
+      {:ok, atom} -> {:ok, atom}
+      :error -> {:error, :unknown_event_type}
+    end
+  end
+
+  def parse_event_type(_payload), do: {:error, :malformed_payload}
+
+  # Must be idempotent: a crash after this runs and before the ledger
+  # records it re-runs it on redelivery.
+  @impl true
+  def handle_event(:order_paid, %{"order_id" => order_id} = payload) do
+    with {:ok, _order} <- MyApp.Orders.mark_paid(order_id) do
+      {:ok, %AshHooks.Provider.Event{type: :order_paid, payload: payload}}
+    else
+      {:error, reason} -> {:error, :retry, reason}
+    end
+  end
+
+  def handle_event(_type, _payload), do: {:error, :permanent, :unhandled_event}
+end
+```
+
+Your sender documents its own scheme: which header, which algorithm, how the
+secret and signature are encoded, what is signed, and whether a timestamp is
+included. Translate it into `verify:` options with the
+[Verify any sender](verify-any-sender.md) guide, which has recipes for common
+shapes, from structured `t=...,v1=...` headers to RSA signatures and JWS bodies.
+
 The ledger resource (one resource per inbound surface):
 
 ```elixir
@@ -195,22 +241,26 @@ defmodule MyApp.WebhookLedger do
   end
 
   webhooks do
-    inbound :comply_cube do
-      # convention-resolves the provider to AshHooks.Provider.ComplyCube;
+    inbound :orders do
+      provider MyApp.Webhooks.Orders
       # a secret source, never a literal
-      secret {:app_env, [:my_app, :complycube_secret]}
+      secret {:app_env, [:my_app, :orders_webhook_secret]}
+      # the sender's event id: the deduplication identity
+      event_id(&__MODULE__.event_id/1)
     end
   end
+
+  def event_id(%{"id" => id}) when is_binary(id), do: {:ok, id}
+  def event_id(_payload), do: :error
 end
 ```
 
-The bundled ComplyCube handler returns a typed verified event; it does not apply
-your application's business changes. For those changes, set the declaration's
-`provider` to your own module, delegate signature verification and event-type
-parsing to the built-in provider, and implement `handle_event/2` with your
-idempotent domain action. The [provider API](https://hexdocs.pm/ash_hooks/AshHooks.Provider.html)
-describes the callbacks. A HubSpot wrapper must also delegate `event_identity/1`
-so retries retain the built-in stable batch identity.
+`provider` is required: the inbound name (`:orders`) identifies the source in
+the ledger and resolves no module. Keep it stable once deliveries are recorded,
+because it is part of every deduplication identity. Without an `event_id`
+extractor or a provider `event_identity/1` callback, the SHA-256 of the raw body
+is the identity. The [provider API](https://hexdocs.pm/ash_hooks/AshHooks.Provider.html)
+describes every callback.
 
 Register the ledger in your existing domain before calling ingress. Keep any
 resources your application already declares:
@@ -235,9 +285,9 @@ your controller:
 ```elixir
 raw = conn.private[:ash_hooks_raw_body]
 
-case AshHooks.Ingress.ingest(MyApp.WebhookLedger, :comply_cube, raw, %{
-       signature: List.first(get_req_header(conn, "complycube-signature")),
-       headers: Map.new(conn.req_headers),
+case AshHooks.Ingress.ingest(MyApp.WebhookLedger, :orders, raw, %{
+       # the provider reads its signature header from here
+       headers: conn.req_headers,
        scope: %{"account_id" => conn.params["account_id"]}
      }) do
   {:ok, :created, %{status: status}} ->
@@ -251,10 +301,14 @@ case AshHooks.Ingress.ingest(MyApp.WebhookLedger, :comply_cube, raw, %{
     code = if delivery.status in [:processed, :failed_permanent, :superseded], do: 200, else: 500
     send_resp(conn, code, "")
 
-  {:error, _invalid_signature_or_payload} ->
+  {:error, _invalid_signature_stale_timestamp_or_bad_payload} ->
     send_resp(conn, 400, "")
 end
 ```
+
+When the sender signs the HTTP method or URL, also pass `method: conn.method`
+and `request_uri:` the public URL the sender called. Behind a TLS-terminating
+proxy, build that URL from a base URL you configure rather than from `conn`.
 
 The ledger deduplicates deliveries and invokes handlers at least once.
 A delivery whose row is terminal (`:processed` /

@@ -5,69 +5,68 @@
 
 Webhooks for [Ash Framework](https://ash-hq.org), in both directions:
 
-- **Inbound** — receive provider webhooks, verify their signatures,
-  deduplicate them on a ledger (a table recording every delivery — the
-  dedup record itself), and run your handler with durable deduplication
-  and at-least-once processing.
-- **Outbound** — sign and deliver your own webhooks with retries,
-  backoff, and dead-lettering through Oban or your own scheduler.
+- **Inbound**: verify webhooks from any sender, deduplicate them on a ledger (a
+  table that records every delivery), and run your handler at least once with
+  durable deduplication.
+- **Outbound**: sign and deliver your own webhooks with retries, backoff, and
+  dead-lettering through Oban or your own scheduler.
 
-The two halves work independently: if you only receive webhooks, you
-need no queue infrastructure at all.
+The two halves work independently: if you only receive webhooks, you need no
+queue infrastructure at all.
 
-- Built-in verifiers cover ComplyCube, HubSpot v3, Twilio, Stripe, Shopify,
-  WooCommerce, Shippo, EasyPost, Adobe Commerce, BigCommerce, Ecwid, Squarespace,
-  and Wix.
-  A configurable HMAC verifier covers senders you control.
-- Duplicate and replayed deliveries are deduplicated on the ledger —
-  exactly one row per delivery; crashes mid-flight resume on
-  redelivery instead of losing events (handlers run at-least-once).
+- **Verify any sender.** Describe a sender's signature scheme in a few lines of
+  configuration: HMAC (SHA-1, SHA-256, SHA-384, SHA-512), RSA (PKCS#1 v1.5 and
+  PSS), ECDSA (P-256, P-384), Ed25519, or a JWS body; a signature header, a
+  structured `t=...,v1=...` header, or the body itself; hex or base64; any signed
+  input; timestamps with a replay window; and key rotation. Anything configuration
+  cannot express is one callback away, with the same primitives public.
+- Duplicate and replayed deliveries are deduplicated on the ledger: exactly one
+  row per delivery, and a crash mid-flight resumes on redelivery instead of
+  losing the event (handlers run at least once).
 - Outbound webhooks follow the [Standard Webhooks](https://www.standardwebhooks.com)
-  spec, so receivers verify with any conformant library. Key rotation
-  and a legacy-envelope mode for receivers mid-migration are built in.
-- Retries honor `Retry-After`, back off with jitter, dead-letter at a
-  ceiling, and durably disable endpoints that return 410. DNS failures are
-  transport, not verdicts: a hostname that stops resolving retries under an
-  honest label (`nxdomain` vs `resolve_timeout`) and only a validated
-  private/loopback answer dead-letters immediately.
+  spec, so receivers verify them with any conformant library. Key rotation and a
+  legacy-envelope mode for receivers mid-migration are built in.
+- Retries honor `Retry-After`, back off with jitter, dead-letter at a ceiling,
+  and durably disable endpoints that return 410. DNS failures are transport, not
+  verdicts: a hostname that stops resolving retries under an honest label
+  (`nxdomain` vs `resolve_timeout`), and only a validated private or loopback
+  answer dead-letters immediately.
 - Safe defaults: inbound declarations use secret resolvers rather than literal
-  binaries, and endpoint rows store secret references. Endpoint URLs are
-  checked against server-side request forgery (SSRF) at
-  registration and again at send time, and response
-  bodies are never stored unless you explicitly opt in for a diagnostic
-  run. Inbound ledgers retain decoded payloads and a digest of the signed
-  bytes; outbound ledgers retain the exact bytes to send. Read access is yours
-  to govern — the package injects no read policies (see
-  [Security](#security)).
-- Telemetry events for the whole send/receive lifecycle, with classified
+  binaries, and endpoint rows store secret references. Endpoint URLs are checked
+  against server-side request forgery (SSRF) at registration and again at send
+  time, and response bodies are never stored unless you opt in for a diagnostic
+  run. Inbound ledgers retain decoded payloads and a digest of the signed bytes;
+  outbound ledgers retain the exact bytes to send. Read access is yours to
+  govern: the package injects no read policies (see [Security](#security)).
+- Telemetry events for the whole send and receive lifecycle, with classified
   reasons and identifiers rather than bodies or signing secrets.
 
 Requires Elixir ~> 1.20 (OTP 28+) and Ash >= 3.34.3, < 4.0. Add Oban (~> 2.20)
 for the generated delivery worker, and Phoenix or Plug for the HTTP ingress.
-Direct delivery and signature verification work without either dependency. From 1.0
-the package follows semantic versioning with a named public surface —
-see [Stability](#stability).
+Direct delivery and signature verification work without either dependency. The
+package follows semantic versioning over a named public surface; see
+[Stability](#stability).
 
 ## Installation
 
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 2.0"},
+    {:ash_hooks, "~> 3.0"},
     # only for outbound delivery:
     {:oban, "~> 2.20"}
   ]
 end
 ```
 
-Upgrading from 1.x? Follow [UPGRADING.md](UPGRADING.md) before starting 2.0
-workers. The delivery schema and HubSpot's default dedup identity have changed.
+Upgrading from 2.x? 3.0 removes the built-in vendor verifiers and requires an
+explicit `provider` on every inbound declaration. [UPGRADING.md](UPGRADING.md)
+gives the replacement configuration for each removed module.
 
-Or `mix igniter.install ash_hooks`, which also tries to patch your
-endpoint's `Plug.Parsers` with a raw-body reader. Signature schemes
-sign the exact wire bytes, and a router plug cannot recover what the
-parser already consumed — so if the automatic patch didn't apply, add
-it yourself:
+Or run `mix igniter.install ash_hooks`, which also tries to patch your
+endpoint's `Plug.Parsers` with a raw-body reader. Signature schemes sign the
+exact wire bytes, and a router plug cannot recover what the parser already
+consumed, so if the automatic patch didn't apply, add it yourself:
 
 ```elixir
 plug Plug.Parsers,
@@ -77,19 +76,56 @@ plug Plug.Parsers,
   json_decoder: Phoenix.json_library()
 ```
 
-By default every parsed request carries a cached copy of its raw body;
-pass `[only: ["/webhooks"]]` as the reader's third element to limit
-that memory cost to your webhook routes.
+By default every parsed request carries a cached copy of its raw body; pass
+`[only: ["/webhooks"]]` as the reader's third element to limit that memory cost
+to your webhook routes.
 
-You also create your own tables — ash_hooks injects fields and
-identities onto your resources, and your migrations carry them,
-including the unique indexes the deduplication guarantee rests on.
-Complete, runnable migrations, resources, and setup are in the
+You also create your own tables: ash_hooks injects fields and identities onto
+your resources, and your migrations carry them, including the unique indexes the
+deduplication guarantee rests on. Complete, runnable migrations, resources, and
+setup are in the
 [get-started tutorial](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md).
 
 ## Receiving webhooks
 
-Declare an inbound source on a ledger resource:
+### 1. Describe the sender
+
+A provider module describes how one sender signs its requests. For most senders,
+configuration is all it takes:
+
+```elixir
+defmodule MyApp.Webhooks.Payments do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:structured_header, "x-payments-signature", signature_key: "v1"},
+      timestamp: {:signature_field, "t"},
+      signed_input: [:timestamp, ".", :body],
+      tolerance_seconds: 300
+    ]
+end
+```
+
+This one reads `x-payments-signature: t=1731312000,v1=5257a8...`, checks the
+lowercase-hex HMAC-SHA256 of `timestamp.body` in constant time, accepts any
+listed `v1` signature (so the sender can rotate keys), and rejects a valid
+signature whose timestamp is more than 300 seconds from the clock. Options are
+checked when the module compiles.
+
+The [Verify any sender](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/verify-any-sender.md)
+guide has recipes for common shapes: an HMAC of the body in a header, a prefixed
+signature, hex or base64 secrets, Standard Webhooks, signed method and URL,
+sorted form fields, RSA and ECDSA headers, Ed25519, JWS bodies, custom timestamp
+formats, and two schemes on one route. `AshHooks.Provider.Scheme` documents
+every option. When a scheme needs something configuration cannot express,
+implement `verify_signature/3` with the public primitives in
+`AshHooks.Provider.Signature`.
+
+ash_hooks ships no vendor-specific verifiers. A sender's documentation is the
+authority on its scheme, and a scheme change on the sender's side never waits on
+an ash_hooks release.
+
+### 2. Declare the source on a ledger
 
 ```elixir
 use Ash.Resource,
@@ -97,8 +133,8 @@ use Ash.Resource,
   extensions: [AshHooks, AshHooks.InboundDelivery]
 
 inbound_delivery do
-  # provider event ids aren't unique across accounts — your scope slots
-  # extend the dedup identity (each must be a non-nullable attribute)
+  # sender event ids aren't unique across accounts: your scope slots extend
+  # the dedup identity (each must be a non-nullable attribute)
   scope_identity([:account_id])
 end
 
@@ -107,211 +143,145 @@ attributes do
 end
 
 webhooks do
-  inbound :comply_cube do
-    secret {:app_env, [:my_app, :complycube_secret]}
+  inbound :payments do
+    provider MyApp.Webhooks.Payments
+    secret {:app_env, [:my_app, :payments_webhook_secret]}
   end
 end
 ```
 
-Secrets are always sources — an `{m, f, a}` callback, an
-`{:app_env, path}`, a zero-arity function, or (multi-tenant apps) a
-one-arity function that receives the tenant — never literal values.
+Secrets are always sources, never literal values: an `{m, f, a}` callback, an
+`{:app_env, path}`, a zero-arity function, or (for multi-tenant apps) a
+one-arity function that receives the tenant. For public-key schemes the source
+returns the sender's public key as PEM.
 
-Your provider module also defines the handler — the `handle_event/2`
-callback that receives the verified payload (the
-[guided-tour Livebook](https://github.com/baselabs/ash_hooks/blob/main/documentation/livebooks/get-started.livemd)
-builds one from scratch in a few lines).
+The inbound name (`:payments`) identifies the source in the ledger. `provider`
+is required.
 
-From your controller, one call runs the whole pipeline: verify the
-signature over the raw bytes, persist the payload, deduplicate, claim
-under a lease (a time-limited ownership claim — rows whose worker died
-are reclaimed when it expires), run your handler, and record the
-outcome.
+### 3. Ingest from your controller
+
+One call runs the whole pipeline: verify the signature over the raw bytes,
+persist the payload, deduplicate, claim under a lease (a time-limited ownership
+claim; rows whose worker died are reclaimed when it expires), run your handler,
+and record the outcome.
 
 ```elixir
-case AshHooks.Ingress.ingest(Ledger, :comply_cube, conn.private[:ash_hooks_raw_body], %{
-       signature: List.first(get_req_header(conn, "complycube-signature")),
-       headers: Map.new(conn.req_headers),
+case AshHooks.Ingress.ingest(Ledger, :payments, conn.private[:ash_hooks_raw_body], %{
+       headers: conn.req_headers,
        scope: %{"account_id" => conn.params["account_id"]}
      }) do
   # Acknowledge terminal rows, including permanent failures.
   # A duplicate may have retried its handler: inspect its current status.
   {:ok, _tag, %{status: status}} when status in [:processed, :failed_permanent, :superseded] ->
     send_resp(conn, 200, "")
-  {:ok, _tag, _row} -> send_resp(conn, 500, "")    # handler failed
-  {:error, _} -> send_resp(conn, 400, "")          # bad signature/payload
+  {:ok, _tag, _row} -> send_resp(conn, 500, "")    # handler failed: the sender retries
+  {:error, _} -> send_resp(conn, 400, "")          # bad signature, stale timestamp, bad payload
 end
 ```
 
-**Delivery semantics.** A terminal delivery (`:processed`,
-`:failed_permanent`, or `:superseded`) is never processed again. A crash after your
-handler ran but before the ledger recorded it will re-run the handler
-on redelivery — so write handlers idempotent, keyed on the logical event
-or batch identity (for action-level idempotency elsewhere in your app, our
-sibling package
-[`ash_onetime`](https://hex.pm/packages/ash_onetime) is an optional
-companion). Permanent failures belong on your operator surface; the successful
-acknowledgment prevents a provider from retrying a row that cannot run again.
+When a scheme signs the HTTP method or URL, also pass `method: conn.method` and
+`request_uri:` the *public* URL. Build it from a base URL you configure, not from
+`conn`, which behind a TLS proxy carries the internal host and port.
 
-HubSpot's v3 scheme also signs the HTTP method and the full request
-URI, so its controller passes both — build the *public* URI from a base
-URL you configure, not from `conn`, which behind a TLS proxy carries
-the internal host and port.
+### 4. Handle the event
 
-`claim_delivery/3`, `mark_processed/4`, and friends are public if you
-want to drive the lease machine from your own async pipeline;
-`AshHooks.Ingress.reap/2` re-drives deliveries whose claims died with
-an expired lease.
+A configured provider classifies every verified request as `:webhook` and
+returns an `AshHooks.Provider.Event` holding the payload. Override
+`parse_event_type/1` and `handle_event/2` in the same module to map the sender's
+event names to your own atoms and run your application's actions:
 
-### Payload formats and provider verifiers
+```elixir
+defmodule MyApp.Webhooks.Payments do
+  use AshHooks.Provider, verify: [...] # the options shown in step 1
 
-JSON remains the default. Opt into flat `application/x-www-form-urlencoded`
-decoding on a route with `body_format :form`, or implement the provider's optional
+  @types %{"charge.succeeded" => :charge_succeeded}
+
+  @impl true
+  def parse_event_type(%{"type" => type}) do
+    case Map.fetch(@types, type) do
+      {:ok, atom} -> {:ok, atom}
+      :error -> {:error, :unknown_event_type}
+    end
+  end
+
+  def parse_event_type(_payload), do: {:error, :malformed_payload}
+
+  # return {:ok, result} or {:error, :retry | :permanent, reason}
+  @impl true
+  def handle_event(:charge_succeeded, payload), do: MyApp.Billing.record_charge(payload)
+end
+```
+
+Map event names with an explicit table; never `String.to_atom/1` request data.
+An unknown type is recorded as a permanent failure.
+
+**Delivery semantics.** A terminal delivery (`:processed`, `:failed_permanent`,
+or `:superseded`) is never processed again. A crash after your handler ran but
+before the ledger recorded it will re-run the handler on redelivery, so write
+handlers idempotent, keyed on the logical event or batch identity (for
+action-level idempotency elsewhere in your app, the sibling package
+[`ash_onetime`](https://hex.pm/packages/ash_onetime) is an optional companion).
+Permanent failures belong on your operator surface; the successful
+acknowledgment prevents a sender from retrying a row that cannot run again.
+
+The deduplication identity comes from the declaration's `event_id` extractor,
+then the provider's optional `event_identity/1` callback, then the SHA-256 of
+the raw body.
+
+`claim_delivery/3`, `mark_processed/4`, and friends are public if you want to
+drive the lease machine from your own async pipeline; `AshHooks.Ingress.reap/2`
+re-drives deliveries whose claims died with an expired lease.
+
+### Payload formats
+
+JSON is the default. Opt into flat `application/x-www-form-urlencoded` decoding
+on a route with `body_format :form`, or implement the provider's optional
 `body_format/0` callback returning `:form`. Names and values are URL-decoded;
-bracket notation remains literal and repeated names keep their last value in
-the stored map. Invalid UTF-8 names or values become a permanent malformed
-payload, matching JSON's failure handling. **Verification always receives the
-original raw bytes**, before decoding. The request's Content-Type cannot opt a
-route into a decoder.
-Providers may implement `decode_payload/1` for a signed envelope; an explicit
-route `body_format` overrides that decoder.
+bracket notation remains literal, and repeated names keep their last value in the
+stored map. Invalid UTF-8 names or values become a permanent malformed payload,
+matching JSON's failure handling. **Verification always receives the original raw
+bytes**, before decoding. The request's Content-Type cannot opt a route into a
+decoder.
 
 ```elixir
-inbound :my_form_emitter do
-  provider MyApp.FormEmitter
+inbound :sms do
+  provider MyApp.Webhooks.Sms
   body_format :form
-  secret {:app_env, [:my_app, :emitter_secret]}
+  secret {:app_env, [:my_app, :sms_webhook_secret]}
 end
 ```
 
-Pass the named signature header in `ctx.signature` and any additional headers in
-`ctx.headers` (lowercase names). These verifiers return the fixed event type
-`:webhook` and an `AshHooks.Provider.Event`; vendor type strings remain in the
-payload. Wrap verification with your own provider to classify events and perform
-idempotent application actions. Configure `provider` explicitly when your inbound
-name differs from the module's underscored name.
+Providers may implement `decode_payload/1` for a signed envelope (a configured
+JWS-body provider generates one); an explicit route `body_format` overrides it.
 
-| Provider module under `AshHooks.Provider` | Header / envelope | Documented scheme |
-| --- | --- | --- |
-| `Twilio` | `X-Twilio-Signature`, exact public `request_uri` | [Base64 HMAC-SHA1 of URL + sorted form fields; JSON binds `bodySHA256`](https://www.twilio.com/docs/usage/webhooks/webhooks-security) |
-| `Stripe` | `Stripe-Signature` | [Hex HMAC-SHA256 of `timestamp.body`; multiple `v1` signatures](https://docs.stripe.com/webhooks#verify-manually) |
-| `Shopify` | `X-Shopify-Hmac-Sha256` | [Base64 HMAC-SHA256 of raw body](https://shopify.dev/docs/apps/build/webhooks/verify-deliveries) |
-| `WooCommerce` | `X-WC-Webhook-Signature` | [Default base64 HMAC-SHA256 of raw body](https://developer.woocommerce.com/docs/apis/rest-api/v1/webhooks/) |
-| `Shippo` | `Shippo-Auth-Signature` | [Hex HMAC-SHA256 of `timestamp.body`, HMAC secret issued by Shippo support](https://docs.goshippo.com/tracking/webhook-security) |
-| `EasyPost` | `X-Hmac-Signature` | [`hmac-sha256-hex=` + lowercase-hex HMAC-SHA256 of raw body, NFKD-normalized UTF-8 webhook secret](https://docs.easypost.com/docs/webhooks#webhook-authentication) |
-| `EasyPost` (v2) | `x-hmac-signature-v2`, `x-timestamp`, `x-path`, public path in `request_uri` | [Case-insensitive `hmac-sha256-hex=` + hex HMAC-SHA256 of timestamp + uppercase method + path + raw body, no separators](https://support.easypost.com/hc/en-us/articles/39826034964237-Webhook-HMAC-Validation) |
-| `Magento2` | `x-adobe-commerce-webhook-signature` | [Adobe Commerce's base64 RSA-SHA256 signature of base64 body bytes](https://developer.adobe.com/commerce/extensibility/webhooks/signature-verification) |
-| `BigCommerce` | `webhook-id`, `webhook-timestamp`, `webhook-signature` | [Standard Webhooks; raw app client secret](https://docs.bigcommerce.com/developer/docs/beta/webhooks/http-webhooks#webhook-signature) |
-| `Ecwid` | `X-Ecwid-Webhook-Signature` | [Base64 HMAC-SHA256 of `eventCreated.eventId`](https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_webhooks.md#webhooks-security) |
-| `Squarespace` | `Squarespace-Signature` | [Hex HMAC-SHA256 of raw body using a hex-decoded subscription secret](https://commerce-apis.squarespace.com/webhooks/verifying-notifications) |
-| `Wix` | RS256 JWT in the raw body; no signature header needed | [Public-key JWT verification](https://dev.wix.com/docs/build-apps/develop-your-app/api-integrations/events-and-webhooks/about-webhooks) |
+### Rotation, pausing, and inbound queries
 
-Stripe, Shippo, and BigCommerce default to a symmetric 300-second replay window;
-`replay_window_seconds` overrides it. Stripe's `whsec_...` secret is used as-is.
-BigCommerce's raw client-secret bytes are encoded for Standard Webhooks by the
-provider; do not pre-encode them. Magento2 and Wix secret sources return a trusted
-**public PEM key**. Adobe's prose calls its scheme HMAC, but its executable
-example verifies an asymmetric signature with `crypto.createVerify('SHA256')`;
-the verifier follows that example. Wix enforces present `exp` and `nbf` claims,
-retains the signed JWT claims in the ledger, and applies no age limit to tokens
-without an expiration. A wrapper must delegate Wix's `signature_source/0`
-and `decode_payload/1` as well as its verifier to use body-only ingress.
+- `previous_secret` on an inbound declaration takes the outgoing key's source:
+  both keys verify until you remove the option. Tenant-aware (one-argument)
+  `previous_secret` and `paused` callbacks receive the resolved tenant on
+  multitenant ledgers.
+- `paused` refuses requests with `{:error, :source_paused}` before verification
+  or any write; answer 5xx and the sender retries, so nothing is lost.
+- `AshHooks.Ingress.list/2` queries inbound deliveries by source, status, event
+  type, and time range; `counts/2` answers a window's received, duplicate,
+  failed-verification, and handler-failure counts (`ingress_tracking :on`).
 
-EasyPost uses the webhook's `webhook_secret`, not an API key. For **v1**, pass
-`X-Hmac-Signature` in `ctx.signature`; the provider NFKD-normalizes only the secret.
-The raw body, exact prefix, and lowercase digest retain their existing behavior.
+### HTTP Message Signatures with RequestSeal
 
-For **v2**, pass all three headers in `ctx.headers`, the v2 signature in
-`ctx.signature`, the uppercase request method in `ctx.method`, and the exact
-public request path in the existing host-supplied `ctx.request_uri`:
-
-```elixir
-headers = Map.new(conn.req_headers)
-
-ctx = %{
-  signature: Map.get(headers, "x-hmac-signature-v2") || Map.get(headers, "x-hmac-signature"),
-  headers: headers,
-  method: conn.method,
-  request_uri: conn.request_path
-}
-
-AshHooks.Ingress.ingest(MyApp.WebhookLedger, :easy_post, conn.private[:ash_hooks_raw_body], ctx)
-```
-
-`x-path` must exactly match that independently supplied public path. If a proxy
-rewrites paths, replace `conn.request_path` with a trusted host resolver's public
-path; never derive it from `x-path` or an untrusted forwarded header. Keep signed
-percent escapes and any query bytes unchanged. No URL parsing or decoding occurs;
-the sources do not specify query canonicalization, so confirm the exact `x-path`
-representation before adopting webhook URLs with queries.
-
-V2 follows the [HMAC help article](https://support.easypost.com/hc/en-us/articles/39826034964237-Webhook-HMAC-Validation):
-`x-timestamp` is RFC 2822 with a numeric `±HHMM` offset (for example,
-`Tue, 19 Aug 2025 20:37:09 -0000`). The original timestamp, uppercase method,
-`x-path`, and raw body bytes are concatenated in that order, without separators.
-The shared secret is UTF-8 as supplied; the v2 article specifies no NFKD step.
-Both signature prefix and hexadecimal digest compare case-insensitively, in
-constant time behind an equal-length guard. The provider enforces the published
-default maximum age of **60 seconds**, allowing **30 seconds** of future clock
-skew. The article allows a configurable age of 0–60 minutes; this provider uses
-its 1-minute default. A present v2 header is authoritative: malformed, tampered,
-or stale v2 never falls back to v1, even when a valid v1 signature is also present.
-
-As of November 10, 2026, EasyPost's [API docs](https://docs.easypost.com/docs/webhooks#webhook-authentication)
-and its official SDKs validate v1 only, and EasyPost has not documented whether v2
-replaces v1, whether both headers are sent, or how an account turns v2 on. Confirm
-with EasyPost before relying on v2; adding a custom header does not enable v2
-signing.
-
-Declare `inbound :easy_post` or set `provider AshHooks.Provider.EasyPost` explicitly.
-Both schemes support inbound `previous_secret` rotation. V1 carries no signed
-timestamp, so do not set `replay_window_seconds` for EasyPost; rely on the
-ledger's deduplication for both versions.
-
-**Ecwid's MAC does not cover other payload fields.** Its verifier uses the signed
-event ID for deduplication, but store IDs, entity IDs, and other business data are
-not authenticated by that MAC. Follow Ecwid's guidance to retrieve authoritative
-data through its API before business effects.
-
-**Salesforce CDC, PrestaShop, and OpenCart publish no native signed-webhook
-contract.** A host receiving HTTP events from these systems verifies its own
-emitter's signature using `AshHooks.Provider.Hmac`, configured for that exact
-emitter. Salesforce CDC over [Pub/Sub](https://developer.salesforce.com/docs/platform/pub-sub-api/guide/intro.html)
-is outside webhook ingress. PrestaShop's [hooks](https://devdocs.prestashop-project.org/9/modules/concepts/hooks/)
-and OpenCart's [events](https://github.com/opencart/opencart/wiki/Events-System)
-are extension mechanisms, not a shared native signed HTTP envelope. Third-party
-Magento modules and custom BigCommerce emitters also require their own contract.
-
-For an emitter you control, the generic verifier supports a configured signature
-header, SHA-256 or SHA-1, lowercase hex or base64, an optional timestamp header and
-tolerance, a host canonical-input callback or raw body, and overlapping secrets:
-
-```elixir
-def verify_signature(raw_body, ctx, secret) do
-  AshHooks.Provider.Hmac.verify_signature(raw_body, ctx, secret,
-    header: "x-emitter-signature",
-    algorithm: :sha256,
-    encoding: :hex,
-    timestamp_header: "x-emitter-timestamp",
-    tolerance_seconds: ctx[:replay_window_seconds] || 300
-  )
-end
-
-def timestamp_header, do: "x-emitter-timestamp"
-```
-
-Without a timestamp header the default input is the raw body; with one it is
-`timestamp <> "." <> raw_body`. `canonical_input: {MyApp.Emitter, :signed_input}`
-can replace that input (`signed_input(raw_body, ctx) -> binary`); the host must
-bind every field its emitter signs, including its timestamp. Keep all options
-host-owned, never request-selected. Direct calls accept a list of overlap keys or
-`previous_secrets: [old_key]`; ingress also supports its `previous_secret` resolver.
-
-Tenant-aware (one-argument) `paused` and `previous_secret` callbacks receive the
-resolved tenant on multitenant ledgers, the same tenant used for verification and
-storage. Calls without a tenant resolve sources as in earlier releases.
-Previous-secret app-env sources accept documented binary keys as well as the
-legacy `{:ok, key}` environment value.
+For senders that sign with [HTTP Message Signatures (RFC 9421)](https://www.rfc-editor.org/rfc/rfc9421.html),
+use [RequestSeal](https://hex.pm/packages/request_seal) (`{:request_seal, "~> 0.5.3"}`)
+alongside ash_hooks. It verifies which parts of the request are covered
+(method, authority, path, query, and named headers), checks signature freshness
+and expiry, verifies body integrity with content digests
+([RFC 9530](https://www.rfc-editor.org/rfc/rfc9530.html)), and spends each
+signature's nonce once through a replay store you choose (ETS, PostgreSQL, or
+`ash_onetime`). Keys come from a resolver you write, and its bounded key
+discovery handles JWKS and key directories; it also verifies Web Bot Auth agents
+and crawlers. Its `RequestSeal.AshHooks` adapter verifies inside an ash_hooks
+provider, and `RequestSeal.AshHooks.Http` signs your outbound ash_hooks
+deliveries with RFC 9421. ash_hooks keeps the ledger, retries, and transport.
+The [Verify any sender](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/verify-any-sender.md#http-message-signatures-rfc-9421-with-requestseal)
+guide shows the provider.
 
 ## Sending webhooks
 
@@ -524,14 +494,6 @@ command) instead of HTTP — the same signing, attempts, and telemetry. A
 destination policy (`AshHooks.DestinationPolicy`) adds your own allow and
 deny rules around the packaged SSRF check.
 
-**Inbound parity.** `AshHooks.Ingress.list/2` queries inbound deliveries
-by source, status, event type, and time range; `counts/2` answers a
-window's received / duplicates / failed verifications / handler failures
-(`ingress_tracking :on`); an inbound source's `previous_secret` rotates
-with an overlap window (both keys verify until it ends); `paused`
-refuses requests with `{:error, :source_paused}` — answer 5xx and the
-provider retries, nothing is lost.
-
 ## Fitting the extensions to your domain
 
 The injected fields and actions carry opinionated names by default;
@@ -628,8 +590,8 @@ end
 AshHooks.dispatch(Order, :order_paid, event, tenant: org.id)
 
 # inbound: the tenant rides the request context
-AshHooks.Ingress.ingest(WebhookLedger, :stripe, raw_body, %{
-  signature: sig,
+AshHooks.Ingress.ingest(WebhookLedger, :payments, raw_body, %{
+  headers: conn.req_headers,
   tenant: org.id
 })
 ```
@@ -701,7 +663,7 @@ covers the full model). Vulnerability reports:
 
 ash_hooks follows semantic versioning over a named public
 surface (the DSL, the public modules, injected attributes/actions,
-telemetry events, error classes) — the current major is 2; breaking changes next ship in 3.0,
+telemetry events, error classes) — the current major is 3; breaking changes next ship in 4.0,
 deprecations run two minors minimum, safety corrections ship as fixes
 ([ADR-0010](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0010-semver-and-support-policy.md)).
 
@@ -725,6 +687,8 @@ release with an [UPGRADING.md](UPGRADING.md) note.
   complete walkthrough, migrations included
 - [Guided tour (Livebook)](https://github.com/baselabs/ash_hooks/blob/main/documentation/livebooks/get-started.livemd) —
   run the whole library inside one notebook
+- [Verify any sender](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/verify-any-sender.md) —
+  signature recipes and the provider configuration reference
 - [UPGRADING.md](UPGRADING.md) — migration notes per release
 - [SECURITY.md](SECURITY.md) — reporting and scope
 - [DSL reference](https://github.com/baselabs/ash_hooks/tree/main/documentation/dsls)

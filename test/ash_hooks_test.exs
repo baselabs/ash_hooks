@@ -14,6 +14,7 @@ defmodule AshHooksTest do
 
     webhooks do
       inbound :mock do
+        provider(AshHooks.Provider.Mock)
         secret {AshHooksTest, :secret, []}
         event_id &AshHooksTest.extract_event_id/1
       end
@@ -35,7 +36,7 @@ defmodule AshHooksTest do
       assert {AshHooksTest, :secret, []} = inbound.secret
       assert is_function(inbound.event_id)
       assert is_nil(inbound.replay_window_seconds)
-      assert is_nil(inbound.provider)
+      assert inbound.provider == AshHooks.Provider.Mock
     end
 
     test "outbound entity parses with its options" do
@@ -141,6 +142,7 @@ defmodule AshHooksTest do
 
         webhooks do
           inbound :hubspot do
+            provider(AshHooks.UnavailableTimestampProvider)
             secret {AshHooksTest, :secret, []}
             replay_window_seconds 300
           end
@@ -166,6 +168,7 @@ defmodule AshHooksTest do
 
           webhooks do
             inbound :mock do
+              provider(AshHooks.Provider.Mock)
               secret "super-secret-bytes"
             end
           end
@@ -188,6 +191,7 @@ defmodule AshHooksTest do
 
         webhooks do
           inbound :thing do
+            provider(AshHooks.Provider.Mock)
             secret {AshHooksTest, :secret, []}
           end
 

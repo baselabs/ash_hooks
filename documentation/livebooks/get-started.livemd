@@ -4,7 +4,13 @@
 
 ## You will learn
 
-* Receive an inbound webhook: verify its signature, deduplicate a replay, reject a tamper
+* Verify webhooks from any sender by configuration: an HMAC header, a timestamped
+  structured header with a replay window, an Ed25519 signature, a signed JWS body,
+  and a sender that canonicalizes form fields
+* Ingest through the ledger: deduplicate a replay, reject a tamper, refuse a stale
+  timestamp, and rotate a secret without dropping deliveries
+* Classify events with your own table and run an idempotent handler
+* Verify directly, without a ledger, and see what an invalid configuration reports
 * Send an outbound webhook to an existing WebHook Tester inbox and verify its captured bytes
 * Scope a multi-tenant deployment: one tenant's dispatch never reaches another's rows
 * Fit the extensions to a domain that reserves `payload`, owns an `active` switch, and types its registers with atoms
@@ -16,8 +22,10 @@ receiver. The receiver must already answer at `http://127.0.0.1:52871`;
 set `LOCAL_WEBHOOK_TESTER_PORT` to use another existing receiver. See
 the [local receiver guide](https://github.com/baselabs/ash_hooks/blob/main/ops/local/README.md).
 The notebook starts no server.
-Uses ash_hooks **2.3.0**. Its examples exercise the library locally; vendor-origin
-delivery and a production queue require your own application integration.
+Uses ash_hooks **3.0.0**. The tour plays both sides of each webhook: it signs
+requests the way a sender would and verifies them the way your application does.
+Real senders, a production queue, and your HTTP endpoint come from your own
+application.
 
 <!-- livebook:{"break_marks":true} -->
 
@@ -26,7 +34,7 @@ delivery and a production queue require your own application integration.
 ```elixir
 package =
   case System.get_env("ASH_HOOKS_NOTEBOOK_SOURCE") do
-    nil -> {:ash_hooks, "== 2.3.0"}
+    nil -> {:ash_hooks, "== 3.0.0"}
     source -> {:ash_hooks, path: Path.expand(source)}
   end
 
@@ -49,8 +57,33 @@ Mix.install(
 # :codepoints is Ash's recommended value: max_length bounds value size
 # and matches how SQL data layers count.
 Application.put_env(:ash, :default_string_length_count, :codepoints)
-Application.put_env(:ash_hooks, :tour_inbound_secret, :crypto.strong_rand_bytes(32))
-"2.3.0" = Application.spec(:ash_hooks, :vsn) |> to_string()
+"3.0.0" = Application.spec(:ash_hooks, :vsn) |> to_string()
+
+# Keys for the tour's senders. In your application these come from your
+# secret store through the inbound `secret` sources, never from literals.
+#
+# Shared secrets for the HMAC senders:
+Application.put_env(:ash_hooks, :tour_orders_secret, :crypto.strong_rand_bytes(32))
+Application.put_env(:ash_hooks, :tour_orders_previous_secret, :crypto.strong_rand_bytes(32))
+Application.put_env(:ash_hooks, :tour_payments_secret, :crypto.strong_rand_bytes(32))
+Application.put_env(:ash_hooks, :tour_sms_secret, :crypto.strong_rand_bytes(20))
+
+# An Ed25519 key pair: the sender keeps the private key, you configure the
+# public key (here as base64 of its 32 raw bytes).
+{partner_public, partner_private} = :crypto.generate_key(:eddsa, :ed25519)
+Application.put_env(:ash_hooks, :tour_partner_public_key, Base.encode64(partner_public))
+
+# An RSA key pair for a sender that signs a JWS body. You configure its
+# public key as PEM.
+envelope_private = :public_key.generate_key({:rsa, 2048, 65_537})
+{:RSAPrivateKey, _, modulus, exponent, _, _, _, _, _, _, _} = envelope_private
+envelope_public_pem =
+  :public_key.pem_encode([
+    :public_key.pem_entry_encode(:SubjectPublicKeyInfo, {:RSAPublicKey, modulus, exponent})
+  ])
+
+Application.put_env(:ash_hooks, :tour_envelope_public_key, envelope_public_pem)
+IO.puts(envelope_public_pem)
 ```
 
 ```elixir
@@ -59,33 +92,122 @@ defmodule Tour.Repo do
 end
 ```
 
+## Describe your senders
+
+Each sender gets one provider module. `use AshHooks.Provider, verify: [...]`
+describes how the sender signs its requests; ash_hooks checks the options when
+the module compiles and generates the verification callbacks. The options come
+from the sender's documentation: the header, the algorithm, how the signature
+and secret are encoded, what is signed, and where the timestamp is. The
+[Verify any sender](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/verify-any-sender.md)
+guide has recipes for common shapes, and `AshHooks.Provider.Scheme` documents
+every option.
+
 ```elixir
 defmodule Tour.VerifiedEvent do
   defstruct [:type, :payload]
 end
 
-# A minimal inbound provider — your integration point for any vendor.
-# The scheme here is the common one: lowercase-hex HMAC-SHA256 over the
-# raw body, so verify delegates to the package's default.
-defmodule Tour.Provider do
-  @behaviour AshHooks.Provider
+# 1. An HMAC-SHA256 of the raw body, lowercase hex, in one header.
+#    This provider also classifies events and runs a handler.
+defmodule Tour.Orders do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:header, "x-tour-signature"},
+      encoding: :hex
+    ]
+
+  # Map the sender's type strings to your event atoms with an explicit
+  # table, never String.to_atom on request data (that would let a hostile
+  # sender grow your atom table). Unknown types fail closed.
+  @types %{"order.paid" => :order_paid}
 
   @impl true
-  def verify_signature(raw_body, %{signature: signature}, secret),
-    do: AshHooks.Provider.default_verify_signature(raw_body, signature, secret, :hmac_sha256)
+  def parse_event_type(%{"type" => type}) do
+    case Map.fetch(@types, type) do
+      {:ok, atom} -> {:ok, atom}
+      :error -> {:error, :unknown_event_type}
+    end
+  end
 
-  # Map the vendor's type strings to your event atoms — an explicit
-  # table, never String.to_atom on provider input (that would let a
-  # hostile sender grow your atom table). Unknown types fail closed.
+  def parse_event_type(_payload), do: {:error, :malformed_payload}
+
+  # Your application's action. It must be safe to run twice for the same
+  # event: the ledger deduplicates deliveries, but a crash between this
+  # call and the ledger update re-runs it on redelivery.
   @impl true
-  def parse_event_type(%{"type" => "order.paid"}), do: {:ok, :order_paid}
-
-  def parse_event_type(_), do: {:error, :unknown_event_type}
-
-  @impl true
-  def handle_event(type, payload), do: {:ok, %Tour.VerifiedEvent{type: type, payload: payload}}
+  def handle_event(type, payload) do
+    Agent.update(Tour.Handled, &[payload["id"] | &1])
+    {:ok, %Tour.VerifiedEvent{type: type, payload: payload}}
+  end
 end
 
+# 2. A structured header carrying a timestamp and one or more signatures:
+#    x-tour-payments: t=1731312000,v1=<hex>,v1=<hex>
+#    The signed input is "timestamp.body"; any listed v1 that verifies is
+#    accepted, so the sender can rotate keys.
+defmodule Tour.Payments do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:structured_header, "x-tour-payments", signature_key: "v1"},
+      timestamp: {:signature_field, "t"},
+      signed_input: [:timestamp, ".", :body],
+      tolerance_seconds: 300
+    ]
+end
+
+# 3. A public-key signature: Ed25519 over the raw body, base64 in a header.
+#    The secret source returns the sender's public key.
+defmodule Tour.Partner do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :ed25519,
+      signature: {:header, "x-partner-signature"},
+      encoding: :base64,
+      key_encoding: :base64
+    ]
+end
+
+# 4. The whole body is a compact JWS (an RS256 JWT). The algorithm is pinned
+#    here and never read from the token; the verified payload is what the
+#    ledger stores.
+defmodule Tour.Envelope do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :rsa_pkcs1_sha256,
+      signature: :jws_body
+    ]
+end
+
+# 5. A sender that canonicalizes before signing: HMAC-SHA1 over the public
+#    URL followed by every form field's name and value, sorted by name. A host
+#    function builds that string; returning anything but a binary fails.
+defmodule Tour.Sms do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha1,
+      signature: {:header, "x-sms-signature"},
+      encoding: :base64,
+      signed_input: {__MODULE__, :signed_input}
+    ]
+
+  def signed_input(raw_body, %{request_uri: url}) when is_binary(url) do
+    fields =
+      raw_body
+      |> URI.decode_query()
+      |> Enum.sort()
+      |> Enum.map(fn {name, value} -> name <> value end)
+
+    url <> Enum.join(fields)
+  end
+
+  def signed_input(_raw_body, _ctx), do: nil
+end
+```
+
+```elixir
 defmodule Tour.Ledger do
   use Ash.Resource,
     domain: Tour.Domain,
@@ -110,17 +232,47 @@ defmodule Tour.Ledger do
     defaults([:read])
   end
 
+  # One declaration per source. `provider` is required; the name identifies
+  # the source in the ledger. Secrets are sources, never literals.
   webhooks do
-    inbound :tour do
-      provider(Tour.Provider)
-      # a secret source — never a literal
-      secret fn -> {:ok, Application.fetch_env!(:ash_hooks, :tour_inbound_secret)} end
+    inbound :orders do
+      provider(Tour.Orders)
+      secret fn -> {:ok, Application.fetch_env!(:ash_hooks, :tour_orders_secret)} end
+      # the outgoing key during a rotation: both keys verify until you remove it
+      previous_secret fn ->
+        {:ok, Application.fetch_env!(:ash_hooks, :tour_orders_previous_secret)}
+      end
+
+      # the sender's event id is the deduplication identity
       event_id(&__MODULE__.event_id/1)
+    end
+
+    inbound :payments do
+      provider(Tour.Payments)
+      secret fn -> {:ok, Application.fetch_env!(:ash_hooks, :tour_payments_secret)} end
+      # overrides the provider's tolerance_seconds for this source
+      replay_window_seconds(120)
+    end
+
+    inbound :partner do
+      provider(Tour.Partner)
+      secret fn -> {:ok, Application.fetch_env!(:ash_hooks, :tour_partner_public_key)} end
+    end
+
+    inbound :envelope do
+      provider(Tour.Envelope)
+      secret fn -> {:ok, Application.fetch_env!(:ash_hooks, :tour_envelope_public_key)} end
+    end
+
+    inbound :sms do
+      provider(Tour.Sms)
+      body_format(:form)
+      secret fn -> {:ok, Application.fetch_env!(:ash_hooks, :tour_sms_secret)} end
     end
   end
 
-  def event_id(%{"id" => id}), do: {:ok, id}
-  def event_id(_), do: :error
+  def event_id(%{"id" => id}) when is_binary(id), do: {:ok, id}
+  def event_id(_payload), do: :error
 end
 
 defmodule Tour.Endpoint do
@@ -371,29 +523,253 @@ Tour.Repo.query!("CREATE TABLE IF NOT EXISTS tour_orders (id TEXT PRIMARY KEY)")
 
 ## Inbound: verify, deduplicate, reject a tamper
 
+Your controller passes `AshHooks.Ingress.ingest/4` the exact raw body and the
+request headers (in Phoenix, `conn.private[:ash_hooks_raw_body]` and
+`conn.req_headers`, which keeps every header line). One call verifies the signature, stores the
+payload, deduplicates, claims the row under a lease, runs your handler, and
+records the outcome.
+
 ```elixir
+# A record of what the orders handler ran, to show it runs once per event.
+{:ok, _} = Agent.start_link(fn -> [] end, name: Tour.Handled)
+
+# The sender's side: an HMAC-SHA256 of the exact bytes, lowercase hex.
+sign_orders = fn body, key ->
+  :crypto.mac(:hmac, :sha256, key, body) |> Base.encode16(case: :lower)
+end
+
+orders_secret = Application.fetch_env!(:ash_hooks, :tour_orders_secret)
 body = Jason.encode!(%{"id" => "evt-tour-1", "type" => "order.paid"})
+scope = %{"account_id" => "acct-42"}
+ctx = %{headers: %{"x-tour-signature" => sign_orders.(body, orders_secret)}, scope: scope}
 
-# our provider signs the raw bytes: lowercase-hex HMAC-SHA256
-signature =
-  :crypto.mac(:hmac, :sha256, Application.fetch_env!(:ash_hooks, :tour_inbound_secret), body)
-  |> Base.encode16(case: :lower)
+# First delivery: verified, persisted, claimed, handled, marked processed.
+{:ok, :created, first} = AshHooks.Ingress.ingest(Tour.Ledger, :orders, body, ctx)
+IO.inspect({first.status, first.external_event_type}, label: "first delivery")
+:processed = first.status
 
-ctx = %{signature: signature, headers: %{}, scope: %{"account_id" => "acct-42"}}
+# The same delivery again: the unique index answers. It is a duplicate, and
+# the handler does not run a second time.
+{:ok, :duplicate, _} = AshHooks.Ingress.ingest(Tour.Ledger, :orders, body, ctx)
+["evt-tour-1"] = Agent.get(Tour.Handled, & &1)
+IO.puts("duplicate recognized; the handler ran once")
 
-# First delivery: verified, persisted, claimed, handled, marked
-{:ok, :created, first} = AshHooks.Ingress.ingest(Tour.Ledger, :tour, body, ctx)
-IO.inspect(first.status, label: "first delivery status")
+# One changed byte in the body: rejected before anything is stored.
+{:error, %{__struct__: AshHooks.Errors.Invalid.InvalidSignature}} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :orders, body <> " ", ctx)
 
-# The exact same delivery again: the unique index answers — duplicate,
-# never re-processed
-{:ok, :duplicate, _} = AshHooks.Ingress.ingest(Tour.Ledger, :tour, body, ctx)
+# No signature header at all: rejected the same way, never a crash.
+{:error, %{__struct__: AshHooks.Errors.Invalid.InvalidSignature}} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :orders, body, %{headers: %{}, scope: scope})
 
-# A tampered signature: rejected before anything is trusted
-<<first, rest::binary>> = signature
-tampered = %{ctx | signature: <<Bitwise.bxor(first, 1), rest::binary>>}
-{:error, error} = AshHooks.Ingress.ingest(Tour.Ledger, :tour, body, tampered)
-IO.inspect(error.__struct__, label: "tamper rejected with")
+IO.puts("tampered and unsigned requests rejected")
+```
+
+### Event types your handler does not know
+
+```elixir
+unknown = Jason.encode!(%{"id" => "evt-tour-2", "type" => "order.cancelled"})
+unknown_ctx = %{headers: %{"x-tour-signature" => sign_orders.(unknown, orders_secret)}, scope: scope}
+
+# A verified request with an unknown type is recorded as a permanent
+# failure, so the sender is acknowledged and does not retry forever. Put
+# these rows on your operator surface.
+{:ok, :created, unknown_row} = AshHooks.Ingress.ingest(Tour.Ledger, :orders, unknown, unknown_ctx)
+IO.inspect({unknown_row.status, unknown_row.error_class}, label: "unknown type")
+{:failed_permanent, "unknown_event_type"} = {unknown_row.status, unknown_row.error_class}
+```
+
+### Rotate a secret without dropping deliveries
+
+```elixir
+# The sender still signs with the outgoing key. Because the declaration
+# carries `previous_secret`, the request verifies with either key until you
+# remove that option.
+previous = Application.fetch_env!(:ash_hooks, :tour_orders_previous_secret)
+rotated = Jason.encode!(%{"id" => "evt-tour-3", "type" => "order.paid"})
+rotated_ctx = %{headers: %{"x-tour-signature" => sign_orders.(rotated, previous)}, scope: scope}
+
+{:ok, :created, %{status: :processed}} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :orders, rotated, rotated_ctx)
+
+IO.puts("a request signed with the previous key verified during the overlap")
+```
+
+### A timestamp and a replay window
+
+```elixir
+payments_secret = Application.fetch_env!(:ash_hooks, :tour_payments_secret)
+
+payments_header = fn body, timestamp, key ->
+  mac = :crypto.mac(:hmac, :sha256, key, "#{timestamp}.#{body}") |> Base.encode16(case: :lower)
+  # a second v1 from a key the receiver does not have: any match verifies
+  stale_key_mac = String.duplicate("0", 64)
+  "t=#{timestamp},v1=#{stale_key_mac},v1=#{mac}"
+end
+
+charge = Jason.encode!(%{"type" => "charge.succeeded", "amount" => 1200})
+now = System.system_time(:second)
+
+# Headers can also arrive as an ordered list, the shape of conn.req_headers.
+# Providers then see every line in ctx.header_list, and repeated lines are
+# joined with ", " in ctx.headers.
+fresh_ctx = %{
+  headers: [
+    {"content-type", "application/json"},
+    {"x-tour-payments", payments_header.(charge, now, payments_secret)}
+  ],
+  scope: scope
+}
+{:ok, :created, payment} = AshHooks.Ingress.ingest(Tour.Ledger, :payments, charge, fresh_ctx)
+
+# Configured providers classify every verified request as :webhook and keep
+# the sender's event name in the payload.
+IO.inspect({payment.status, payment.external_event_type, payment.payload["type"]}, label: "payment")
+
+# A correctly signed request from an hour ago is outside the 120-second
+# window declared on this source: a replay, refused.
+old = now - 3600
+old_ctx = %{headers: [{"x-tour-payments", payments_header.(charge, old, payments_secret)}], scope: scope}
+
+{:error, %{__struct__: AshHooks.Errors.Invalid.StaleTimestamp}} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :payments, charge, old_ctx)
+
+# A fresh timestamp never rescues a bad signature: that is still an invalid signature.
+forged_ctx = %{headers: %{"x-tour-payments" => "t=#{now},v1=#{String.duplicate("a", 64)}"}, scope: scope}
+
+{:error, %{__struct__: AshHooks.Errors.Invalid.InvalidSignature}} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :payments, charge, forged_ctx)
+
+IO.puts("stale timestamp refused; forged signature refused")
+```
+
+### A public-key signature
+
+```elixir
+shipment = Jason.encode!(%{"shipment" => "shp_1", "status" => "delivered"})
+partner_signature = :crypto.sign(:eddsa, :none, shipment, [partner_private, :ed25519])
+
+partner_ctx = %{headers: %{"x-partner-signature" => Base.encode64(partner_signature)}, scope: scope}
+{:ok, :created, %{status: :processed}} = AshHooks.Ingress.ingest(Tour.Ledger, :partner, shipment, partner_ctx)
+
+# A signature from any other key fails: only the configured public key verifies.
+{_other_public, other_private} = :crypto.generate_key(:eddsa, :ed25519)
+imposter = :crypto.sign(:eddsa, :none, shipment, [other_private, :ed25519])
+imposter_ctx = %{headers: %{"x-partner-signature" => Base.encode64(imposter)}, scope: scope}
+
+{:error, %{__struct__: AshHooks.Errors.Invalid.InvalidSignature}} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :partner, shipment, imposter_ctx)
+
+IO.puts("Ed25519: the sender's key verifies, another key does not")
+```
+
+### A signed JWS body
+
+```elixir
+b64url = &Base.url_encode64(&1, padding: false)
+
+jws = fn header, claims ->
+  input = b64url.(Jason.encode!(header)) <> "." <> b64url.(Jason.encode!(claims))
+  input <> "." <> b64url.(:public_key.sign(input, :sha256, envelope_private))
+end
+
+claims = %{"event" => "member.joined", "member" => "m_7", "exp" => System.system_time(:second) + 300}
+token = jws.(%{"alg" => "RS256", "typ" => "JWT"}, claims)
+
+# No signature header: the body is the signed envelope. The ledger stores the
+# verified claims.
+{:ok, :created, envelope} = AshHooks.Ingress.ingest(Tour.Ledger, :envelope, token, %{headers: %{}, scope: scope})
+IO.inspect(envelope.payload, label: "stored JWS payload")
+"member.joined" = envelope.payload["event"]
+
+# A token that names another algorithm is rejected, whatever its signature:
+# the algorithm comes from your configuration, never from the token.
+unsigned = b64url.(Jason.encode!(%{"alg" => "none"})) <> "." <> b64url.(Jason.encode!(claims)) <> "."
+
+{:error, %{__struct__: AshHooks.Errors.Invalid.InvalidSignature}} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :envelope, unsigned, %{headers: %{}, scope: scope})
+
+# A validly signed token past its exp claim is refused as stale.
+expired = jws.(%{"alg" => "RS256"}, %{claims | "exp" => System.system_time(:second) - 60})
+
+{:error, %{__struct__: AshHooks.Errors.Invalid.StaleTimestamp}} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :envelope, expired, %{headers: %{}, scope: scope})
+
+IO.puts("JWS: pinned algorithm, alg none refused, exp enforced")
+```
+
+### A sender that canonicalizes form fields
+
+```elixir
+# This sender posts a form and signs the public URL it called plus the
+# sorted fields. Pass that URL as request_uri: behind a proxy, build it from
+# a base URL you configure, never from forwarded headers.
+url = "https://hooks.example.test/sms?account=acct-42"
+form = "To=%2B15550100&From=%2B15550199&Body=hello"
+sms_secret = Application.fetch_env!(:ash_hooks, :tour_sms_secret)
+signed = url <> "Bodyhello" <> "From+15550199" <> "To+15550100"
+sms_signature = :crypto.mac(:hmac, :sha, sms_secret, signed) |> Base.encode64()
+
+sms_ctx = %{headers: %{"x-sms-signature" => sms_signature}, request_uri: url, scope: scope}
+{:ok, :created, sms} = AshHooks.Ingress.ingest(Tour.Ledger, :sms, form, sms_ctx)
+
+# body_format :form decoded the verified bytes into the stored payload.
+IO.inspect(sms.payload, label: "stored form payload")
+"hello" = sms.payload["Body"]
+
+# The same bytes posted to a different URL do not verify.
+{:error, %{__struct__: AshHooks.Errors.Invalid.InvalidSignature}} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :sms, form, %{sms_ctx | request_uri: "https://evil.example.test/sms"})
+```
+
+### What to answer the sender
+
+| `ingest/4` result | Meaning | Answer |
+| --- | --- | --- |
+| `{:ok, _, %{status: s}}` with `s` in `[:processed, :failed_permanent, :superseded]` | terminal: done, or permanently failed (on your operator surface) | 2xx |
+| `{:ok, _, _row}` with another status | your handler failed and can retry | 5xx, so the sender retries |
+| `{:error, %InvalidSignature{}}`, `%StaleTimestamp{}`, `%MalformedPayload{}` | not authentic, a replay, or not decodable | 4xx |
+| `{:error, %NoWebhookSecret{}}` or `{:error, :source_paused}` | your configuration or a deliberate pause | 5xx, so nothing is lost |
+
+### Verify without a ledger
+
+```elixir
+# Every provider's verify_signature/3 can be called directly, for example in
+# your own tests. Direct calls may pin the clock with :now_ms.
+:ok = Tour.Orders.verify_signature(body, %{headers: ctx.headers}, orders_secret)
+
+# The configuration also works without a module...
+:ok =
+  AshHooks.Provider.Scheme.verify(body, %{headers: ctx.headers}, orders_secret,
+    algorithm: :hmac_sha256,
+    signature: {:header, "x-tour-signature"}
+  )
+
+# ...and the primitives underneath are public, for schemes you implement yourself.
+:ok = AshHooks.Provider.Signature.hmac(body, ctx.headers["x-tour-signature"], orders_secret, digest: :sha256)
+:ok = AshHooks.Provider.Signature.ed25519(shipment, Base.encode64(partner_signature), [partner_public])
+{:ok, _claims_json} = AshHooks.Provider.Signature.jws(token, [envelope_public_pem], alg: "RS256")
+
+# A list of keys verifies with any of them: rotation for direct calls.
+:ok = AshHooks.Provider.Signature.hmac(rotated, rotated_ctx.headers["x-tour-signature"], [orders_secret, previous])
+IO.puts("direct verification agrees with ingress")
+```
+
+```elixir
+# Options are checked when the provider compiles. A typo is a compile error
+# that names the problem, not a provider that silently rejects everything.
+try do
+  Code.compile_string("""
+  defmodule Tour.Misconfigured do
+    use AshHooks.Provider,
+      verify: [algorithm: :hmac_sha256, signature: {:header, "x-sig"}, encoding: :hexadecimal]
+  end
+  """)
+rescue
+  error -> IO.puts("compile error: " <> Exception.message(error))
+else
+  _ -> raise "an invalid encoding must not compile"
+end
 ```
 
 <!-- livebook:{"break_marks":true} -->
@@ -776,15 +1152,20 @@ IO.puts("tenant-less dispatch: {:error, :tenant_required}")
 # Nothing is older than 30 days — prune finds nothing yet
 {:ok, 0} = AshHooks.Ingress.prune(Tour.Ledger, older_than: DateTime.add(DateTime.utc_now(), -30, :day))
 
-# Backdate the processed row past a 30-day TTL and prune again
+# Backdate the processed rows past a 30-day TTL and prune again
+%{rows: [[processed]]} =
+  Tour.Repo.query!("SELECT COUNT(*) FROM tour_ledgers WHERE status = 'processed'")
+
 Tour.Repo.query!("UPDATE tour_ledgers SET inserted_at = ? WHERE status = 'processed'", [
   DateTime.add(DateTime.utc_now(), -31, :day)
   |> DateTime.truncate(:microsecond)
   |> DateTime.to_iso8601()
 ])
 
-{:ok, 1} = AshHooks.Ingress.prune(Tour.Ledger, older_than: DateTime.add(DateTime.utc_now(), -30, :day))
-IO.puts("Pruned the terminal row — non-terminal rows are never touched.")
+{:ok, ^processed} =
+  AshHooks.Ingress.prune(Tour.Ledger, older_than: DateTime.add(DateTime.utc_now(), -30, :day))
+
+IO.puts("Pruned #{processed} terminal rows past the TTL; recent and non-terminal rows are never touched.")
 ```
 
 <!-- livebook:{"break_marks":true} -->
@@ -1026,8 +1407,18 @@ only that file and its SQLite sidecars when you finish:
 database_path = Application.fetch_env!(:ash_hooks, Tour.Repo)[:database]
 :ok = Supervisor.stop(Process.whereis(Tour.Repo))
 for suffix <- ["", "-shm", "-wal"], do: File.rm(database_path <> suffix)
-Application.delete_env(:ash_hooks, :tour_inbound_secret)
-Application.delete_env(:ash_hooks, Tour.Repo)
+for key <- [
+      :tour_orders_secret,
+      :tour_orders_previous_secret,
+      :tour_payments_secret,
+      :tour_sms_secret,
+      :tour_partner_public_key,
+      :tour_envelope_public_key,
+      Tour.Repo
+    ],
+    do: Application.delete_env(:ash_hooks, key)
+
+:ok = Agent.stop(Tour.Handled)
 :ok = :telemetry.detach("tour")
 IO.puts("Tour database removed; captured receiver requests follow the receiver's retention policy.")
 ```
@@ -1037,6 +1428,7 @@ IO.puts("Tour database removed; captured receiver requests follow the receiver's
 ## Where to go next
 
 * [Get-started tutorial](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md) — the full walkthrough with Oban
+* [Verify any sender](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/verify-any-sender.md) — signature recipes and the configuration reference
 * [Multi-tenant adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
 * [DSL reference](https://github.com/baselabs/ash_hooks/tree/main/documentation/dsls)
-* `AshHooks.Telemetry`, `AshHooks.Delivery`, `AshHooks.Ingress` module docs
+* `AshHooks.Provider.Scheme`, `AshHooks.Provider.Signature`, `AshHooks.Telemetry`, `AshHooks.Delivery`, `AshHooks.Ingress` module docs

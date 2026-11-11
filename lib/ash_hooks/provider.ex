@@ -6,16 +6,26 @@ defmodule AshHooks.Provider do
   its decoded payload. Optional callbacks resolve per-connection secrets,
   declare an authenticated timestamp, or identify a complete delivery.
 
-  `verify_signature/3` implementations whose scheme is exactly "lowercase-hex
-  HMAC over the raw body" delegate to `default_verify_signature/4`;
-  scheme-specific providers (composite strings, separate timestamp headers,
-  replay windows) implement their own.
+  Most providers describe the sender's scheme in configuration:
 
-  Built-in providers return typed events. Implement `handle_event/2` in your
-  own provider when ingress must execute application actions. Make those
-  actions idempotent: durable ingress claims prevent overlapping ownership,
-  but cannot make a remote side effect and the ledger update one transaction.
+      defmodule MyApp.Webhooks.Orders do
+        use AshHooks.Provider,
+          verify: [algorithm: :hmac_sha256, signature: {:header, "x-orders-signature"}]
+      end
+
+  `AshHooks.Provider.Scheme` documents every option, and the
+  [Verify any sender](verify-any-sender.md) guide has recipes for common
+  signature shapes. A scheme that configuration cannot express implements
+  `verify_signature/3` with the primitives in `AshHooks.Provider.Signature`.
+
+  Configured providers return generic typed events (`AshHooks.Provider.Event`).
+  Override `parse_event_type/1` and `handle_event/2` when ingress must classify
+  events and execute application actions. Make those actions idempotent:
+  durable ingress claims prevent overlapping ownership, but cannot make a remote
+  side effect and the ledger update one transaction.
   """
+
+  alias AshHooks.Provider.{Event, Scheme}
 
   @type raw_body :: binary()
   @type signature_header_value :: binary()
@@ -29,8 +39,12 @@ defmodule AshHooks.Provider do
   Carries everything any provider's signature scheme can need:
 
     * `:signature` — the value extracted from the provider's signature header.
-    * `:headers` — the full lowercased request header map, for schemes that
-      read an additional header (e.g. a separate timestamp header).
+    * `:headers` — the request headers as a map. When the host passed the
+      ordered list from `conn.req_headers`, names are lowercased and repeated
+      lines are joined with `", "`; a host-supplied map arrives unchanged.
+    * `:header_list` — every request header line as `{name, value}`, in
+      arrival order with repeated lines kept, when the host passed a list
+      (names lowercased); for a host-supplied map, its binary entries.
     * `:method` — the uppercase HTTP method, for schemes that sign over it.
       `nil` when the caller does not supply it.
     * `:request_uri` — the exact request URI the provider signed. `nil` when
@@ -46,8 +60,9 @@ defmodule AshHooks.Provider do
   """
   @type verify_context :: %{
           optional(:replay_window_seconds) => pos_integer(),
-          signature: signature_header_value(),
+          signature: signature_header_value() | nil,
           headers: %{optional(String.t()) => String.t()},
+          header_list: [{String.t(), String.t()}],
           method: String.t() | nil,
           request_uri: String.t() | nil,
           tenant: term()
@@ -108,7 +123,16 @@ defmodule AshHooks.Provider do
                       timestamp_header: 0
 
   @doc """
-  The `use` form for new providers: sets the behavior and provides the
+  Defines a provider. With `verify: opts`, generates overridable verification,
+  timestamp, signature-source, event-parsing, and handling callbacks from an
+  `AshHooks.Provider.Scheme`; JWS-body providers also get a payload decoder and
+  a payload-based `event_identity/1`. The options are checked when the module
+  finishes compiling, so an invalid option is a compile error. Write them in
+  place as a keyword list; their values may read module attributes and may be
+  two-argument anonymous functions (which may call the module's private
+  functions), remote captures, or `{module, function}` tuples.
+
+  Plain `use AshHooks.Provider` sets the behavior and provides the
   tenant-aware `webhook_signing_secret/2` as an overridable default that
   delegates to `webhook_signing_secret/1` when the provider implements it
   — implement `/1` and both shapes resolve; override `/2` for
@@ -118,7 +142,13 @@ defmodule AshHooks.Provider do
   all). Providers written against the plain `@behaviour` keep working
   unchanged (`webhook_signing_secret/3` resolves both).
   """
-  defmacro __using__(_opts) do
+  defmacro __using__(opts) do
+    configured =
+      case Keyword.fetch(opts, :verify) do
+        :error -> nil
+        {:ok, verify_opts} -> configured_callbacks(verify_opts)
+      end
+
     quote do
       @behaviour AshHooks.Provider
 
@@ -127,6 +157,8 @@ defmodule AshHooks.Provider do
       # is a compile error in providers that implement neither secret
       # callback. The apply also
       # lets the runtime branch fail closed for app-scope providers.
+      unquote(if configured, do: quote(do: @impl(true)))
+
       def webhook_signing_secret(connection, _tenant) do
         if function_exported?(__MODULE__, :webhook_signing_secret, 1) do
           apply(__MODULE__, :webhook_signing_secret, [connection])
@@ -136,13 +168,88 @@ defmodule AshHooks.Provider do
       end
 
       defoverridable webhook_signing_secret: 2
+      unquote(configured)
     end
+  end
+
+  # Options are rebuilt inside the module on each call, so they may use
+  # anonymous functions that call the module's own private helpers and read
+  # its attributes. They are validated once the module has compiled
+  # (`__after_compile__/2`), so a bad option is still a compile error. Only
+  # the signature location is read at expansion: a JWS body provider gets a
+  # payload decoder and a payload-based identity.
+  defp configured_callbacks(verify_opts) do
+    {options, jws?} = literal_options(verify_opts)
+    source = if jws?, do: :body, else: :request
+
+    quote do
+      @after_compile AshHooks.Provider
+
+      @doc false
+      def __ash_hooks_scheme__, do: Scheme.new!(unquote(options))
+
+      @impl true
+      def verify_signature(raw_body, ctx, keys),
+        do: Scheme.verify(raw_body, ctx, keys, __ash_hooks_scheme__())
+
+      @impl true
+      def timestamp_header, do: Scheme.timestamp_header(__ash_hooks_scheme__())
+      @impl true
+      def signature_source, do: unquote(source)
+      @impl true
+      def parse_event_type(payload), do: Event.parse(payload)
+      @impl true
+      def handle_event(type, payload), do: Event.build(type, payload)
+
+      defoverridable verify_signature: 3,
+                     timestamp_header: 0,
+                     signature_source: 0,
+                     parse_event_type: 1,
+                     handle_event: 2
+
+      unquote(jws_callbacks(jws?))
+    end
+  end
+
+  defp jws_callbacks(false), do: nil
+
+  defp jws_callbacks(true) do
+    quote do
+      @impl true
+      def decode_payload(raw_body),
+        do: Scheme.decode_payload(raw_body, __ash_hooks_scheme__())
+
+      @impl true
+      def event_identity(payload), do: Scheme.payload_identity(payload)
+
+      defoverridable decode_payload: 1, event_identity: 1
+    end
+  end
+
+  defp literal_options(options) when is_list(options) do
+    if Keyword.keyword?(options),
+      do: {options, Keyword.get(options, :signature) == :jws_body},
+      else: raise(ArgumentError, "use AshHooks.Provider expects verify: to be a keyword list")
+  end
+
+  defp literal_options(_options) do
+    raise ArgumentError,
+          "use AshHooks.Provider expects verify: to be a keyword list written in place " <>
+            "(its values may read module attributes or call the module's functions); to " <>
+            "choose options at runtime, implement verify_signature/3 with " <>
+            "AshHooks.Provider.Scheme.verify/4"
+  end
+
+  @doc false
+  def __after_compile__(env, _bytecode) do
+    _ = env.module.__ash_hooks_scheme__()
+    :ok
   end
 
   @doc """
   Parses the event type from the decoded request body — a map for
-  object-shaped vendors, a list for batch vendors (HubSpot delivers
-  top-level arrays). Providers receiving a shape their vendor never sends
+  object-shaped deliveries, a list for batch deliveries. Providers receiving a
+  shape their sender never sends
   fail closed through their catch-all clause (`{:error, :malformed_payload}`).
   """
   @callback parse_event_type(payload :: map() | list()) ::
@@ -179,8 +286,12 @@ defmodule AshHooks.Provider do
 
   @optional_callbacks decode_payload: 1, body_format: 0
 
-  @doc "Optional signature location. `:body` admits signed body envelopes such as Wix JWTs."
-  @callback signature_source() :: :header | :body
+  @doc """
+  Optional signature location: `:header` (default) requires the host-supplied
+  `ctx.signature`; `:body` admits signed body envelopes; `:request` lets the
+  provider extract signatures from request headers itself.
+  """
+  @callback signature_source() :: :header | :body | :request
   @optional_callbacks signature_source: 0
 
   @doc false

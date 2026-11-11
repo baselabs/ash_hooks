@@ -30,18 +30,19 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     end
 
     webhooks do
-      inbound :hub_spot_v3 do
-        provider(AshHooks.Provider.HubSpotV3)
+      inbound :batch do
+        provider(AshHooks.TestBatchProvider)
         secret {AshHooks.InboundLegacyAdoptionTest, :secret, []}
       end
 
       inbound :custom_identity do
-        provider(AshHooks.Provider.HubSpotV3)
+        provider(AshHooks.TestBatchProvider)
         secret {AshHooks.InboundLegacyAdoptionTest, :secret, []}
         event_id(&AshHooks.InboundLegacyAdoptionTest.explicit_event_id/1)
       end
 
       inbound :unsupported_identity do
+        provider(AshHooks.Provider.Mock)
         secret {AshHooks.InboundLegacyAdoptionTest, :secret, []}
       end
     end
@@ -73,8 +74,8 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     end
 
     webhooks do
-      inbound :hub_spot_v3 do
-        provider(AshHooks.Provider.HubSpotV3)
+      inbound :batch do
+        provider(AshHooks.TestBatchProvider)
         secret {AshHooks.InboundLegacyAdoptionTest, :secret, []}
       end
     end
@@ -104,8 +105,8 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     end
 
     webhooks do
-      inbound :hub_spot_v3 do
-        provider(AshHooks.Provider.HubSpotV3)
+      inbound :batch do
+        provider(AshHooks.TestBatchProvider)
         secret {AshHooks.InboundLegacyAdoptionTest, :secret, []}
       end
     end
@@ -140,8 +141,8 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     end
 
     webhooks do
-      inbound :hub_spot_v3 do
-        provider(AshHooks.Provider.HubSpotV3)
+      inbound :batch do
+        provider(AshHooks.TestBatchProvider)
         secret {AshHooks.InboundLegacyAdoptionTest, :secret, []}
       end
     end
@@ -172,8 +173,8 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     end
 
     webhooks do
-      inbound :hub_spot_v3 do
-        provider(AshHooks.Provider.HubSpotV3)
+      inbound :batch do
+        provider(AshHooks.TestBatchProvider)
         secret {AshHooks.InboundLegacyAdoptionTest, :secret, []}
       end
     end
@@ -195,7 +196,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
 
   alias AshHooks.InboundDelivery.LegacyAdoption
   alias AshHooks.Ingress
-  alias AshHooks.Provider.HubSpotV3
+  alias AshHooks.TestBatchProvider
 
   @table "inbound_legacy_adoption_ledgers"
 
@@ -249,15 +250,13 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     retry = event(5)
     first_id = legacy_row(first, :received, ~U[2026-10-06 10:00:00.000000Z])
     processed_id = legacy_row(retry, :processed, ~U[2026-10-06 10:01:00.000000Z])
-    {:ok, canonical} = HubSpotV3.event_identity([first])
+    {:ok, canonical} = TestBatchProvider.event_identity([first])
 
     assert {:error, :ingress_not_quiesced} =
-             Ingress.adopt_legacy_identity(Ledger, :hub_spot_v3, scope: %{account_id: "acct-a"})
+             Ingress.adopt_legacy_identity(Ledger, :batch, scope: %{account_id: "acct-a"})
 
     assert {:ok, plan} =
-             Ingress.plan_legacy_identity_adoption(Ledger, :hub_spot_v3,
-               scope: %{account_id: "acct-a"}
-             )
+             Ingress.plan_legacy_identity_adoption(Ledger, :batch, scope: %{account_id: "acct-a"})
 
     assert plan.unresolved == []
     assert length(plan.groups) == 1
@@ -266,7 +265,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     assert Enum.all?(plan.audit, &is_binary(&1.after_external_event_id))
 
     assert {:ok, applied} =
-             Ingress.adopt_legacy_identity(Ledger, :hub_spot_v3,
+             Ingress.adopt_legacy_identity(Ledger, :batch,
                scope: %{account_id: "acct-a"},
                quiesced?: true
              )
@@ -287,7 +286,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     before = snapshot(rows)
 
     assert {:ok, _rerun} =
-             Ingress.adopt_legacy_identity(Ledger, :hub_spot_v3,
+             Ingress.adopt_legacy_identity(Ledger, :batch,
                scope: %{account_id: "acct-a"},
                quiesced?: true
              )
@@ -300,7 +299,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     [before] = rows()
 
     assert {:error, %{reason: :unresolved_payloads, unresolved: [unresolved]}} =
-             Ingress.adopt_legacy_identity(Ledger, :hub_spot_v3,
+             Ingress.adopt_legacy_identity(Ledger, :batch,
                scope: %{account_id: "acct-a"},
                quiesced?: true
              )
@@ -309,7 +308,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     assert snapshot(rows()) == snapshot([before])
 
     assert {:ok, _} =
-             Ingress.adopt_legacy_identity(Ledger, :hub_spot_v3,
+             Ingress.adopt_legacy_identity(Ledger, :batch,
                scope: %{account_id: "acct-a"},
                canonical_ids: %{digest(%{}) => "host-canonical-id"},
                quiesced?: true
@@ -329,16 +328,16 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
 
   test "default entry points and validation failures remain bounded" do
     assert {:error, :inbound_not_found} = LegacyAdoption.plan(Ledger, :missing)
-    assert {:error, :ingress_not_quiesced} = LegacyAdoption.apply(Ledger, :hub_spot_v3)
+    assert {:error, :ingress_not_quiesced} = LegacyAdoption.apply(Ledger, :batch)
 
     assert {:error, :partition_scope_mismatch} =
-             LegacyAdoption.plan(Ledger, :hub_spot_v3, scope: "not-a-map")
+             LegacyAdoption.plan(Ledger, :batch, scope: "not-a-map")
 
     assert {:error, :provider_identity_not_supported} =
              LegacyAdoption.plan(Ledger, :unsupported_identity, scope: %{account_id: "acct-a"})
 
     assert {:error, :inserted_at_required} =
-             LegacyAdoption.plan(NoInsertedAtLedger, :hub_spot_v3, scope: %{account_id: "acct-a"})
+             LegacyAdoption.plan(NoInsertedAtLedger, :batch, scope: %{account_id: "acct-a"})
   end
 
   test "a nonrepresentative canonical occupant receives a stable superseded identity" do
@@ -354,7 +353,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     ])
 
     assert {:ok, plan} =
-             LegacyAdoption.plan(Ledger, :hub_spot_v3,
+             LegacyAdoption.plan(Ledger, :batch,
                scope: %{account_id: "acct-a"},
                canonical_ids: %{
                  canonical => canonical,
@@ -385,7 +384,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     }
 
     assert {:ok, plan} =
-             LegacyAdoption.plan(Ledger, :hub_spot_v3,
+             LegacyAdoption.plan(Ledger, :batch,
                scope: %{account_id: "acct-a"},
                canonical_ids: mappings
              )
@@ -394,7 +393,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     assert occupant.after_external_event_id == canonical
 
     assert {:ok, event_key_plan} =
-             LegacyAdoption.plan(EventIdKeyLedger, :hub_spot_v3,
+             LegacyAdoption.plan(EventIdKeyLedger, :batch,
                scope: %{account_id: "acct-a"},
                canonical_ids: mappings
              )
@@ -411,7 +410,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     refute Ash.DataLayer.can?(:transact, LedgerNoTransactions)
 
     assert {:error, :transactions_not_supported} =
-             Ingress.adopt_legacy_identity(LedgerNoTransactions, :hub_spot_v3,
+             Ingress.adopt_legacy_identity(LedgerNoTransactions, :batch,
                scope: %{account_id: "acct-a"},
                quiesced?: true
              )
@@ -424,7 +423,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     before = complete_snapshot(rows())
 
     assert {:error, :partition_scope_mismatch} =
-             Ingress.adopt_legacy_identity(Ledger, :hub_spot_v3,
+             Ingress.adopt_legacy_identity(Ledger, :batch,
                scope: %{},
                quiesced?: true
              )
@@ -447,7 +446,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     }
 
     assert {:ok, %{conflicts: [conflict]}} =
-             Ingress.plan_legacy_identity_adoption(Ledger, :hub_spot_v3,
+             Ingress.plan_legacy_identity_adoption(Ledger, :batch,
                scope: %{account_id: "acct-a"},
                canonical_ids: mappings
              )
@@ -458,7 +457,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     assert conflict.occupied_next_event_id == "second-canonical-id"
 
     assert {:error, %{reason: :canonical_identity_conflicts, conflicts: [^conflict]}} =
-             Ingress.adopt_legacy_identity(Ledger, :hub_spot_v3,
+             Ingress.adopt_legacy_identity(Ledger, :batch,
                scope: %{account_id: "acct-a"},
                canonical_ids: mappings,
                quiesced?: true
@@ -509,7 +508,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     end)
 
     assert {:error, _database_error} =
-             Ingress.adopt_legacy_identity(Ledger, :hub_spot_v3,
+             Ingress.adopt_legacy_identity(Ledger, :batch,
                scope: %{account_id: "acct-a"},
                quiesced?: true
              )
@@ -537,7 +536,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     end)
 
     assert {:error, _partition_changed} =
-             LegacyAdoption.apply(Ledger, :hub_spot_v3,
+             LegacyAdoption.apply(Ledger, :batch,
                scope: %{account_id: "acct-a"},
                quiesced?: true
              )
@@ -550,7 +549,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     before = complete_snapshot(rows(RejectingUpdateLedger))
 
     assert {:error, error} =
-             LegacyAdoption.apply(RejectingUpdateLedger, :hub_spot_v3,
+             LegacyAdoption.apply(RejectingUpdateLedger, :batch,
                scope: %{account_id: "acct-a"},
                quiesced?: true
              )
@@ -575,7 +574,7 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
     old_identity = digest(payload)
 
     Repo.query!(
-      "INSERT INTO #{@table} (id, provider, external_event_id, external_event_type, payload, payload_digest, status, account_id, inserted_at, updated_at) VALUES (?, 'hub_spot_v3', ?, 'object_association_change', ?, ?, ?, 'acct-a', ?, ?)",
+      "INSERT INTO #{@table} (id, provider, external_event_id, external_event_type, payload, payload_digest, status, account_id, inserted_at, updated_at) VALUES (?, 'batch', ?, 'object_association_change', ?, ?, ?, 'acct-a', ?, ?)",
       [
         id,
         old_identity,

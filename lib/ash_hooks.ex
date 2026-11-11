@@ -9,17 +9,10 @@ defmodule AshHooks do
         extensions: [AshHooks]
 
       webhooks do
-        # convention-resolves to AshHooks.Provider.ComplyCube
-        inbound :comply_cube do
-          secret {:app_env, [:my_app, :complycube_secret]}
-          # optional: extract a stable event id (payload -> {:ok, id} | :error);
-          # otherwise the provider identity callback, then raw-body digest, applies
-        end
-
-        # convention-resolves to AshHooks.Provider.HubSpotV3 — the
-        # vendor-default 300s replay window applies; override it either way
-        inbound :hub_spot_v3 do
-          secret {:app_env, [:my_app, :hubspot_client_secret]}
+        inbound :orders do
+          provider MyApp.Webhooks.OrderProvider
+          secret {:app_env, [:my_app, :webhook_secret]}
+          # optional: extract a stable event id from the decoded payload
         end
 
         outbound :order_paid do
@@ -53,15 +46,14 @@ defmodule AshHooks do
       name: [
         type: :atom,
         required: true,
-        doc: "The provider name (e.g. `:comply_cube`)."
+        doc: "The source identity stored in the inbound delivery ledger."
       ],
       provider: [
         type: :atom,
         doc: """
-        The provider MODULE implementing `AshHooks.Provider`. When unset, the
-        ingress resolves `AshHooks.Provider.<Camelized(name)>` and fails
-        closed when that module does not exist or does not implement the
-        behavior.
+        The required module implementing `AshHooks.Provider`, for example one
+        defined with `use AshHooks.Provider, verify: [...]`. The source name
+        does not select a module.
         """
       ],
       body_format: [
@@ -122,9 +114,8 @@ defmodule AshHooks do
         type: :pos_integer,
         doc: """
         Replay-protection window for providers whose scheme carries a
-        trustworthy timestamp (e.g. HubSpot v3). Providers without timestamps
-        (e.g. ComplyCube) MUST leave this unset — the verifier rejects a
-        window whose provider declares no timestamp header
+        trustworthy timestamp. Providers without timestamps must leave this
+        unset — the verifier rejects a window whose provider declares no timestamp header
         (`AshHooks.Provider.timestamp_header/1` returns nil). The window value
         is passed to the provider's `verify_signature/3` in the context map
         for scheme-specific enforcement.
@@ -244,6 +235,7 @@ defmodule AshHooks do
   use Spark.Dsl.Extension,
     sections: [@webhooks],
     verifiers: [
+      AshHooks.Verifiers.ProviderRequired,
       AshHooks.Verifiers.ReplayWindowRequiresTimestamp,
       AshHooks.Verifiers.OutboundReferences
     ]

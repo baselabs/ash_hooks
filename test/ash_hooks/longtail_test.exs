@@ -3,7 +3,7 @@ defmodule AshHooks.LongTailTest do
   Direct unit coverage for the small pure surfaces: error message/1
   clauses, the top-level entry points, event/legacy/signing edges, the
   SSRF classifier arms, the Ash.Type Ecto surfaces, CertSan's DER
-  fallbacks, and the HubSpot v3 guard arms.
+  fallbacks, and the configured HMAC guard arms.
   """
 
   use ExUnit.Case, async: true
@@ -14,7 +14,7 @@ defmodule AshHooks.LongTailTest do
   alias AshHooks.Errors.Unknown.UnknownError
   alias AshHooks.Http.CertSan
   alias AshHooks.InboundDelivery.Payload
-  alias AshHooks.Provider.HubSpotV3
+  alias AshHooks.Provider.Hmac
 
   describe "error message/1 clauses" do
     test "every Invalid class renders its message" do
@@ -212,10 +212,10 @@ defmodule AshHooks.LongTailTest do
     end
   end
 
-  describe "HubSpot v3 guard arms" do
-    test "verification without a v1-shaped signature fails closed" do
+  describe "configured HMAC guard arms" do
+    test "verification without a signature fails closed" do
       assert {:error, :invalid_signature} =
-               HubSpotV3.verify_signature(
+               Hmac.verify_signature(
                  "raw",
                  %{headers: %{}, signature: nil},
                  "s"
@@ -223,11 +223,11 @@ defmodule AshHooks.LongTailTest do
     end
 
     test "non-secret and headerless-ctx shapes hit the guard catch-alls" do
-      assert {:error, :invalid_signature} =
-               HubSpotV3.verify_signature("raw", %{}, :not_a_secret)
+      assert {:error, :no_webhook_secret} =
+               Hmac.verify_signature("raw", %{}, :not_a_secret)
 
       assert {:error, :invalid_signature} =
-               HubSpotV3.verify_signature(
+               Hmac.verify_signature(
                  "raw",
                  %{signature: "v1=abc"},
                  "secret"

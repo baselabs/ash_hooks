@@ -115,7 +115,7 @@ defmodule AshHooks.InboundParityTest do
   def previous_secret, do: {:ok, @old}
   def paused?, do: Application.get_env(:ash_hooks, :inbound_parity_paused, false)
 
-  defp signed_body(source, id, secret) do
+  defp signed_body(id, secret) do
     body = Jason.encode!(%{"id" => id, "type" => "created"})
 
     signature =
@@ -124,7 +124,7 @@ defmodule AshHooks.InboundParityTest do
     {body, %{signature: signature, scope: %{"account_id" => "acct-1"}}}
   end
 
-  defp ingest_ok(id), do: signed_body(:counter, id, @current)
+  defp ingest_ok(id), do: signed_body(id, @current)
 
   test "list queries by source, status, event type, and time range (keyset)" do
     for i <- 1..3 do
@@ -161,7 +161,7 @@ defmodule AshHooks.InboundParityTest do
     # (resolved via a runtime-compiled declaration in transformers_test
     # style — here: the {m,f,a} arm)
     Application.put_env(:ash_hooks, :inbound_parity_paused, false)
-    {body, ctx} = signed_body(:pausable, "evt_pause_off", @current)
+    {body, ctx} = signed_body("evt_pause_off", @current)
     {:ok, :created, _} = AshHooks.Ingress.ingest(Ledger, :pausable, body, ctx)
 
     # fn-shaped previous_secret resolution arms (via a second ledger? no —
@@ -229,7 +229,7 @@ defmodule AshHooks.InboundParityTest do
   test "every pause and previous-secret source shape resolves" do
     # fn/0 pause: paused via a zero-arity function
     Application.put_env(:ash_hooks, :inbound_parity_paused, true)
-    {body, ctx} = signed_body(:fn_paused, "evt_fn_paused", @current)
+    {body, ctx} = signed_body("evt_fn_paused", @current)
 
     source = """
     defmodule AshHooks.FnPausedDomain do
@@ -323,7 +323,7 @@ defmodule AshHooks.InboundParityTest do
     # app_env pause refuses while true, admits when false
     Application.put_env(:ash_hooks, :inbound_parity_paused, true)
 
-    {env_body, env_ctx} = signed_body(:appenv_paused, "evt_env_paused", @current)
+    {env_body, env_ctx} = signed_body("evt_env_paused", @current)
 
     assert {:error, :source_paused} =
              AshHooks.Ingress.ingest(AshHooks.FnPausedLedger, :appenv_paused, env_body, env_ctx)
@@ -334,14 +334,14 @@ defmodule AshHooks.InboundParityTest do
              AshHooks.Ingress.ingest(AshHooks.FnPausedLedger, :appenv_paused, env_body, env_ctx)
 
     # fn previous_secret verifies the OLD key
-    {old_body, old_ctx} = signed_body(:fn_previous, "evt_fn_previous", @old)
+    {old_body, old_ctx} = signed_body("evt_fn_previous", @old)
 
     {:ok, :created, _} =
       AshHooks.Ingress.ingest(AshHooks.FnPausedLedger, :fn_previous, old_body, old_ctx)
 
     # an app_env previous that resolves nothing collapses to the
     # current-key failure
-    {bad_body, bad_ctx} = signed_body(:bad_previous, "evt_bad_previous", @old)
+    {bad_body, bad_ctx} = signed_body("evt_bad_previous", @old)
 
     assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
              AshHooks.Ingress.ingest(AshHooks.FnPausedLedger, :bad_previous, bad_body, bad_ctx)
@@ -357,7 +357,7 @@ defmodule AshHooks.InboundParityTest do
     # an off-tree env walk (a non-keyword intermediate) resolves nothing:
     # the current-key failure stands
     Application.put_env(:ash_hooks, :inbound_parity_nested, "not-a-keyword")
-    {tree_body, tree_ctx} = signed_body(:offtree_previous, "evt_offtree", @old)
+    {tree_body, tree_ctx} = signed_body("evt_offtree", @old)
 
     assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
              AshHooks.Ingress.ingest(
@@ -369,7 +369,7 @@ defmodule AshHooks.InboundParityTest do
 
     # a 1-arity previous-secret fn (a shape the source validator admits)
     # is not a supported previous source — collapses to the current key
-    {arity_body, arity_ctx} = signed_body(:arity_previous, "evt_arity_prev", @old)
+    {arity_body, arity_ctx} = signed_body("evt_arity_prev", @old)
 
     assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
              AshHooks.Ingress.ingest(
@@ -381,7 +381,7 @@ defmodule AshHooks.InboundParityTest do
 
     # a 1-arity pause fn resolves not-paused (the unsupported shape fails
     # OPEN on pause — deliveries continue)
-    {open_body, open_ctx} = signed_body(:arity_paused, "evt_arity_paused", @current)
+    {open_body, open_ctx} = signed_body("evt_arity_paused", @current)
 
     {:ok, :created, _} =
       AshHooks.Ingress.ingest(AshHooks.FnPausedLedger, :arity_paused, open_body, open_ctx)
@@ -450,15 +450,15 @@ defmodule AshHooks.InboundParityTest do
 
   test "a rotated source verifies against BOTH keys during the overlap" do
     # the OLD key still verifies on the source carrying previous_secret
-    {old_body, old_ctx} = signed_body(:counter, "evt_overlap_old", @old)
+    {old_body, old_ctx} = signed_body("evt_overlap_old", @old)
     {:ok, :created, _} = AshHooks.Ingress.ingest(Ledger, :counter, old_body, old_ctx)
 
     # and so does the CURRENT key
-    {new_body, new_ctx} = signed_body(:counter, "evt_overlap_new", @current)
+    {new_body, new_ctx} = signed_body("evt_overlap_new", @current)
     {:ok, :created, _} = AshHooks.Ingress.ingest(Ledger, :counter, new_body, new_ctx)
 
     # without the previous configured, the OLD key is refused
-    {away_body, away_ctx} = signed_body(:rotated_away, "evt_overlap_away", @old)
+    {away_body, away_ctx} = signed_body("evt_overlap_away", @old)
 
     assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
              AshHooks.Ingress.ingest(Ledger, :rotated_away, away_body, away_ctx)
@@ -467,7 +467,7 @@ defmodule AshHooks.InboundParityTest do
   test "a paused source refuses requests so the provider retries" do
     Application.put_env(:ash_hooks, :inbound_parity_paused, true)
 
-    {body, ctx} = signed_body(:pausable, "evt_paused", @current)
+    {body, ctx} = signed_body("evt_paused", @current)
 
     assert {:error, :source_paused} = AshHooks.Ingress.ingest(Ledger, :pausable, body, ctx)
 

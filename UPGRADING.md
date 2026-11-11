@@ -1,5 +1,138 @@
 # Upgrading
 
+## 2.x → 3.0.0
+
+3.0.0 makes inbound verification generic. It removes the vendor-specific
+verifier modules and the name-to-module convention, and adds a configuration
+layer that expresses each removed scheme, and many others, in one small module
+in your application. There are two breaking changes; nothing else changes shape.
+No migration and no dependency change is needed.
+
+If you are upgrading from 2.2.x, read the 2.3.0 section below as well: nothing
+in it is required.
+
+### Breaking: every inbound declaration needs `provider`
+
+2.x resolved a missing `provider` to `AshHooks.Provider.<CamelizedName>`, so
+`inbound :comply_cube` found `AshHooks.Provider.ComplyCube`. That convention is
+gone. A declaration without `provider` fails to compile with a message naming
+the fix:
+
+```elixir
+webhooks do
+  inbound :comply_cube do
+    provider MyApp.Webhooks.ComplyCube
+    secret {:app_env, [:my_app, :complycube_secret]}
+  end
+end
+```
+
+**Keep each inbound name exactly as it was.** The name is stored in the ledger's
+`provider` column and is part of every deduplication identity, so renaming a
+source would let already-recorded deliveries be processed again.
+
+### Breaking: the vendor verifier modules are removed
+
+These modules no longer exist: `AshHooks.Provider.ComplyCube` (with
+`ComplyCube.Event`), `AshHooks.Provider.HubSpotV3` (with `HubSpotV3.Event` and
+`decode_request_uri/1`), `AshHooks.Provider.Twilio`, `AshHooks.Provider.Stripe`,
+`AshHooks.Provider.Shopify`, `AshHooks.Provider.WooCommerce`,
+`AshHooks.Provider.Shippo`, `AshHooks.Provider.EasyPost`,
+`AshHooks.Provider.Magento2`, `AshHooks.Provider.BigCommerce`,
+`AshHooks.Provider.Ecwid`, `AshHooks.Provider.Squarespace`, and
+`AshHooks.Provider.Wix`.
+
+Replace each with a provider module in your application. Most need only
+configuration:
+
+```elixir
+defmodule MyApp.Webhooks.Shopify do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:header, "x-shopify-hmac-sha256"},
+      encoding: :base64
+    ]
+end
+```
+
+The table gives the configuration that reproduces each removed module's
+signature check. The
+[Verify any sender](documentation/tutorials/verify-any-sender.md) guide has the
+complete modules for the rows marked *recipe*, which need a host function.
+Check each sender's current documentation before you rely on a configuration.
+
+| Removed module | Replacement `verify:` options |
+| --- | --- |
+| `ComplyCube` | `algorithm: :hmac_sha256, signature: {:header, "complycube-signature"}, encoding: :hex` |
+| `HubSpotV3` | `algorithm: :hmac_sha256, signature: {:header, "x-hubspot-signature-v3"}, encoding: :base64, timestamp: {:header, "x-hubspot-request-timestamp"}, timestamp_unit: :milliseconds`, plus a `signed_input` function for its URI decoding (*recipe*: "Method, URL, body, and timestamp") |
+| `Twilio` | `algorithm: :hmac_sha1, signature: {:header, "x-twilio-signature"}, encoding: :base64`, plus a `signed_input` function for its sorted form fields and `bodySHA256` (*recipe*: "Sorted form fields") |
+| `Stripe` | `algorithm: :hmac_sha256, signature: {:structured_header, "stripe-signature", signature_key: "v1"}, timestamp: {:signature_field, "t"}, signed_input: [:timestamp, ".", :body]` |
+| `Shopify` | `algorithm: :hmac_sha256, signature: {:header, "x-shopify-hmac-sha256"}, encoding: :base64` |
+| `WooCommerce` | `algorithm: :hmac_sha256, signature: {:header, "x-wc-webhook-signature"}, encoding: :base64` |
+| `Shippo` | as `Stripe`, with `{:structured_header, "shippo-auth-signature", signature_key: "v1"}` |
+| `EasyPost` (v1) | `algorithm: :hmac_sha256, signature: {:header, "x-hmac-signature", prefix: "hmac-sha256-hex="}, encoding: :hex`; return the NFKD-normalized secret from your secret source |
+| `EasyPost` (v2) | `algorithm: :hmac_sha256, signature: {:header, "x-hmac-signature-v2", prefix: "hmac-sha256-hex="}, encoding: :hex_any, signed_input: [{:header, "x-timestamp"}, :method, :path, :body], tolerance_seconds: 60`, plus a `timestamp` function for RFC 2822 (*recipe*: "A timestamp in another format"); choose v1 or v2 per request as in "Two schemes on one route" |
+| `Magento2` | `algorithm: :rsa_pkcs1_sha256, signature: {:header, "x-adobe-commerce-webhook-signature"}, encoding: :base64, signed_input: [{:base64, :body}]`; the secret source returns the public PEM key |
+| `BigCommerce` | `algorithm: :hmac_sha256, signature: {:structured_header, "webhook-signature", signature_key: "v1", pair_separator: " ", key_value_separator: ","}, encoding: :base64, timestamp: {:header, "webhook-timestamp"}, signed_input: [{:header, "webhook-id"}, ".", :timestamp, ".", :body]`; the secret source returns the raw client secret |
+| `Ecwid` | `algorithm: :hmac_sha256, signature: {:header, "x-ecwid-webhook-signature"}, encoding: :base64`, plus a `signed_input` function and `event_identity/1` (*recipe*: "A signature over selected payload fields") |
+| `Squarespace` | `algorithm: :hmac_sha256, signature: {:header, "squarespace-signature"}, encoding: :hex, key_encoding: :hex` |
+| `Wix` | `algorithm: :rsa_pkcs1_sha256, signature: :jws_body`; the secret source returns the public PEM key |
+
+Configured providers read their signature from the request headers. In your
+controller, pass `headers: conn.req_headers` to `AshHooks.Ingress.ingest/4`;
+`ctx.signature` is no longer needed for them. Keep
+passing `method` and the public `request_uri` for schemes that sign them.
+
+Differences from the removed modules, all deliberate:
+
+- A configured provider classifies every request as `:webhook` and returns
+  `AshHooks.Provider.Event`. `ComplyCube` and `HubSpotV3` mapped event names to
+  atoms and returned their own event structs. If your handlers or stored
+  `external_event_type` values depend on those atoms, override
+  `parse_event_type/1` with the same mapping (the 2.3.0 source lists both
+  tables) and keep the atom names.
+- `HubSpotV3` and `Ecwid` implemented `event_identity/1`. If your ledger already
+  holds rows for those sources, implement the same identity in your provider so
+  redeliveries keep matching existing rows. For Ecwid that is the signed
+  `eventId` (shown in the recipe). For HubSpot it was a SHA-256 of the batch that
+  ignored each event's `attemptNumber`, sorted object keys and the outer event
+  order, and kept nested list order; copy the 2.3.0 implementation if you
+  depend on it.
+- `Twilio` decoded JSON or form bodies itself. Declare `body_format :form` on a
+  form route, or implement `decode_payload/1`.
+- Signature prefixes are matched without regard to ASCII case.
+- EasyPost v2 accepted 60 seconds of age and 30 seconds of future skew; a
+  configured tolerance is symmetric.
+
+### What stays the same
+
+- `AshHooks.Provider`, every callback, and `default_verify_signature/4`.
+  `signature_source/0` gains a third value, `:request`, for providers that read
+  their own signature from the headers; `:header` (the default) and `:body` keep
+  their meaning.
+- `AshHooks.Provider.Hmac` keeps its options and behavior, and its `:algorithm`
+  option now also accepts `:sha384` and `:sha512`. New code can use
+  `use AshHooks.Provider, verify: [...]`, which covers the same ground and more.
+- `AshHooks.Provider.Event` and `AshHooks.Provider.Mock`.
+- Form bodies, batch payloads, tenant-aware `paused` and `previous_secret`,
+  retry-status selection, certificate pins, host delivery headers, outbound
+  signing (`AshHooks.Signing`), and every resource, column, action, and
+  telemetry event.
+
+### New
+
+- Pass `headers: conn.req_headers` (the ordered list) instead of building a map.
+  Providers then receive every header line in `ctx.header_list`, and repeated
+  lines are joined with `", "` in `ctx.headers`. A map you pass is still delivered
+  unchanged, but it has already lost repeated lines, so a provider that reads a
+  header that can repeat should read `ctx.header_list`.
+- `use AshHooks.Provider, verify: [...]` generates a provider from
+  configuration. `AshHooks.Provider.Scheme` documents every option and exposes
+  `Scheme.verify/4` for direct calls.
+- `AshHooks.Provider.Signature` is now public: `hmac/4`, `rsa/4`, `ecdsa/4`,
+  `ed25519/4`, `jws/3`, `compare/2`, `header/2`, and `check_timestamp/3`.
+
 ## 2.2.1 → 2.3.0
 
 **Nothing is required for existing adopters.** No migration, dependency, or
@@ -12,21 +145,13 @@ binary value; the `{:ok, key}` environment shape also works.
 
 - Opt into URL-encoded ingress with `body_format :form` on an inbound declaration
   or a provider's optional `body_format/0`. The raw bytes still reach signature
-  verification unchanged. JSON remains the default. Twilio supplies its own
-  form/JSON decoder; Wix verifies a body JWT and stores its signed claims through
-  `decode_payload/1` and `signature_source/0`. If you wrap the Wix provider,
-  delegate `decode_payload/1` and `signature_source/0`.
-- Adopt the new provider modules explicitly. Consult the README's provider table
-  for headers, secret encodings, timestamp rules, and public-key sources. Do not
-  substitute a custom raw-body HMAC for a native BigCommerce, Ecwid, Adobe
-  Commerce, or Wix envelope. The new verifiers classify as `:webhook`; wrap them
-  for product-specific classification, effects, and stable identity where needed.
-- Host-owned emitters use `AshHooks.Provider.Hmac.verify_signature/4` with trusted
-  options for header, SHA-256/SHA-1, hex/base64, timestamp tolerance, canonical
-  input, and overlap keys. There are no native verifiers for Salesforce CDC,
-  PrestaShop or OpenCart, because they publish no standard signature scheme;
-  configure the HMAC verifier to match your emitter. Salesforce Pub/Sub is outside
-  webhook ingress.
+  verification unchanged. JSON remains the default. Providers can decode a signed
+  body envelope with `decode_payload/1` and declare it with `signature_source/0`.
+- 2.3.0 added vendor verifier modules. 3.0.0 removes them; configure your own
+  provider instead, as described in the 3.0.0 section above.
+- Host-owned emitters can use `AshHooks.Provider.Hmac.verify_signature/4` with
+  trusted options for header, algorithm, hex or base64, timestamp tolerance,
+  canonical input, and overlap keys.
 - Set `retryable_statuses` on the worker or direct-run config to replace the
   ordinary HTTP retry set. Omit it to keep the default. 2xx, redirects, and 410
   retain their existing rules; configured retry responses honor `Retry-After`.
@@ -265,6 +390,9 @@ A domain provider wrapping the built-in HubSpot provider must delegate
 ```elixir
 defdelegate event_identity(payload), to: AshHooks.Provider.HubSpotV3
 ```
+
+That module exists only in 2.x. On 3.0, implement the same identity in your own
+provider, as described in the 2.x → 3.0.0 section.
 
 Return a successful provider acknowledgment for `:processed`,
 `:failed_permanent`, and `:superseded`. Send permanent errors to your operator

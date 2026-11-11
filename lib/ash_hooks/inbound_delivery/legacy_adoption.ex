@@ -110,9 +110,8 @@ defmodule AshHooks.InboundDelivery.LegacyAdoption do
     end
   end
 
-  defp resolve_provider(inbound, name) do
-    provider =
-      inbound.provider || Module.concat(AshHooks.Provider, Macro.camelize(to_string(name)))
+  defp resolve_provider(inbound, _name) do
+    provider = inbound.provider
 
     if Code.ensure_loaded?(provider) and function_exported?(provider, :event_identity, 1) do
       {:ok, provider}

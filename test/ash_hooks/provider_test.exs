@@ -214,6 +214,17 @@ defmodule AshHooks.ProviderTest do
     end
   end
 
+  test "host batch identities ignore retry counters, preserve nested order, and reject malformed shapes" do
+    provider = AshHooks.TestBatchProvider
+    first = %{"subscriptionType" => "changed", "nested" => [%{"b" => 2, "a" => 1}, 3]}
+    assert {:ok, id} = provider.event_identity([first])
+    assert {:ok, ^id} = provider.event_identity([Map.put(first, "attemptNumber", 3)])
+
+    for input <- [nil, [], %{}, [%{}]] do
+      assert {:error, :malformed_payload} = provider.event_identity(input)
+    end
+  end
+
   describe "event_identity/2" do
     test "returns :not_supported when the optional callback is absent" do
       assert :not_supported = Provider.event_identity(AshHooks.Provider.Mock, %{})
@@ -221,7 +232,7 @@ defmodule AshHooks.ProviderTest do
 
     test "loads the provider and returns its callback result unchanged" do
       assert {:ok, identity} =
-               Provider.event_identity(AshHooks.Provider.HubSpotV3, [
+               Provider.event_identity(AshHooks.TestBatchProvider, [
                  %{"subscriptionType" => "contact.creation", "objectId" => 1}
                ])
 

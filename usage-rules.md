@@ -1,7 +1,7 @@
 # AshHooks usage rules
 
 Guidance for maintainers and coding assistants working in applications that use
-AshHooks 2.3.
+AshHooks 3.0.
 
 ## Build events from exact bytes
 
@@ -17,26 +17,41 @@ AshHooks 2.3.
 
 ## Receive webhooks through the ledger
 
-- Add `AshHooks` and `AshHooks.InboundDelivery` to the inbound ledger, declare the
-  provider, and pass the raw request body to `AshHooks.Ingress.ingest/4`. Signature
-  verification is over those exact bytes.
-- Include every provider scope needed for uniqueness in `scope_identity`, and create the
+- Add `AshHooks` and `AshHooks.InboundDelivery` to the inbound ledger, set `provider` on
+  every inbound declaration, and pass the exact raw request body to
+  `AshHooks.Ingress.ingest/4`. Signature verification is over those exact bytes. There
+  is no name-to-module convention and there are no built-in vendor verifiers.
+- Describe a sender with `use AshHooks.Provider, verify: [...]` (options in
+  `AshHooks.Provider.Scheme`). Copy the scheme from the sender's own documentation:
+  algorithm, signature location, encoding, secret encoding, signed input, and
+  timestamp. Configured providers read their signature from `ctx.headers`, so pass
+  `headers: conn.req_headers` (the ordered list, so repeated lines survive); pass `method`
+  and the public `request_uri` when the scheme signs them.
+- Keep every verification option and key in code or the secret source. Never build
+  options, keys, algorithms, or key URLs from the request. Public-key schemes take the
+  sender's PEM key from the secret source.
+- Use a `signed_input` or `timestamp` host function only where the sender canonicalizes
+  (sorted form fields, decoded URLs, fields from the body, unusual timestamp formats).
+  A `signed_input` function returns the binary to verify; a `timestamp` function returns
+  `{:ok, unix_seconds}`. Any other result fails verification.
+- When configuration cannot express a scheme, implement `verify_signature/3` with the
+  primitives in `AshHooks.Provider.Signature`. Compare in constant time and return an
+  error tuple for every malformed input; never raise.
+- A configured provider classifies every request as `:webhook`. Override
+  `parse_event_type/1` with an explicit table of the sender's event names (never
+  `String.to_atom/1`), and implement application effects and their idempotency in
+  `handle_event/2`.
+- Include every sender scope needed for uniqueness in `scope_identity`, and create the
   generated unique index in the database. The ledger is the deduplication boundary; do
   not add a separate seen-events table.
-- A provider's `parse_event_type/1` classifies the verified payload; `handle_event/2`
-  handles it. Built-in handlers return typed events. Implement application effects and
-  their idempotency inside your own provider's `handle_event/2` callback.
-- Provider identity resolution is ordered: an explicit declaration `event_id` extractor,
-  then the provider's optional `event_identity/1`, then the raw-body digest when the
-  provider has no identity callback. An implemented provider callback that rejects a
-  malformed payload fails the ingest; it does not fall back silently.
-- JSON remains the default. Opt into form decoding with `body_format :form`; verify
-  the exact raw bytes before decoding. A wrapper for Wix must also delegate
-  `signature_source/0` and `decode_payload/1` for native body JWTs.
-- Match the actual provider's documented envelope. Emitter-defined schemes use
-  `AshHooks.Provider.Hmac` with host-owned header, algorithm, encoding, canonical-input,
-  timestamp, and rotation options. Salesforce CDC Pub/Sub is outside HTTP ingress;
-  Salesforce CDC, PrestaShop, and OpenCart have no package-supplied native verifier.
+- Identity resolution is ordered: an explicit declaration `event_id` extractor, then the
+  provider's optional `event_identity/1`, then the raw-body digest when the provider has
+  no identity callback. An implemented provider callback that rejects a malformed payload
+  fails the ingest; it does not fall back silently.
+- Keep an inbound name stable once it has recorded deliveries: it is part of every
+  deduplication identity.
+- JSON remains the default. Opt into form decoding with `body_format :form`; a
+  configured JWS-body provider decodes its verified payload itself.
 - The low-level claim, renew, mark, and reap functions are for custom asynchronous
   pipelines. Preserve their token and lease values exactly; a stale owner must never
   write around a fence.
@@ -143,7 +158,10 @@ AshHooks 2.3.
 - Running queued delivery without scheduling `reconcile_pending/3`.
 - Using an anonymous enqueue callback without a stable `enqueue_key` when recovery is
   required.
-- Treating a built-in provider parser as the application's domain handler.
+- Leaving the generated `:webhook` classification in place when handlers need the
+  sender's event types.
+- Passing only `ctx.signature` to a configured provider: it reads its signature from
+  `ctx.headers`.
 - Reading or updating a row through an assumed `.id` instead of its declared primary key.
 - Registering a telemetry prefix instead of the complete event name expected by
   `:telemetry.attach_many/4`.

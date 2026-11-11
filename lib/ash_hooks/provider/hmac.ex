@@ -2,13 +2,17 @@ defmodule AshHooks.Provider.Hmac do
   @moduledoc """
   A host-configured HMAC verifier for an emitter whose wire contract you own.
 
+  `use AshHooks.Provider, verify: [...]` (see `AshHooks.Provider.Scheme`) covers
+  the same HMAC contracts and adds public-key algorithms, structured headers, and
+  signed-input templates; this module keeps its existing options.
+
   This is not a vendor protocol. `verify_signature/3` defaults to lowercase-hex
   HMAC-SHA256 over the raw bytes and reads `ctx.signature`. Its four-argument
   form accepts trusted host options:
 
     * `:header` — signature header name, case-insensitive; when set, only that
       header is used, never a fallback signature from another source.
-    * `:algorithm` — `:sha256` (default) or `:sha1`.
+    * `:algorithm` — `:sha256` (default), `:sha1`, `:sha384`, or `:sha512`.
     * `:encoding` — `:hex` (lowercase, default) or `:base64`.
     * `:timestamp_header` — optional Unix-seconds header. When configured,
       the default signed input becomes `timestamp <> "." <> raw_body`.
@@ -65,7 +69,9 @@ defmodule AshHooks.Provider.Hmac do
   end
 
   defp digest(:sha256), do: {:ok, :sha256}
-  defp digest(:sha1), do: {:ok, :sha}
+  defp digest(:sha1), do: {:ok, :sha1}
+  defp digest(:sha384), do: {:ok, :sha384}
+  defp digest(:sha512), do: {:ok, :sha512}
   defp digest(_), do: {:error, :invalid_signature}
 
   defp secrets(current, previous) when is_list(previous) do
@@ -104,9 +110,7 @@ defmodule AshHooks.Provider.Hmac do
   end
 
   defp matches?(input, signature, keys, digest, encoding) do
-    Enum.reduce(keys, false, fn key, matched ->
-      Signature.hmac(input, signature, key, digest, encoding) == :ok or matched
-    end)
+    Signature.hmac(input, signature, keys, digest: digest, encoding: encoding) == :ok
   end
 
   defp timestamp_check(ctx, opts) do

@@ -6,6 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 3.0.0 — Unreleased
+
+Inbound verification becomes generic: describe any sender's signature scheme in
+configuration, or write one callback with public primitives. The package no
+longer ships vendor-specific verifiers. Two breaking changes, listed below with
+their replacements; [UPGRADING.md](UPGRADING.md) gives the configuration for
+each removed module. No schema or dependency changes.
+
+### Breaking
+
+- **Removed the vendor verifier modules** `AshHooks.Provider.ComplyCube` (and
+  `ComplyCube.Event`), `AshHooks.Provider.HubSpotV3` (and `HubSpotV3.Event` and
+  `decode_request_uri/1`), `AshHooks.Provider.Twilio`, `AshHooks.Provider.Stripe`,
+  `AshHooks.Provider.Shopify`, `AshHooks.Provider.WooCommerce`,
+  `AshHooks.Provider.Shippo`, `AshHooks.Provider.EasyPost`,
+  `AshHooks.Provider.Magento2`, `AshHooks.Provider.BigCommerce`,
+  `AshHooks.Provider.Ecwid`, `AshHooks.Provider.Squarespace`, and
+  `AshHooks.Provider.Wix`. Replacement: a provider module in your application,
+  usually `use AshHooks.Provider, verify: [...]` with the options UPGRADING lists
+  for each one.
+- **Removed the name-to-module convention.** An inbound declaration without
+  `provider` no longer resolves `AshHooks.Provider.<CamelizedName>`; it fails to
+  compile with a message naming the fix. Replacement: set `provider` on every
+  inbound declaration, keeping the inbound name unchanged so existing
+  deduplication identities still match.
+
+### Added
+
+- `use AshHooks.Provider, verify: [...]` generates a provider from configuration:
+  HMAC with SHA-1, SHA-256, SHA-384 or SHA-512; RSA PKCS#1 v1.5 and RSA-PSS with
+  SHA-256, SHA-384 or SHA-512; ECDSA P-256 and P-384 with DER or raw `r || s`
+  signatures; Ed25519; and compact JWS bodies with the algorithm pinned by the
+  host. Signatures come from a named header (optionally prefixed), a structured
+  header of key/value pairs carrying up to 16 signatures, or the body. Hex,
+  base64 and base64url encodings; raw, hex or base64 secrets with an optional
+  prefix; PEM public keys, X.509 certificates or raw Ed25519 keys; a signed input
+  built from the body, timestamp, method, URL, path, headers and literals, or by a
+  host function; timestamps in seconds or milliseconds from a header, a signature
+  field or a host function, with a symmetric tolerance. Options are checked at
+  compile time and every generated callback can be overridden.
+- `AshHooks.Provider.Scheme` documents those options and verifies with them
+  directly through `Scheme.verify/4`.
+- `AshHooks.Provider.Signature` is public: `hmac/4`, `rsa/4`, `ecdsa/4`,
+  `ed25519/4`, `jws/3`, `compare/2`, `header/2` and `check_timestamp/3`, for
+  providers that implement `verify_signature/3` themselves.
+- The optional `signature_source/0` callback accepts `:request`, for providers
+  that read their own signature from the request headers; ingress then needs no
+  `ctx.signature`.
+- `AshHooks.Ingress.ingest/4` accepts the request headers as an ordered list of
+  `{name, value}` pairs, such as `conn.req_headers`, as well as a map. Providers
+  receive every line in arrival order in the new `ctx.header_list`, and repeated
+  lines are joined with `", "` in `ctx.headers`. A map the host passes is
+  delivered unchanged, as before.
+- `AshHooks.Provider.Hmac` accepts `:sha384` and `:sha512` algorithms.
+- A "Verify any sender" guide with recipes for common signature shapes.
+
 ## 2.3.0 — November 11, 2026
 
 ### Added
@@ -19,8 +75,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Native signature verifiers for Twilio (form and JSON), Stripe, Shopify,
   WooCommerce, Shippo, Adobe Commerce/Magento 2, BigCommerce Standard Webhooks,
   Ecwid, Squarespace, and Wix RS256 body JWTs. Each module cites its vendor
-  contract. The new verifier modules classify every event as `:webhook` and never convert
-  input to atoms.
+  contract. The new verifier modules classify every event as `:webhook` and
+  never convert input to atoms.
 - EasyPost's API/SDK `X-Hmac-Signature` verifier: exact `hmac-sha256-hex=` prefix,
   lowercase-hex raw-body HMAC-SHA256, NFKD-normalized UTF-8 webhook secrets,
   constant-time comparison, and overlap rotation through `previous_secret`.

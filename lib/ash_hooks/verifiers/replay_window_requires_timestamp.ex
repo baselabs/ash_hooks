@@ -40,7 +40,7 @@ defmodule AshHooks.Verifiers.ReplayWindowRequiresTimestamp do
   end
 
   defp resolve_provider(entity) do
-    candidate = entity.provider || name_module(entity.name)
+    candidate = entity.provider
 
     # ensure_compiled waits for in-project parallel compilation where
     # ensure_loaded? reports a sibling module as absent
@@ -50,9 +50,5 @@ defmodule AshHooks.Verifiers.ReplayWindowRequiresTimestamp do
     else
       :error
     end
-  end
-
-  defp name_module(name) do
-    Module.concat(AshHooks.Provider, Macro.camelize(Atom.to_string(name)))
   end
 end

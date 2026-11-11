@@ -97,6 +97,13 @@ defmodule AshHooks.Provider.HmacTest do
     end
   end
 
+  test "SHA384 and SHA512 are plain algorithm values" do
+    for digest <- [:sha384, :sha512] do
+      signature = :crypto.mac(:hmac, digest, @key, @body) |> Base.encode16(case: :lower)
+      assert :ok = Hmac.verify_signature(@body, %{signature: signature}, @key, algorithm: digest)
+    end
+  end
+
   def canonical(_body, _ctx), do: @body
 
   test "default verification rejects malformed headers, missing authenticated time, and thrown callbacks" do

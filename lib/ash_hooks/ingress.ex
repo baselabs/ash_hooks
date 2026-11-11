@@ -6,7 +6,7 @@ defmodule AshHooks.Ingress do
   `ingest/4` is the sync-mode entry point a consumer's controller calls with
   the raw request body (captured pre-parser via the endpoint body_reader — a
   router plug cannot recover pre-parse bytes). Request context carries the
-  signature, lowercased headers, public request method/URI, scope, connection,
+  signature, request headers, public request method/URI, scope, connection,
   and tenant. It does not accept or forward a request-controlled clock;
   replay-window verification uses the runtime system clock. The machine's
   crash-safety contract:
@@ -54,8 +54,10 @@ defmodule AshHooks.Ingress do
   alias Spark.Dsl.Extension
 
   @typedoc """
-  The request context. `:signature` is the provider's signature header value;
-  `:headers` contains lowercased request headers; `:method` and `:request_uri`
+  The request context. `:signature` is the signature header value for
+  providers whose `signature_source/0` is `:header` (the default); `:headers`
+  carries the request headers, preferably as the ordered `{name, value}` list
+  Plug provides in `conn.req_headers`, or as a map; `:method` and `:request_uri`
   must reproduce the public request values covered by the provider signature;
   `:scope` carries values for the ledger's declared `scope_identity` slots;
   `:connection` is the per-connection provider's secret source argument; and
@@ -65,7 +67,8 @@ defmodule AshHooks.Ingress do
   """
   @type ctx :: %{
           optional(:signature) => String.t(),
-          optional(:headers) => %{optional(String.t()) => String.t()},
+          optional(:headers) =>
+            [{String.t(), String.t()}] | %{optional(String.t()) => String.t()},
           optional(:method) => String.t() | nil,
           optional(:request_uri) => String.t() | nil,
           optional(:connection) => term(),
@@ -103,7 +106,7 @@ defmodule AshHooks.Ingress do
   Lists inbound deliveries by filter with keyset pagination (newest
   first) — the inbound delivery log.
 
-  Options: `:source` (the inbound declaration's name, e.g. `:stripe`),
+  Options: `:source` (the inbound declaration's name, e.g. `:orders`),
   `:status` (a list of `AshHooks.InboundDelivery.statuses/0`),
   `:event_type`, `:from` / `:to` (`DateTime` bounds on `inserted_at`),
   `:limit` (default 50, max 500), `:after` (the previous page's cursor),
@@ -606,7 +609,7 @@ defmodule AshHooks.Ingress do
   audit trail).
 
   The redactor (`{m, f}` | 1-arity fun) receives the stored payload
-  (map or list — HubSpot batches are lists) and returns the
+  (map or list, including event batches) and returns the
   replacement (same type) or nil to leave it unchanged. A crashing or
   invalid redactor returns an error and leaves the payload UNCHANGED
   (fail-safe for the audit record — the caller may retry). Redact,
@@ -1106,7 +1109,7 @@ defmodule AshHooks.Ingress do
   defp truthy(true), do: true
   defp truthy(_other), do: false
 
-  # Batch vendors (HubSpot) deliver top-level JSON ARRAYS; providers that
+  # Batch senders deliver top-level JSON ARRAYS; providers that
   # only accept maps fail lists closed through their own catch-all clauses
   # ({:error, :malformed_payload}) — the shape decision belongs to the
   # provider, not the pipeline.
@@ -1137,10 +1140,8 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  defp resolve_provider(inbound, name) do
-    candidate =
-      inbound.provider ||
-        Module.concat(AshHooks.Provider, Macro.camelize(Atom.to_string(name)))
+  defp resolve_provider(inbound, _name) do
+    candidate = inbound.provider
 
     if Code.ensure_loaded?(candidate) and function_exported?(candidate, :verify_signature, 3) do
       {:ok, candidate}
@@ -1230,34 +1231,81 @@ defmodule AshHooks.Ingress do
   # A missing/malformed signature header is attacker-controlled input: it
   # must fail closed as a tuple, never reach a provider guard as a crash
   # (default_verify_signature/4 would FunctionClauseError on non-binary).
-  defp verify(provider, raw_body, %{signature: signature} = ctx, inbound, secret, name)
-       when is_binary(signature) do
-    verify_ctx =
-      %{
-        signature: ctx[:signature],
-        headers: ctx[:headers] || %{},
-        method: ctx[:method],
-        request_uri: ctx[:request_uri],
-        tenant: ctx[:tenant]
-      }
-      |> maybe_put_replay_window(inbound)
-
-    case provider.verify_signature(raw_body, verify_ctx, secret) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        verify_with_previous(provider, raw_body, verify_ctx, inbound, reason, name)
-    end
-  end
-
   defp verify(provider, raw_body, ctx, inbound, secret, name) do
-    if Provider.signature_source(provider) == :body do
-      verify(provider, raw_body, Map.put(ctx, :signature, raw_body), inbound, secret, name)
+    source = Provider.signature_source(provider)
+
+    if is_binary(ctx[:signature]) or source in [:body, :request] do
+      ctx =
+        if source == :body and not is_binary(ctx[:signature]),
+          do: Map.put(ctx, :signature, raw_body),
+          else: ctx
+
+      verify_request(provider, raw_body, ctx, inbound, secret, name)
     else
       {:error, Errors.from_reason(:invalid_signature, provider: name)}
     end
   end
+
+  defp verify_request(provider, raw_body, ctx, inbound, secret, name) do
+    case request_headers(ctx[:headers]) do
+      {:ok, headers, header_list} ->
+        verify_ctx =
+          %{
+            signature: ctx[:signature],
+            headers: headers,
+            header_list: header_list,
+            method: ctx[:method],
+            request_uri: ctx[:request_uri],
+            tenant: ctx[:tenant]
+          }
+          |> maybe_put_replay_window(inbound)
+
+        case provider.verify_signature(raw_body, verify_ctx, secret) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            verify_with_previous(provider, raw_body, verify_ctx, inbound, reason, name)
+        end
+
+      :error ->
+        {:error, Errors.from_reason(:invalid_signature, provider: name)}
+    end
+  end
+
+  # A host map passes through unchanged, as in 2.x (its own construction
+  # decided how repeated lines were kept); `header_list` carries its binary
+  # entries only. An ordered list keeps every line for
+  # `header_list` and joins repeated names with ", " (RFC 9110 field-line
+  # combination) for the map. Anything else is not a header set: fail closed.
+  defp request_headers(nil), do: {:ok, %{}, []}
+
+  defp request_headers(headers) when is_map(headers) do
+    lines =
+      for {name, value} when is_binary(name) and is_binary(value) <- headers, do: {name, value}
+
+    {:ok, headers, lines}
+  end
+
+  defp request_headers(headers) when is_list(headers) do
+    with {:ok, lines} <- header_lines(headers, []) do
+      map =
+        lines
+        |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+        |> Map.new(fn {name, values} -> {name, Enum.join(values, ", ")} end)
+
+      {:ok, map, lines}
+    end
+  end
+
+  defp request_headers(_headers), do: :error
+
+  defp header_lines([], lines), do: {:ok, Enum.reverse(lines)}
+
+  defp header_lines([{name, value} | rest], lines) when is_binary(name) and is_binary(value),
+    do: header_lines(rest, [{String.downcase(name, :ascii), value} | lines])
+
+  defp header_lines(_headers, _lines), do: :error
 
   # The rotation overlap: when the declaration carries a previous_secret
   # source, a failing current-key verification retries the rotated-out key

@@ -1,0 +1,13 @@
+# Published signature test vectors, not credentials: the RFC 7515
+# Appendix A.2 example JWT and EasyPost HMACs computed over its documented
+# example body with the literal keys "test-key" and "current-key".
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Published signature known-answer vectors in the test suite"
+regexes = [
+  '''^eyJhbGciOiJSUzI1NiJ9\.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAs''',
+  '''^0b56c93f30784936100cc12e249dd143dbe61a42cea85c2e6cd3f718198d9c8c$''',
+  '''^f56153af3ad5caebb848c609d3352f626ef57ed4509b467be9b3c2a1f6ff6c85$''',
+]

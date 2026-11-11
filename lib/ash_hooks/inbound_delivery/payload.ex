@@ -2,8 +2,8 @@ defmodule AshHooks.InboundDelivery.Payload do
   @moduledoc """
   A decoded inbound webhook body, stored as a JSON object or array.
 
-  ComplyCube delivers top-level objects; HubSpot delivers batches of event
-  objects. The ledger retains that decoded shape and separately stores a
+  Senders may deliver top-level objects or batches of event objects.
+  The ledger retains that decoded shape and separately stores a
   digest of the signed raw bytes. This value does not preserve the original
   wire encoding and must not be used to reconstruct bytes for verification.
 

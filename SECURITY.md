@@ -10,7 +10,7 @@ Security fixes are released for the newest minor release in the current major li
 
 | Release line | Supported |
 | --- | --- |
-| 2.0.x | Yes |
+| 3.0.x | Yes |
 | Earlier releases | No |
 
 Upgrade to a supported release before requesting a backport. Safety corrections may
@@ -41,13 +41,23 @@ the reporter.
 
 ### Inbound verification
 
-- Signatures are checked against the exact request bytes with constant-time comparison.
-  Decode the payload only after `AshHooks.Ingress` accepts it.
+- Signatures are checked against the exact request bytes with constant-time comparison
+  behind an equal-length guard. Decode the payload only after `AshHooks.Ingress` accepts
+  it.
+- Verification fails closed: a missing, malformed, or undecodable signature, key, header,
+  or signed-input part returns an error, never an exception, and errors never carry key
+  or signature bytes.
+- Keys and algorithms come only from the host's provider configuration and secret
+  sources. The package never fetches keys from a URL, a header, or the token being
+  verified. A JWS body is verified only with the host-pinned algorithm; `none`, an
+  algorithm mismatch, unknown critical headers, and unencoded payloads are rejected.
+- X.509 certificates supplied as keys are used only as containers for a key the host
+  pins; their chain, expiry, and revocation are not evaluated.
 - Inbound DSL secret options accept resolver sources rather than literal binaries.
   Runtime secrets come from callbacks, while persisted endpoint rows contain references
   and reject known secret-material prefixes.
-- Timestamped schemes enforce their replay windows before handler execution. ComplyCube
-  signs only the body; its scheme has no authenticated timestamp, so retained ledger
+- Timestamped schemes enforce their replay windows before handler execution, and only
+  after the signature verifies. For schemes that sign no timestamp, retained ledger
   identities prevent repeated handling. Leases and fencing tokens prevent a stale or
   superseded owner from marking a newer claim complete.
 - Inbound headers are not stored. Decoded payloads and a digest of the signed raw
