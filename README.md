@@ -198,6 +198,7 @@ name differs from the module's underscored name.
 | `WooCommerce` | `X-WC-Webhook-Signature` | [Default base64 HMAC-SHA256 of raw body](https://developer.woocommerce.com/docs/apis/rest-api/v1/webhooks/) |
 | `Shippo` | `Shippo-Auth-Signature` | [Hex HMAC-SHA256 of `timestamp.body`, solutions-team HMAC secret](https://docs.goshippo.com/tracking/webhook-security) |
 | `EasyPost` | `X-Hmac-Signature` | [`hmac-sha256-hex=` + lowercase-hex HMAC-SHA256 of raw body, NFKD-normalized UTF-8 webhook secret](https://docs.easypost.com/docs/webhooks#webhook-authentication) |
+| `EasyPost` (v2) | `x-hmac-signature-v2`, `x-timestamp`, `x-path`, public path in `request_uri` | [Case-insensitive `hmac-sha256-hex=` + hex HMAC-SHA256 of timestamp + uppercase method + path + raw body, no separators](https://support.easypost.com/hc/en-us/articles/39826034964237-Webhook-HMAC-Validation) |
 | `Magento2` | `x-adobe-commerce-webhook-signature` | [Adobe Commerce's base64 RSA-SHA256 signature of base64 body bytes](https://developer.adobe.com/commerce/extensibility/webhooks/signature-verification) |
 | `BigCommerce` | `webhook-id`, `webhook-timestamp`, `webhook-signature` | [Standard Webhooks; raw app client secret](https://docs.bigcommerce.com/developer/docs/beta/webhooks/http-webhooks#webhook-signature) |
 | `Ecwid` | `X-Ecwid-Webhook-Signature` | [Base64 HMAC-SHA256 of `eventCreated.eventId`](https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_webhooks.md#webhooks-security) |
@@ -215,15 +216,62 @@ retains the signed JWT claims in the ledger, and does not invent an age limit fo
 tokens without expiration. A wrapper must delegate Wix's `signature_source/0`
 and `decode_payload/1` as well as its verifier to use body-only ingress.
 
-EasyPost uses the webhook's `webhook_secret`, not an API key. Pass
-`X-Hmac-Signature` in `ctx.signature`; the provider normalizes the secret, never
-the raw body. This follows the API docs and official [Python verifier](https://github.com/EasyPost/easypost-python/blob/7e788d1b92272bbe4e899eab5c923e53f13df778/easypost/util.py#L118-L144).
-EasyPost's separate [HMAC help article](https://support.easypost.com/hc/en-us/articles/39826034964237-Webhook-HMAC-Validation)
-describes a different `x-hmac-signature-v2` timestamp/method/path/body envelope;
-this provider implements the API/SDK `X-Hmac-Signature` scheme. It has no signed
-timestamp; use durable deduplication. Declare `inbound :easy_post` or set
-`provider AshHooks.Provider.EasyPost` explicitly. For rotation, configure the
-inbound `previous_secret` source; both current and previous keys are normalized.
+EasyPost uses the webhook's `webhook_secret`, not an API key. For **v1**, pass
+`X-Hmac-Signature` in `ctx.signature`; the provider NFKD-normalizes only the secret.
+The raw body, exact prefix, and lowercase digest retain their existing behavior.
+
+For **v2**, pass all three headers in `ctx.headers`, the v2 signature in
+`ctx.signature`, the uppercase request method in `ctx.method`, and the exact
+public request path in the existing host-supplied `ctx.request_uri`:
+
+```elixir
+headers = Map.new(conn.req_headers)
+
+ctx = %{
+  signature: Map.get(headers, "x-hmac-signature-v2") || Map.get(headers, "x-hmac-signature"),
+  headers: headers,
+  method: conn.method,
+  request_uri: conn.request_path
+}
+
+AshHooks.Ingress.ingest(MyApp.WebhookLedger, :easy_post, conn.private[:ash_hooks_raw_body], ctx)
+```
+
+`x-path` must exactly match that independently supplied public path. If a proxy
+rewrites paths, replace `conn.request_path` with a trusted host resolver's public
+path; never derive it from `x-path` or an untrusted forwarded header. Keep signed
+percent escapes and any query bytes unchanged. No URL parsing or decoding occurs;
+the sources do not specify query canonicalization, so confirm the exact `x-path`
+representation before adopting webhook URLs with queries.
+
+V2 follows the [HMAC help article](https://support.easypost.com/hc/en-us/articles/39826034964237-Webhook-HMAC-Validation):
+`x-timestamp` is RFC 2822 with a numeric `±HHMM` offset (for example,
+`Tue, 19 Aug 2025 20:37:09 -0000`). The original timestamp, uppercase method,
+`x-path`, and raw body bytes are concatenated in that order, without separators.
+The shared secret is UTF-8 as supplied; the v2 article specifies no NFKD step.
+Both signature prefix and hexadecimal digest compare case-insensitively, in
+constant time behind an equal-length guard. The provider enforces the published
+default maximum age of **60 seconds**, allowing **30 seconds** of future clock
+skew. The article allows a configurable age of 0–60 minutes; this provider uses
+its 1-minute default. A present v2 header is authoritative: malformed, tampered,
+or stale v2 never falls back to v1, even when a valid v1 signature is also present.
+
+As checked November 10, 2026, the [API authentication docs](https://docs.easypost.com/docs/webhooks#webhook-authentication)
+and current default-branch [Python](https://github.com/EasyPost/easypost-python/blob/7e788d1b92272bbe4e899eab5c923e53f13df778/easypost/util.py#L117-L145),
+[Ruby](https://github.com/EasyPost/easypost-ruby/blob/16d18a4121be61f9e428f4a45e01c6e2f4a6b4b8/lib/easypost/util.rb#L159-L179),
+[Node](https://github.com/EasyPost/easypost-node/blob/a8c55049d9257330bd6518fbc98644fbd647993b/src/utils/util.ts#L122-L168),
+and [Go](https://github.com/EasyPost/easypost-go/blob/d6cf3775cb902240b40762f5af738a0c905f9e59/webhook.go#L138-L178)
+validators still implement v1. These sources do **not** establish whether v2
+replaces v1, both headers are delivered, or an account/webhook can opt in. Ask
+EasyPost to confirm rollout and account settings; adding a custom header does
+not establish v2 signing. The v2 tests use independently computed Python vectors,
+not live EasyPost delivery proof; no v2 secret/digest test vector is published in
+these sources.
+
+Declare `inbound :easy_post` or set `provider AshHooks.Provider.EasyPost` explicitly.
+Both schemes support inbound `previous_secret` rotation. V1 still has no signed
+timestamp, so the provider keeps its timestamp callback undeclared: do not set
+DSL `replay_window_seconds`; retain durable deduplication for both versions.
 
 **Ecwid's MAC does not cover other payload fields.** Its verifier uses the signed
 event ID for deduplication, but store IDs, entity IDs, and other business data are

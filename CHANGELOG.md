@@ -20,7 +20,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - EasyPost's API/SDK `X-Hmac-Signature` verifier: exact `hmac-sha256-hex=` prefix,
   lowercase-hex raw-body HMAC-SHA256, NFKD-normalized UTF-8 webhook secrets,
   constant-time comparison, and overlap rotation through `previous_secret`.
-  This is separate from the help center's timestamped v2 envelope.
+- Additive EasyPost v2 verification per its HMAC help article: UTF-8
+  timestamp/method/path/body HMAC-SHA256 with no separators, RFC 2822 numeric
+  timezone parsing, 60-second maximum age and 30-second future allowance,
+  case-insensitive constant-time signature comparison, and overlapping secrets.
+  The signed path must equal the host's existing `request_uri` context. A present
+  v2 header never falls back to v1. Existing v1 verification stays unchanged;
+  README documents the host path seam and the undocumented v2 rollout/opt-in.
 - A host-configured HMAC verifier for emitter-defined contracts: header name,
   SHA-256/SHA-1, hex/base64, optional signed timestamp and tolerance, canonical
   input, and overlap keys. Salesforce CDC, PrestaShop, and OpenCart have no
