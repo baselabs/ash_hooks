@@ -16,7 +16,8 @@ The two halves work independently: if you only receive webhooks, you
 need no queue infrastructure at all.
 
 - Built-in verifiers cover ComplyCube, HubSpot v3, Twilio, Stripe, Shopify,
-  WooCommerce, Shippo, Adobe Commerce, BigCommerce, Ecwid, Squarespace, and Wix.
+  WooCommerce, Shippo, EasyPost, Adobe Commerce, BigCommerce, Ecwid, Squarespace,
+  and Wix.
   A configurable HMAC verifier also supports host-owned emitters.
 - Duplicate and replayed deliveries are deduplicated on the ledger —
   exactly one row per delivery; crashes mid-flight resume on
@@ -196,6 +197,7 @@ name differs from the module's underscored name.
 | `Shopify` | `X-Shopify-Hmac-Sha256` | [Base64 HMAC-SHA256 of raw body](https://shopify.dev/docs/apps/build/webhooks/verify-deliveries) |
 | `WooCommerce` | `X-WC-Webhook-Signature` | [Default base64 HMAC-SHA256 of raw body](https://developer.woocommerce.com/docs/apis/rest-api/v1/webhooks/) |
 | `Shippo` | `Shippo-Auth-Signature` | [Hex HMAC-SHA256 of `timestamp.body`, solutions-team HMAC secret](https://docs.goshippo.com/tracking/webhook-security) |
+| `EasyPost` | `X-Hmac-Signature` | [`hmac-sha256-hex=` + lowercase-hex HMAC-SHA256 of raw body, NFKD-normalized UTF-8 webhook secret](https://docs.easypost.com/docs/webhooks#webhook-authentication) |
 | `Magento2` | `x-adobe-commerce-webhook-signature` | [Adobe Commerce's base64 RSA-SHA256 signature of base64 body bytes](https://developer.adobe.com/commerce/extensibility/webhooks/signature-verification) |
 | `BigCommerce` | `webhook-id`, `webhook-timestamp`, `webhook-signature` | [Standard Webhooks; raw app client secret](https://docs.bigcommerce.com/developer/docs/beta/webhooks/http-webhooks#webhook-signature) |
 | `Ecwid` | `X-Ecwid-Webhook-Signature` | [Base64 HMAC-SHA256 of `eventCreated.eventId`](https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_webhooks.md#webhooks-security) |
@@ -212,6 +214,16 @@ the verifier follows that example. Wix enforces present `exp` and `nbf` claims,
 retains the signed JWT claims in the ledger, and does not invent an age limit for
 tokens without expiration. A wrapper must delegate Wix's `signature_source/0`
 and `decode_payload/1` as well as its verifier to use body-only ingress.
+
+EasyPost uses the webhook's `webhook_secret`, not an API key. Pass
+`X-Hmac-Signature` in `ctx.signature`; the provider normalizes the secret, never
+the raw body. This follows the API docs and official [Python verifier](https://github.com/EasyPost/easypost-python/blob/7e788d1b92272bbe4e899eab5c923e53f13df778/easypost/util.py#L118-L144).
+EasyPost's separate [HMAC help article](https://support.easypost.com/hc/en-us/articles/39826034964237-Webhook-HMAC-Validation)
+describes a different `x-hmac-signature-v2` timestamp/method/path/body envelope;
+this provider implements the API/SDK `X-Hmac-Signature` scheme. It has no signed
+timestamp; use durable deduplication. Declare `inbound :easy_post` or set
+`provider AshHooks.Provider.EasyPost` explicitly. For rotation, configure the
+inbound `previous_secret` source; both current and previous keys are normalized.
 
 **Ecwid's MAC does not cover other payload fields.** Its verifier uses the signed
 event ID for deduplication, but store IDs, entity IDs, and other business data are

@@ -205,6 +205,7 @@ defmodule AshHooks.MixProject do
           AshHooks.Provider.Shopify,
           AshHooks.Provider.WooCommerce,
           AshHooks.Provider.Shippo,
+          AshHooks.Provider.EasyPost,
           AshHooks.Provider.Magento2,
           AshHooks.Provider.BigCommerce,
           AshHooks.Provider.Ecwid,

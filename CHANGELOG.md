@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   WooCommerce, Shippo, Adobe Commerce/Magento 2, BigCommerce Standard Webhooks,
   Ecwid, Squarespace, and Wix RS256 body JWTs. Each module cites its vendor
   contract. New handlers return a fixed `:webhook` event without atomizing input.
+- EasyPost's API/SDK `X-Hmac-Signature` verifier: exact `hmac-sha256-hex=` prefix,
+  lowercase-hex raw-body HMAC-SHA256, NFKD-normalized UTF-8 webhook secrets,
+  constant-time comparison, and overlap rotation through `previous_secret`.
+  This is separate from the help center's timestamped v2 envelope.
 - A host-configured HMAC verifier for emitter-defined contracts: header name,
   SHA-256/SHA-1, hex/base64, optional signed timestamp and tolerance, canonical
   input, and overlap keys. Salesforce CDC, PrestaShop, and OpenCart have no
