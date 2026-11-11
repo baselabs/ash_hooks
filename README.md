@@ -15,9 +15,9 @@ Webhooks for [Ash Framework](https://ash-hq.org), in both directions:
 The two halves work independently: if you only receive webhooks, you
 need no queue infrastructure at all.
 
-- Verify signatures for [ComplyCube](https://docs.complycube.com/) and
-  [HubSpot v3](https://developers.hubspot.com/) out of the box; bring
-  your own scheme with a one-module provider behavior.
+- Built-in verifiers cover ComplyCube, HubSpot v3, Twilio, Stripe, Shopify,
+  WooCommerce, Shippo, Adobe Commerce, BigCommerce, Ecwid, Squarespace, and Wix.
+  A configurable HMAC verifier also supports host-owned emitters.
 - Duplicate and replayed deliveries are deduplicated on the ledger —
   exactly one row per delivery; crashes mid-flight resume on
   redelivery instead of losing events (handlers run at-least-once).
@@ -162,6 +162,103 @@ want to drive the lease machine from your own async pipeline;
 `AshHooks.Ingress.reap/2` re-drives deliveries whose claims died with
 an expired lease.
 
+### Payload formats and provider verifiers
+
+JSON remains the default. Opt into flat `application/x-www-form-urlencoded`
+decoding on a route with `body_format :form`, or implement the provider's optional
+`body_format/0` callback returning `:form`. Names and values are URL-decoded;
+bracket notation remains literal and repeated names keep their last value in
+the stored map. Invalid UTF-8 names or values become a permanent malformed
+payload, matching JSON's failure handling. **Verification always receives the original raw bytes**, before
+decoding. The request's Content-Type cannot opt a route into a decoder.
+Providers may implement `decode_payload/1` for a signed envelope; an explicit
+route `body_format` overrides that decoder.
+
+```elixir
+inbound :my_form_emitter do
+  provider MyApp.FormEmitter
+  body_format :form
+  secret {:app_env, [:my_app, :emitter_secret]}
+end
+```
+
+Pass the named signature header in `ctx.signature` and any additional headers in
+`ctx.headers` (lowercase names). Each new verifier returns the fixed event type
+`:webhook` and an `AshHooks.Provider.Event`; vendor type strings remain in the
+payload. Wrap verification with your own provider to classify events and perform
+idempotent application actions. Configure `provider` explicitly when your inbound
+name differs from the module's underscored name.
+
+| Provider module under `AshHooks.Provider` | Header / envelope | Documented scheme |
+| --- | --- | --- |
+| `Twilio` | `X-Twilio-Signature`, exact public `request_uri` | [Base64 HMAC-SHA1 of URL + sorted form fields; JSON binds `bodySHA256`](https://www.twilio.com/docs/usage/webhooks/webhooks-security) |
+| `Stripe` | `Stripe-Signature` | [Hex HMAC-SHA256 of `timestamp.body`; multiple `v1` signatures](https://docs.stripe.com/webhooks#verify-manually) |
+| `Shopify` | `X-Shopify-Hmac-Sha256` | [Base64 HMAC-SHA256 of raw body](https://shopify.dev/docs/apps/build/webhooks/verify-deliveries) |
+| `WooCommerce` | `X-WC-Webhook-Signature` | [Default base64 HMAC-SHA256 of raw body](https://developer.woocommerce.com/docs/apis/rest-api/v1/webhooks/) |
+| `Shippo` | `Shippo-Auth-Signature` | [Hex HMAC-SHA256 of `timestamp.body`, solutions-team HMAC secret](https://docs.goshippo.com/tracking/webhook-security) |
+| `Magento2` | `x-adobe-commerce-webhook-signature` | [Adobe Commerce's base64 RSA-SHA256 signature of base64 body bytes](https://developer.adobe.com/commerce/extensibility/webhooks/signature-verification) |
+| `BigCommerce` | `webhook-id`, `webhook-timestamp`, `webhook-signature` | [Standard Webhooks; raw app client secret](https://docs.bigcommerce.com/developer/docs/beta/webhooks/http-webhooks#webhook-signature) |
+| `Ecwid` | `X-Ecwid-Webhook-Signature` | [Base64 HMAC-SHA256 of `eventCreated.eventId`](https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_webhooks.md#webhooks-security) |
+| `Squarespace` | `Squarespace-Signature` | [Hex HMAC-SHA256 of raw body using a hex-decoded subscription secret](https://commerce-apis.squarespace.com/webhooks/verifying-notifications) |
+| `Wix` | RS256 JWT in the raw body; no signature header needed | [Public-key JWT verification](https://dev.wix.com/docs/build-apps/develop-your-app/api-integrations/events-and-webhooks/about-webhooks) |
+
+Stripe, Shippo, and BigCommerce default to a symmetric 300-second replay window;
+`replay_window_seconds` overrides it. Stripe's `whsec_...` secret is used as-is.
+BigCommerce's raw client-secret bytes are encoded for Standard Webhooks by the
+provider; do not pre-encode them. Magento2 and Wix secret sources return a trusted
+**public PEM key**. Adobe's prose calls its scheme HMAC, but its executable
+example verifies an asymmetric signature with `crypto.createVerify('SHA256')`;
+the verifier follows that example. Wix enforces present `exp` and `nbf` claims,
+retains the signed JWT claims in the ledger, and does not invent an age limit for
+tokens without expiration. A wrapper must delegate Wix's `signature_source/0`
+and `decode_payload/1` as well as its verifier to use body-only ingress.
+
+**Ecwid's MAC does not cover other payload fields.** Its verifier uses the signed
+event ID for deduplication, but store IDs, entity IDs, and other business data are
+not authenticated by that MAC. Follow Ecwid's guidance to retrieve authoritative
+data through its API before business effects.
+
+**Salesforce CDC, PrestaShop, and OpenCart publish no native signed-webhook
+contract.** A host receiving HTTP events from these systems verifies its own
+emitter's signature using `AshHooks.Provider.Hmac`, configured for that exact
+emitter. Salesforce CDC over [Pub/Sub](https://developer.salesforce.com/docs/platform/pub-sub-api/guide/intro.html)
+is outside webhook ingress. PrestaShop's [hooks](https://devdocs.prestashop-project.org/9/modules/concepts/hooks/)
+and OpenCart's [events](https://github.com/opencart/opencart/wiki/Events-System)
+are extension mechanisms, not a shared native signed HTTP envelope. Third-party
+Magento modules and custom BigCommerce emitters also require their own contract.
+No provider-named verifier is supplied for an invented uniform HMAC scheme.
+
+For an emitter you control, the generic verifier supports a configured signature
+header, SHA-256 or SHA-1, lowercase hex or base64, an optional timestamp header and
+tolerance, a host canonical-input callback or raw body, and overlapping secrets:
+
+```elixir
+def verify_signature(raw_body, ctx, secret) do
+  AshHooks.Provider.Hmac.verify_signature(raw_body, ctx, secret,
+    header: "x-emitter-signature",
+    algorithm: :sha256,
+    encoding: :hex,
+    timestamp_header: "x-emitter-timestamp",
+    tolerance_seconds: ctx[:replay_window_seconds] || 300
+  )
+end
+
+def timestamp_header, do: "x-emitter-timestamp"
+```
+
+Without a timestamp header the default input is the raw body; with one it is
+`timestamp <> "." <> raw_body`. `canonical_input: {MyApp.Emitter, :signed_input}`
+can replace that input (`signed_input(raw_body, ctx) -> binary`); the host must
+bind every field its emitter signs, including its timestamp. Keep all options
+host-owned, never request-selected. Direct calls accept a list of overlap keys or
+`previous_secrets: [old_key]`; ingress also supports its `previous_secret` resolver.
+
+Tenant-aware one-argument `paused` and `previous_secret` callbacks now take effect
+on multitenant ledgers, using the same resolved tenant as verification and storage.
+Calls without a tenant preserve their existing source-resolution behavior.
+Previous-secret app-env sources accept documented binary keys as well as the
+legacy `{:ok, key}` environment value.
+
 ## Sending webhooks
 
 Declare the event on the emitting resource, point it at your
@@ -229,6 +326,40 @@ The default HTTP adapter bounds response headers, retained body bytes, and
 the complete operation time. OTP's `:httpc` is an alternative with additional
 buffering limits described in its module docs. You can also provide an adapter
 for your application's transport requirements.
+
+### Optional outbound policy
+
+Existing defaults remain unchanged. The worker and direct delivery runner accept:
+
+- `retryable_statuses: [408, 409, 425, 429, 500, 502, 503, 504]` replaces the
+  retryable HTTP-status set. Omit it for today's 408/429/5xx behavior; use `[]`
+  to terminalize all ordinary HTTP failures. `Retry-After`, backoff, and ceilings
+  apply to configured retry statuses. Success on 2xx, redirect refusal, and the
+  durable 410 disable rule remain fixed. Transport errors retain their policy.
+- `delivery_headers: {MyApp.Webhooks, :headers}` calls
+  `headers(delivery, endpoint, tenant)` before each send. Return a header map or
+  list of binary pairs. Direct-run configuration also accepts that map/list or
+  a three-argument function. Names are checked case-insensitively: hosts cannot
+  override `webhook-id`, `webhook-timestamp`, `webhook-signature`,
+  `x-webhook-signature`, Content-Type, Host, or HTTP framing/connection headers.
+  Host metadata such as `x-webhook-event`, trace IDs, and dates is allowed.
+  Invalid headers and callback failures retry without sending; their values
+  never become error summaries.
+- `certificate_pin: {MyApp.Webhooks, :pin}` calls `pin(endpoint, tenant)` so a
+  host can choose a pin per endpoint. Return `nil` for off, `{:certificate, der}`
+  for the exact leaf certificate, `{:sha256, digest}` for its SHA-256, or
+  `{:spki_sha256, digest}` for the DER SubjectPublicKeyInfo SHA-256. Digests are
+  32 raw bytes. Direct configuration also accepts the pin or a two-argument
+  function. A static host pin can be supplied in `http_opts[:certificate_pin]`;
+  a configured resolver takes precedence, including an explicit `nil` result.
+  The pin requires HTTPS and `AshHooks.Http.Bounded`; it adds to normal CA,
+  hostname/IP-SAN, SSRF, and deadline checks. Mismatch, invalid pin, or resolver
+  failure closes the attempt without a request and records a non-retryable
+  failure. Default: off. Load computed worker pins through the callback or the
+  existing `http_opts: {module, function, args}` runtime seam.
+
+All callbacks resolve from current host configuration on each attempt. No new
+tables, endpoint attributes, process-local shared state, or dependencies are needed.
 
 Schedule `AshHooks.reconcile_pending/3` for each declaration and tenant using
 the same named worker callback. It repairs enqueue gaps, due retries, expired

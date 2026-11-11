@@ -1,5 +1,46 @@
 # Upgrading
 
+## 2.2.1 → 2.3.0 (unreleased)
+
+**Nothing is required for existing adopters.** No migration, dependency, or
+existing default changes. The new behavior is opt-in, apart from fixing the
+documented tenant-aware `paused` and `previous_secret` callbacks: one-argument
+callbacks now receive the resolved tenant on multitenant ledgers. Calls without
+a tenant retain their prior behavior. Existing zero-argument, MFA, and app-env
+sources keep working. `previous_secret` app-env sources now accept the documented
+binary value; the previously working `{:ok, key}` environment shape still works.
+
+- Opt into URL-encoded ingress with `body_format :form` on an inbound declaration
+  or a provider's optional `body_format/0`. The raw bytes still reach signature
+  verification unchanged. JSON remains the default. Twilio supplies its own
+  form/JSON decoder; Wix verifies a body JWT and stores its signed claims through
+  `decode_payload/1` and `signature_source/0`. Delegate those callbacks in wrappers.
+- Adopt the new provider modules explicitly. Consult the README's provider table
+  for headers, secret encodings, timestamp rules, and public-key sources. Do not
+  substitute a custom raw-body HMAC for a native BigCommerce, Ecwid, Adobe
+  Commerce, or Wix envelope. The new verifiers classify as `:webhook`; wrap them
+  for product-specific classification, effects, and stable identity where needed.
+- Host-owned emitters use `AshHooks.Provider.Hmac.verify_signature/4` with trusted
+  options for header, SHA-256/SHA-1, hex/base64, timestamp tolerance, canonical
+  input, and overlap keys. No invented native Salesforce CDC, PrestaShop, or
+  OpenCart verifier is supplied. Salesforce Pub/Sub is outside webhook ingress.
+- Set `retryable_statuses` on the worker or direct-run config to replace the
+  ordinary HTTP retry set. Omit it to keep the default. 2xx, redirects, and 410
+  retain their existing rules; configured retry responses honor `Retry-After`.
+- Add `delivery_headers: {module, function}` on the worker/direct-run config.
+  It receives `(delivery, endpoint, tenant)` and returns binary header pairs.
+  Direct configuration also accepts a map/list or function. Package-owned signing,
+  content-type, and framing headers cannot be overridden, regardless of case.
+- Optional certificate pins use `certificate_pin: {module, function}` on a worker
+  or direct run, resolving `(endpoint, tenant)` to a pin or `nil`. A host-wide
+  pin can also live in `http_opts[:certificate_pin]`. Supported pins are exact
+  DER leaf certificate, SHA-256 of that DER, or SHA-256 of DER SubjectPublicKeyInfo.
+  Pins require HTTPS and the bounded adapter; normal TLS and SSRF checks stay on.
+  Mismatch and configuration failures are non-retryable and send no body bytes.
+
+This checkout prepares 2.3.0 only. Publication and tags require the maintainer's
+separate release decision. See [README.md](README.md) for examples.
+
 ## 2.2.0 → 2.2.1
 
 - **`auto_disable` declarants gain the `disable_warned_at` column.** The

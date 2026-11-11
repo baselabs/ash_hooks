@@ -1,7 +1,7 @@
 # AshHooks usage rules
 
 Guidance for maintainers and coding assistants working in applications that use
-AshHooks 2.0.
+AshHooks 2.3.
 
 ## Build events from exact bytes
 
@@ -30,6 +30,13 @@ AshHooks 2.0.
   then the provider's optional `event_identity/1`, then the raw-body digest when the
   provider has no identity callback. An implemented provider callback that rejects a
   malformed payload fails the ingest; it does not fall back silently.
+- JSON remains the default. Opt into form decoding with `body_format :form`; verify
+  the exact raw bytes before decoding. A wrapper for Wix must also delegate
+  `signature_source/0` and `decode_payload/1` for native body JWTs.
+- Match the actual provider's documented envelope. Emitter-defined schemes use
+  `AshHooks.Provider.Hmac` with host-owned header, algorithm, encoding, canonical-input,
+  timestamp, and rotation options. Salesforce CDC Pub/Sub is outside HTTP ingress;
+  Salesforce CDC, PrestaShop, and OpenCart have no package-supplied native verifier.
 - The low-level claim, renew, mark, and reap functions are for custom asynchronous
   pipelines. Preserve their token and lease values exactly; a stale owner must never
   write around a fence.
@@ -53,6 +60,12 @@ AshHooks 2.0.
   scheduler is a trigger only; do not add a second retry policy around the row.
 - Delivery is at least once across a crash during transport. Receivers must deduplicate
   the stable `webhook-id`.
+- `retryable_statuses` optionally replaces the HTTP retry set. 2xx, redirects, and 410
+  keep their package-owned rules. Host `delivery_headers` callbacks receive the delivery,
+  endpoint, and tenant; they cannot override signature or framing headers.
+- Optional certificate pins require HTTPS and `AshHooks.Http.Bounded`; pin mismatch
+  fails before sending and is non-retryable. Resolve per-endpoint pins from current
+  host configuration, never from process-local state another node would need.
 
 ## Preserve durable ownership and recovery
 

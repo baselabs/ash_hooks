@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.3.0 — Unreleased
+
+### Added
+
+- Opt-in URL-encoded ingress via route/provider format declaration; providers can
+  decode signed body envelopes after verification. JSON defaults and raw signed
+  bytes are preserved.
+- Native signature verifiers for Twilio (form and JSON), Stripe, Shopify,
+  WooCommerce, Shippo, Adobe Commerce/Magento 2, BigCommerce Standard Webhooks,
+  Ecwid, Squarespace, and Wix RS256 body JWTs. Each module cites its vendor
+  contract. New handlers return a fixed `:webhook` event without atomizing input.
+- A host-configured HMAC verifier for emitter-defined contracts: header name,
+  SHA-256/SHA-1, hex/base64, optional signed timestamp and tolerance, canonical
+  input, and overlap keys. Salesforce CDC, PrestaShop, and OpenCart have no
+  package-supplied native signed-webhook verifier; hosts verify their own emitter.
+- Optional outbound retry-status selection, preserving current defaults and the
+  existing success, redirect, and 410 rules.
+- Optional outbound host headers resolved per delivery, with case-insensitive
+  protection for signing, content-type, and framing headers.
+- Optional exact certificate, certificate SHA-256, or SPKI SHA-256 pins on the
+  bounded HTTP adapter, selected per endpoint or host configuration. Normal TLS
+  checks remain required. Pin failure closes before sending and does not retry.
+
+### Fixed
+
+- Tenant-aware one-argument inbound `paused` and `previous_secret` sources now
+  receive the resolved tenant and take effect on multitenant ledgers. Existing
+  tenant-less and zero-argument/MFA/app-env source behavior is preserved.
+- Previous-secret app-env sources resolve the documented binary keys while
+  preserving the legacy `{:ok, key}` value shape. Invalid UTF-8 form fields
+  record a permanent malformed payload instead of failing the storage write.
+
+No new dependencies or schema changes. This version is prepared locally and
+unreleased; publication requires the maintainer's release decision.
+
 ## 2.2.1 — November 8, 2026
 
 ### Fixed

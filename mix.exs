@@ -1,7 +1,7 @@
 defmodule AshHooks.MixProject do
   use Mix.Project
 
-  @version "2.2.1"
+  @version "2.3.0"
   @source_url "https://github.com/baselabs/ash_hooks"
 
   def project do
@@ -197,7 +197,19 @@ defmodule AshHooks.MixProject do
           AshHooks.Provider,
           AshHooks.Provider.Mock,
           AshHooks.Provider.ComplyCube,
-          AshHooks.Provider.HubSpotV3
+          AshHooks.Provider.HubSpotV3,
+          AshHooks.Provider.Event,
+          AshHooks.Provider.Hmac,
+          AshHooks.Provider.Twilio,
+          AshHooks.Provider.Stripe,
+          AshHooks.Provider.Shopify,
+          AshHooks.Provider.WooCommerce,
+          AshHooks.Provider.Shippo,
+          AshHooks.Provider.Magento2,
+          AshHooks.Provider.BigCommerce,
+          AshHooks.Provider.Ecwid,
+          AshHooks.Provider.Squarespace,
+          AshHooks.Provider.Wix
         ],
         "HTTP adapters": [
           AshHooks.Transport,
