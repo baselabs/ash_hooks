@@ -6,17 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
-## 2.3.0 — Unreleased
+## 2.3.0 — November 11, 2026
 
 ### Added
 
-- Opt-in URL-encoded ingress via route/provider format declaration; providers can
-  decode signed body envelopes after verification. JSON defaults and raw signed
-  bytes are preserved.
+- Inbound routes can accept `application/x-www-form-urlencoded` bodies: declare
+  `body_format :form` on the route, or return it from a provider's optional
+  `body_format/0`. Signatures are verified over the exact raw bytes before
+  decoding; JSON stays the default. Providers can decode a signed body envelope
+  after verification. Invalid UTF-8 fields are recorded as a permanent malformed
+  payload.
 - Native signature verifiers for Twilio (form and JSON), Stripe, Shopify,
   WooCommerce, Shippo, Adobe Commerce/Magento 2, BigCommerce Standard Webhooks,
   Ecwid, Squarespace, and Wix RS256 body JWTs. Each module cites its vendor
-  contract. New handlers return a fixed `:webhook` event without atomizing input.
+  contract. The new verifier modules classify every event as `:webhook` and never convert
+  input to atoms.
 - EasyPost's API/SDK `X-Hmac-Signature` verifier: exact `hmac-sha256-hex=` prefix,
   lowercase-hex raw-body HMAC-SHA256, NFKD-normalized UTF-8 webhook secrets,
   constant-time comparison, and overlap rotation through `previous_secret`.
@@ -25,12 +29,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   timezone parsing, 60-second maximum age and 30-second future allowance,
   case-insensitive constant-time signature comparison, and overlapping secrets.
   The signed path must equal the host's existing `request_uri` context. A present
-  v2 header never falls back to v1. Existing v1 verification stays unchanged;
-  README documents the host path seam and the undocumented v2 rollout/opt-in.
+  v2 header never falls back to v1. Existing v1 verification stays unchanged.
+  EasyPost has not documented how an account turns v2 on; the README explains
+  this and how the host supplies the signed path.
 - A host-configured HMAC verifier for emitter-defined contracts: header name,
   SHA-256/SHA-1, hex/base64, optional signed timestamp and tolerance, canonical
-  input, and overlap keys. Salesforce CDC, PrestaShop, and OpenCart have no
-  package-supplied native signed-webhook verifier; hosts verify their own emitter.
+  input, and overlap keys. Use it for emitters with no standard scheme, for example
+  Salesforce CDC, PrestaShop and OpenCart.
 - Optional outbound retry-status selection, preserving current defaults and the
   existing success, redirect, and 410 rules.
 - Optional outbound host headers resolved per delivery, with case-insensitive
@@ -41,15 +46,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Tenant-aware one-argument inbound `paused` and `previous_secret` sources now
-  receive the resolved tenant and take effect on multitenant ledgers. Existing
-  tenant-less and zero-argument/MFA/app-env source behavior is preserved.
+- Tenant-aware one-argument inbound `paused` and `previous_secret` sources
+  receive the resolved tenant and take effect on multitenant ledgers. Tenant-less,
+  zero-argument, `{module, function, args}` and app-env sources behave as before.
 - Previous-secret app-env sources resolve the documented binary keys while
-  preserving the legacy `{:ok, key}` value shape. Invalid UTF-8 form fields
-  record a permanent malformed payload instead of failing the storage write.
+  preserving the legacy `{:ok, key}` value shape.
 
-No new dependencies or schema changes. This version is prepared locally and
-unreleased; publication requires the maintainer's release decision.
+No new dependencies or schema changes.
 
 ## 2.2.1 — November 8, 2026
 

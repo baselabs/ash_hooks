@@ -18,7 +18,7 @@ need no queue infrastructure at all.
 - Built-in verifiers cover ComplyCube, HubSpot v3, Twilio, Stripe, Shopify,
   WooCommerce, Shippo, EasyPost, Adobe Commerce, BigCommerce, Ecwid, Squarespace,
   and Wix.
-  A configurable HMAC verifier also supports host-owned emitters.
+  A configurable HMAC verifier covers senders you control.
 - Duplicate and replayed deliveries are deduplicated on the ledger —
   exactly one row per delivery; crashes mid-flight resume on
   redelivery instead of losing events (handlers run at-least-once).
@@ -170,8 +170,9 @@ decoding on a route with `body_format :form`, or implement the provider's option
 `body_format/0` callback returning `:form`. Names and values are URL-decoded;
 bracket notation remains literal and repeated names keep their last value in
 the stored map. Invalid UTF-8 names or values become a permanent malformed
-payload, matching JSON's failure handling. **Verification always receives the original raw bytes**, before
-decoding. The request's Content-Type cannot opt a route into a decoder.
+payload, matching JSON's failure handling. **Verification always receives the
+original raw bytes**, before decoding. The request's Content-Type cannot opt a
+route into a decoder.
 Providers may implement `decode_payload/1` for a signed envelope; an explicit
 route `body_format` overrides that decoder.
 
@@ -184,7 +185,7 @@ end
 ```
 
 Pass the named signature header in `ctx.signature` and any additional headers in
-`ctx.headers` (lowercase names). Each new verifier returns the fixed event type
+`ctx.headers` (lowercase names). These verifiers return the fixed event type
 `:webhook` and an `AshHooks.Provider.Event`; vendor type strings remain in the
 payload. Wrap verification with your own provider to classify events and perform
 idempotent application actions. Configure `provider` explicitly when your inbound
@@ -196,7 +197,7 @@ name differs from the module's underscored name.
 | `Stripe` | `Stripe-Signature` | [Hex HMAC-SHA256 of `timestamp.body`; multiple `v1` signatures](https://docs.stripe.com/webhooks#verify-manually) |
 | `Shopify` | `X-Shopify-Hmac-Sha256` | [Base64 HMAC-SHA256 of raw body](https://shopify.dev/docs/apps/build/webhooks/verify-deliveries) |
 | `WooCommerce` | `X-WC-Webhook-Signature` | [Default base64 HMAC-SHA256 of raw body](https://developer.woocommerce.com/docs/apis/rest-api/v1/webhooks/) |
-| `Shippo` | `Shippo-Auth-Signature` | [Hex HMAC-SHA256 of `timestamp.body`, solutions-team HMAC secret](https://docs.goshippo.com/tracking/webhook-security) |
+| `Shippo` | `Shippo-Auth-Signature` | [Hex HMAC-SHA256 of `timestamp.body`, HMAC secret issued by Shippo support](https://docs.goshippo.com/tracking/webhook-security) |
 | `EasyPost` | `X-Hmac-Signature` | [`hmac-sha256-hex=` + lowercase-hex HMAC-SHA256 of raw body, NFKD-normalized UTF-8 webhook secret](https://docs.easypost.com/docs/webhooks#webhook-authentication) |
 | `EasyPost` (v2) | `x-hmac-signature-v2`, `x-timestamp`, `x-path`, public path in `request_uri` | [Case-insensitive `hmac-sha256-hex=` + hex HMAC-SHA256 of timestamp + uppercase method + path + raw body, no separators](https://support.easypost.com/hc/en-us/articles/39826034964237-Webhook-HMAC-Validation) |
 | `Magento2` | `x-adobe-commerce-webhook-signature` | [Adobe Commerce's base64 RSA-SHA256 signature of base64 body bytes](https://developer.adobe.com/commerce/extensibility/webhooks/signature-verification) |
@@ -212,8 +213,8 @@ provider; do not pre-encode them. Magento2 and Wix secret sources return a trust
 **public PEM key**. Adobe's prose calls its scheme HMAC, but its executable
 example verifies an asymmetric signature with `crypto.createVerify('SHA256')`;
 the verifier follows that example. Wix enforces present `exp` and `nbf` claims,
-retains the signed JWT claims in the ledger, and does not invent an age limit for
-tokens without expiration. A wrapper must delegate Wix's `signature_source/0`
+retains the signed JWT claims in the ledger, and applies no age limit to tokens
+without an expiration. A wrapper must delegate Wix's `signature_source/0`
 and `decode_payload/1` as well as its verifier to use body-only ingress.
 
 EasyPost uses the webhook's `webhook_secret`, not an API key. For **v1**, pass
@@ -256,22 +257,16 @@ skew. The article allows a configurable age of 0–60 minutes; this provider use
 its 1-minute default. A present v2 header is authoritative: malformed, tampered,
 or stale v2 never falls back to v1, even when a valid v1 signature is also present.
 
-As checked November 10, 2026, the [API authentication docs](https://docs.easypost.com/docs/webhooks#webhook-authentication)
-and current default-branch [Python](https://github.com/EasyPost/easypost-python/blob/7e788d1b92272bbe4e899eab5c923e53f13df778/easypost/util.py#L117-L145),
-[Ruby](https://github.com/EasyPost/easypost-ruby/blob/16d18a4121be61f9e428f4a45e01c6e2f4a6b4b8/lib/easypost/util.rb#L159-L179),
-[Node](https://github.com/EasyPost/easypost-node/blob/a8c55049d9257330bd6518fbc98644fbd647993b/src/utils/util.ts#L122-L168),
-and [Go](https://github.com/EasyPost/easypost-go/blob/d6cf3775cb902240b40762f5af738a0c905f9e59/webhook.go#L138-L178)
-validators still implement v1. These sources do **not** establish whether v2
-replaces v1, both headers are delivered, or an account/webhook can opt in. Ask
-EasyPost to confirm rollout and account settings; adding a custom header does
-not establish v2 signing. The v2 tests use independently computed Python vectors,
-not live EasyPost delivery proof; no v2 secret/digest test vector is published in
-these sources.
+As of November 10, 2026, EasyPost's [API docs](https://docs.easypost.com/docs/webhooks#webhook-authentication)
+and its official SDKs validate v1 only, and EasyPost has not documented whether v2
+replaces v1, whether both headers are sent, or how an account turns v2 on. Confirm
+with EasyPost before relying on v2; adding a custom header does not enable v2
+signing.
 
 Declare `inbound :easy_post` or set `provider AshHooks.Provider.EasyPost` explicitly.
-Both schemes support inbound `previous_secret` rotation. V1 still has no signed
-timestamp, so the provider keeps its timestamp callback undeclared: do not set
-DSL `replay_window_seconds`; retain durable deduplication for both versions.
+Both schemes support inbound `previous_secret` rotation. V1 carries no signed
+timestamp, so do not set `replay_window_seconds` for EasyPost; rely on the
+ledger's deduplication for both versions.
 
 **Ecwid's MAC does not cover other payload fields.** Its verifier uses the signed
 event ID for deduplication, but store IDs, entity IDs, and other business data are
@@ -286,7 +281,6 @@ is outside webhook ingress. PrestaShop's [hooks](https://devdocs.prestashop-proj
 and OpenCart's [events](https://github.com/opencart/opencart/wiki/Events-System)
 are extension mechanisms, not a shared native signed HTTP envelope. Third-party
 Magento modules and custom BigCommerce emitters also require their own contract.
-No provider-named verifier is supplied for an invented uniform HMAC scheme.
 
 For an emitter you control, the generic verifier supports a configured signature
 header, SHA-256 or SHA-1, lowercase hex or base64, an optional timestamp header and
@@ -313,9 +307,9 @@ bind every field its emitter signs, including its timestamp. Keep all options
 host-owned, never request-selected. Direct calls accept a list of overlap keys or
 `previous_secrets: [old_key]`; ingress also supports its `previous_secret` resolver.
 
-Tenant-aware one-argument `paused` and `previous_secret` callbacks now take effect
-on multitenant ledgers, using the same resolved tenant as verification and storage.
-Calls without a tenant preserve their existing source-resolution behavior.
+Tenant-aware (one-argument) `paused` and `previous_secret` callbacks receive the
+resolved tenant on multitenant ledgers, the same tenant used for verification and
+storage. Calls without a tenant resolve sources as in earlier releases.
 Previous-secret app-env sources accept documented binary keys as well as the
 legacy `{:ok, key}` environment value.
 
@@ -389,13 +383,15 @@ for your application's transport requirements.
 
 ### Optional outbound policy
 
-Existing defaults remain unchanged. The worker and direct delivery runner accept:
+All three options are off by default. The worker and direct delivery runner
+accept:
 
 - `retryable_statuses: [408, 409, 425, 429, 500, 502, 503, 504]` replaces the
-  retryable HTTP-status set. Omit it for today's 408/429/5xx behavior; use `[]`
-  to terminalize all ordinary HTTP failures. `Retry-After`, backoff, and ceilings
+  retryable HTTP-status set. Omit it for the default (408, 429 and 5xx); use `[]`
+  to make every ordinary HTTP failure final. `Retry-After`, backoff, and ceilings
   apply to configured retry statuses. Success on 2xx, redirect refusal, and the
-  durable 410 disable rule remain fixed. Transport errors retain their policy.
+  durable 410 disable rule remain fixed. Transport errors keep the default retry
+  policy.
 - `delivery_headers: {MyApp.Webhooks, :headers}` calls
   `headers(delivery, endpoint, tenant)` before each send. Return a header map or
   list of binary pairs. Direct-run configuration also accepts that map/list or
@@ -418,8 +414,8 @@ Existing defaults remain unchanged. The worker and direct delivery runner accept
   failure. Default: off. Load computed worker pins through the callback or the
   existing `http_opts: {module, function, args}` runtime seam.
 
-All callbacks resolve from current host configuration on each attempt. No new
-tables, endpoint attributes, process-local shared state, or dependencies are needed.
+All callbacks resolve from current host configuration on each attempt. They need
+no tables, endpoint attributes, process-local state or extra dependencies.
 
 Schedule `AshHooks.reconcile_pending/3` for each declaration and tenant using
 the same named worker callback. It repairs enqueue gaps, due retries, expired
