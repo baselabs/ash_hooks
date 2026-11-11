@@ -15,11 +15,14 @@ The two halves work independently: if you only receive webhooks, you need no
 queue infrastructure at all.
 
 - **Verify any sender.** Describe a sender's signature scheme in a few lines of
-  configuration: HMAC (SHA-1, SHA-256, SHA-384, SHA-512), RSA (PKCS#1 v1.5 and
-  PSS), ECDSA (P-256, P-384), Ed25519, or a JWS body; a signature header, a
-  structured `t=...,v1=...` header, or the body itself; hex or base64; any signed
-  input; timestamps with a replay window; and key rotation. Anything configuration
-  cannot express is one callback away, with the same primitives public.
+  configuration: HMAC (hash-based message authentication code) with SHA-1,
+  SHA-256, SHA-384 or SHA-512; RSA signatures, PKCS#1 v1.5 or RSA-PSS (the
+  probabilistic signature scheme); ECDSA (elliptic curve digital signature
+  algorithm) on P-256 or P-384; Ed25519; or a JWS (JSON Web Signature) body. The
+  signature can sit in a header, a structured `t=...,v1=...` header, or the body
+  itself, hex or base64 encoded, over any signed input, with timestamps, a replay
+  window, and key rotation. When configuration cannot express a scheme, one
+  callback can, written with the same public primitives.
 - Duplicate and replayed deliveries are deduplicated on the ledger: exactly one
   row per delivery, and a crash mid-flight resumes on redelivery instead of
   losing the event (handlers run at least once).
@@ -27,10 +30,10 @@ queue infrastructure at all.
   spec, so receivers verify them with any conformant library. Key rotation and a
   legacy-envelope mode for receivers mid-migration are built in.
 - Retries honor `Retry-After`, back off with jitter, dead-letter at a ceiling,
-  and durably disable endpoints that return 410. DNS failures are transport, not
-  verdicts: a hostname that stops resolving retries under an honest label
-  (`nxdomain` vs `resolve_timeout`), and only a validated private or loopback
-  answer dead-letters immediately.
+  and durably disable endpoints that return 410. A DNS failure is a transport
+  error: a hostname that stops resolving retries, labeled `nxdomain` or
+  `resolve_timeout`, and only a validated private or loopback answer
+  dead-letters immediately.
 - Safe defaults: inbound declarations use secret resolvers rather than literal
   binaries, and endpoint rows store secret references. Endpoint URLs are checked
   against server-side request forgery (SSRF) at registration and again at send
@@ -59,10 +62,6 @@ def deps do
 end
 ```
 
-Upgrading from 2.x? 3.0 removes the built-in vendor verifiers and requires an
-explicit `provider` on every inbound declaration. [UPGRADING.md](UPGRADING.md)
-gives the replacement configuration for each removed module.
-
 Or run `mix igniter.install ash_hooks`, which also tries to patch your
 endpoint's `Plug.Parsers` with a raw-body reader. Signature schemes sign the
 exact wire bytes, and a router plug cannot recover what the parser already
@@ -84,7 +83,11 @@ You also create your own tables: ash_hooks injects fields and identities onto
 your resources, and your migrations carry them, including the unique indexes the
 deduplication guarantee rests on. Complete, runnable migrations, resources, and
 setup are in the
-[get-started tutorial](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md).
+[get-started tutorial](documentation/tutorials/get-started.md).
+
+Upgrading from 2.x? 3.0 removes the built-in vendor verifiers and requires an
+explicit `provider` on every inbound declaration. [UPGRADING.md](UPGRADING.md)
+gives the replacement configuration for each removed module.
 
 ## Receiving webhooks
 
@@ -112,7 +115,7 @@ listed `v1` signature (so the sender can rotate keys), and rejects a valid
 signature whose timestamp is more than 300 seconds from the clock. Options are
 checked when the module compiles.
 
-The [Verify any sender](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/verify-any-sender.md)
+The [Verify any sender](documentation/tutorials/verify-any-sender.md)
 guide has recipes for common shapes: an HMAC of the body in a header, a prefixed
 signature, hex or base64 secrets, Standard Webhooks, signed method and URL,
 sorted form fields, RSA and ECDSA headers, Ed25519, JWS bodies, custom timestamp
@@ -153,7 +156,7 @@ end
 Secrets are always sources, never literal values: an `{m, f, a}` callback, an
 `{:app_env, path}`, a zero-arity function, or (for multi-tenant apps) a
 one-arity function that receives the tenant. For public-key schemes the source
-returns the sender's public key as PEM.
+returns the sender's public key, PEM-encoded.
 
 The inbound name (`:payments`) identifies the source in the ledger. `provider`
 is required.
@@ -175,7 +178,12 @@ case AshHooks.Ingress.ingest(Ledger, :payments, conn.private[:ash_hooks_raw_body
   {:ok, _tag, %{status: status}} when status in [:processed, :failed_permanent, :superseded] ->
     send_resp(conn, 200, "")
   {:ok, _tag, _row} -> send_resp(conn, 500, "")    # handler failed: the sender retries
-  {:error, _} -> send_resp(conn, 400, "")          # bad signature, stale timestamp, bad payload
+  # not authentic, a replay, or an identity the provider rejected: do not retry
+  {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} -> send_resp(conn, 400, "")
+  {:error, %AshHooks.Errors.Invalid.StaleTimestamp{}} -> send_resp(conn, 400, "")
+  {:error, %AshHooks.Errors.Invalid.MalformedPayload{}} -> send_resp(conn, 400, "")
+  # paused source, missing secret, storage failure: the sender retries
+  {:error, _} -> send_resp(conn, 503, "")
 end
 ```
 
@@ -212,7 +220,7 @@ defmodule MyApp.Webhooks.Payments do
 end
 ```
 
-Map event names with an explicit table; never `String.to_atom/1` request data.
+Map event names with an explicit table; never call `String.to_atom/1` on request data.
 An unknown type is recorded as a permanent failure.
 
 **Delivery semantics.** A terminal delivery (`:processed`, `:failed_permanent`,
@@ -269,18 +277,18 @@ JWS-body provider generates one); an explicit route `body_format` overrides it.
 ### HTTP Message Signatures with RequestSeal
 
 For senders that sign with [HTTP Message Signatures (RFC 9421)](https://www.rfc-editor.org/rfc/rfc9421.html),
-use [RequestSeal](https://hex.pm/packages/request_seal) (`{:request_seal, "~> 0.5.3"}`)
-alongside ash_hooks. It verifies which parts of the request are covered
+use [RequestSeal](https://hex.pm/packages/request_seal) 1.0 or later
+(`{:request_seal, "~> 1.0"}`) alongside ash_hooks. It verifies which parts of the request are covered
 (method, authority, path, query, and named headers), checks signature freshness
 and expiry, verifies body integrity with content digests
 ([RFC 9530](https://www.rfc-editor.org/rfc/rfc9530.html)), and spends each
-signature's nonce once through a replay store you choose (ETS, PostgreSQL, or
-`ash_onetime`). Keys come from a resolver you write, and its bounded key
-discovery handles JWKS and key directories; it also verifies Web Bot Auth agents
+signature's nonce once through a replay store you choose (ETS, Erlang Term
+Storage; PostgreSQL; or `ash_onetime`). Keys come from a resolver you write, and its bounded key
+discovery handles JSON Web Key Sets (JWKS) and key directories; it also verifies Web Bot Auth agents
 and crawlers. Its `RequestSeal.AshHooks` adapter verifies inside an ash_hooks
 provider, and `RequestSeal.AshHooks.Http` signs your outbound ash_hooks
 deliveries with RFC 9421. ash_hooks keeps the ledger, retries, and transport.
-The [Verify any sender](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/verify-any-sender.md#http-message-signatures-rfc-9421-with-requestseal)
+The [Verify any sender](documentation/tutorials/verify-any-sender.md#http-message-signatures-rfc-9421-with-requestseal)
 guide shows the provider.
 
 ## Sending webhooks
@@ -298,7 +306,7 @@ defmodule MyApp.WebhookDeliveryWorker do
 end
 ```
 
-The secret resolver maps an endpoint's secret reference to its value —
+The secret resolver maps an endpoint's secret reference to its value:
 generate values with `AshHooks.Signing.generate_secret/0`, store them
 whole in your secret store, and return them unchanged.
 
@@ -310,7 +318,7 @@ ceiling decides dead-letter), a literal `http_opts` `timeout:` at or above
 seam). Timing is also configurable at runtime: pass
 `runtime_config: {MyApp.Config, :webhook_runtime}` and the callback
 resolves `:delivery_max_attempts`, the backoff ladder, the `Retry-After`
-cap, `:attempt_timeout`, and `:finalization_allowance` per perform — every
+cap, `:attempt_timeout`, and `:finalization_allowance` per perform; every
 compile-time misfit check re-runs against the resolved set, so an override
 that overruns the baked job envelope fails the job before any delivery
 work. See `AshHooks.Worker` for every relation and its rationale.
@@ -340,11 +348,12 @@ client errors, and
 durably disables the endpoint on 410. An endpoint's failure never
 blocks delivery to its siblings.
 
-**Without Oban**, dispatch still works — every matching endpoint gets a
-durable `:pending` row — but nothing drives those rows until you define
+**Without Oban**, dispatch still works (every matching endpoint gets a
+durable `:pending` row), but nothing drives those rows until you define
 the worker (or call `AshHooks.Delivery.run/2` yourself): the delivery
 row owns the retry policy, and the queue is only its trigger
-([ADR-0008](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0008-delivery-row-owns-retry-policy-oban-is-the-trigger.md)).
+(architecture decision record
+[ADR-0008](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0008-delivery-row-owns-retry-policy-oban-is-the-trigger.md)).
 
 The default HTTP adapter bounds response headers, retained body bytes, and
 the complete operation time. OTP's `:httpc` is an alternative with additional
@@ -402,14 +411,14 @@ deduplicate by the stable `webhook-id`.
 **Delivery logs and attempt history.** Add the `AshHooks.OutboundAttempt`
 extension on a resource and pass `attempts:` to the worker: every attempt
 records one durable row (time, outcome, classified reason, HTTP status,
-latency, the signing key reference — never the secret), queryable by
+latency, the signing key reference but never the secret), queryable by
 endpoint, outcome, event type, and time range with keyset pagination
 (`AshHooks.Delivery.list/2` and `AshHooks.OutboundAttempt.list/2`). Response
 bodies stay off unless an endpoint opts in per row
 (`response_capture_attributes :on` + `response_capture: true`): captured
 bytes are bounded, redacted, and only allowlisted response headers are kept.
 
-**Response bodies are never stored by default** — each delivery row keeps the
+**Response bodies are never stored by default**: each delivery row keeps the
 status and a content-type summary. For a diagnostic run, enable capture on one
 row. The captured body is bounded, passes built-in redaction, and is marked
 `[captured]` in the snippet:
@@ -434,23 +443,23 @@ because the worker's `max_attempts` controls Oban jobs. Copy the worker's
 retry policy for a diagnostic run: a lower delivery ceiling can dead-letter a
 row the worker would still retry.
 
-Only non-terminal rows are driven — a row that already finished will
+Only non-terminal rows are driven: a row that already finished will
 not re-send; re-drive a failed one, or wait for its retry.
 
 For a domain-specific denylist, also pass a `snippet_redactor`
-(`{module, function}` or `fn body -> body | nil` — return the
+(`{module, function}` or `fn body -> body | nil`; return the
 redacted binary, or nil to leave the body uncaptured). It runs before
 the built-in redaction; a crashing redactor leaves the body
 uncaptured. See `AshHooks.Worker` for the worker-macro form.
 
 **Test events.** `AshHooks.Delivery.test_send/2` sends a signed synthetic
-event of a chosen type to one endpoint, outside subscriptions — a fresh
+event of a chosen type to one endpoint, outside subscriptions: a fresh
 webhook id each time, a payload that marks itself as a test, and the
 normal attempt/telemetry lifecycle behind it (see `AshHooks.Delivery`).
 
 **Signing modes.** `:standard` (default) needs only the endpoint's
 `secret_ref`. `:dual` and `:legacy` additionally require a
-`legacy_secret_ref` — `:dual` emits both envelopes so receivers can
+`legacy_secret_ref`: `:dual` emits both envelopes so receivers can
 migrate, `:legacy` emits only the old one.
 
 **Secret rolling.** Roll an endpoint's signing secret with an overlap
@@ -458,7 +467,7 @@ window (`AshHooks.Endpoint.roll_secret/2` + `key_lifecycle :on`): the
 incumbent reference moves to `previous_secret_ref`, BOTH keys sign every
 delivery until the window ends (Standard Webhooks multi-signature), the
 scheduled sweep retires the old key on time, and the row exposes each
-key's created / first-used / retired times — never secret material.
+key's created, first-used, and retired times, never secret material.
 
 **Endpoint health and auto-disable.** `AshHooks.EndpointHealth.stats/2`
 computes one endpoint's trailing-window success rate, latency
@@ -473,24 +482,24 @@ reach people before the breaker opens. Re-enabling is explicit.
 each event type's `description`, `payload_schema`, `example`, and
 `version`; `AshHooks.Catalog` reads the catalog back for event pickers
 and doc generation. An endpoint that pins a payload version
-(`version_pinning :on`) receives that variant builder's exact bytes —
+(`version_pinning :on`) receives that variant builder's exact bytes;
 per-endpoint rows carry their own version.
 
 **The event log.** `AshHooks.OutboundEvent` records each dispatched event
 once (id, type, version, exact bytes) whether or not any endpoint was
-enabled, with its own retention — and `replay/3` delivers one event or a
+enabled, with its own retention, and `replay/3` delivers one event or a
 filtered set to any chosen endpoint, including one added later, keeping
 the event id so receivers deduplicate.
 
 **Subscription attribute filters.** `filter_attributes([:order_id,
 :region])` on the subscription resource lets a subscription match on
 declared event attributes (values ride the event's `metadata`), evaluated
-before any delivery row exists — multiple filters AND, list values
+before any delivery row exists: multiple filters AND, list values
 any-of, unknown keys never match.
 
 **Transports.** `AshHooks.Transport` routes one endpoint's deliveries to
 your own transport (a developer's local forwarder behind a CLI `listen`
-command) instead of HTTP — the same signing, attempts, and telemetry. A
+command) instead of HTTP, with the same signing, attempts, and telemetry. A
 destination policy (`AshHooks.DestinationPolicy`) adds your own allow and
 deny rules around the packaged SSRF check.
 
@@ -501,7 +510,7 @@ your domain may reserve those names or own the lifecycle itself.
 Every knob is a per-resource DSL option, fail-closed at compile:
 
 ```elixir
-# your domain reserves `payload` for its own sole payload store —
+# your domain reserves `payload` for its own sole payload store:
 # rename the ledger's exact-bytes column instead
 outbound_delivery do
   payload_attribute :event_bytes
@@ -514,7 +523,7 @@ outbound_delivery do
   prune_action :none
 end
 
-# your register already has an enable switch — map the durable
+# your register already has an enable switch: map the durable
 # enable/disable onto it (the 410 breaker and operators flip your
 # attribute; the package injects no `status` of its own)
 endpoint do
@@ -530,25 +539,25 @@ supported create input; inbound scope fields can supply key components.
 Endpoint and subscription references require a single UUID-compatible
 key, which may be renamed or generated with `uuid_v7_primary_key`.
 A subscription register may be a closed `{:array, :atom}` enum
-(your constraints, your default — matching handles atoms and strings
+(your constraints, your default; matching handles atoms and strings
 identically, wildcard included), and injected-PK ledgers still classify
 `:created`/`:duplicate` exactly.
 
 **Policies.** The package injects write actions, not the authorization
 around them. Cover the generated machine actions with an action-specific
 policy of your own (the runtime's internal calls bypass policies by
-design), or keep the resources off every actor-facing surface — the
+design), or keep the resources off every actor-facing surface; the
 full action set and obligation are stated at each extension site in the module docs.
 
 ## Observability
 
-Attach one handler to see the whole lifecycle — inbound
+Attach one handler to see the whole lifecycle: inbound
 verify/dedup/claim, enqueue failures, delivery
 attempt/result/backoff/dead-letter/endpoint-disable. Events carry ids,
-integers, fixed atoms, and classified reasons — never secrets, bodies,
+integers, fixed atoms, and classified reasons, never secrets, bodies,
 or payloads. The exact event list and a copy-paste `attach_many` block
 are in the `AshHooks.Telemetry` docs and the
-[get-started tutorial](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md).
+[get-started tutorial](documentation/tutorials/get-started.md).
 
 ## Retention
 
@@ -558,25 +567,25 @@ a schedule of your choosing (an Oban cron job, a mix task, a nightly
 job):
 
 - `AshHooks.Ingress.prune/2` and `AshHooks.Delivery.prune/2` delete
-  terminal rows older than a cutoff — retryable and in-flight rows are
+  terminal rows older than a cutoff; retryable and in-flight rows are
   never touched. They key off the resource's `inserted_at`, so add
   Ash's `timestamps()` to the resource and its migration. Append-only
   ledgers may omit the destroy action entirely
-  (`prune_action :none`) — `prune/2` then fails loud with a named
+  (`prune_action :none`); `prune/2` then fails loud with a named
   error, and deletion is your own surface.
 - `AshHooks.Ingress.redact_payload/5` rewrites a claimed row's payload
   under the claim fence (scrub sensitive fields while keeping the dedup
   identity; the original-bytes digest is preserved for audit).
 
-Deleting a terminal row re-opens its dedup identity — a replayed
-webhook re-processes, a re-emitted outbound event re-sends — so set the
+Deleting a terminal row re-opens its dedup identity (a replayed
+webhook re-processes, a re-emitted outbound event re-sends), so set the
 TTL beyond any replay or re-emission horizon.
 
 ## Multi-tenancy
 
 If one app serves multiple organizations, ash_hooks works the way Ash
-does: declare **attribute multitenancy** on the four resources — your
-Subscription, Endpoint, inbound ledger, and outbound delivery ledger —
+does: declare **attribute multitenancy** on the four resources (your
+Subscription, Endpoint, inbound ledger, and outbound delivery ledger)
 and pass a `:tenant` to every call:
 
 ```elixir
@@ -596,7 +605,7 @@ AshHooks.Ingress.ingest(WebhookLedger, :payments, raw_body, %{
 })
 ```
 
-From there the isolation is structural, not advisory: a dispatch for
+From there, isolation is enforced by the data model: a dispatch for
 tenant A cannot create a delivery row for tenant B's endpoint, a
 subscription pointing at another tenant's endpoint id resolves to
 not-found and is skipped, the inbound dedup identity is per-tenant, and
@@ -604,17 +613,17 @@ the claim fence and every mark are per-tenant. Touch a multitenant
 resource without a tenant and you get `{:error, :tenant_required}`
 before any data access; mix tenancy declarations across the resources
 one operation touches (say, a tenant-scoped delivery ledger beside an
-undeclared endpoint table) and you get `{:error, :tenancy_mismatch}` —
-both named errors, both fail-closed. Each operation checks the set it
+undeclared endpoint table) and you get `{:error, :tenancy_mismatch}`.
+Both are named errors, and both fail closed. Each operation checks the set it
 actually reads: an inbound-only app declares tenancy on its ledger
 alone and needs none of the outbound resources.
 
-The async path carries its own weight: the Oban job args include the
+The async path is tenant-aware too: the Oban job args include the
 row's tenant (the worker recovers full context after any restart), the
 retention sweeps take a `:tenant` (with `AshHooks.reap_all/2` /
 `AshHooks.prune_all/2` sugar to sweep a tenant list), and
 `AshHooks.reconcile_pending/3` repairs rows stranded between the row
-write and the enqueue — per tenant, with single-winner semantics. If
+write and the enqueue, per tenant, with single-winner semantics. If
 your signing secrets are per-tenant, resolution can be too: the worker
 macro's `tenant_aware_secrets: true` (the resolver becomes
 `f(ref, tenant)`), an inbound `secret fn tenant -> {:ok, secret} end`,
@@ -622,11 +631,11 @@ and an optional provider `webhook_signing_secret(connection, tenant)`
 callback.
 
 Single-tenant app? Do none of this. No tenant passed means no tenant
-threaded — behavior is identical.
+threaded; behavior is identical.
 
 Adopting tenancy on tables that already have rows is an ordered
-transition (backfill, then regenerate indexes, then enable) — the
-[adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
+transition (backfill, then regenerate indexes, then enable); the
+[adoption checklist](documentation/tutorials/tenancy-adoption-checklist.md)
 walks it.
 
 ## Security
@@ -655,16 +664,16 @@ This assumes `Ash.Policy.Authorizer` in the resource's `authorizers`;
 match the snippet to your actual actors. The `policies` block lives
 inside the ledger/delivery resource module (with
 `authorizers: [Ash.Policy.Authorizer]` in the `use Ash.Resource`
-options — Ash's [policies guide](https://hexdocs.pm/ash/policies.html)
+options; Ash's [policies guide](https://hexdocs.pm/ash/policies.html)
 covers the full model). Vulnerability reports:
-[SECURITY.md](SECURITY.md) — never a public issue.
+[SECURITY.md](SECURITY.md), never a public issue.
 
 ## Stability
 
 ash_hooks follows semantic versioning over a named public
 surface (the DSL, the public modules, injected attributes/actions,
-telemetry events, error classes) — the current major is 3; breaking changes next ship in 4.0,
-deprecations run two minors minimum, safety corrections ship as fixes
+telemetry events, error classes). The current major is 3: breaking changes next ship in 4.0,
+deprecations run at least two minor releases, and safety corrections ship as fixes
 ([ADR-0010](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0010-semver-and-support-policy.md)).
 
 Minimum supported versions: Elixir ~> 1.20 (OTP 28+; CI-tested on
@@ -673,29 +682,29 @@ Development is supported on macOS and Linux; Windows developers use WSL2.
 CI runs on Linux, including an AshPostgres leg exercising a
 `uuid_v7`-keyed consumer shape. On Ash 3.33+ your
 application must also set Ash's required `default_string_length_count`
-config — an Ash requirement for every app compiling resources, not an
+config: an Ash requirement for every app compiling resources, not an
 ash_hooks one ([UPGRADING.md](UPGRADING.md)). One nuance: a fix
 that closes a safety hole can change behavior in a patch release (a
-delivery that wrongly succeeded may now retry, for example) — such
+delivery that wrongly succeeded may now retry, for example); such
 corrections are always called out under "Fixed" in the
 [CHANGELOG](CHANGELOG.md). Moving off a supported version is a minor
 release with an [UPGRADING.md](UPGRADING.md) note.
 
 ## Further reading
 
-- [Get started](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md) —
-  complete walkthrough, migrations included
-- [Guided tour (Livebook)](https://github.com/baselabs/ash_hooks/blob/main/documentation/livebooks/get-started.livemd) —
-  run the whole library inside one notebook
-- [Verify any sender](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/verify-any-sender.md) —
-  signature recipes and the provider configuration reference
-- [UPGRADING.md](UPGRADING.md) — migration notes per release
-- [SECURITY.md](SECURITY.md) — reporting and scope
-- [DSL reference](https://github.com/baselabs/ash_hooks/tree/main/documentation/dsls)
-- [Architecture decisions](https://github.com/baselabs/ash_hooks/tree/main/docs/adr)
-  (ADRs — the reasoning behind every major design choice)
-- [CONTRIBUTING.md](CONTRIBUTING.md) — setup, the gate suite, how to
-  propose changes; GitHub issues are the support channel
+- [Get started](documentation/tutorials/get-started.md): a complete walkthrough,
+  migrations included
+- [Guided tour (Livebook)](documentation/livebooks/get-started.livemd): run the
+  whole library inside one notebook
+- [Verify any sender](documentation/tutorials/verify-any-sender.md): signature
+  recipes and the provider configuration reference
+- [UPGRADING.md](UPGRADING.md): migration notes per release
+- [SECURITY.md](SECURITY.md): reporting and scope
+- [DSL reference](documentation/dsls/DSL-AshHooks.md)
+- [Architecture decisions](https://github.com/baselabs/ash_hooks/tree/main/docs/adr):
+  the reasoning behind every major design choice
+- [CONTRIBUTING.md](CONTRIBUTING.md): setup, the gate suite, and how to propose
+  changes; GitHub issues are the support channel
 - Full API docs at [hexdocs.pm/ash_hooks](https://hexdocs.pm/ash_hooks)
 
 ## License

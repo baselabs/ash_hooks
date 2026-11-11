@@ -50,7 +50,8 @@ the reporter.
 - Keys and algorithms come only from the host's provider configuration and secret
   sources. The package never fetches keys from a URL, a header, or the token being
   verified. A JWS body is verified only with the host-pinned algorithm; `none`, an
-  algorithm mismatch, unknown critical headers, and unencoded payloads are rejected.
+  algorithm mismatch, a nonempty `crit` header, `b64: false` payloads, and padded
+  segments are rejected.
 - X.509 certificates supplied as keys are used only as containers for a key the host
   pins; their chain, expiry, and revocation are not evaluated.
 - Inbound DSL secret options accept resolver sources rather than literal binaries.
@@ -81,7 +82,7 @@ the reporter.
   ahead of this check: an `:allow` is an explicit consumer trust decision that replaces
   the packaged send-time gate for that URL (the HTTP adapter's resolve-and-pin remains
   the transport's own boundary), a `:deny` is terminal, and a contained callback
-  failure retries — a policy defect never dead-letters deliveries.
+  failure retries: a policy defect never dead-letters deliveries.
 - TLS uses the OTP trust store unless the host supplies a CA bundle. Hostnames use the
   normal certificate hostname check. Literal HTTPS addresses must match an `iPAddress`
   subject alternative name.

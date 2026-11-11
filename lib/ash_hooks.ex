@@ -12,7 +12,7 @@ defmodule AshHooks do
         inbound :orders do
           provider MyApp.Webhooks.OrderProvider
           secret {:app_env, [:my_app, :webhook_secret]}
-          # optional: extract a stable event id from the decoded payload
+          event_id &MyApp.Webhooks.OrderProvider.event_id/1  # optional: a stable event id from the decoded payload
         end
 
         outbound :order_paid do
@@ -39,7 +39,7 @@ defmodule AshHooks do
     args: [:name],
     target: AshHooks.Inbound,
     describe: """
-    Declares an inbound webhook source — a provider whose deliveries this
+    Declares an inbound webhook source: a sender whose deliveries this
     resource receives, verifies, deduplicates, and handles.
     """,
     schema: [
@@ -82,11 +82,13 @@ defmodule AshHooks do
       event_id: [
         type: :any,
         doc: """
-        Extractor for the provider's external event id from the decoded payload
+        Extractor for the sender's event id from the decoded payload
         (`payload -> {:ok, id} | :error`). This explicit extractor takes precedence
-        over the provider's optional `event_identity/1`. Without either, the raw
-        request-body digest supplies the identity. A provider callback error fails
-        closed rather than falling back to the digest.
+        over the provider's optional `event_identity/1`. Any result other than
+        `{:ok, id}` with a binary `id` uses the raw request-body digest, and an id
+        longer than 255 bytes is stored as its SHA-256. Without an extractor or a
+        provider callback, the raw request-body digest supplies the identity. A
+        provider callback error fails closed rather than falling back to the digest.
         """
       ],
       previous_secret: [
@@ -105,8 +107,8 @@ defmodule AshHooks do
         The pause switch source (`{m, f, a}`, `{:app_env, path}`, or a
         0-arity fn, or tenant-aware 1-arity fn resolving to a boolean): while it resolves `true`,
         every request to this source is REFUSED with
-        `{:error, :source_paused}` before verification or any write —
-        answer 5xx from your controller so the provider retries. Unpause
+        `{:error, :source_paused}` before verification or any write;
+        answer 5xx from your controller so the sender retries. Unpause
         by resolving `false` again; nothing is lost while paused.
         """
       ],
@@ -115,10 +117,11 @@ defmodule AshHooks do
         doc: """
         Replay-protection window for providers whose scheme carries a
         trustworthy timestamp. Providers without timestamps must leave this
-        unset — the verifier rejects a window whose provider declares no timestamp header
+        unset: compilation fails when the provider declares no timestamp header
         (`AshHooks.Provider.timestamp_header/1` returns nil). The window value
         is passed to the provider's `verify_signature/3` in the context map
-        for scheme-specific enforcement.
+        for scheme-specific enforcement. For a configured provider, the window
+        overrides `tolerance_seconds`.
         """
       ]
     ]

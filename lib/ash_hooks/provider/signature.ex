@@ -2,9 +2,9 @@ defmodule AshHooks.Provider.Signature do
   @moduledoc """
   Stateless webhook signature verification with caller-pinned keys and algorithms.
 
-  HMAC, RSA, ECDSA and Ed25519 functions return `:ok` or an error with reason
-  `:invalid_signature`, `:no_webhook_secret`, or `:stale_timestamp`. `jws/3`
-  returns the authenticated payload bytes. Malformed input never raises.
+  HMAC, RSA, ECDSA and Ed25519 functions return `:ok`, `{:error, :invalid_signature}`
+  or `{:error, :no_webhook_secret}`; `jws/3` and `check_timestamp/3` can also return
+  `{:error, :stale_timestamp}`. `jws/3` returns the authenticated payload bytes. Malformed input never raises.
 
   `encoding:` describes the received signature: `:hex` is lowercase only,
   `:hex_upper` uppercase only, `:hex_any` accepts either case, `:base64` and

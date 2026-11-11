@@ -15,7 +15,7 @@ Attach to a resource:
       inbound :orders do
         provider MyApp.Webhooks.OrderProvider
         secret {:app_env, [:my_app, :webhook_secret]}
-        # optional: extract a stable event id from the decoded payload
+        event_id &MyApp.Webhooks.OrderProvider.event_id/1  # optional: a stable event id from the decoded payload
       end
 
       outbound :order_paid do
@@ -56,7 +56,7 @@ inbound name
 ```
 
 
-Declares an inbound webhook source — a provider whose deliveries this
+Declares an inbound webhook source: a sender whose deliveries this
 resource receives, verifies, deduplicates, and handles.
 
 
@@ -76,10 +76,10 @@ resource receives, verifies, deduplicates, and handles.
 | [`secret`](#webhooks-inbound-secret){: #webhooks-inbound-secret .spark-required} | `any` |  | The signing-secret source: an `{M, f, a}` callback, `{:app_env, path}`, a 0-arity function (app-global), or a 1-arity function (`tenant -> {:ok, secret} \| {:error, :no_webhook_secret}` — resolves the TENANT's secret on multitenant ledgers; arity dispatch on literal fns is unambiguous). A literal binary is rejected at parse time (ADR-0005). Scope: this net catches the secret passed AS the option value; arguments of an MFA source are the consumer's own code. |
 | [`provider`](#webhooks-inbound-provider){: #webhooks-inbound-provider } | `atom` |  | The required module implementing `AshHooks.Provider`, for example one defined with `use AshHooks.Provider, verify: [...]`. The source name does not select a module. |
 | [`body_format`](#webhooks-inbound-body_format){: #webhooks-inbound-body_format } | `:json \| :form` |  | Opt-in payload decoding for this route. `:form` decodes application/x-www-form-urlencoded names and values without interpreting bracket notation. Verification still receives the exact raw bytes. When unset, use the provider's `decode_payload/1` callback or JSON. The request Content-Type never enables a decoder implicitly. |
-| [`event_id`](#webhooks-inbound-event_id){: #webhooks-inbound-event_id } | `any` |  | Extractor for the provider's external event id from the decoded payload (`payload -> {:ok, id} \| :error`). This explicit extractor takes precedence over the provider's optional `event_identity/1`. Without either, the raw request-body digest supplies the identity. A provider callback error fails closed rather than falling back to the digest. |
+| [`event_id`](#webhooks-inbound-event_id){: #webhooks-inbound-event_id } | `any` |  | Extractor for the sender's event id from the decoded payload (`payload -> {:ok, id} \| :error`). This explicit extractor takes precedence over the provider's optional `event_identity/1`. Any result other than `{:ok, id}` with a binary `id` uses the raw request-body digest, and an id longer than 255 bytes is stored as its SHA-256. Without an extractor or a provider callback, the raw request-body digest supplies the identity. A provider callback error fails closed rather than falling back to the digest. |
 | [`previous_secret`](#webhooks-inbound-previous_secret){: #webhooks-inbound-previous_secret } | `any` |  | The ROTATED-OUT signing secret source for this inbound declaration (the same source shapes as `secret`): during a rotation's overlap window, verification falls back to this key when the current one does not match — both keys verify until you remove the option (the end of your overlap window). |
-| [`paused`](#webhooks-inbound-paused){: #webhooks-inbound-paused } | `any` |  | The pause switch source (`{m, f, a}`, `{:app_env, path}`, or a 0-arity fn, or tenant-aware 1-arity fn resolving to a boolean): while it resolves `true`, every request to this source is REFUSED with `{:error, :source_paused}` before verification or any write — answer 5xx from your controller so the provider retries. Unpause by resolving `false` again; nothing is lost while paused. |
-| [`replay_window_seconds`](#webhooks-inbound-replay_window_seconds){: #webhooks-inbound-replay_window_seconds } | `pos_integer` |  | Replay-protection window for providers whose scheme carries a trustworthy timestamp. Providers without timestamps must leave this unset — the verifier rejects a window whose provider declares no timestamp header (`AshHooks.Provider.timestamp_header/1` returns nil). The window value is passed to the provider's `verify_signature/3` in the context map for scheme-specific enforcement. |
+| [`paused`](#webhooks-inbound-paused){: #webhooks-inbound-paused } | `any` |  | The pause switch source (`{m, f, a}`, `{:app_env, path}`, or a 0-arity fn, or tenant-aware 1-arity fn resolving to a boolean): while it resolves `true`, every request to this source is REFUSED with `{:error, :source_paused}` before verification or any write; answer 5xx from your controller so the sender retries. Unpause by resolving `false` again; nothing is lost while paused. |
+| [`replay_window_seconds`](#webhooks-inbound-replay_window_seconds){: #webhooks-inbound-replay_window_seconds } | `pos_integer` |  | Replay-protection window for providers whose scheme carries a trustworthy timestamp. Providers without timestamps must leave this unset: compilation fails when the provider declares no timestamp header (`AshHooks.Provider.timestamp_header/1` returns nil). The window value is passed to the provider's `verify_signature/3` in the context map for scheme-specific enforcement. For a configured provider, the window overrides `tolerance_seconds`. |
 
 
 

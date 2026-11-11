@@ -93,7 +93,7 @@ the same provider event id in two tenants is two rows, both processed.
 AshHooks.dispatch(Order, :order_paid, event, tenant: org.id)
 
 # inbound — the tenant rides the request context
-AshHooks.Ingress.ingest(WebhookLedger, :stripe, raw_body, %{signature: sig, tenant: org.id})
+AshHooks.Ingress.ingest(WebhookLedger, :payments, raw_body, %{headers: conn.req_headers, tenant: org.id})
 
 # the worker (unchanged) — the enqueue serializes the row's tenant into
 # job args; Delivery.run/2 recovers it after any restart

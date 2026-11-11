@@ -38,21 +38,22 @@ defmodule AshHooks.Provider do
   The request context `verify_signature/3` receives as its second argument.
   Carries everything any provider's signature scheme can need:
 
-    * `:signature` — the value extracted from the provider's signature header.
-    * `:headers` — the request headers as a map. When the host passed the
+    * `:signature`: the signature header value the host passed, or `nil`; for a
+      `signature_source/0` of `:body`, the raw body.
+    * `:headers`: the request headers as a map. When the host passed the
       ordered list from `conn.req_headers`, names are lowercased and repeated
       lines are joined with `", "`; a host-supplied map arrives unchanged.
-    * `:header_list` — every request header line as `{name, value}`, in
+    * `:header_list`: every request header line as `{name, value}`, in
       arrival order with repeated lines kept, when the host passed a list
       (names lowercased); for a host-supplied map, its binary entries.
-    * `:method` — the uppercase HTTP method, for schemes that sign over it.
+    * `:method`: the uppercase HTTP method, for schemes that sign over it.
       `nil` when the caller does not supply it.
-    * `:request_uri` — the exact request URI the provider signed. `nil` when
+    * `:request_uri`: the exact request URI the provider signed. `nil` when
       not supplied.
-    * `:tenant` — the ingest tenant when the ledger is multitenant, `nil`
+    * `:tenant`: the ingest tenant when the ledger is multitenant, `nil`
       otherwise. A provider whose custody is per-tenant (per-connection
       secrets keyed by organization) reads it here.
-    * `:replay_window_seconds` — the declaration override when configured;
+    * `:replay_window_seconds`: the declaration override when configured;
       absent when the provider should use its own default.
 
   A provider whose scheme needs only the signature reads `:signature` and
@@ -71,9 +72,9 @@ defmodule AshHooks.Provider do
   @typedoc """
   Where a provider's webhook signing secret lives:
 
-    * `:app_level` — one app-wide shared secret signs every connection's
+    * `:app_level`: one app-wide shared secret signs every connection's
       webhooks. The default when the callback is not implemented.
-    * `:per_connection` — each connection carries its own signing secret.
+    * `:per_connection`: each connection carries its own signing secret.
   """
   @type webhook_secret_scope :: :app_level | :per_connection
 
@@ -86,16 +87,16 @@ defmodule AshHooks.Provider do
   The secret SOURCE is provider-dependent, so it lives with the provider
   module rather than in the generic ingress. App-level providers read an
   app-wide config value; per-connection providers read it off the `connection`
-  argument. Returns `{:error, :no_webhook_secret}` when unconfigured — the
+  argument. Returns `{:error, :no_webhook_secret}` when unconfigured; the
   caller verifies nothing and does not run the handler.
   """
   @callback webhook_signing_secret(connection :: struct()) ::
               {:ok, webhook_secret()} | {:error, :no_webhook_secret}
 
   @doc """
-  Tenant-aware per-connection secret resolution (optional, 1.2.0): resolves
-  the signing secret from the connection AND the ingest tenant — custody of
-  Organization × connection. A provider using `use AshHooks.Provider` gets a
+  Optional. Resolves the signing secret from the connection and the ingest
+  tenant, for secrets kept per tenant and connection. A provider using
+  `use AshHooks.Provider` gets a
   default implementation delegating to `webhook_signing_secret/1` (existing
   providers compile unchanged); a per-tenant provider overrides `/2`.
   """
@@ -111,7 +112,7 @@ defmodule AshHooks.Provider do
   @doc """
   The request header this provider's signature scheme carries a trustworthy
   timestamp in (`nil` when the scheme has none). A DSL `replay_window_seconds`
-  requires a non-`nil` value here — the compile-time verifier rejects the
+  requires a non-`nil` value here: the compile-time verifier rejects the
   combination otherwise, and there is no replay protection without it.
   Optional, defaulting to `nil`.
   """
@@ -128,18 +129,18 @@ defmodule AshHooks.Provider do
   `AshHooks.Provider.Scheme`; JWS-body providers also get a payload decoder and
   a payload-based `event_identity/1`. The options are checked when the module
   finishes compiling, so an invalid option is a compile error. Write them in
-  place as a keyword list; their values may read module attributes and may be
+  place as a keyword list; their values may read module attributes set before the
+  `use` line and may be
   two-argument anonymous functions (which may call the module's private
   functions), remote captures, or `{module, function}` tuples.
 
   Plain `use AshHooks.Provider` sets the behavior and provides the
   tenant-aware `webhook_signing_secret/2` as an overridable default that
-  delegates to `webhook_signing_secret/1` when the provider implements it
-  — implement `/1` and both shapes resolve; override `/2` for
-  Organization × connection custody; implement neither and the default
-  fails closed as `{:error, :no_webhook_secret}` (the optional-callback
-  semantics — an app-level provider never sees the callback called at
-  all). Providers written against the plain `@behaviour` keep working
+  delegates to `webhook_signing_secret/1` when the provider implements it:
+  implement `/1` and both shapes resolve; override `/2` for per-tenant
+  secrets; implement neither and the default fails closed as
+  `{:error, :no_webhook_secret}` (the optional-callback semantics: an
+  app-level provider never sees the callback called at all). Providers written against the plain `@behaviour` keep working
   unchanged (`webhook_signing_secret/3` resolves both).
   """
   defmacro __using__(opts) do
@@ -247,7 +248,7 @@ defmodule AshHooks.Provider do
   end
 
   @doc """
-  Parses the event type from the decoded request body — a map for
+  Parses the event type from the decoded request body: a map for
   object-shaped deliveries, a list for batch deliveries. Providers receiving a
   shape their sender never sends
   fail closed through their catch-all clause (`{:error, :malformed_payload}`).
@@ -350,7 +351,7 @@ defmodule AshHooks.Provider do
   Resolves a provider's trustworthy timestamp header, defaulting to `nil`
   when the optional `timestamp_header/0` callback is not implemented.
 
-  Loads the provider module first — same unloaded-module guard as
+  Loads the provider module first, with the same unloaded-module guard as
   `secret_scope/1`.
   """
   @spec timestamp_header(module()) :: String.t() | nil
@@ -381,7 +382,7 @@ defmodule AshHooks.Provider do
   @doc """
   Resolves the per-connection signing secret for an ingest: an overriding
   `webhook_signing_secret/2` (tenant-aware custody) wins; otherwise the
-  call delegates to `webhook_signing_secret/1` — providers of either
+  call delegates to `webhook_signing_secret/1`, so providers of either
   implementation shape work through this one entry point.
   """
   @spec webhook_signing_secret(module(), struct(), term()) ::
@@ -401,7 +402,7 @@ defmodule AshHooks.Provider do
   The byte-size guard both short-circuits wrong-length signatures and
   satisfies `:crypto.hash_equals/2`'s equal-length requirement.
 
-  An EMPTY secret fails closed as `{:error, :no_webhook_secret}` — an HMAC
+  An EMPTY secret fails closed as `{:error, :no_webhook_secret}`: an HMAC
   under the empty key is computable by anyone, so a secret source that quietly
   resolves to `""` must not verify anything.
   """

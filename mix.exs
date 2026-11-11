@@ -34,7 +34,7 @@ defmodule AshHooks.MixProject do
       aliases: aliases(),
       name: "AshHooks",
       description:
-        "Webhooks for Ash Framework — inbound verification + dedup, outbound signing + delivery",
+        "Webhooks for Ash Framework: verify and deduplicate inbound webhooks from any sender, and sign and deliver outbound webhooks.",
       source_url: @source_url,
       homepage_url: @source_url,
       # :ecto_sql is explicit because `use AshSqlite.Repo` (test/support)

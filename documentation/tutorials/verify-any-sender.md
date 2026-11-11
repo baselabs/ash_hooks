@@ -37,7 +37,8 @@ compiles and generates these callbacks:
   timestamp and signature live;
 - `parse_event_type/1` and `handle_event/2`, which classify every verified
   request as `:webhook` and return an `AshHooks.Provider.Event`;
-- `decode_payload/1`, for senders that sign a JWS body.
+- `decode_payload/1` and `event_identity/1`, for senders that sign a JWS (JSON
+  Web Signature) body.
 
 Every generated callback can be overridden. Point an inbound declaration at the
 module:
@@ -120,9 +121,11 @@ Options are part of your code. Never build them from the request.
 
 ### Keys
 
-The inbound `secret` source supplies the key. For HMAC it is the shared secret,
-decoded according to `key_encoding` after `key_prefix` is removed. For RSA,
-ECDSA, and Ed25519 it is the sender's public key as PEM: a `PUBLIC KEY`, an
+The inbound `secret` source supplies the key. For HMAC (hash-based message
+authentication code) it is the shared secret, decoded according to
+`key_encoding` after `key_prefix` is removed. For RSA, ECDSA (elliptic curve
+digital signature algorithm), and Ed25519 it is the sender's public key,
+PEM-encoded: a `PUBLIC KEY`, an
 `RSA PUBLIC KEY`, or a `CERTIFICATE`. A certificate is used only as a container
 for the key you pinned; ash_hooks does not check its chain, expiry, or
 revocation. An Ed25519 key can also be its 32 raw bytes, decoded with
@@ -158,9 +161,11 @@ key or signature bytes:
 - `{:error, :no_webhook_secret}`: the secret source returned no usable key;
 - `{:error, :stale_timestamp}`: a valid signature outside the replay window.
 
-Ingress turns these into `AshHooks.Errors` values before any row is written.
-Answer them with a 4xx response; answer handler failures with a 5xx so the
-sender retries.
+Ingress turns these into `AshHooks.Errors` values before it writes a delivery
+row. With `ingress_tracking :on`, a rejected request records only a digest row
+for `counts/2`. Answer `:invalid_signature` and `:stale_timestamp` with a 4xx
+response. Answer `:no_webhook_secret`, a paused source, and handler failures with
+a 5xx, so the sender retries once you fix the cause.
 
 ## Recipes
 
@@ -443,10 +448,11 @@ fixed-width `r || s` form.
 
 ### A JWS or JWT as the body
 
-Some senders deliver a compact JWS as the whole body. The algorithm is pinned by
-your configuration and never read from the token. A token whose header names a
-different algorithm, `none`, a critical extension, or an unencoded payload is
-rejected. When the payload is a JSON object with `exp` or `nbf` claims, they are
+Some senders deliver a compact JWS, often a JWT (JSON Web Token), as the whole
+body. The algorithm is pinned by your configuration and never read from the
+token. A token whose header names a different algorithm, `none`, a critical
+extension, or an unencoded payload is rejected. So is a token with padded
+segments. When the payload is a JSON object with `exp` or `nbf` claims, they are
 enforced.
 
 ```elixir
@@ -558,7 +564,7 @@ tells ingress that the provider reads its own signature from the headers.
 Senders that sign with [HTTP Message Signatures](https://www.rfc-editor.org/rfc/rfc9421.html)
 put `signature` and `signature-input` headers on the request, naming exactly
 which components they cover. Verify them with
-[RequestSeal](https://hex.pm/packages/request_seal), a separate package that adds
+[RequestSeal](https://hex.pm/packages/request_seal) 1.0 or later, a separate package that adds
 what this scheme needs beyond a signature check: required covered components,
 freshness and expiry, body integrity through content digests
 ([RFC 9530](https://www.rfc-editor.org/rfc/rfc9530.html)), and one-time nonces
@@ -566,7 +572,7 @@ through a replay store you supervise.
 
 ```elixir
 # mix.exs
-{:request_seal, "~> 0.5.3"}
+{:request_seal, "~> 1.0"}
 ```
 
 Its `RequestSeal.AshHooks` adapter verifies inside a provider. The inbound
@@ -588,7 +594,7 @@ defmodule MyApp.Webhooks.Signed do
     )
   end
 
-  # The adapter reads the signature from ctx.headers.
+  # The adapter reads the signature headers itself; ingress needs no ctx.signature.
   @impl true
   def signature_source, do: :request
 
@@ -621,10 +627,6 @@ defmodule MyApp.Webhooks.Signed do
 end
 ```
 
-Pass `method`, the public `request_uri`, and `headers` to ingress, as for any
-scheme that signs the request line. A policy function that fails makes
-verification fail; it never accepts the request.
-
 `replay: :not_required` keeps the example short. To accept each signed request
 once, configure a replay store in the policy, as RequestSeal's
 [replay protection guide](https://hexdocs.pm/request_seal/replay-protection.html)
@@ -634,7 +636,8 @@ Pass `headers: conn.req_headers` to ingress. The adapter rebuilds the signed
 request from `ctx.header_list`, so a covered header that arrives on several
 lines verifies exactly as it was sent. Pass the exact URL the sender signed,
 query included, as `request_uri`; ash_hooks hands it to the adapter unchanged.
-RequestSeal's [webhooks with ash_hooks guide](https://hexdocs.pm/request_seal/ash-hooks.html)
+A policy function that fails makes verification fail; it never accepts the
+request. RequestSeal's [webhooks with ash_hooks guide](https://hexdocs.pm/request_seal/ash-hooks.html)
 also covers signing your outbound ash_hooks deliveries with RFC 9421.
 
 ## Key rotation

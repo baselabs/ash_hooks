@@ -4,25 +4,25 @@ defmodule AshHooks.Provider.Hmac do
 
   `use AshHooks.Provider, verify: [...]` (see `AshHooks.Provider.Scheme`) covers
   the same HMAC contracts and adds public-key algorithms, structured headers, and
-  signed-input templates; this module keeps its existing options.
+  signed-input templates.
 
-  This is not a vendor protocol. `verify_signature/3` defaults to lowercase-hex
+  `verify_signature/3` defaults to lowercase-hex
   HMAC-SHA256 over the raw bytes and reads `ctx.signature`. Its four-argument
   form accepts trusted host options:
 
-    * `:header` — signature header name, case-insensitive; when set, only that
+    * `:header`: signature header name, case-insensitive; when set, only that
       header is used, never a fallback signature from another source.
-    * `:algorithm` — `:sha256` (default), `:sha1`, `:sha384`, or `:sha512`.
-    * `:encoding` — `:hex` (lowercase, default) or `:base64`.
-    * `:timestamp_header` — optional Unix-seconds header. When configured,
+    * `:algorithm`: `:sha256` (default), `:sha1`, `:sha384`, or `:sha512`.
+    * `:encoding`: `:hex` (lowercase, default) or `:base64`.
+    * `:timestamp_header`: optional Unix-seconds header. When configured,
       the default signed input becomes `timestamp <> "." <> raw_body`.
-    * `:tolerance_seconds` — positive replay tolerance, default 300, symmetric
+    * `:tolerance_seconds`: positive replay tolerance, default 300, symmetric
       about the runtime clock. A timestamp without a valid MAC never verifies.
-    * `:canonical_input` — `{module, function}` or a two-argument function
+    * `:canonical_input`: `{module, function}` or a two-argument function
       `(raw_body, ctx) -> binary`. Replaces the default signed input; the host
       must bind every field its emitter signs, including the timestamp when
       enabled. Never obtain this callback or these options from the request.
-    * `:previous_secrets` — additional nonempty binary keys during rotation.
+    * `:previous_secrets`: additional nonempty binary keys during rotation.
       The third argument may also be a list of current/overlap keys. Empty
       keys never verify. Ingress's `previous_secret` source is another option.
 
@@ -31,12 +31,14 @@ defmodule AshHooks.Provider.Hmac do
   failures return an error without exposing their contents.
 
   Algorithm known answers are published in [RFC 4231](https://www.rfc-editor.org/rfc/rfc4231)
-  (SHA-256) and [RFC 2202](https://www.rfc-editor.org/rfc/rfc2202) (SHA-1).
+  (SHA-256, SHA-384, SHA-512) and [RFC 2202](https://www.rfc-editor.org/rfc/rfc2202) (SHA-1).
 
   To configure ingress, implement a host provider that delegates verification
   with these options and implements its own parsing and idempotent handling.
   Delegate `timestamp_header/0` to your configured timestamp header if you use
-  a DSL replay window, and pass that window as `:tolerance_seconds`.
+  a DSL replay window, and pass that window as `:tolerance_seconds`. If you set
+  `:header`, also define `signature_source/0` returning `:request`; otherwise
+  ingress requires `ctx.signature`.
   Without a wrapper this provider returns `AshHooks.Provider.Event`.
   """
 

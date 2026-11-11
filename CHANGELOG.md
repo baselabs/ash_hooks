@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
-## 3.0.0 — Unreleased
+## 3.0.0 — November 11, 2026
 
 Inbound verification becomes generic: describe any sender's signature scheme in
 configuration, or write one callback with public primitives. The package no
@@ -46,8 +46,18 @@ each removed module. No schema or dependency changes.
   host function; timestamps in seconds or milliseconds from a header, a signature
   field or a host function, with a symmetric tolerance. Options are checked at
   compile time and every generated callback can be overridden.
-- `AshHooks.Provider.Scheme` documents those options and verifies with them
-  directly through `Scheme.verify/4`.
+- `AshHooks.Provider.Scheme` documents those options. `new!/1` validates them,
+  `verify/4` verifies with them directly, and `payload_identity/1`,
+  `decode_payload/2`, `timestamp_header/1` and `signature_source/1` back the
+  generated callbacks.
+- A provider configured with `signature: :jws_body` also gets `decode_payload/1`,
+  which stores the verified JWS payload, and `event_identity/1`, which
+  deduplicates on the SHA-256 of that payload as canonical JSON
+  (`AshHooks.Provider.Scheme.payload_identity/1`) instead of the raw-body digest.
+  Two encodings of the same signed content share one ledger row.
+- `AshHooks.Provider.Signature.jws/3` and `:jws_body` accept only unpadded
+  base64url segments, as RFC 7515 requires. A token that contains `=` fails with
+  `:invalid_signature`.
 - `AshHooks.Provider.Signature` is public: `hmac/4`, `rsa/4`, `ecdsa/4`,
   `ed25519/4`, `jws/3`, `compare/2`, `header/2` and `check_timestamp/3`, for
   providers that implement `verify_signature/3` themselves.
@@ -61,6 +71,12 @@ each removed module. No schema or dependency changes.
   delivered unchanged, as before.
 - `AshHooks.Provider.Hmac` accepts `:sha384` and `:sha512` algorithms.
 - A "Verify any sender" guide with recipes for common signature shapes.
+
+### Changed
+
+- `AshHooks.Ingress.ingest/4` fails verification when `headers` is neither a map
+  nor a list of binary `{name, value}` pairs. A list reaches providers as a map in
+  `ctx.headers` and in full in `ctx.header_list`.
 
 ## 2.3.0 — November 11, 2026
 

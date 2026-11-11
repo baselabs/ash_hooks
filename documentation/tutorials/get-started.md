@@ -7,7 +7,7 @@ independently consumable: inbound-only applications need no Oban.
 Requirements: Elixir ~> 1.20 (OTP 28+), Ash >= 3.34.3, < 4.0. Optional components: Oban
 (~> 2.20) for outbound delivery, Plug/Phoenix for inbound receipt.
 
-This walkthrough builds on a working Ash application — one with a
+This walkthrough builds on a working Ash application: one with a
 domain, a repo (Postgres or sqlite), and a migration workflow. If you
 are starting from an empty directory, follow
 [Ash's get-started guide](https://hexdocs.pm/ash/get-started.html) first; the
@@ -27,7 +27,7 @@ end
 ```
 
 Or `mix igniter.install ash_hooks`, which also attempts to patch your
-endpoint's `Plug.Parsers` with a `body_reader` (see below) — review the
+endpoint's `Plug.Parsers` with a `body_reader` (see below); review the
 generated diff; if the patch could not be applied, add it by hand.
 
 One Ash-side requirement to know about: Ash 3.33 and later require every
@@ -39,7 +39,7 @@ resource fails until it is set:
 config :ash, default_string_length_count: :codepoints
 ```
 
-`:codepoints` is Ash's recommendation — `max_length` bounds value size
+`:codepoints` is Ash's recommendation: `max_length` bounds value size
 and matches how SQL data layers count. `:mixed` keeps the pre-3.33
 grapheme counting if you need it. This is an Ash requirement for every
 app compiling resources, not an ash_hooks one; an application already on
@@ -48,11 +48,11 @@ Ash 3.33+ necessarily has it set.
 ## The database migrations
 
 ash_hooks injects fields and identities onto your resources; your
-migrations create the tables and — critically — the two unique indexes
+migrations create the tables and, critically, the two unique indexes
 that make the dedup guarantees real. Minimal shapes:
 
 ```elixir
-# inbound ledger — payload is the decoded body (a :map / JSONB column);
+# inbound ledger: payload is the decoded body (a :map / JSONB column);
 # payload_digest binds it to the signed raw bytes
 create table(:webhook_ledgers, primary_key: false) do
   add :id, :uuid, primary_key: true
@@ -73,7 +73,7 @@ end
 
 create unique_index(:webhook_ledgers, [:provider, :external_event_id, :account_id])
 
-# outbound ledger — payload here is the exact bytes to sign
+# outbound ledger: payload here is the exact bytes to sign
 create table(:outbound_deliveries, primary_key: false) do
   add :id, :uuid, primary_key: true
   add :event_uuid, :text, null: false
@@ -150,7 +150,7 @@ against a real SQLite database.
 
 ## Inbound: receive, verify, dedup
 
-Configure the raw-body reader first — signature schemes sign the exact
+Configure the raw-body reader first: signature schemes sign the exact
 wire bytes, and a router plug cannot recover pre-parser bytes:
 
 ```elixir
@@ -225,7 +225,7 @@ defmodule MyApp.WebhookLedger do
   end
 
   inbound_delivery do
-    # provider event ids are not globally unique across accounts — your
+    # provider event ids are not globally unique across accounts; your
     # scope slots extend the unique-ingest identity (each slot must be a
     # non-nullable attribute, supplied on every ingest)
     scope_identity([:account_id])
@@ -276,7 +276,7 @@ defmodule MyApp.Domain do
 end
 ```
 
-`AshHooks.Ingress.ingest/4` runs the whole sync pipeline — verify the
+`AshHooks.Ingress.ingest/4` runs the whole sync pipeline: verify the
 signature over the raw bytes, persist the decoded payload plus a digest
 binding it to those bytes, dedup on the unique index, claim under a
 fenced lease, invoke the provider handler, and mark the outcome. From
@@ -301,8 +301,12 @@ case AshHooks.Ingress.ingest(MyApp.WebhookLedger, :orders, raw, %{
     code = if delivery.status in [:processed, :failed_permanent, :superseded], do: 200, else: 500
     send_resp(conn, code, "")
 
-  {:error, _invalid_signature_stale_timestamp_or_bad_payload} ->
-    send_resp(conn, 400, "")
+  # not authentic, a replay, or an identity the provider rejected: do not retry
+  {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} -> send_resp(conn, 400, "")
+  {:error, %AshHooks.Errors.Invalid.StaleTimestamp{}} -> send_resp(conn, 400, "")
+  {:error, %AshHooks.Errors.Invalid.MalformedPayload{}} -> send_resp(conn, 400, "")
+  # paused source, missing secret, storage failure: the sender retries
+  {:error, _} -> send_resp(conn, 503, "")
 end
 ```
 
@@ -317,12 +321,13 @@ handler's side effects and before the ledger mark will re-invoke it on
 redelivery. Write handlers idempotent, keyed on the external event
 identity. `claim_delivery/3`, `mark_processed/4`,
 `mark_failed/6`, `renew/4` and `reap/2` are public if you need to drive
-the lease machine yourself (e.g. from your own async pipeline) — the
+the lease machine yourself (e.g. from your own async pipeline); the
 sync `ingest/4` above is the default.
 
 Permanent failures need an operator-visible error record, rather than an endless
 provider retry loop. `:superseded` identifies a retained legacy row replaced by
-the canonical identity during the 2.0 upgrade; see [UPGRADING](../../UPGRADING.md).
+its canonical identity during a legacy identity adoption
+(`AshHooks.Ingress.adopt_legacy_identity/3`); see [UPGRADING](../../UPGRADING.md).
 
 Crash safety: once the durable row exists, a crash between any two
 steps re-drives on redelivery instead of silently dropping.
@@ -437,13 +442,13 @@ defmodule MyApp.WebhookDeliveryWorker do
 end
 ```
 
-The secret resolver maps an endpoint's secret reference to its value —
+The secret resolver maps an endpoint's secret reference to its value:
 endpoints store references only, never secrets:
 
 ```elixir
 defmodule MyApp.Secrets do
   # ref is whatever string you stored on the endpoint's secret_ref.
-  # The value is a complete generated secret — create it once with
+  # The value is a complete generated secret: create it once with
   # AshHooks.Signing.generate_secret/0 (returns a "whsec_"-prefixed,
   # correctly-encoded binary), store it whole in your secret store,
   # and return it unchanged:
@@ -459,7 +464,7 @@ end
 ```
 
 Oban itself (dependency, migration, and a supervised instance with a
-`:webhooks` queue) is the consumer's to set up — see Oban's
+`:webhooks` queue) is the consumer's to set up; see Oban's
 [installation guide](https://hexdocs.pm/oban/installation.html); the worker above
 plugs into it.
 
@@ -468,7 +473,7 @@ Set `PUBLIC_WEBHOOK_TEST_URL` to your existing public receiver endpoint and
 Register an endpoint and a subscription, then dispatch:
 
 ```elixir
-# a public, DNS-resolvable HTTPS URL — the send-time SSRF check
+# a public, DNS-resolvable HTTPS URL: the send-time SSRF check
 # resolves DNS and refuses private, loopback, and special-purpose targets
 {:ok, endpoint} =
   Ash.create(MyApp.WebhookEndpoint, %{
@@ -506,11 +511,11 @@ endpoint durably disabled on 410. A hostname that stops resolving is
 transport, not a verdict: it retries labeled `nxdomain` (the name is
 authoritatively gone) or `resolve_timeout` (resolver outage, congestion)
 and only a validated private/loopback answer dead-letters immediately as
-`unsafe_destination` — the labels a triage surface should key on.
+`unsafe_destination`: the labels a triage surface should key on.
 
 Signing modes: `:standard` (default) needs only `secret_ref`. Both
 `:legacy` and `:dual` require the endpoint to carry a
-`legacy_secret_ref` — signing fails (and the row retries as
+`legacy_secret_ref`: signing fails (and the row retries as
 `signing_failed`) without one; `:dual` additionally emits the legacy
 envelope alongside the Standard Webhooks one during receiver
 migration.
@@ -518,13 +523,13 @@ migration.
 **Fit the extensions to your domain** with per-resource options:
 rename the exact-bytes column when your domain reserves `payload`
 (`payload_attribute :event_bytes` in the delivery's `outbound_delivery`
-block — the dispatch/signing/send paths follow the configured name),
+block; the dispatch, signing, and send paths follow the configured name),
 omit the retention destroy action on an append-only ledger
-(`prune_action :none` — no destroy action exists, and
+(`prune_action :none`: no destroy action exists, and
 `AshHooks.Delivery.prune/2` fails loud), and map the durable
 enable/disable onto your own switch (the endpoint's `endpoint do
 status_attribute :active; enabled_values [true]; disabled_value false
-end` — the dispatcher, the send path, and the 410 breaker all consult
+end`: the dispatcher, the send path, and the 410 breaker all consult
 YOUR attribute; the package injects no `status`). Generated primary
 keys (`uuid_v7_primary_key`) compile as-is, and a subscription register
 redeclared as a closed `{:array, :atom}` enum matches normally with
@@ -539,7 +544,7 @@ endpoint disable. Broad application update actions must not expose machine field
 Add the `AshHooks.OutboundAttempt` extension on its own resource (the
 migration shape is above) and pass `attempts: MyApp.OutboundAttempt` to
 `use AshHooks.Worker` (or the direct-run config): every delivery attempt
-records one durable row — time, outcome, classified reason, HTTP status,
+records one durable row with the time, outcome, classified reason, HTTP status,
 latency in milliseconds, and the signing key REFERENCE (a secret-store
 reference string, never secret material). Rows are idempotent per
 `(delivery, attempt)`, and a history write failure never fails the send
@@ -588,7 +593,7 @@ and the send-time destination policy seam
 
 Response snippets store NO body bytes by default (a status +
 content-type summary). For a one-row diagnostic capture, re-drive the
-row with `AshHooks.Delivery.run/2` — it takes the same configuration
+row with `AshHooks.Delivery.run/2`; it takes the same configuration
 the worker macro bakes (deliveries, endpoints, secret_resolver, retry
 policy) plus the per-call `snippet_capture: true`; the
 [guided-tour Livebook](../livebooks/get-started.livemd) shows a worked
@@ -621,8 +626,8 @@ Synchronize application-node clocks because leases use application UTC time.
 
 The ledger fences each attempt's result, while network delivery remains
 at-least-once. A receiver can accept a request before the sender dies, so deduplicate
-by `webhook-id` at the receiver. For an existing 1.x installation, follow
-[the ordered upgrade](../../UPGRADING.md) before enabling 2.0 workers.
+by `webhook-id` at the receiver. Upgrading an existing installation? Follow
+[UPGRADING](../../UPGRADING.md) from your release onward before you start workers.
 
 ## Observing: telemetry
 
@@ -643,15 +648,15 @@ by `webhook-id` at the receiver. For an existing 1.x installation, follow
 end, nil)
 ```
 
-`attach_many` with the exact names is required — `:telemetry.execute/3`
+`attach_many` with the exact names is required: `:telemetry.execute/3`
 matches exact names only. Events carry ids, integers, fixed atoms, and
-classified reasons — never secrets, bodies, or payloads (ADR-0005).
+classified reasons, never secrets, bodies, or payloads (ADR-0005).
 
 ## Where next
 
-- [Multi-tenant adoption checklist](tenancy-adoption-checklist.md) —
-  when one app serves many organizations
-- [Guided tour (Livebook)](../livebooks/get-started.livemd) — run the
-  whole library inside one notebook
+- [Multi-tenant adoption checklist](tenancy-adoption-checklist.md): when one
+  app serves many organizations
+- [Guided tour (Livebook)](../livebooks/get-started.livemd): run the whole
+  library inside one notebook
 - `AshHooks.Dispatcher`, `AshHooks.Delivery`, and `AshHooks.Ingress`
-  module docs — the machines this walkthrough drove
+  module docs: the machines this walkthrough drove

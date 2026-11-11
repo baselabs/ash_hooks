@@ -24,23 +24,23 @@ defmodule AshHooks.Provider.Scheme do
 
   Other options:
 
-    * `encoding:` — `:hex`, `:hex_upper`, `:hex_any`, `:base64`, or `:base64url`;
+    * `encoding`: `:hex`, `:hex_upper`, `:hex_any`, `:base64`, or `:base64url`;
       default `:hex` for HMAC, `:base64` for public keys.
-    * `ecdsa_format:` — `:der` (default) or `:raw`, only for ECDSA.
-    * `key_encoding:` — `:raw` (default), `:hex`, `:base64`, or `:base64url` for
+    * `ecdsa_format`: `:der` (default) or `:raw`, only for ECDSA.
+    * `key_encoding`: `:raw` (default), `:hex`, `:base64`, or `:base64url` for
       HMAC secrets and raw Ed25519 keys. PEM is detected automatically.
-    * `key_prefix:` — optional literal prefix removed before key decoding when present.
-    * `signed_input:` — `:body` (default), a nonempty list of binary literals,
+    * `key_prefix`: optional literal prefix removed before key decoding when present.
+    * `signed_input`: `:body` (default), a nonempty list of binary literals,
       `:body`, `:timestamp`, `:method`, `:url`, `:path`, `{:header, name}`, or
       `{:base64, part}`, concatenated without separators. Alternatively a
       `{module, function}` or two-argument function `(raw_body, ctx) -> binary`.
       `:path` preserves encoding and excludes the query; `:url` preserves the URI.
-    * `timestamp:` — `nil` (default), `{:header, name}`, `{:signature_field, key}`
+    * `timestamp`: `nil` (default), `{:header, name}`, `{:signature_field, key}`
       for structured signatures, or a `{module, function}` / two-argument function
       returning `{:ok, unix_seconds}` or `:error`.
-    * `timestamp_unit:` — `:seconds` (default) or `:milliseconds` for header/field
+    * `timestamp_unit`: `:seconds` (default) or `:milliseconds` for header/field
       timestamps. Milliseconds use integer division by 1000.
-    * `tolerance_seconds:` — positive integer, default 300; overridden by
+    * `tolerance_seconds`: positive integer, default 300; overridden by
       `ctx[:replay_window_seconds]`. The clock is `ctx[:now_ms]` or system time.
 
   A configured JWS-body provider deduplicates on `payload_identity/1` unless the
@@ -48,9 +48,9 @@ defmodule AshHooks.Provider.Scheme do
   `event_identity/1`.
 
   JWS bodies derive the pinned JWS algorithm from `algorithm:`. They reject
-  HMAC-SHA1 and explicit `encoding:`, `ecdsa_format:`, `signed_input:`, or header/
-  field timestamp options. Explicit timestamp options require a host timestamp
-  function; `timestamp_unit:` is not used with JWS. JSON object
+  HMAC-SHA1 and any `encoding:`, `ecdsa_format:`, `signed_input:` or
+  `timestamp_unit:`. A `timestamp:` must be a host function, and
+  `tolerance_seconds:` requires one. JSON object
   `exp`/`nbf` claims are also enforced by `AshHooks.Provider.Signature.jws/3`.
 
   Keys are decoded first, then signatures extracted and input built. Timestamp

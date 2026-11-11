@@ -45,12 +45,13 @@ AshHooks 3.0.
   generated unique index in the database. The ledger is the deduplication boundary; do
   not add a separate seen-events table.
 - Identity resolution is ordered: an explicit declaration `event_id` extractor, then the
-  provider's optional `event_identity/1`, then the raw-body digest when the provider has
-  no identity callback. An implemented provider callback that rejects a malformed payload
+  provider's optional `event_identity/1` (a configured JWS-body provider generates one from
+  its verified payload), then the raw-body digest when the provider has no identity
+  callback. An implemented provider callback that rejects a malformed payload
   fails the ingest; it does not fall back silently.
 - Keep an inbound name stable once it has recorded deliveries: it is part of every
   deduplication identity.
-- JSON remains the default. Opt into form decoding with `body_format :form`; a
+- JSON is the default. Opt into form decoding with `body_format :form`; a
   configured JWS-body provider decodes its verified payload itself.
 - The low-level claim, renew, mark, and reap functions are for custom asynchronous
   pipelines. Preserve their token and lease values exactly; a stale owner must never
@@ -151,7 +152,7 @@ AshHooks 3.0.
 ## Common mistakes
 
 - Baking `validate_destination: false` or an `http_opts` `timeout:` above `:attempt_timeout`
-  into a worker module (the macro refuses both — the bypass is the `:test`-only loopback seam).
+  into a worker module (the macro refuses both; the bypass is the `:test`-only loopback seam).
 - Decoding JSON before capturing the raw request body used by the provider signature.
 - Generating a new event ID each time the same source record is dispatched.
 - Calling `Delivery.run/2` without handling `{:snooze, seconds}`.
