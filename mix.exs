@@ -61,6 +61,10 @@ defmodule AshHooks.MixProject do
           ~r/^AshHooks\.TestAstTripwire/,
           ~r/^AshHooks\.TestPerConnectionProvider/,
           ~r/^AshHooks\.TestPostgres\.Repo/,
+          # The sqlite test repos: AshSqlite reads min_sqlite_version/0
+          # only on paths these tests never take.
+          ~r/^AshHooks\.Test\.Repo$/,
+          ~r/^AshHooks\.Test\.BusyRepo$/,
           ~r/^AshHooks\.Endpoint\.Url/,
           ~r/^AshHooks\.Endpoint\.SecretRef/,
           ~r/^AshHooks\.InboundDelivery\.Payload/,
