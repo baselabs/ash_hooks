@@ -19,7 +19,7 @@ examples below refer to your existing `MyApp.Domain` and `MyApp.Repo`
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 3.0"},
+    {:ash_hooks, "~> 3.1"},
     # for outbound delivery only:
     {:oban, "~> 2.20"}
   ]
@@ -301,7 +301,7 @@ defmodule MyApp.Webhooks do
     case MyApp.Integrations.find_webhook_endpoint(provider, endpoint_id) do
       {:ok, endpoint} ->
         {:ok, %{source: endpoint.source, scope: %{account_id: endpoint.account_id},
-                tenant: endpoint.organization_id, connection: endpoint.connection}}
+                connection: endpoint.connection}}
 
       {:error, :not_found} -> {:error, :not_found}
       {:error, _reason} -> {:error, :unavailable}
@@ -314,8 +314,10 @@ end
 
 The lookup is your application's code interface for a stored endpoint; do not
 turn path strings into modules or trust them as tenants. Match its scope keys to
-the ledger's `scope_identity`. On a single-tenant ledger without scope slots,
-a fixed route can use `source: :orders` instead of `resolve:`.
+the ledger's `scope_identity`. A multitenant ledger also needs `tenant:` in that
+map (see the [tenancy checklist](tenancy-adoption-checklist.md)). On a
+single-tenant ledger without scope slots, a fixed route can use `source: :orders`
+instead of `resolve:`.
 
 The plug sends and halts: 200 for terminal rows (including duplicate deliveries),
 500 for retryable ledger outcomes, 400 for typed invalid-signature, stale-timestamp
@@ -339,7 +341,7 @@ For a custom transport or pipeline, call the lower-level entry point directly:
 ```elixir
 AshHooks.Ingress.ingest(MyApp.WebhookLedger, :orders, raw_body, %{
   headers: conn.req_headers, method: conn.method,
-  scope: %{account_id: account_id}, tenant: tenant,
+  scope: %{account_id: account_id},
   request_uri: public_request_uri
 })
 ```

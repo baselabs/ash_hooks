@@ -22,7 +22,7 @@ receiver. The receiver must already answer at `http://127.0.0.1:52871`;
 set `LOCAL_WEBHOOK_TESTER_PORT` to use another existing receiver. See
 the [local receiver guide](https://github.com/baselabs/ash_hooks/blob/main/ops/local/README.md).
 The notebook starts no server.
-Uses ash_hooks **3.0.0**. The tour plays both sides of each webhook: it signs
+Uses ash_hooks **3.1.0**. The tour plays both sides of each webhook: it signs
 requests the way a sender would and verifies them the way your application does.
 Real senders, a production queue, and your HTTP endpoint come from your own
 application.
@@ -34,7 +34,7 @@ application.
 ```elixir
 package =
   case System.get_env("ASH_HOOKS_NOTEBOOK_SOURCE") do
-    nil -> {:ash_hooks, "== 3.0.0"}
+    nil -> {:ash_hooks, "== 3.1.0"}
     source -> {:ash_hooks, path: Path.expand(source)}
   end
 
@@ -57,7 +57,7 @@ Mix.install(
 # :codepoints is Ash's recommended value: max_length bounds value size
 # and matches how SQL data layers count.
 Application.put_env(:ash, :default_string_length_count, :codepoints)
-"3.0.0" = Application.spec(:ash_hooks, :vsn) |> to_string()
+"3.1.0" = Application.spec(:ash_hooks, :vsn) |> to_string()
 
 # Keys for the tour's senders. In your application these come from your
 # secret store through the inbound `secret` sources, never from literals.

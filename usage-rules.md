@@ -1,7 +1,7 @@
 # AshHooks usage rules
 
 Guidance for maintainers and coding assistants working in applications that use
-AshHooks 3.0.
+AshHooks 3.1.
 
 ## Build events from exact bytes
 
@@ -48,6 +48,8 @@ AshHooks 3.0.
 - Provider `handshake/1` may return `{:respond, status, headers, body}` before method
   and verification checks, or `:deliver`. It receives method, decoded query params,
   request headers and raw bytes. No delivery is written for a handshake response.
+  Signature verification has not run yet: authenticate any challenge exactly as the
+  sender's protocol requires before answering it.
 - Provider `response/1` overrides the plug's `respond:` MFA; `:default` falls through
   to the host policy, then `AshHooks.Plug.default_response/2` (outcome and validated
   plug options). Both policies receive

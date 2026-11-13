@@ -55,7 +55,7 @@ package follows semantic versioning over a named public surface; see
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 3.0"},
+    {:ash_hooks, "~> 3.1"},
     # only for outbound delivery:
     {:oban, "~> 2.20"}
   ]
@@ -179,11 +179,13 @@ forward "/webhooks/payments", AshHooks.Plug,
 If no parser has read the body, the plug reads it itself. A preceding parser
 must cache the exact bytes with `AshHooks.BodyReader` or the host contract below;
 parsed params cannot reproduce signed bytes.
+
 If your endpoint already has its own body reader, it can instead call
 `AshHooks.BodyReader.put_raw_body(conn, complete_bytes)` from its `Plug.Parsers`
 `body_reader` or before parsing. Supply the complete body exactly as sent, never
 a partial or re-encoded body. The plug retrieves it with
 `AshHooks.BodyReader.raw_body/1` and does not read it again.
+
 The plug sends and halts with 200 for terminal deliveries, 500 for retryable
 ledger outcomes, 400 for invalid signatures, stale timestamps or malformed
 payload errors, and 503 for paused sources, missing secrets or storage failures.

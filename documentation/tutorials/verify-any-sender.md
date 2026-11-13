@@ -80,8 +80,8 @@ line of that header must be present; none or several are refused as unsigned.
 ### Lower-level request context
 
 Configured providers read their signature and timestamp from the request
-headers, so a direct `Ingress.ingest/4` caller passes the headers, the exact raw body, and, when the scheme signs
-them, the method and the public request URL:
+headers, so a direct `Ingress.ingest/4` caller passes the headers, the exact raw
+body, and, when the scheme signs them, the method and the public request URL:
 
 ```elixir
 raw_body = AshHooks.BodyReader.raw_body(conn)

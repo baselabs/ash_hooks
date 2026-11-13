@@ -4,7 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 3.1.0 — November 13, 2026
+
+Inbound webhooks get an HTTP entry point: `AshHooks.Plug` takes a request from
+the router to the ledger and answers it, with no controller code. The Ash floor
+rises past three published advisories. No schema change and no breaking API
+change; see [UPGRADING.md](UPGRADING.md).
 
 ### Added
 
@@ -16,8 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `signature_header:` (or a resolver's `:signature_header`) names the header whose
   single value becomes `ctx.signature` for a provider on the default `:header`
   signature source; a missing or repeated header is refused as unsigned.
-- Optional `c:AshHooks.Provider.handshake/1` and `c:AshHooks.Provider.response/1` callbacks for sender
-  challenges and acknowledgment protocols; the plug also accepts a host response policy.
+- Optional `c:AshHooks.Provider.handshake/1` and `c:AshHooks.Provider.response/1`
+  callbacks for sender challenges and acknowledgment protocols; the plug also
+  accepts a host response policy.
 - `AshHooks.BodyReader.put_raw_body/2` and `raw_body/1` provide a public exact-byte
   contract for host endpoint readers and lower-level ingress callers, without a
   second body read or access to an implementation-specific connection key.

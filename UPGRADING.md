@@ -1,6 +1,6 @@
 # Upgrading
 
-## 3.0.x → Unreleased
+## 3.0.x → 3.1.0
 
 The Ash floor rises from 3.34.3 to 3.37.2, because three published advisories
 affect Ash releases the old floor admitted (EEF-CVE-2026-101028, -114214 and
@@ -11,6 +11,15 @@ mix deps.update ash
 ```
 
 Nothing else changes for this reason: no schema change and no API change.
+
+`AshHooks.Plug` is new and optional. An existing controller that calls
+`AshHooks.Ingress.ingest/4` keeps working unchanged. To move to the plug, forward
+the webhook route to it and delete the controller; the
+[README](README.md#3-receive-with-ashhooksplug) shows both the fixed-source and the
+resolver form. If that controller passes `ctx.signature` itself for a hand-written
+provider, set the plug's `signature_header:` to the header it read. Code that
+read `conn.private[:ash_hooks_raw_body]` should call
+`AshHooks.BodyReader.raw_body/1` instead; the key is internal.
 
 ## 2.x → 3.0.0
 

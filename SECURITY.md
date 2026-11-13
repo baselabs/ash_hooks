@@ -10,8 +10,8 @@ Security fixes are released for the newest minor release in the current major li
 
 | Release line | Supported |
 | --- | --- |
-| 3.0.x | Yes |
-| Earlier releases | No |
+| 3.1.x | Yes |
+| 3.0.x and earlier | No |
 
 Upgrade to a supported release before requesting a backport. Safety corrections may
 tighten behavior in a patch release when the previous behavior accepted unsafe input or
