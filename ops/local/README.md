@@ -10,24 +10,17 @@ delivery, and changes no endpoint registration.
 
 ## Receiver
 
-The BaseLabs cluster provides one shared WebHook Tester on
-`127.0.0.1:52871` for local package verification. Use that running receiver.
-Check it without restarting anything; it answers with its version:
+These checks use a WebHook Tester receiver that is already running on
+`127.0.0.1:52871` (CI runs one beside its PostgreSQL service). Check it without
+restarting anything; it answers with its version:
 
 ```sh
 curl -fsS http://127.0.0.1:52871/api/version
 ```
 
-BaseLabs repositories use the shared receiver in the BaseLabs cluster. If the
-version probe fails, inspect that cluster; wait for a restarting pod or stop and
-report the unavailable service. Do not start a second receiver or a standalone
-Compose stack:
-
-```sh
-~/Developer/kimosabe/bin/kimosabe-cluster status
-```
-
-Never delete the named capture volume to "restart" the service.
+If the version probe fails, bring your receiver back before running anything
+here; these scripts never start one. Never delete the receiver's capture volume
+to "restart" it.
 
 ## Send and verify
 

@@ -26,8 +26,8 @@ Application.put_env(:ash_hooks, AshHooks.Test.Repo,
 
 # The AshPostgres consumer leg: ASH_HOOKS_POSTGRES=1 starts the PG repo
 # and includes the :postgres-tagged suite (CI's postgres job — a Linux
-# runner with a Postgres service; locally, a BaseLabs ephemeral-area
-# Postgres pointed at by the env below). Without the flag the suite is
+# runner with a Postgres service; locally, any real PostgreSQL pointed
+# at by the env below). Without the flag the suite is
 # excluded and ordinary dev/test runs need no Postgres at all.
 postgres? = System.get_env("ASH_HOOKS_POSTGRES") == "1"
 httpbun? = System.get_env("ASH_HOOKS_HTTPBUN") == "1"

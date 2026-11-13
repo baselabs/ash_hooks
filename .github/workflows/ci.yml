@@ -2,8 +2,8 @@ name: CI
 
 on:
   push:
-    # kci/** is kimosabe-land's short-lived landing branch: the full run
-    # there is what admits a commit to main.
+    # kci/** is the short-lived landing branch: the full run there is what
+    # admits a commit to main.
     branches: [main, 'kci/**']
     tags: ['v*']
     paths-ignore: ['LICENSE*', '.github/ISSUE_TEMPLATE/**']
@@ -16,9 +16,8 @@ concurrency:
 
 jobs:
   # The matrix tests the supported Elixir window (~> 1.20 in mix.exs) on
-  # the OTP releases this project targets. The dev default is the estate
-  # version set (latest stable Elixir and OTP 29, mirrored exactly from
-  # .tool-versions); OTP 28 is the other end of the supported window.
+  # the OTP releases this project targets. The dev default is the latest
+  # stable Elixir on OTP 29, mirrored exactly from .tool-versions; OTP 28 is the other end of the supported window.
   # Lockstep: the window, .tool-versions, this matrix, and the OTP
   # allowlist in config/config.exs move together in ONE commit. Default
   # legs build with the full dev dep set; the no-optional leg proves the
@@ -254,8 +253,8 @@ jobs:
           archive="_build/release/ash_hooks-$(grep -m1 '@version' mix.exs | sed -E 's/.*@version "([^"]+)".*/\1/').tar"
           ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive "$archive"
 
-  # Published advisories and retired packages, each failing closed (the
-  # estate standard's security job, 5.3). OSV's Hex database is downloaded
+  # Published advisories and retired packages, each failing closed. OSV's
+  # Hex database is downloaded
   # first, given no lock file; the scan then runs --offline inside a network
   # namespace with no interfaces, so nothing about a lock leaves the runner.
   # scripts/check-advisories.sh also proves each lock is exactly what Mix

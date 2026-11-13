@@ -4,7 +4,7 @@ defmodule AshHooks.LegacyTest do
   alias AshHooks.Legacy
   import AshHooks.TestAstTripwire
 
-  # INCUMBENT-CAPTURED vectors: commerce_platform's own Signing module was
+  # INCUMBENT-CAPTURED vectors: the originating application's Signing module was
   # executed first-hand (scratch VM, single stdlib-only file compiled — zero
   # footprint on that read-only tree) over these fixed inputs, and its output
   # captured verbatim. Byte-identity is against executed incumbent code, not a

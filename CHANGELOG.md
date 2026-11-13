@@ -188,8 +188,8 @@ No new dependencies or schema changes.
   it with the declaration), the first qualifying sweep warns and stamps,
   and the disable lands on the next sweep that still qualifies, clearing
   the stamp. Recovery below the warning band clears the stamp, so a
-  later degradation gets a fresh warning cycle. (Found by Agent Access,
-  reports/aa-webhooks.md "ash_hooks gap".)
+  later degradation gets a fresh warning cycle. (Found while adopting the
+  package in a downstream application.)
 
 ## 2.2.0 — November 8, 2026
 
