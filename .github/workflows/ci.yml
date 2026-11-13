@@ -254,18 +254,23 @@ jobs:
           archive="_build/release/ash_hooks-$(grep -m1 '@version' mix.exs | sed -E 's/.*@version "([^"]+)".*/\1/').tar"
           ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive "$archive"
 
-  # Published advisories and retired packages, each failing closed: OSV's
-  # scanner (one pinned 2.x release, checksum-verified) over the
-  # development lock AND over the lock a consumer resolves at the declared
-  # Ash floor, so a floor that admits an advised version fails here; and
-  # `mix hex.audit` for retired packages. The scan sends only public
-  # package names and versions.
+  # Published advisories and retired packages, each failing closed (the
+  # estate standard's security job, 5.3). OSV's Hex database is downloaded
+  # first, given no lock file; the scan then runs --offline inside a network
+  # namespace with no interfaces, so nothing about a lock leaves the runner.
+  # scripts/check-advisories.sh also proves each lock is exactly what Mix
+  # writes and that the scanner read every :hex entry Mix counts. It scans
+  # the development lock AND the lock a consumer resolves at the declared Ash
+  # floor, so a floor that admits an advised version fails here. `mix
+  # hex.audit` fails on a retired package.
   security:
     runs-on: ubuntu-latest
     env:
       OSV_SCANNER_VERSION: "2.7.1"
       OSV_SCANNER_SHA256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
     steps:
+      - name: Require Linux (the scan's network namespace)
+        run: test "$(uname -s)" = Linux
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
@@ -278,16 +283,24 @@ jobs:
           echo "${OSV_SCANNER_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/osv-scanner"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      - run: mix deps.get
+      - name: Download OSV's Hex database (no lock file sent)
+        run: |
+          db="$RUNNER_TEMP/osv-db"
+          mkdir -p "$db/osv-scalibr/Hex"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 \
+            -o "$db/osv-scalibr/Hex/all.zip" \
+            https://osv-vulnerabilities.storage.googleapis.com/Hex/all.zip
+          test -s "$db/osv-scalibr/Hex/all.zip"
+          echo "OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=$db" >> "$GITHUB_ENV"
+      - name: Fetch exactly the locked dependencies
+        run: mix deps.get --check-locked
       - name: Retired packages
         run: mix hex.audit
-      - name: Advisories in the development lock
-        run: osv-scanner scan source --lockfile mix.lock
       - name: Resolve a consumer at the declared Ash floor
         run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix deps.get
         working-directory: test/consumer
-      - name: Advisories in the floor consumer's lock
-        run: osv-scanner scan source --lockfile test/consumer/mix.lock
+      - name: Advisories in the development lock and the floor consumer's lock
+        run: scripts/check-advisories.sh mix.lock test/consumer/mix.lock
 
   # The single branch-protection check name: require `all-checks-pass`
   # on main and every leg (test matrix, floor, dialyzer, package,

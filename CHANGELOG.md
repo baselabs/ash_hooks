@@ -17,9 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
-- CI gains a `security` job that fails closed: OSV's scanner (pinned 2.7.1,
-  checksum-verified) over the development lock and over the lock a consumer
-  resolves at the declared Ash floor, and `mix hex.audit` for retired packages.
+- CI gains a `security` job that fails closed. OSV's scanner (pinned 2.7.1,
+  checksum-verified) runs offline, with no network, against OSV's Hex database
+  downloaded first, over the development lock and over the lock a consumer
+  resolves at the declared Ash floor; each lock must be exactly what Mix writes,
+  and the scanner must read every `:hex` entry Mix counts
+  (`scripts/check-advisories.sh`). `mix hex.audit` fails on a retired package.
 
 ### Dependencies
 
