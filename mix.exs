@@ -95,7 +95,10 @@ defmodule AshHooks.MixProject do
       else
         [
           {:oban, "~> 2.20", optional: true},
-          {:plug, "~> 1.16", optional: true}
+          {:plug, "~> 1.16", optional: true},
+          # A real HTTP server for the plug's interoperability tests. It
+          # depends on Plug, so it leaves with Plug on the no-optional leg.
+          {:bandit, "~> 1.14", only: :test}
         ]
       end
 

@@ -282,6 +282,42 @@ if Code.ensure_loaded?(Plug.Conn) do
       forward("/webhooks", to: Router)
     end
 
+    # A real HTTP server for the interoperability tests: Bandit on loopback,
+    # an endpoint-style Plug.Parsers with the body reader, and the plug mounted
+    # by `forward` as a host would mount it.
+    defmodule HttpRouter do
+      use Plug.Router
+
+      plug(Plug.Parsers,
+        parsers: [:json],
+        pass: ["*/*"],
+        json_decoder: Jason,
+        body_reader: {AshHooks.BodyReader, :read_body, [only: ["/webhooks"]]}
+      )
+
+      plug(:match)
+      plug(:dispatch)
+
+      forward("/webhooks/orders",
+        to: AshHooks.Plug,
+        init_opts: [resource: AshHooks.PlugTest.Ledger, source: :orders]
+      )
+
+      forward("/webhooks/small",
+        to: AshHooks.Plug,
+        init_opts: [resource: AshHooks.PlugTest.Ledger, source: :orders, length: 16]
+      )
+
+      forward("/webhooks/host-signed",
+        to: AshHooks.Plug,
+        init_opts: [
+          resource: AshHooks.PlugTest.Ledger,
+          source: :host_signed,
+          signature_header: "x-signature"
+        ]
+      )
+    end
+
     # Real TCP reads for transport failures. Responses use Plug.Test's normal
     # response recorder; no signature, provider, ledger or database is replaced.
     defmodule SocketAdapter do
@@ -971,6 +1007,88 @@ if Code.ensure_loaded?(Plug.Conn) do
       |> assert_response(200)
 
       assert_receive {:handled, :webhook, _}
+    end
+
+    test "over real HTTP, the mounted plug verifies, ingests and answers" do
+      server =
+        start_supervised!(
+          {Bandit, plug: HttpRouter, ip: {127, 0, 0, 1}, port: 0, startup_log: false}
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+
+      post = fn path, raw, type, headers ->
+        url = ~c"http://127.0.0.1:#{port}#{path}"
+        headers = for {name, value} <- headers, do: {to_charlist(name), to_charlist(value)}
+
+        {:ok, {{_, status, _}, response_headers, _body}} =
+          :httpc.request(:post, {url, headers, to_charlist(type), raw}, [], body_format: :binary)
+
+        {status, response_headers}
+      end
+
+      # Parsed by the endpoint parser: the plug uses the cached exact bytes.
+      parsed = " " <> body(%{"via" => "parser"}) <> "\n"
+
+      assert {200, _} =
+               post.("/webhooks/orders", parsed, "application/json", [
+                 {"x-signature", sign(parsed)}
+               ])
+
+      assert_receive {:handled, :webhook, %{"via" => "parser"}}
+
+      # An unparsed content type: the plug reads the body itself.
+      direct = Jason.encode!(%{"id" => "event-2", "via" => "direct"})
+
+      assert {200, _} =
+               post.("/webhooks/orders", direct, "application/octet-stream", [
+                 {"x-signature", sign(direct)}
+               ])
+
+      assert_receive {:handled, :webhook, %{"via" => "direct"}}
+
+      # The same delivery again is acknowledged without a second handler run.
+      assert {200, _} =
+               post.("/webhooks/orders", direct, "application/octet-stream", [
+                 {"x-signature", sign(direct)}
+               ])
+
+      refute_receive {:handled, _, _}
+
+      # A provider on the default :header source, its signature named by the route.
+      signed = body(%{"via" => "header"})
+
+      assert {200, _} =
+               post.("/webhooks/host-signed", signed, "application/json", [
+                 {"x-signature", sign(signed)}
+               ])
+
+      assert_receive {:handled, :webhook, %{"via" => "header"}}
+
+      # Refusals write nothing.
+      tampered = body(%{"id" => "event-3"})
+
+      assert {400, _} =
+               post.("/webhooks/orders", tampered, "application/json", [
+                 {"x-signature", sign("other")}
+               ])
+
+      oversized = Jason.encode!(%{"id" => "event-4", "padding" => String.duplicate("x", 64)})
+
+      assert {413, _} =
+               post.("/webhooks/small", oversized, "application/octet-stream", [
+                 {"x-signature", sign(oversized)}
+               ])
+
+      {:ok, {{_, 405, _}, headers, _}} =
+        :httpc.request(:get, {~c"http://127.0.0.1:#{port}/webhooks/orders", []}, [], [])
+
+      assert {~c"allow", ~c"POST"} in headers
+      refute_receive {:handled, _, _}
+
+      rows = Ash.read!(Ledger, authorize?: false)
+      assert length(rows) == 3
+      assert Enum.all?(rows, &(&1.status == :processed))
     end
 
     test "init validates shapes without loading or introspecting the resource" do
