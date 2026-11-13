@@ -32,19 +32,11 @@ application.
 ## Setup
 
 ```elixir
-package =
-  case System.get_env("ASH_HOOKS_NOTEBOOK_SOURCE") do
-    nil -> {:ash_hooks, "== 3.1.0"}
-    source -> {:ash_hooks, path: Path.expand(source)}
-  end
-
-# Release verification supplies the unpacked candidate archive explicitly.
-# Normal notebook execution resolves the exact published version above.
 Mix.install(
   [
     {:ash, ">= 3.37.2 and < 4.0.0-0"},
-    package,
-    {:ash_sqlite, "~> 0.2"},
+    {:ash_hooks, "== 3.1.0"},
+    {:ash_sqlite, "~> 0.3.1"},
     {:jason, "~> 1.2"}
   ],
   consolidate_protocols: false
@@ -89,6 +81,9 @@ IO.puts(envelope_public_pem)
 ```elixir
 defmodule Tour.Repo do
   use AshSqlite.Repo, otp_app: :ash_hooks
+
+  # The SQLite version bundled with the exqlite driver this notebook installs.
+  def min_sqlite_version, do: %Version{major: 3, minor: 54, patch: 1}
 end
 ```
 

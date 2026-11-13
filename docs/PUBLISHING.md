@@ -41,9 +41,13 @@ operator procedure.
    ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive _build/release/ash_hooks-<version>.tar
    ```
 
-   The runner supplies the unpacked archive explicitly inside this checkout.
-   Normal notebook execution uses the exact registry version. Both paths are
-   required; this removes the publication/CI dependency loop. The existing real
+   The notebook runs exactly as written. The runner serves the candidate
+   archive and the hex.pm tarballs of its dependency graph from a throwaway
+   local Hex registry, so the notebook's own `Mix.install` cell resolves the
+   candidate as it will resolve the published package, checksum verified, and
+   the runner confirms the installed package is the candidate byte for byte.
+   After publishing, the same runner without `--archive` resolves everything
+   from hex.pm. Both runs are required. The existing real
    receiver must answer on `LOCAL_WEBHOOK_TESTER_PORT` (default 52871); do not
    start a second receiver to replace an unavailable service.
 6. Record the final source commit and archive digest. Commit the reviewed source,
@@ -81,8 +85,8 @@ After publication:
    and README bytes against the verified candidate.
 2. Inspect versioned HexDocs pages, links, and notebook download. Confirm the
    package page renders the release README.
-3. Run the notebook normally, with no source override, against the exact published
-   version. Run the production consumer against the released archive as well.
+3. Run the notebook against the exact published version:
+   `./scripts/run-livebook.sh documentation/livebooks/get-started.livemd`. Run the production consumer against the released archive as well.
 4. Create the GitHub release from the verified tag with notes from its CHANGELOG
    section. Confirm tag, release, `main`, and Hex all identify the intended version.
 5. Complete operator records, record observed checks and any unobserved integration
