@@ -74,6 +74,10 @@ defmodule AshHooks.MixProject do
     ]
   end
 
+  # The landing loop runs in the test environment so test/support compiles
+  # under --warnings-as-errors too.
+  def cli, do: [preferred_envs: [precommit: :test]]
+
   def application, do: [extra_applications: [:logger, :crypto, :public_key, :ssl, :inets]]
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
@@ -112,7 +116,7 @@ defmodule AshHooks.MixProject do
       [
         # Dev/Test
         {:igniter, "~> 0.6", only: [:dev, :test], runtime: false, optional: true},
-        {:ex_doc, "~> 0.31", only: :dev, runtime: false},
+        {:ex_doc, "~> 0.31", only: [:dev, :test], runtime: false},
         {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
         {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
         {:simple_sat, "~> 0.1", only: [:dev, :test], runtime: false},
@@ -222,7 +226,17 @@ defmodule AshHooks.MixProject do
 
   defp aliases do
     [
-      credo: ["credo --strict"]
+      credo: ["credo --strict"],
+      # The landing loop (AGENTS.md, Build and test): every whole-tree gate,
+      # no test suite and no Dialyzer.
+      precommit: [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "credo --strict",
+        "spark.cheat_sheets --extensions AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery --check",
+        "docs --warnings-as-errors",
+        "cmd ./scripts/check-package.sh"
+      ]
     ]
   end
 end

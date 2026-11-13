@@ -6,7 +6,7 @@ changes, and include the evidence needed to review that behavior.
 ## Development environment
 
 AshHooks supports Elixir `~> 1.20`, Erlang/OTP 28 and 29, and Ash `>= 3.37.2 and < 4.0`.
-The repository pins Elixir 1.20.4 and Erlang/OTP 28.5 in `.tool-versions` for development.
+The repository pins Elixir 1.20.5 and Erlang/OTP 29.1.2 in `.tool-versions` for development.
 Use macOS or Linux; Windows contributors should use WSL2.
 
 Work from a Git checkout of the [repository](https://github.com/baselabs/ash_hooks).
@@ -58,14 +58,20 @@ endpoint before the test run.
   tenancy, renamed or composite ledger keys, UUIDv7 endpoint/subscription keys, and
   optional Oban/Plug absence where relevant.
 
-Run focused checks while developing. Before opening a pull request, run the repository
-gate:
+Run focused checks while developing. Before every push, run the whole-tree gates in one
+command: the format check, compilation with warnings as errors (test support included),
+Credo, the generated DSL documentation check, the documentation build and the candidate
+Hex archive check:
 
 ```sh
-mix format --check-formatted
+mix precommit
+```
+
+Before opening a pull request, run the repository gate:
+
+```sh
+mix precommit
 mix hex.audit
-mix compile --warnings-as-errors
-mix credo --strict
 mix test
 ASH_HOOKS_POSTGRES=1 mix test --cover
 MIX_ENV=test mix dialyzer
@@ -95,14 +101,6 @@ process consuming a real Oban.Basic job. It keeps the checkout's main lock, depe
 and build files unchanged, using `_build/ash-floor` for the minimum graph. Public
 Httpbun checks are excluded from ordinary tests and CI; use them deliberately and
 respect the service's usage policy.
-
-When a change affects generated DSL documentation or the package surface, also run:
-
-```sh
-mix spark.cheat_sheets --extensions AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery --check
-mix docs
-./scripts/check-package.sh
-```
 
 CI additionally checks the minimum supported Elixir/Ash consumer graph, Erlang/OTP 28 and
 29, an installation with Oban and Plug absent, real PostgreSQL behavior, the candidate
