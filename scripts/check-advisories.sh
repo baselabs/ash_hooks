@@ -11,9 +11,12 @@
 #   2. osv-scanner runs with --offline (and, on Linux, inside a network
 #      namespace with no interfaces), so nothing about the lock leaves the
 #      machine;
-#   3. the packages the scanner reports equal the lock's :hex entries as Mix
-#      counts them, so a lock the scanner cannot parse never passes as clean;
-#   4. any advisory affecting a locked version fails.
+#   3. the packages the scanner reports equal the lock's :hex and :git entries
+#      as Mix counts them (the scanner reads both kinds), so a lock the scanner
+#      cannot parse never passes as clean;
+#   4. any advisory affecting a locked version fails. A :git entry has no
+#      version, so the scanner reports every advisory filed against its
+#      package name: such an entry fails closed.
 set -euo pipefail
 
 [ "$#" -ge 1 ] || { echo "usage: $0 LOCK..." >&2; exit 2; }
@@ -59,7 +62,7 @@ for lock in "$@"; do
     continue
   fi
 
-  mix_count="$(elixir -e 'Mix.start(); [f] = System.argv(); IO.puts(Enum.count(Mix.Dep.Lock.read(f), fn {_, v} -> is_tuple(v) and elem(v, 0) == :hex end))' "$lock")"
+  mix_count="$(elixir -e 'Mix.start(); [f] = System.argv(); IO.puts(Enum.count(Mix.Dep.Lock.read(f), fn {_, v} -> is_tuple(v) and elem(v, 0) in [:hex, :git] end))' "$lock")"
 
   # the scanner picks its extractor by file name: scan a copy named mix.lock
   rm -rf "$work/scan"
@@ -87,7 +90,7 @@ advisories = sorted(
 )
 failed = False
 if len(packages) != expected:
-    print(f"{lock}: scanner read {len(packages)} packages, Mix counts {expected} :hex entries", file=sys.stderr)
+    print(f"{lock}: scanner read {len(packages)} packages, Mix counts {expected} :hex and :git entries", file=sys.stderr)
     failed = True
 for line in advisories:
     print(f"{lock}: advisory {line}", file=sys.stderr)

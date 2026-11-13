@@ -254,14 +254,15 @@ jobs:
           ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive "$archive"
 
   # Published advisories and retired packages, each failing closed. OSV's
-  # Hex database is downloaded
-  # first, given no lock file; the scan then runs --offline inside a network
-  # namespace with no interfaces, so nothing about a lock leaves the runner.
-  # scripts/check-advisories.sh also proves each lock is exactly what Mix
-  # writes and that the scanner read every :hex entry Mix counts. It scans
-  # the development lock AND the lock a consumer resolves at the declared Ash
-  # floor, so a floor that admits an advised version fails here. `mix
-  # hex.audit` fails on a retired package.
+  # Hex database is downloaded first, given no lock file; the scan then runs
+  # --offline inside a network namespace with no interfaces, so nothing about
+  # a lock leaves the runner. scripts/check-advisories.sh also proves each
+  # lock is exactly what Mix writes and that the scanner read every :hex and
+  # :git entry Mix counts. It scans the development lock, the lock a consumer
+  # resolves at the declared Ash floor (a floor that admits an advised version
+  # fails here), and a fixture lock holding both entry kinds, which keeps the
+  # count check honest for git dependencies. `mix hex.audit` fails on a
+  # retired package.
   security:
     runs-on: ubuntu-latest
     env:
@@ -298,8 +299,8 @@ jobs:
       - name: Resolve a consumer at the declared Ash floor
         run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix deps.get
         working-directory: test/consumer
-      - name: Advisories in the development lock and the floor consumer's lock
-        run: scripts/check-advisories.sh mix.lock test/consumer/mix.lock
+      - name: Advisories in the development lock, the floor consumer's lock and the hex-and-git fixture
+        run: scripts/check-advisories.sh mix.lock test/consumer/mix.lock scripts/fixtures/hex-and-git.lock
 
   # The single branch-protection check name: require `all-checks-pass`
   # on main and every leg (test matrix, floor, dialyzer, package,

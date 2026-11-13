@@ -43,8 +43,8 @@ change; see [UPGRADING.md](UPGRADING.md).
   checksum-verified) runs offline, with no network, against OSV's Hex database
   downloaded first, over the development lock and over the lock a consumer
   resolves at the declared Ash floor; each lock must be exactly what Mix writes,
-  and the scanner must read every `:hex` entry Mix counts
-  (`scripts/check-advisories.sh`). `mix hex.audit` fails on a retired package.
+  and the scanner must read every `:hex` and `:git` entry Mix counts
+  (`scripts/check-advisories.sh`, with a fixture lock holding both kinds). `mix hex.audit` fails on a retired package.
 
 ### Dependencies
 
