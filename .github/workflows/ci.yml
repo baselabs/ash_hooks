@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # kci/** is kimosabe-land's short-lived landing branch: the full run
+    # there is what admits a commit to main.
+    branches: [main, 'kci/**']
     tags: ['v*']
     paths-ignore: ['LICENSE*', '.github/ISSUE_TEMPLATE/**']
   workflow_dispatch:
@@ -14,28 +16,30 @@ concurrency:
 
 jobs:
   # The matrix tests the supported Elixir window (~> 1.20 in mix.exs) on
-  # the OTP releases this project targets: 28 (the dev default, mirrored
-  # exactly from .tool-versions) and 29 (current OTP). Lockstep: the
-  # window, .tool-versions, this matrix, and the OTP allowlist in
-  # config/config.exs move together in ONE commit. Default legs build
-  # with the full dev dep set; the no-optional leg proves the package
-  # compiles/tests/runs with oban and plug entirely absent (ADR-0004).
+  # the OTP releases this project targets. The dev default is the estate
+  # version set (latest stable Elixir and OTP 29, mirrored exactly from
+  # .tool-versions); OTP 28 is the other end of the supported window.
+  # Lockstep: the window, .tool-versions, this matrix, and the OTP
+  # allowlist in config/config.exs move together in ONE commit. Default
+  # legs build with the full dev dep set; the no-optional leg proves the
+  # package compiles/tests/runs with oban and plug entirely absent
+  # (ADR-0004).
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Dev default — mirrors .tool-versions exactly.
-          - elixir: "1.20.4"
+          # Dev default — the version set, mirrors .tool-versions exactly.
+          - elixir: "1.20.5"
+            otp: "29.1.2"
+          # OTP 28 — the other end of the supported OTP range.
+          - elixir: "1.20.5"
             otp: "28"
-          # Current OTP — the other end of the supported OTP range.
-          - elixir: "1.20.4"
-            otp: "29"
           # ADR-0004 proof: oban/plug dropped from the dep list entirely —
           # the package must compile, test, and run with neither loaded.
-          - elixir: "1.20.4"
-            otp: "28"
+          - elixir: "1.20.5"
+            otp: "29.1.2"
             no_optional: "1"
     env:
       MIX_ENV: test
@@ -67,7 +71,7 @@ jobs:
         run: |
           mix run --no-start -e 'if :code.which(Oban) != :non_existing or :code.which(Plug) != :non_existing, do: (IO.puts("optional dep loaded"); System.halt(1))'
 
-  # A minimal production consumer pins the actual Ash floor, 3.34.3,
+  # A minimal production consumer pins the actual Ash floor, 3.37.2,
   # on Elixir 1.20. Dev/test and optional dependencies cannot mask OTP
   # startup requirements or unavailable APIs in this consumer graph.
   floor:
@@ -116,7 +120,7 @@ jobs:
       ASH_HOOKS_REAL_RECEIVER_PORT: "52871"
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -140,14 +144,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.20.4"
-          otp-version: "28"
+          elixir-version: "1.20.5"
+          otp-version: "29.1.2"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             deps
             _build
-          key: mix-pg-1.20.4-28-${{ hashFiles('mix.lock') }}
+          key: mix-pg-1.20.5-29.1.2-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - run: mix hex.audit
       - run: mix compile --warnings-as-errors
@@ -178,15 +182,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.20.4"
-          otp-version: "28"
+          elixir-version: "1.20.5"
+          otp-version: "29.1.2"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             deps
             _build
             ~/.mix
-          key: dialyzer-1.20.4-28-${{ hashFiles('mix.lock') }}
+          key: dialyzer-1.20.5-29.1.2-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - run: mix dialyzer
 
@@ -200,14 +204,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.20.4"
-          otp-version: "28"
+          elixir-version: "1.20.5"
+          otp-version: "29.1.2"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             deps
             _build
-          key: package-1.20.4-28-${{ hashFiles('mix.lock') }}
+          key: package-1.20.5-29.1.2-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - name: DSL cheat sheets match the DSL (generated files must not drift)
         run: mix spark.cheat_sheets --extensions AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery --check
@@ -233,14 +237,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.20.4"
-          otp-version: "28"
+          elixir-version: "1.20.5"
+          otp-version: "29.1.2"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/.mix
             ~/.cache
-          key: livebook-mix-${{ hashFiles('mix.lock') }}
+          key: livebook-mix-1.20.5-29.1.2-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - run: ./scripts/check-package.sh
       - name: Wait for the real receiver
@@ -250,12 +254,47 @@ jobs:
           archive="_build/release/ash_hooks-$(grep -m1 '@version' mix.exs | sed -E 's/.*@version "([^"]+)".*/\1/').tar"
           ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive "$archive"
 
+  # Published advisories and retired packages, each failing closed: OSV's
+  # scanner (one pinned 2.x release, checksum-verified) over the
+  # development lock AND over the lock a consumer resolves at the declared
+  # Ash floor, so a floor that admits an advised version fails here; and
+  # `mix hex.audit` for retired packages. The scan sends only public
+  # package names and versions.
+  security:
+    runs-on: ubuntu-latest
+    env:
+      OSV_SCANNER_VERSION: "2.7.1"
+      OSV_SCANNER_SHA256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          elixir-version: "1.20.5"
+          otp-version: "29.1.2"
+      - name: Install checksum-pinned osv-scanner
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/osv-scanner" \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/osv-scanner"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - run: mix deps.get
+      - name: Retired packages
+        run: mix hex.audit
+      - name: Advisories in the development lock
+        run: osv-scanner scan source --lockfile mix.lock
+      - name: Resolve a consumer at the declared Ash floor
+        run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix deps.get
+        working-directory: test/consumer
+      - name: Advisories in the floor consumer's lock
+        run: osv-scanner scan source --lockfile test/consumer/mix.lock
+
   # The single branch-protection check name: require `all-checks-pass`
   # on main and every leg (test matrix, floor, dialyzer, package,
-  # postgres, livebook) gates through it — no per-job check-name
-  # maintenance when the matrix grows.
+  # postgres, livebook, security) gates through it — no per-job
+  # check-name maintenance when the matrix grows.
   all-checks-pass:
-    needs: [test, floor, postgres, dialyzer, package, livebook]
+    needs: [test, floor, postgres, dialyzer, package, livebook, security]
     if: always()
     runs-on: ubuntu-latest
     steps:

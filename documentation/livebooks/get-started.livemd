@@ -42,7 +42,7 @@ package =
 # Normal notebook execution resolves the exact published version above.
 Mix.install(
   [
-    {:ash, ">= 3.34.3 and < 4.0.0-0"},
+    {:ash, ">= 3.37.2 and < 4.0.0-0"},
     package,
     {:ash_sqlite, "~> 0.2"},
     {:jason, "~> 1.2"}

@@ -44,7 +44,7 @@ queue infrastructure at all.
 - Telemetry events for the whole send and receive lifecycle, with classified
   reasons and identifiers rather than bodies or signing secrets.
 
-Requires Elixir ~> 1.20 (OTP 28+) and Ash >= 3.34.3, < 4.0. Add Oban (~> 2.20)
+Requires Elixir ~> 1.20 (OTP 28+) and Ash >= 3.37.2, < 4.0. Add Oban (~> 2.20)
 for the generated delivery worker, and Phoenix or Plug for the HTTP ingress.
 Direct delivery and signature verification work without either dependency. The
 package follows semantic versioning over a named public surface; see
@@ -677,7 +677,7 @@ deprecations run at least two minor releases, and safety corrections ship as fix
 ([ADR-0010](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0010-semver-and-support-policy.md)).
 
 Minimum supported versions: Elixir ~> 1.20 (OTP 28+; CI-tested on
-Erlang/OTP 28 and 29), Ash >= 3.34.3 and < 4.0, Oban ~> 2.20 (optional, outbound only).
+Erlang/OTP 28 and 29), Ash >= 3.37.2 and < 4.0, Oban ~> 2.20 (optional, outbound only).
 Development is supported on macOS and Linux; Windows developers use WSL2.
 CI runs on Linux, including an AshPostgres leg exercising a
 `uuid_v7`-keyed consumer shape. On Ash 3.33+ your

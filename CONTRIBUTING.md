@@ -5,7 +5,7 @@ changes, and include the evidence needed to review that behavior.
 
 ## Development environment
 
-AshHooks supports Elixir `~> 1.20`, Erlang/OTP 28 and 29, and Ash `>= 3.34.3 and < 4.0`.
+AshHooks supports Elixir `~> 1.20`, Erlang/OTP 28 and 29, and Ash `>= 3.37.2 and < 4.0`.
 The repository pins Elixir 1.20.4 and Erlang/OTP 28.5 in `.tool-versions` for development.
 Use macOS or Linux; Windows contributors should use WSL2.
 

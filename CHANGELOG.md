@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- **Ash floor raised to 3.37.2** (`{:ash, ">= 3.37.2 and < 4.0.0-0"}`), so that
+  no admitted Ash release carries a published advisory: EEF-CVE-2026-96581
+  (HIGH, fixed in 3.37.2), EEF-CVE-2026-114214 (MEDIUM, 3.37.1) and
+  EEF-CVE-2026-101028 (MEDIUM, 3.34.6) all affect releases the 3.0.0 floor
+  (3.34.3) admitted. A floor rise is a minor change (ADR 0010); see
+  [UPGRADING.md](UPGRADING.md).
+
+### Security
+
+- CI gains a `security` job that fails closed: OSV's scanner (pinned 2.7.1,
+  checksum-verified) over the development lock and over the lock a consumer
+  resolves at the declared Ash floor, and `mix hex.audit` for retired packages.
+
+### Dependencies
+
+- Development lock and toolchain at the latest stable releases: Elixir 1.20.5
+  on Erlang/OTP 29.1.2 (OTP 28 stays in the supported window and the CI
+  matrix), Ash 3.37.4, Spark 2.7.10, AshSqlite 0.3.1 (test substrate),
+  Dialyxir 1.4.9, Makeup 1.2.3. The PostgreSQL leg runs PostgreSQL 18.
+
 ## 3.0.0 — November 11, 2026
 
 Inbound verification becomes generic: describe any sender's signature scheme in

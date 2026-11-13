@@ -74,7 +74,7 @@ dependencies =
   Mix.Project.in_project(:ash_hooks, root, [], fn project -> project.project()[:deps] end)
 
 unless List.keymember?(dependencies, :ash, 0), do: raise("root Ash dependency not found")
-dependencies = List.keyreplace(dependencies, :ash, 0, {:ash, "== 3.34.3"})
+dependencies = List.keyreplace(dependencies, :ash, 0, {:ash, "== 3.37.2"})
 File.mkdir_p!(qualification)
 floor_lock = Path.join(qualification, "mix.lock")
 File.cp!(Path.join(root, "mix.lock"), floor_lock)
@@ -104,7 +104,7 @@ try do
     Mix.Task.run("app.start")
 
     actual = to_string(Application.spec(:ash, :vsn))
-    unless actual == "3.34.3", do: raise("expected loaded Ash 3.34.3, found #{actual}")
+    unless actual == "3.37.2", do: raise("expected loaded Ash 3.37.2, found #{actual}")
     IO.puts("LOADED ASH: #{actual}; #{:code.which(Ash.Resource.Info)}")
 
     Mix.Task.run("test", [
@@ -115,7 +115,7 @@ try do
       "--raise"
     ])
 
-    IO.puts("FLOOR WORKER QUALIFICATION: exact Ash 3.34.3 focused case returned without failure")
+    IO.puts("FLOOR WORKER QUALIFICATION: exact Ash 3.37.2 focused case returned without failure")
   end)
 after
   after_identity = fingerprint.()

@@ -93,9 +93,12 @@ defmodule AshHooks.MixProject do
 
     [
       # Runtime
-      # 3.34.3 fixes CVE-2026-94201 and supplies the tenant inverse API
-      # used by the worker. Older releases are not a supported consumer graph.
-      {:ash, ">= 3.34.3 and < 4.0.0-0"},
+      # The floor admits no Ash release with a published advisory:
+      # 3.37.2 clears EEF-CVE-2026-94201 (3.34.3), -101028 (3.34.6),
+      # -114214 (3.37.1) and -96581 (3.37.2), and keeps the tenant inverse
+      # API the worker uses. CI's security job scans the lock a consumer
+      # resolves at this floor; a new advisory against it fails there.
+      {:ash, ">= 3.37.2 and < 4.0.0-0"},
       {:splode, "~> 0.3"},
       {:spark, ">= 2.3.3 and < 3.0.0-0"},
       {:jason, "~> 1.2"},
@@ -114,7 +117,7 @@ defmodule AshHooks.MixProject do
         # ships in hex metadata, never constrains consumers. ETS was probed
         # and cannot express storage-level uniqueness or conditional-update
         # atomicity (read-then-write on both paths).
-        {:ash_sqlite, "~> 0.2.17", only: [:dev, :test], runtime: false},
+        {:ash_sqlite, "~> 0.3.1", only: [:dev, :test], runtime: false},
         # The AshPostgres consumer leg (CI's postgres job): exercises the
         # transformers against a uuid_v7-keyed, sole-store-payload consumer
         # shape — the gaps sqlite alone could not surface. Dev/test-only;

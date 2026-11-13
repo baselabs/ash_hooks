@@ -1,5 +1,17 @@
 # Upgrading
 
+## 3.0.x → Unreleased
+
+The Ash floor rises from 3.34.3 to 3.37.2, because three published advisories
+affect Ash releases the old floor admitted (EEF-CVE-2026-101028, -114214 and
+-96581). If your lock holds Ash below 3.37.2, update Ash first:
+
+```sh
+mix deps.update ash
+```
+
+Nothing else changes for this reason: no schema change and no API change.
+
 ## 2.x → 3.0.0
 
 3.0.0 makes inbound verification generic. It removes the vendor-specific

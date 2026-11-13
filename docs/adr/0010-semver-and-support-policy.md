@@ -42,8 +42,10 @@ Rules:
    truncated bodies as success) is fixed forward and CHANGELOG'd under "Fixed", even
    where a consumer might have depended on the defect.
 4. **Support matrix:** the newest minor release of ash_hooks receives fixes; the
-   supported floors are Elixir ~> 1.20, OTP 28+, Ash >= 3.34.3 and < 4.0 *(Ash floor
-   amended October 6, 2026 for the tenant inverse API and CVE-2026-94201;
+   supported floors are Elixir ~> 1.20, OTP 28+, Ash >= 3.37.2 and < 4.0 *(Ash floor
+   amended November 12, 2026 so that no admitted Ash release carries a published
+   advisory: EEF-CVE-2026-101028, -114214 and -96581, fixed in 3.34.6, 3.37.1 and
+   3.37.2; amended October 6, 2026 for the tenant inverse API and CVE-2026-94201;
    this release also requires the 2.0 durable-schema migration. Earlier support floors amended
    2026-09-16, released as 1.1.0: previously Elixir ~> 1.17, OTP 27+. History: the
    original 1.15 claim was disproven by the floor leg — modern ash requires the

@@ -4,7 +4,7 @@ This walkthrough takes a new application from install to a verified
 inbound webhook and a delivered outbound webhook. Both halves are
 independently consumable: inbound-only applications need no Oban.
 
-Requirements: Elixir ~> 1.20 (OTP 28+), Ash >= 3.34.3, < 4.0. Optional components: Oban
+Requirements: Elixir ~> 1.20 (OTP 28+), Ash >= 3.37.2, < 4.0. Optional components: Oban
 (~> 2.20) for outbound delivery, Plug/Phoenix for inbound receipt.
 
 This walkthrough builds on a working Ash application: one with a
