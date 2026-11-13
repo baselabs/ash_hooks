@@ -5,7 +5,9 @@
 #
 # The OSV Hex database must already be at
 # $OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY/osv-scalibr/Hex/all.zip (CI downloads
-# it first, given no lock file). For each lock:
+# it first, given no lock file). Each lock is read by its path, under any file
+# name: Mix.Dep.Lock.read/1 takes the path, and osv-scanner takes it as
+# -L mix.lock:<path>. For each lock:
 #   1. the lock is exactly what Mix writes (read and rewritten through
 #      Mix.Dep.Lock into a temporary file, byte-compared), so a hand edit fails;
 #   2. osv-scanner runs with --offline (and, on Linux, inside a network
@@ -44,6 +46,7 @@ for lock in "$@"; do
   # skips the write when equal), then runs will_recompile, which needs a
   # project. So the rewrite runs inside a throwaway project whose own lock is
   # empty: the write always happens, and the bytes are exactly Mix's.
+  path="$(cd "$(dirname "$lock")" && pwd)/$(basename "$lock")"
   rm -rf "$work/project"
   mkdir -p "$work/project"
   printf 'defmodule LockCheck.MixProject do\n  use Mix.Project\n  def project, do: [app: :lock_check, version: "0.0.0"]\nend\n' \
@@ -55,21 +58,19 @@ for lock in "$@"; do
     Mix.Project.in_project(:lock_check, project, fn _ ->
       Mix.Dep.Lock.write(lock, file: Path.join(project, "roundtrip.lock"))
     end)
-  ' "$(cd "$(dirname "$lock")" && pwd)/$(basename "$lock")" "$work/project"
+  ' "$path" "$work/project"
   if ! cmp -s "$lock" "$work/project/roundtrip.lock"; then
     echo "$lock: not as Mix writes it (edit locks only through deps.get, deps.update or deps.unlock)" >&2
     status=1
     continue
   fi
 
-  mix_count="$(elixir -e 'Mix.start(); [f] = System.argv(); IO.puts(Enum.count(Mix.Dep.Lock.read(f), fn {_, v} -> is_tuple(v) and elem(v, 0) in [:hex, :git] end))' "$lock")"
+  mix_count="$(elixir -e 'Mix.start(); [f] = System.argv(); IO.puts(Enum.count(Mix.Dep.Lock.read(f), fn {_, v} -> is_tuple(v) and elem(v, 0) in [:hex, :git] end))' "$path")"
 
-  # the scanner picks its extractor by file name: scan a copy named mix.lock
-  rm -rf "$work/scan"
-  mkdir -p "$work/scan"
-  cp "$lock" "$work/scan/mix.lock"
+  # the lock is read by path in the named mix.lock format, whatever its file
+  # name: a lock kept as test data is never named mix.lock
   set +e
-  "${deny[@]}" "$scanner" scan source --offline --format json --all-packages -L "$work/scan/mix.lock" \
+  "${deny[@]}" "$scanner" scan source --offline --format json --all-packages -L "mix.lock:$path" \
     > "$work/report.json" 2> "$work/scan.err"
   scan_status=$?
   set -e

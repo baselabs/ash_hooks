@@ -300,7 +300,7 @@ jobs:
         run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix deps.get
         working-directory: test/consumer
       - name: Advisories in the development lock, the floor consumer's lock and the hex-and-git fixture
-        run: scripts/check-advisories.sh mix.lock test/consumer/mix.lock scripts/fixtures/hex-and-git.lock
+        run: scripts/check-advisories.sh mix.lock test/consumer/mix.lock scripts/fixtures/hex-and-git.mix.lock.fixture
 
   # The single branch-protection check name: require `all-checks-pass`
   # on main and every leg (test matrix, floor, dialyzer, package,
