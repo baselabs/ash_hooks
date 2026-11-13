@@ -6,13 +6,42 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     use ExUnit.Case, async: true
 
+    test "raw_body/1 on a fresh conn returns nil" do
+      assert AshHooks.BodyReader.raw_body(Plug.Test.conn("POST", "/webhooks", "")) == nil
+    end
+
+    test "put_raw_body/2 stores complete exact binary bytes" do
+      for bytes <- ["", <<0, 255, 10>>, " { \"id\": 1 }\n"] do
+        conn = Plug.Test.conn("POST", "/webhooks", "")
+        conn = AshHooks.BodyReader.put_raw_body(conn, bytes)
+        assert AshHooks.BodyReader.raw_body(conn) == bytes
+      end
+    end
+
+    test "put_raw_body/2 rejects non-binaries" do
+      for value <- [nil, 1, %{}, [], <<1::1>>] do
+        assert_raise ArgumentError, ~r/binary/, fn ->
+          AshHooks.BodyReader.put_raw_body(Plug.Test.conn("POST", "/webhooks", ""), value)
+        end
+      end
+    end
+
+    test "chunked read_body/3 yields the full body through raw_body/1" do
+      raw = "0123456789"
+      conn = Plug.Test.conn("POST", "/webhooks", raw)
+      assert {:more, "0123", conn} = AshHooks.BodyReader.read_body(conn, [length: 4], [])
+      assert {:more, "4567", conn} = AshHooks.BodyReader.read_body(conn, [length: 4], [])
+      assert {:ok, "89", conn} = AshHooks.BodyReader.read_body(conn, [length: 4], [])
+      assert AshHooks.BodyReader.raw_body(conn) == raw
+    end
+
     test "read_body/2 returns the body and caches the exact bytes privately" do
       conn = Plug.Test.conn("POST", "/webhooks/complycube", ~s({"id":"evt_1"}))
 
       assert {:ok, body, conn} = AshHooks.BodyReader.read_body(conn, [])
 
       assert body == ~s({"id":"evt_1"})
-      assert conn.private[:ash_hooks_raw_body] == ~s({"id":"evt_1"})
+      assert AshHooks.BodyReader.raw_body(conn) == ~s({"id":"evt_1"})
     end
 
     test "the cached bytes are the wire bytes, not a re-encoding" do
@@ -23,7 +52,7 @@ if Code.ensure_loaded?(Plug.Conn) do
       conn = Plug.Test.conn("POST", "/webhooks", raw)
       {:ok, _body, conn} = AshHooks.BodyReader.read_body(conn, [])
 
-      assert conn.private[:ash_hooks_raw_body] == raw
+      assert AshHooks.BodyReader.raw_body(conn) == raw
     end
 
     test ":only wiring works through real Plug.Parsers (extras arrive positionally)" do
@@ -44,7 +73,7 @@ if Code.ensure_loaded?(Plug.Conn) do
 
       conn = Plug.Parsers.call(conn, parser)
 
-      assert conn.private[:ash_hooks_raw_body] == ~s({"id":"evt_1"})
+      assert AshHooks.BodyReader.raw_body(conn) == ~s({"id":"evt_1"})
       assert conn.body_params == %{"id" => "evt_1"}
     end
 
@@ -64,7 +93,7 @@ if Code.ensure_loaded?(Plug.Conn) do
       conn = Plug.Parsers.call(conn, parser)
 
       assert conn.body_params == %{"order" => 1}
-      refute Map.has_key?(conn.private, :ash_hooks_raw_body)
+      assert is_nil(AshHooks.BodyReader.raw_body(conn))
     end
 
     test "a non-canonical routable path (//webhooks/x) still caches" do
@@ -77,7 +106,7 @@ if Code.ensure_loaded?(Plug.Conn) do
 
       assert {:ok, _body, conn} = AshHooks.BodyReader.read_body(conn, only: ["/webhooks"])
 
-      assert conn.private[:ash_hooks_raw_body] == ~s({"id":"evt_1"})
+      assert AshHooks.BodyReader.raw_body(conn) == ~s({"id":"evt_1"})
     end
 
     test "only: [] behaves as unset (cache everything), never cache-nowhere" do
@@ -85,7 +114,7 @@ if Code.ensure_loaded?(Plug.Conn) do
 
       assert {:ok, _body, conn} = AshHooks.BodyReader.read_body(conn, only: [])
 
-      assert conn.private[:ash_hooks_raw_body] == ~s({"x":1})
+      assert AshHooks.BodyReader.raw_body(conn) == ~s({"x":1})
     end
 
     test "with :only, a matching path prefix caches as usual" do
@@ -95,7 +124,7 @@ if Code.ensure_loaded?(Plug.Conn) do
                AshHooks.BodyReader.read_body(conn, only: ["/webhooks"])
 
       assert body == ~s({"id":"evt_1"})
-      assert conn.private[:ash_hooks_raw_body] == ~s({"id":"evt_1"})
+      assert AshHooks.BodyReader.raw_body(conn) == ~s({"id":"evt_1"})
     end
 
     test "with :only, a non-matching path passes through with NO cache" do
@@ -105,7 +134,7 @@ if Code.ensure_loaded?(Plug.Conn) do
                AshHooks.BodyReader.read_body(conn, only: ["/webhooks"])
 
       assert body == ~s({"order":1})
-      refute Map.has_key?(conn.private, :ash_hooks_raw_body)
+      assert is_nil(AshHooks.BodyReader.raw_body(conn))
     end
 
     test "with :only, chunked non-matching reads never accumulate anything" do
@@ -121,7 +150,7 @@ if Code.ensure_loaded?(Plug.Conn) do
           end
         end)
 
-      refute Map.has_key?(conn.private, :ash_hooks_raw_body)
+      assert is_nil(AshHooks.BodyReader.raw_body(conn))
     end
 
     test "chunked reads accumulate — the cache holds the FULL body, not the last chunk" do
@@ -139,7 +168,7 @@ if Code.ensure_loaded?(Plug.Conn) do
           end
         end)
 
-      assert conn.private[:ash_hooks_raw_body] == raw
+      assert AshHooks.BodyReader.raw_body(conn) == raw
     end
 
     describe "chunked + faulted reads" do
@@ -160,7 +189,7 @@ if Code.ensure_loaded?(Plug.Conn) do
           end)
 
         assert IO.iodata_to_binary(Enum.reverse(chunks)) == raw
-        assert conn.private[:ash_hooks_raw_body] == raw
+        assert AshHooks.BodyReader.raw_body(conn) == raw
       end
 
       test "a faulted read surfaces the error and caches nothing" do

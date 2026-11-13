@@ -523,9 +523,13 @@ Tour.Repo.query!("CREATE TABLE IF NOT EXISTS tour_orders (id TEXT PRIMARY KEY)")
 
 ## Inbound: verify, deduplicate, reject a tamper
 
-Your controller passes `AshHooks.Ingress.ingest/4` the exact raw body and the
-request headers (in Phoenix, `conn.private[:ash_hooks_raw_body]` and
-`conn.req_headers`, which keeps every header line). One call verifies the signature, stores the
+In an HTTP application, forward the webhook route to `AshHooks.Plug` with the
+ledger resource and either a fixed `source:` or an endpoint `resolve:` MFA.
+Configure `AshHooks.BodyReader` on preceding `Plug.Parsers`; the plug uses its
+exact cached bytes, or reads the body itself when no parser ran. See the
+[get-started tutorial](../tutorials/get-started.md) for Phoenix wiring and tenant
+resolution. This executable tour uses the lower-level `AshHooks.Ingress.ingest/4`
+with the exact raw body and request headers. One call verifies the signature, stores the
 payload, deduplicates, claims the row under a lease, runs your handler, and
 records the outcome.
 

@@ -55,14 +55,36 @@ end
 The inbound name (`:orders`) is the source's identity in the ledger. It is not a
 module name and resolves nothing by convention: `provider` is required.
 
-### What your controller passes
+### Receive with the plug
+
+Forward HTTP webhook routes to `AshHooks.Plug`, with `resource:` and either a
+fixed `source:` or a stored-endpoint `resolve:` MFA. Configure `AshHooks.BodyReader`
+on any preceding `Plug.Parsers`. The plug supplies exact raw bytes, ordered
+request headers and the method. Set `request_uri:` to a configured public base
+URL or an MFA returning the full public URI when the signature covers it. See
+the [get-started tutorial](get-started.md) for routing and tenant resolution.
+
+A hand-written provider whose `verify_signature/3` reads `ctx.signature` keeps the
+default `:header` signature source. Tell the plug which header carries it:
+
+```elixir
+forward "/webhooks/billing", AshHooks.Plug,
+  resource: MyApp.WebhookLedger,
+  source: :billing,
+  signature_header: "x-billing-signature"
+```
+
+A resolver may instead return `:signature_header` with the source. Exactly one
+line of that header must be present; none or several are refused as unsigned.
+
+### Lower-level request context
 
 Configured providers read their signature and timestamp from the request
-headers, so pass the headers, the exact raw body, and, when the scheme signs
+headers, so a direct `Ingress.ingest/4` caller passes the headers, the exact raw body, and, when the scheme signs
 them, the method and the public request URL:
 
 ```elixir
-raw_body = conn.private[:ash_hooks_raw_body]
+raw_body = AshHooks.BodyReader.raw_body(conn)
 
 AshHooks.Ingress.ingest(MyApp.WebhookLedger, :orders, raw_body, %{
   headers: conn.req_headers,

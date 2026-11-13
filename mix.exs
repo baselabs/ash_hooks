@@ -180,6 +180,7 @@ defmodule AshHooks.MixProject do
         ],
         Inbound: [
           AshHooks.BodyReader,
+          AshHooks.Plug,
           AshHooks.Ingress,
           AshHooks.InboundDelivery,
           AshHooks.InboundDelivery.Payload

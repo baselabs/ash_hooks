@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- `AshHooks.Plug`, an optional generic Plug adapter for inbound HTTP delivery,
+  with endpoint resolution, tenant and scope context, exact raw-body reads,
+  configured public request URIs, and a public default response mapping. `refuse:`
+  lets hosts shape refusal headers and bodies while preserving status and required
+  headers; `retry_after:` sets default 503 retry hints (60 seconds by default).
+  `signature_header:` (or a resolver's `:signature_header`) names the header whose
+  single value becomes `ctx.signature` for a provider on the default `:header`
+  signature source; a missing or repeated header is refused as unsigned.
+- Optional `c:AshHooks.Provider.handshake/1` and `c:AshHooks.Provider.response/1` callbacks for sender
+  challenges and acknowledgment protocols; the plug also accepts a host response policy.
+- `AshHooks.BodyReader.put_raw_body/2` and `raw_body/1` provide a public exact-byte
+  contract for host endpoint readers and lower-level ingress callers, without a
+  second body read or access to an implementation-specific connection key.
+
 ### Changed
 
 - **Ash floor raised to 3.37.2** (`{:ash, ">= 3.37.2 and < 4.0.0-0"}`), so that

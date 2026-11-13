@@ -3,9 +3,11 @@ defmodule AshHooks.Ingress do
   The inbound pipeline driver: verify → ingest → claim → handle → mark,
   over a ledger resource carrying the `AshHooks.InboundDelivery` extension.
 
-  `ingest/4` is the sync-mode entry point a consumer's controller calls with
-  the raw request body (captured pre-parser via the endpoint body_reader — a
-  router plug cannot recover pre-parse bytes). Request context carries the
+  `AshHooks.Plug` is the HTTP entry point. `ingest/4` is the lower-level sync
+  entry point for custom transports and pipelines, called with the exact raw
+  request body. Capture it pre-parser via `AshHooks.BodyReader`, or read it
+  before any parser consumes it; parsed params cannot recover those bytes.
+  Request context carries the
   signature, request headers, public request method/URI, scope, connection,
   and tenant. It does not accept or forward a request-controlled clock;
   replay-window verification uses the runtime system clock. The machine's

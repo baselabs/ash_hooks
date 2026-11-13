@@ -18,15 +18,56 @@ AshHooks 3.0.
 ## Receive webhooks through the ledger
 
 - Add `AshHooks` and `AshHooks.InboundDelivery` to the inbound ledger, set `provider` on
-  every inbound declaration, and pass the exact raw request body to
-  `AshHooks.Ingress.ingest/4`. Signature verification is over those exact bytes. There
+  every inbound declaration, and forward HTTP webhook routes to `AshHooks.Plug`.
+  Set `resource:` and exactly one of `source:` or `resolve: {module, function, args}`.
+  `AshHooks.Ingress.ingest/4` remains the lower-level path for custom transports.
+  Signature verification is over the exact raw bytes. There
   is no name-to-module convention and there are no built-in vendor verifiers.
+- Configure `body_reader: {AshHooks.BodyReader, :read_body, []}` on any preceding
+  `Plug.Parsers`, or have your own endpoint reader call
+  `AshHooks.BodyReader.put_raw_body(conn, complete_bytes)` before parsing. Supply
+  the whole body exactly as sent, never partial or re-encoded bytes; the plug
+  retrieves it through `AshHooks.BodyReader.raw_body/1` without a second read.
+  Direct ingress callers also use `AshHooks.BodyReader.raw_body(conn)`.
+  Without a parser the plug reads the body itself. Never reconstruct
+  signed bytes from parsed params. Configure parser body limits separately from the
+  plug's `length:`, `read_length:` and `read_timeout:` for direct reads.
+- Use `resolve:` to look up a stored endpoint from the request path and return
+  `{:ok, %{source: source, tenant: tenant, scope: scope, connection: connection}}`.
+  Only `source` is required in that map; multitenant ledgers require `tenant`, and
+  scoped identities require their scope slots. Do not trust a path's tenant directly.
+  Return `{:error, :not_found}` for 404 or `{:error, :unavailable}` for 503; neither writes.
+- Set `request_uri:` to a configured public base URL or an MFA returning the full URI
+  when the sender signs the URL. The plug never derives it from the internal conn
+  authority. `methods:` defaults to `["POST"]`; other methods receive 405 with `allow`.
+- A provider written directly against `AshHooks.Provider` reads only `ctx.signature`
+  (its `signature_source/0` is `:header` by default). Name its header with the plug's
+  `signature_header:` option, or return `:signature_header` from the resolver to set
+  it per source. A missing or repeated header is refused as unsigned with 400.
+  Configured providers (`verify: [...]`) read their own headers and need neither.
+- Provider `handshake/1` may return `{:respond, status, headers, body}` before method
+  and verification checks, or `:deliver`. It receives method, decoded query params,
+  request headers and raw bytes. No delivery is written for a handshake response.
+- Provider `response/1` overrides the plug's `respond:` MFA; `:default` falls through
+  to the host policy, then `AshHooks.Plug.default_response/2` (outcome and validated
+  plug options). Both policies receive
+  the exact ingest outcome and never override a plug refusal. Defaults acknowledge
+  terminal rows with 200, retry other ledger outcomes with 500, reject typed signature,
+  timestamp and malformed-payload errors with 400, and retry other failures with 503.
+- Set `retry_after:` to a positive number of seconds (default 60) for the required
+  `retry-after` header on default-mapping and resolver 503s. Provider and host
+  ingest-response policies own their 503 headers.
+- Use `refuse: {module, function, args}` to shape refusal headers and bodies. It
+  receives `:not_found`, `:unavailable`, `:method_not_allowed`, `:too_large`, or
+  `:body_consumed` and returns `{headers, body}` or `:default`. It cannot change the
+  status; required `allow` and `retry-after` headers win on a name conflict.
 - Describe a sender with `use AshHooks.Provider, verify: [...]` (options in
   `AshHooks.Provider.Scheme`). Copy the scheme from the sender's own documentation:
   algorithm, signature location, encoding, secret encoding, signed input, and
-  timestamp. Configured providers read their signature from `ctx.headers`, so pass
-  `headers: conn.req_headers` (the ordered list, so repeated lines survive); pass `method`
-  and the public `request_uri` when the scheme signs them.
+  timestamp. Configured providers read their signature from `ctx.headers`.
+  The plug supplies the ordered request headers and method. For direct
+  `Ingress.ingest/4` calls, pass `headers: conn.req_headers` (so repeated lines
+  survive), `method`, and the public `request_uri` when the scheme signs them.
 - Keep every verification option and key in code or the secret source. Never build
   options, keys, algorithms, or key URLs from the request. Public-key schemes take the
   sender's PEM key from the secret source.

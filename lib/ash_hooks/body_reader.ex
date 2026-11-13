@@ -14,13 +14,14 @@ if Code.ensure_loaded?(Plug.Conn) do
           ...,
           body_reader: {AshHooks.BodyReader, :read_body, []}
 
-    The controller then passes `conn.private[:ash_hooks_raw_body]` to
-    `AshHooks.Ingress.ingest/4` — signature schemes sign over the exact wire
-    bytes, so any re-encoding (parsed params, JSON roundtrip) would break
-    verification.
+    `AshHooks.Plug` retrieves the cached bytes through `raw_body/1` automatically.
+    Custom pipelines may pass `raw_body(conn)` to `AshHooks.Ingress.ingest/4`.
+    Signature schemes sign over the exact wire bytes, so any re-encoding
+    (parsed params, JSON roundtrip) would break verification. Without a preceding
+    parser, `AshHooks.Plug` can read the request body itself.
 
     The reader is endpoint-wide by default: every parsed request (not only
-    webhook routes) carries a second copy of its body in `conn.private` for
+    webhook routes) carries a second copy of its body in the connection cache for
     the request lifetime, bounded by the parser's `:length`. To scope the
     memory cost to the webhook routes, pass `:only` path prefixes:
 
@@ -30,9 +31,38 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     Only requests whose path starts with one of the prefixes are cached;
     everything else passes through with zero retained bytes.
+
+    A host with its own endpoint reader does not need a second reader. Call
+    `put_raw_body/2` from that reader (configured as `Plug.Parsers`' `body_reader`),
+    or before parsing, with the complete body exactly as sent. Never supply a
+    partial body or reconstruct bytes from parsed params. The storage key is an
+    implementation detail; use `put_raw_body/2` and `raw_body/1` to exchange bytes.
     """
 
     @raw_body_key :ash_hooks_raw_body
+
+    @doc """
+    Stores the complete, exact request body for signature verification.
+
+    Call this from a host's own `Plug.Parsers` `body_reader`, or before parsing,
+    with the whole body as sent. Never supply a partial or re-encoded body.
+    Returns the updated connection. Raises `ArgumentError` unless `bytes` is a
+    binary; an empty binary is a valid body.
+    """
+    @spec put_raw_body(Plug.Conn.t(), binary()) :: Plug.Conn.t()
+    def put_raw_body(conn, bytes) when is_binary(bytes),
+      do: Plug.Conn.put_private(conn, @raw_body_key, bytes)
+
+    def put_raw_body(_conn, _bytes), do: raise(ArgumentError, "raw body must be a binary")
+
+    @doc """
+    Returns the stored exact request bytes, or `nil` when none have been stored.
+
+    Use after the endpoint body reader has completed, or after a host has stored
+    the complete body with `put_raw_body/2`. The connection storage key is private.
+    """
+    @spec raw_body(Plug.Conn.t()) :: binary() | nil
+    def raw_body(conn), do: conn.private[@raw_body_key]
 
     @doc """
     `body_reader` entry point. `Plug.Parsers` invokes the configured MFA as
@@ -95,9 +125,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     end
 
     defp cache(conn, chunk) do
-      Plug.Conn.put_private(conn, @raw_body_key, accumulated(conn) <> chunk)
+      put_raw_body(conn, (raw_body(conn) || <<>>) <> chunk)
     end
-
-    defp accumulated(conn), do: conn.private[@raw_body_key] || <<>>
   end
 end

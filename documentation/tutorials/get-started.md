@@ -164,6 +164,12 @@ plug Plug.Parsers,
   json_decoder: Phoenix.json_library()
 ```
 
+If your endpoint already has a body reader, keep it and call
+`AshHooks.BodyReader.put_raw_body(conn, complete_bytes)` from that reader or
+before parsing. Supply the entire body exactly as sent, never partial or
+re-encoded bytes. The plug retrieves it through `AshHooks.BodyReader.raw_body/1`
+without reading it again; direct ingress callers can use the same accessor.
+
 Describe the sender in a provider module. This one verifies a lowercase-hex
 HMAC-SHA256 of the raw body sent in `x-orders-signature`, and maps the sender's
 event names to atoms your handler understands:
@@ -276,43 +282,67 @@ defmodule MyApp.Domain do
 end
 ```
 
-`AshHooks.Ingress.ingest/4` runs the whole sync pipeline: verify the
+`AshHooks.Plug` runs the whole sync pipeline: verify the
 signature over the raw bytes, persist the decoded payload plus a digest
 binding it to those bytes, dedup on the unique index, claim under a
-fenced lease, invoke the provider handler, and mark the outcome. From
-your controller:
+fenced lease, invoke the provider handler, and mark the outcome. After configuring
+the endpoint's `Plug.Parsers` with `AshHooks.BodyReader` above, forward the webhook
+prefix in your Phoenix router, outside browser/session/CSRF pipelines:
 
 ```elixir
-raw = conn.private[:ash_hooks_raw_body]
+forward "/webhooks", AshHooks.Plug,
+  resource: MyApp.WebhookLedger,
+  resolve: {MyApp.Webhooks, :resolve, []},
+  request_uri: "https://hooks.example.com"
 
-case AshHooks.Ingress.ingest(MyApp.WebhookLedger, :orders, raw, %{
-       # the provider reads its signature header from here
-       headers: conn.req_headers,
-       scope: %{"account_id" => conn.params["account_id"]}
-     }) do
-  {:ok, :created, %{status: status}} ->
-    # Acknowledge terminal outcomes; retry only recoverable failures.
-    code = if status in [:processed, :failed_permanent, :superseded], do: 200, else: 500
-    send_resp(conn, code, "")
+defmodule MyApp.Webhooks do
+  # /webhooks/:provider/:endpoint_id; the forwarded conn retains these segments.
+  def resolve(%Plug.Conn{path_info: [provider, endpoint_id]}) do
+    case MyApp.Integrations.find_webhook_endpoint(provider, endpoint_id) do
+      {:ok, endpoint} ->
+        {:ok, %{source: endpoint.source, scope: %{account_id: endpoint.account_id},
+                tenant: endpoint.organization_id, connection: endpoint.connection}}
 
-  {:ok, :duplicate, delivery} ->
-    # Already seen, but a redelivery can retry the row, so its handler
-    # may have failed again: judge the status, not just the tag
-    code = if delivery.status in [:processed, :failed_permanent, :superseded], do: 200, else: 500
-    send_resp(conn, code, "")
+      {:error, :not_found} -> {:error, :not_found}
+      {:error, _reason} -> {:error, :unavailable}
+    end
+  end
 
-  # not authentic, a replay, or an identity the provider rejected: do not retry
-  {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} -> send_resp(conn, 400, "")
-  {:error, %AshHooks.Errors.Invalid.StaleTimestamp{}} -> send_resp(conn, 400, "")
-  {:error, %AshHooks.Errors.Invalid.MalformedPayload{}} -> send_resp(conn, 400, "")
-  # paused source, missing secret, storage failure: the sender retries
-  {:error, _} -> send_resp(conn, 503, "")
+  def resolve(_conn), do: {:error, :not_found}
 end
 ```
 
-When the sender signs the HTTP method or URL, also pass `method: conn.method`
-and `request_uri:` the public URL the sender called. Behind a TLS-terminating
-proxy, build that URL from a base URL you configure rather than from `conn`.
+The lookup is your application's code interface for a stored endpoint; do not
+turn path strings into modules or trust them as tenants. Match its scope keys to
+the ledger's `scope_identity`. On a single-tenant ledger without scope slots,
+a fixed route can use `source: :orders` instead of `resolve:`.
+
+The plug sends and halts: 200 for terminal rows (including duplicate deliveries),
+500 for retryable ledger outcomes, 400 for typed invalid-signature, stale-timestamp
+or malformed-payload errors, and 503 for other ingest failures. Resolver failures
+answer 404 or 503 without writing. POST is the default allowed method (405 with
+`allow` otherwise). Direct body reads default to an 8,000,000-byte limit (413 on
+overflow); when a parser runs first its own body limit applies.
+
+The configured public base URI gets the request's original path and query appended.
+An MFA can return the full URI instead. The default supplies no URI, and the plug
+never uses the conn's internal host, scheme or port. Provider `handshake/1` can
+answer subscription challenges before method/signature checks. Provider
+`response/1`, then the plug's `respond:` MFA, may customize ingest responses;
+`:default` falls through to `AshHooks.Plug.default_response/2`, taking the outcome
+and validated plug options. Default 503s include `retry-after` (60 seconds;
+configure `retry_after:`). A `refuse:` MFA can shape refusal headers and body
+without changing status or required `allow`/`retry-after` headers.
+
+For a custom transport or pipeline, call the lower-level entry point directly:
+
+```elixir
+AshHooks.Ingress.ingest(MyApp.WebhookLedger, :orders, raw_body, %{
+  headers: conn.req_headers, method: conn.method,
+  scope: %{account_id: account_id}, tenant: tenant,
+  request_uri: public_request_uri
+})
+```
 
 The ledger deduplicates deliveries and invokes handlers at least once.
 A delivery whose row is terminal (`:processed` /
@@ -322,7 +352,7 @@ redelivery. Write handlers idempotent, keyed on the external event
 identity. `claim_delivery/3`, `mark_processed/4`,
 `mark_failed/6`, `renew/4` and `reap/2` are public if you need to drive
 the lease machine yourself (e.g. from your own async pipeline); the
-sync `ingest/4` above is the default.
+sync pipeline used by the plug is the default.
 
 Permanent failures need an operator-visible error record, rather than an endless
 provider retry loop. `:superseded` identifies a retained legacy row replaced by
