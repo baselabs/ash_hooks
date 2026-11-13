@@ -96,9 +96,12 @@ defmodule AshHooks.MixProject do
         [
           {:oban, "~> 2.20", optional: true},
           {:plug, "~> 1.16", optional: true},
-          # A real HTTP server for the plug's interoperability tests. It
-          # depends on Plug, so it leaves with Plug on the no-optional leg.
-          {:bandit, "~> 1.14", only: :test}
+          # A real HTTP server and a real Phoenix endpoint and router for the
+          # plug's interoperability tests and the documentation's mounting
+          # examples. Both depend on Plug, so they leave with it on the
+          # no-optional leg; neither is a dependency of the package.
+          {:bandit, "~> 1.14", only: :test},
+          {:phoenix, "~> 1.8", only: :test}
         ]
       end
 
@@ -238,7 +241,9 @@ defmodule AshHooks.MixProject do
         "credo --strict",
         "spark.cheat_sheets --extensions AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery --check",
         "docs --warnings-as-errors",
-        "cmd ./scripts/check-package.sh"
+        "cmd ./scripts/check-package.sh",
+        # The documentation's mounting examples, compiled and run as written.
+        "test test/ash_hooks/documentation_examples_test.exs"
       ]
     ]
   end

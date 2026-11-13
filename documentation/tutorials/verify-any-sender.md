@@ -67,6 +67,7 @@ the [get-started tutorial](get-started.md) for routing and tenant resolution.
 A hand-written provider whose `verify_signature/3` reads `ctx.signature` keeps the
 default `:header` signature source. Tell the plug which header carries it:
 
+<!-- tested: verify-any-sender-signature-header -->
 ```elixir
 forward "/webhooks/billing", AshHooks.Plug,
   resource: MyApp.WebhookLedger,

@@ -14,8 +14,10 @@ connection variables and the real receiver the delivery tests use.
   to storage, tenancy or the worker also runs those paths with `ASH_HOOKS_POSTGRES=1`.
 - **Before a push.** `mix precommit`, in the test environment: format check, compile with warnings as
   errors (test support included), `credo --strict`, the generated DSL documentation check, the
-  documentation build with warnings as errors, and the candidate Hex archive check; with the changed
-  files' covering tests. Not Dialyzer, not the full suite.
+  documentation build with warnings as errors, the candidate Hex archive check, and the
+  documentation's mounting examples compiled and run as written in a real Phoenix endpoint
+  (`test/ash_hooks/documentation_examples_test.exs`); with the changed files' covering tests. Not
+  Dialyzer, not the full suite.
 - **Exceptions.** A change to the minimum supported Ash graph runs `scripts/check-ash-floor.exs` as
   CONTRIBUTING.md describes. A change to the Livebook runs it headless against the candidate archive
   (`scripts/run-livebook.sh`).

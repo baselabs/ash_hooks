@@ -60,8 +60,8 @@ endpoint before the test run.
 
 Run focused checks while developing. Before every push, run the whole-tree gates in one
 command: the format check, compilation with warnings as errors (test support included),
-Credo, the generated DSL documentation check, the documentation build and the candidate
-Hex archive check:
+Credo, the generated DSL documentation check, the documentation build, the candidate
+Hex archive check, and the documentation's mounting examples:
 
 ```sh
 mix precommit
@@ -108,6 +108,13 @@ Hex archive, and the headless Livebook against that archive. A pull request is r
 merge only when the aggregate `all-checks-pass` job succeeds.
 
 ## Code and documentation
+
+Every documentation block that mounts `AshHooks.Plug` or `AshHooks.BodyReader` carries a
+`<!-- tested: name -->` marker on the line before its fence.
+`test/ash_hooks/documentation_examples_test.exs` reads each marked block, compiles it
+unchanged in a real Phoenix endpoint and router, and sends it real requests; an unmarked
+mounting block, or mounting code in a module's documentation, fails it. Add a new example
+to that test when you add its marker.
 
 - Public behavior includes the DSL, public functions, injected attributes and actions,
   telemetry payloads, error classes, and worker options. Update tests and user-facing docs

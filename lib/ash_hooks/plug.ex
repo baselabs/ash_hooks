@@ -8,25 +8,13 @@ if Code.ensure_loaded?(Plug.Conn) do
     once. Every answer is sent and the connection halted. Plug must be installed
     by the host; this module is absent when Plug is unavailable.
 
-    In a Phoenix endpoint, configure the reader before the router:
-
-        plug Plug.Parsers,
-          parsers: [:json],
-          json_decoder: Jason,
-          body_reader: {AshHooks.BodyReader, :read_body, [only: ["/webhooks"]]}
-
-    Then, in the router (outside browser/session/CSRF pipelines):
-
-        forward "/webhooks/orders", AshHooks.Plug,
-          resource: MyApp.WebhookLedger,
-          source: :orders
-
-    For a scoped or multitenant ledger, use an endpoint resolver instead:
-
-        forward "/webhooks", AshHooks.Plug,
-          resource: MyApp.WebhookLedger,
-          resolve: {MyApp.Webhooks, :resolve, []},
-          request_uri: "https://hooks.example.com"
+    Configure `AshHooks.BodyReader` on the endpoint's `Plug.Parsers`, then
+    `forward` a webhook route to this plug from the router, outside
+    browser/session/CSRF pipelines: with `:source` for a fixed source on a
+    single-tenant ledger, or with `:resolve` for a scoped or multitenant one. The
+    README's [Receive with AshHooks.Plug](README.md#3-receive-with-ashhooksplug)
+    section shows both in a Phoenix endpoint and router; the test suite compiles
+    and runs those examples as written.
 
     `:resolve` is called with the conn followed by its configured arguments.
     It must return `{:ok, %{source: atom}}`, optionally including `:tenant`,

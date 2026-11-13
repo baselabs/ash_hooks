@@ -7,12 +7,12 @@ if Code.ensure_loaded?(Plug.Conn) do
     Endpoint `body_reader` that caches the raw, pre-parser request bytes for
     signature verification.
 
-    Configure it on the endpoint's `Plug.Parsers` (the installer patches
-    this; a router plug cannot recover pre-parse bytes):
-
-        plug Plug.Parsers,
-          ...,
-          body_reader: {AshHooks.BodyReader, :read_body, []}
+    Configure it as the `body_reader` of the endpoint's `Plug.Parsers`,
+    `{AshHooks.BodyReader, :read_body, []}` (the installer patches this; a router
+    plug cannot recover pre-parse bytes). The README's
+    [Receive with AshHooks.Plug](README.md#3-receive-with-ashhooksplug) section
+    shows the endpoint and router; the test suite compiles and runs that example
+    as written.
 
     `AshHooks.Plug` retrieves the cached bytes through `raw_body/1` automatically.
     Custom pipelines may pass `raw_body(conn)` to `AshHooks.Ingress.ingest/4`.
@@ -23,12 +23,8 @@ if Code.ensure_loaded?(Plug.Conn) do
     The reader is endpoint-wide by default: every parsed request (not only
     webhook routes) carries a second copy of its body in the connection cache for
     the request lifetime, bounded by the parser's `:length`. To scope the
-    memory cost to the webhook routes, pass `:only` path prefixes:
-
-        plug Plug.Parsers,
-          ...,
-          body_reader: {AshHooks.BodyReader, :read_body, [only: ["/webhooks"]]}
-
+    memory cost to the webhook routes, pass `:only` path prefixes as the
+    reader's arguments, `{AshHooks.BodyReader, :read_body, [only: ["/webhooks"]]}`.
     Only requests whose path starts with one of the prefixes are cached;
     everything else passes through with zero retained bytes.
 

@@ -153,6 +153,7 @@ against a real SQLite database.
 Configure the raw-body reader first: signature schemes sign the exact
 wire bytes, and a router plug cannot recover pre-parser bytes:
 
+<!-- tested: get-started-endpoint -->
 ```elixir
 # in your Phoenix Endpoint:
 plug Plug.Parsers,
@@ -289,6 +290,7 @@ fenced lease, invoke the provider handler, and mark the outcome. After configuri
 the endpoint's `Plug.Parsers` with `AshHooks.BodyReader` above, forward the webhook
 prefix in your Phoenix router, outside browser/session/CSRF pipelines:
 
+<!-- tested: get-started-resolver -->
 ```elixir
 forward "/webhooks", AshHooks.Plug,
   resource: MyApp.WebhookLedger,

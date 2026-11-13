@@ -67,6 +67,7 @@ endpoint's `Plug.Parsers` with a raw-body reader. Signature schemes sign the
 exact wire bytes, and a router plug cannot recover what the parser already
 consumed, so if the automatic patch didn't apply, add it yourself:
 
+<!-- tested: readme-install-endpoint -->
 ```elixir
 plug Plug.Parsers,
   parsers: [:json],
@@ -161,6 +162,7 @@ and record the outcome.
 Configure the raw-body reader on your Phoenix endpoint, then forward a route
 from the router. Keep webhook routes outside browser/session/CSRF pipelines:
 
+<!-- tested: readme-fixed-source -->
 ```elixir
 # MyAppWeb.Endpoint, before the router
 plug Plug.Parsers,
@@ -215,6 +217,7 @@ to trust directly. For a multitenant ledger, also declare Ash attribute
 multitenancy as described in the
 [tenancy checklist](documentation/tutorials/tenancy-adoption-checklist.md):
 
+<!-- tested: readme-resolver -->
 ```elixir
 forward "/webhooks", AshHooks.Plug,
   resource: MyApp.WebhookLedger,
