@@ -3,6 +3,9 @@ defmodule AshHooks.MixProject do
 
   @version "3.1.0"
   @source_url "https://github.com/baselabs/ash_hooks"
+  # Every Spark extension the package ships. The formatter export and the DSL
+  # references are generated from this one list.
+  @spark_extensions "AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery,AshHooks.KeyRegistry"
 
   def project do
     [
@@ -243,13 +246,24 @@ defmodule AshHooks.MixProject do
   defp aliases do
     [
       credo: ["credo --strict"],
+      # Regenerates the exported `locals_without_parens` in .formatter.exs and
+      # the DSL references in documentation/dsls.
+      "spark.generate": [
+        "spark.formatter --extensions #{@spark_extensions}",
+        "spark.cheat_sheets --extensions #{@spark_extensions}"
+      ],
+      # Fails when either generated file drifts from the DSL.
+      "spark.check": [
+        "spark.formatter --extensions #{@spark_extensions} --check",
+        "spark.cheat_sheets --extensions #{@spark_extensions} --check"
+      ],
       # The landing loop (AGENTS.md, Build and test): every whole-tree gate,
       # no test suite and no Dialyzer.
       precommit: [
         "format --check-formatted",
         "compile --warnings-as-errors",
         "credo --strict",
-        "spark.cheat_sheets --extensions AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery,AshHooks.KeyRegistry --check",
+        "spark.check",
         "docs --warnings-as-errors",
         "cmd ./scripts/check-package.sh",
         # The documentation's mounting examples, compiled and run as written.

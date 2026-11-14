@@ -212,8 +212,8 @@ jobs:
             _build
           key: package-1.20.5-29.1.2-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
-      - name: DSL cheat sheets match the DSL (generated files must not drift)
-        run: mix spark.cheat_sheets --extensions AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery --check
+      - name: Formatter export and DSL references match the DSL (generated files must not drift)
+        run: mix spark.check
       - name: Tarball carries every publish surface
         run: ./scripts/check-package.sh
       - run: mix docs --warnings-as-errors

@@ -66,6 +66,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The formatter configuration exported to consumers lists every ash_hooks DSL
+  option, including `provider`, `subscriptions`, `deliveries`, `paused` and
+  `previous_secret`. A consumer importing `:ash_hooks` in `import_deps` no
+  longer has `mix format` add parentheses to the documented DSL. The list is
+  generated from the DSL and checked for drift.
 - Custody lifecycle retirement checks the persisted owner after each write and
   retains references still held in any slot, including after a concurrent roll
   or a host action that returns an outdated record.

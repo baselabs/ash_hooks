@@ -11,10 +11,10 @@ operator procedure.
    upgrade guidance, and every notebook's exact package pin. Keep a fresh
    `Unreleased` section. Review README and tutorials for a new reader, then
    check their examples and contracts against the final implementation.
-2. Regenerate the five DSL references:
+2. Regenerate the formatter export and the DSL references:
 
    ```sh
-   mix spark.cheat_sheets --extensions AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery
+   mix spark.generate
    ```
 
 3. Complete the independent review and resolve its confirmed product findings.
