@@ -136,7 +136,12 @@ defmodule AshHooks.Test.CustodySigningCases do
   def setup_all(module, layer, repo, prefix) do
     ctx = KeyRegistryCases.setup_all(module, layer, repo, prefix)
     endpoint = Module.concat(module, SigningEndpoint)
-    KeyRegistryCases.compile_endpoint(ctx, endpoint, custodian: AnswerCustodian)
+
+    KeyRegistryCases.compile_endpoint(ctx, endpoint,
+      custodian: AnswerCustodian,
+      secret_resolver: nil
+    )
+
     ctx = %{ctx | endpoint: endpoint}
     setup_outbound(ctx)
   end
@@ -814,15 +819,9 @@ defmodule AshHooks.Test.CustodySigningCases do
     ctx.endpoint
     |> Ash.Changeset.for_create(
       :create,
-      Map.take(params, [
-        :url,
-        :tenant_id,
-        :secret_ref,
-        :previous_secret_ref,
-        :legacy_secret_ref,
-        :legacy_previous_secret_ref
-      ]),
-      tenant: 17
+      Map.take(params, [:url, :tenant_id]),
+      tenant: 17,
+      context: %{ash_hooks_issued_attributes: params}
     )
     |> Ash.Changeset.force_change_attributes(params)
     |> Ash.create!(authorize?: false)

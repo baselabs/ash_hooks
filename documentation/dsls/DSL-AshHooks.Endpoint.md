@@ -108,6 +108,14 @@ displacement retire custody references in the owner's transaction; the
 separately scheduled registry sweep destroys them after commit. See
 `AshHooks.KeyRegistry` and the migration instructions in UPGRADING.md.
 
+Create custody endpoints with `create_with_key/3`, roll with `material:` or
+`generate: kind`, recover a lost disclosure with `reissue_secret/2`, and
+migrate existing byte slots with `adopt_keys/2`. These issuing operations
+refuse enclosing transactions before issuing anything. Storage runs outside
+transactions; owner changes and registry attachment commit together. A failed
+attempt retires its own issues, and the registry sweep recovers crashed issues.
+Without `secret_resolver`, ordinary create actions refuse direct references.
+
 Custody owners also receive the reserved `read_custody_owner` system action.
 It has no action filter, preparation or pagination; the resource's own
 `base_filter` still applies. Lifecycle retirement reads the persisted owner
@@ -131,9 +139,9 @@ Configuration of this resource as the outbound webhook endpoint.
 
 | Name | Type | Default | Docs |
 |------|------|---------|------|
-| [`custodian`](#endpoint-custodian){: #endpoint-custodian } | `module` |  | Opaque-key custodian implementing AshHooks.Custody. Requires key_lifecycle :on and key_registry. Injects a kind marker beside each enabled signing slot's reference; migrate these columns before enabling. |
+| [`custodian`](#endpoint-custodian){: #endpoint-custodian } | `module` |  | Opaque-key custodian implementing AshHooks.Custody. Requires key_lifecycle :on and key_registry. Injects per-slot kind markers; migrate them before enabling. Create with create_with_key/3, roll with material: or generate:, recover disclosures with reissue_secret/2, and migrate byte slots with adopt_keys/2. Issuing operations refuse enclosing transactions. |
 | [`custody_tenant_key`](#endpoint-custody_tenant_key){: #endpoint-custody_tenant_key } | `mfa` |  | Canonical custody tenant for an otherwise unsupported tenant type: {module, function, args}, called with the cast tenant value followed by args. Must return equal UTF-8 binaries for tenants the database treats as equal. This equality contract belongs to the host. |
-| [`secret_resolver`](#endpoint-secret_resolver){: #endpoint-secret_resolver } | `{module, atom}` |  | Byte-reference resolver {module, function}. Slots without a kind marker use this resolver; custody slots use the custodian. A delivery or worker resolver remains supported for byte endpoints and migration. Refused with key_material: :custody_only. |
+| [`secret_resolver`](#endpoint-secret_resolver){: #endpoint-secret_resolver } | `{module, atom}` |  | Byte-reference resolver {module, function}. Unmarked slots use this resolver; custody slots use the custodian. Keep it during adopt_keys/2 migration. Without it, custody create actions refuse direct references and rolls require material: or generate:. Delivery and worker resolvers remain supported for byte signing. Refused with key_material: :custody_only. |
 | [`key_registry`](#endpoint-key_registry){: #endpoint-key_registry } | `module` |  | Host resource using AshHooks.KeyRegistry, on the same transactional AshPostgres or AshSqlite data layer, mutate repo and tenancy as this endpoint. |
 | [`status_attribute`](#endpoint-status_attribute){: #endpoint-status_attribute } | `atom` |  | The consumer's enable/disable attribute the package maps onto (e.g. `active`). When set, `status` is not injected; the mapped attribute is the one durable switch: the dispatcher skips endpoints whose value is outside `enabled_values`, and the 410 auto-disable sets it to `disabled_value`. The attribute must be declared in the resource's own `attributes` block (not another extension's injection), and `enabled_values`/`disabled_value` must be spelled out explicitly, or compilation fails closed. |
 | [`version_pinning`](#endpoint-version_pinning){: #endpoint-version_pinning } | `:off \| :on` | `:off` | Whether the payload-version pinning column is injected (default `:off`, leaving existing schemas untouched). With `:on`, the extension injects `pinned_payload_version` (integer, nullable). Endpoints without a pin, or pinned to the declaration's current `version`, receive the dispatch payload. Other pins select the matching `payload_versions` builder; a pin on a version with no builder fails that endpoint closed at dispatch, before any row is written. Declaring `:on` requires a migration for the column. |

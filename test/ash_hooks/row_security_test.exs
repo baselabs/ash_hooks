@@ -78,6 +78,26 @@ defmodule AshHooks.RowSecurityTest do
                assert {:error, :inside_transaction} =
                         AshHooks.KeyRegistry.sweep(context.registry, tenant: "tenant_a")
 
+               owner = struct(context.custody_owner, secret_ref: "byte")
+
+               assert {:error, :inside_transaction} =
+                        AshHooks.Endpoint.create_with_key(context.custody_owner, %{},
+                          tenant: "tenant_a",
+                          generate: {:standard_webhooks, :v1}
+                        )
+
+               assert {:error, :inside_transaction} =
+                        AshHooks.Endpoint.roll_secret(owner,
+                          tenant: "tenant_a",
+                          generate: {:standard_webhooks, :v1}
+                        )
+
+               assert {:error, :inside_transaction} =
+                        AshHooks.Endpoint.reissue_secret(owner, tenant: "tenant_a")
+
+               assert {:error, :inside_transaction} =
+                        AshHooks.Endpoint.adopt_keys(owner, tenant: "tenant_a")
+
                :ok
              end)
   end
@@ -145,6 +165,11 @@ defmodule AshHooks.RowSecurityTest do
            context do
         Cases.inherited_refusal(context, :worker)
       end
+    end
+
+    @tag configuration: configuration
+    test "issuing phases with #{configuration} reads", context do
+      Cases.issuing_phases(context)
     end
 
     @tag configuration: configuration

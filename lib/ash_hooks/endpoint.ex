@@ -1,5 +1,6 @@
 defmodule AshHooks.Endpoint do
   alias Ash.Resource.Info, as: ResourceInfo
+  alias AshHooks.Endpoint.Keys
 
   @moduledoc """
   Configures an Ash resource as an outbound webhook destination, including
@@ -107,6 +108,14 @@ defmodule AshHooks.Endpoint do
   separately scheduled registry sweep destroys them after commit. See
   `AshHooks.KeyRegistry` and the migration instructions in UPGRADING.md.
 
+  Create custody endpoints with `create_with_key/3`, roll with `material:` or
+  `generate: kind`, recover a lost disclosure with `reissue_secret/2`, and
+  migrate existing byte slots with `adopt_keys/2`. These issuing operations
+  refuse enclosing transactions before issuing anything. Storage runs outside
+  transactions; owner changes and registry attachment commit together. A failed
+  attempt retires its own issues, and the registry sweep recovers crashed issues.
+  Without `secret_resolver`, ordinary create actions refuse direct references.
+
   Custody owners also receive the reserved `read_custody_owner` system action.
   It has no action filter, preparation or pagination; the resource's own
   `base_filter` still applies. Lifecycle retirement reads the persisted owner
@@ -182,8 +191,25 @@ defmodule AshHooks.Endpoint do
           overlap_seconds: 24 * 3_600
         )
 
-  Options: `:new_secret_ref` (required, a fresh store reference; rolling
-  onto the selected incumbent or previous reference is `{:error, :same_reference}`),
+  Byte endpoints take `:new_secret_ref` (a fresh store reference; rolling
+  onto the selected incumbent or previous reference is `{:error, :same_reference}`).
+  Custody endpoints take exactly one of `material:` (decoded from the signing
+  API's wire encoding) or `generate: kind`. With a declared `secret_resolver`,
+  a custody endpoint may also select the byte `new_secret_ref:` path. Without
+  it, that path returns `:secret_resolver_required`. Missing or conflicting
+  custody inputs return `:key_input_required`.
+
+  Standard slots generate `{:standard_webhooks, :v1}` or
+  `{:standard_webhooks, :v1a}`; legacy slots generate `{:legacy_hmac, :sha256}`.
+  Other kinds return `:kind_not_allowed` before issuing anything. All generation
+  uses 32 cryptographically random bytes. Generation returns
+  `{:ok, endpoint, disclosure}`: a `whsec_` secret for v1, a `whpk_` public half
+  for v1a, or the exact raw key bytes for legacy. Import and byte rolls return
+  `{:ok, endpoint}`. Never persist, log, or emit the one-time disclosure.
+  Custody issuance refuses enclosing transactions with `:inside_transaction`;
+  an issue lost to the registry sweep returns `:key_issue_expired`.
+
+  Other options:
   `:slot` (`:standard` by default, or `:legacy` with `legacy_key_lifecycle :on`),
   `:overlap_seconds`
   (a non-negative integer, defaulting to the resource's
@@ -198,9 +224,69 @@ defmodule AshHooks.Endpoint do
   (`{:error, :rolled_underneath}` when the incumbent moved first); a
   resource without `key_lifecycle :on` fails with a named error.
   """
-  @spec roll_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
+  @spec roll_secret(struct(), keyword()) ::
+          {:ok, struct()} | {:ok, struct(), binary()} | {:error, term()}
   def roll_secret(endpoint, opts \\ []) do
     AshHooks.KeyLifecycle.roll_secret(endpoint, opts)
+  end
+
+  @doc """
+  Creates an endpoint with its current custody key. Requires `custodian` and
+  `key_registry`. Supply exactly one of `generate: kind` or `material: wire_key`.
+  Standard slots generate `{:standard_webhooks, :v1}` or
+  `{:standard_webhooks, :v1a}`. Material uses the signing API's wire encoding.
+
+  Generation returns `{:ok, endpoint, disclosure}`: a `whsec_` secret for v1,
+  or the `whpk_` public half for v1a. Import returns `{:ok, endpoint}`.
+  Disclosure is returned once and is never persisted or emitted as telemetry.
+  Options: `:action` (the resource's primary create action by default), `:tenant`
+  and `:now`. Authorize the caller before this system operation.
+
+  Issuance refuses enclosing transactions with `:inside_transaction`. A timed
+  out issue returns `:key_issue_expired`; an owner that did not persist every
+  issued reference in its intended slot returns `:owner_mismatch`. Failed
+  attempts retire their issued references for the registry sweep.
+  """
+  @spec create_with_key(module(), map(), keyword()) ::
+          {:ok, struct()} | {:ok, struct(), binary()} | {:error, term()}
+  def create_with_key(resource, attrs, opts \\ []) do
+    Keys.create(resource, attrs, opts)
+  end
+
+  @doc """
+  Replaces the selected current custody key with a generated key of the same
+  kind and returns `{:ok, endpoint, disclosure}`. Options: `:slot` (`:standard`
+  or `:legacy`), `:tenant`, and `:now`. A byte slot returns `:byte_slot`;
+  a kind that cannot be generated returns `:kind_not_allowed` before issuance.
+
+  The replaced key stops signing at once. A counterparty holding only that
+  key is cut off immediately. The separate previous key and its retirement
+  time stay unchanged, and only that previous key keeps working through its
+  existing window. This operation ignores the overlap gate and recovers a
+  committed generation whose one-time disclosure was lost. It refuses an
+  enclosing transaction with `:inside_transaction`. Authorize callers first.
+  """
+  @spec reissue_secret(struct(), keyword()) :: {:ok, struct(), binary()} | {:error, term()}
+  def reissue_secret(endpoint, opts \\ []) do
+    Keys.reissue(endpoint, opts)
+  end
+
+  @doc """
+  Adopts every occupied byte slot through the resource's `secret_resolver`
+  into custody without changing any lifecycle timestamp. Kind-marked slots
+  remain unchanged, making adoption resumable and idempotent. Host byte
+  references remain host-owned and never enter the registry.
+
+  Options: `:tenant`, `:now`, and `:tenant_aware_secrets` (pass the tenant as
+  the resolver's second argument). An undated previous key returns
+  `:previous_secret_undated`; schedule or expire it first. A concurrent roll
+  returns `:rolled_underneath` and retires this attempt's issued references.
+  Returns `{:ok, endpoint}`; refuses enclosing transactions with
+  `:inside_transaction`. Authorize callers before this system operation.
+  """
+  @spec adopt_keys(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
+  def adopt_keys(endpoint, opts \\ []) do
+    Keys.adopt(endpoint, opts)
   end
 
   @doc """
@@ -333,7 +419,7 @@ defmodule AshHooks.Endpoint do
       custodian: [
         type: :module,
         doc:
-          "Opaque-key custodian implementing AshHooks.Custody. Requires key_lifecycle :on and key_registry. Injects a kind marker beside each enabled signing slot's reference; migrate these columns before enabling."
+          "Opaque-key custodian implementing AshHooks.Custody. Requires key_lifecycle :on and key_registry. Injects per-slot kind markers; migrate them before enabling. Create with create_with_key/3, roll with material: or generate:, recover disclosures with reissue_secret/2, and migrate byte slots with adopt_keys/2. Issuing operations refuse enclosing transactions."
       ],
       custody_tenant_key: [
         type: :mfa,
@@ -343,7 +429,7 @@ defmodule AshHooks.Endpoint do
       secret_resolver: [
         type: {:tuple, [:module, :atom]},
         doc:
-          "Byte-reference resolver {module, function}. Slots without a kind marker use this resolver; custody slots use the custodian. A delivery or worker resolver remains supported for byte endpoints and migration. Refused with key_material: :custody_only."
+          "Byte-reference resolver {module, function}. Unmarked slots use this resolver; custody slots use the custodian. Keep it during adopt_keys/2 migration. Without it, custody create actions refuse direct references and rolls require material: or generate:. Delivery and worker resolvers remain supported for byte signing. Refused with key_material: :custody_only."
       ],
       key_registry: [
         type: :module,

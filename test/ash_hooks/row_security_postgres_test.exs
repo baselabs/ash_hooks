@@ -122,6 +122,11 @@ defmodule AshHooks.RowSecurityPostgresTest do
     end
 
     @tag configuration: configuration
+    test "issuing phases with #{configuration} reads", context do
+      Cases.issuing_phases(context)
+    end
+
+    @tag configuration: configuration
     test "registry phases with #{configuration} reads", context do
       Cases.registry_phases(context)
     end

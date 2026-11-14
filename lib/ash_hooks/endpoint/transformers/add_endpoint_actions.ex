@@ -64,14 +64,37 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
     custody =
       if Extension.get_opt(dsl_state, [:endpoint], :custodian) do
         {:ok, action} = Builder.build_action(:read, :read_custody_owner, pagination: false)
-        [action]
+
+        attributes =
+          Transformer.get_entities(dsl_state, [:attributes])
+          |> Enum.map(& &1.name)
+          |> Enum.filter(fn name ->
+            name in [
+              :secret_ref,
+              :previous_secret_ref,
+              :legacy_secret_ref,
+              :legacy_previous_secret_ref,
+              :secret_kind,
+              :previous_secret_kind,
+              :legacy_secret_kind,
+              :legacy_previous_secret_kind,
+              :secret_created_at,
+              :secret_first_used_at,
+              :legacy_secret_created_at,
+              :legacy_secret_first_used_at
+            ]
+          end)
+
+        {:ok, replace} = Builder.build_action(:update, :set_custody_keys, accept: attributes)
+        [action, replace]
       else
         []
       end
 
     with {:ok, change} <-
            Builder.build_action_change(Builtins.set_attribute(switch, disabled_value)),
-         {:ok, dsl_state} <- add_all(dsl_state, lifecycle ++ warning ++ custody) do
+         {:ok, dsl_state} <- add_all(dsl_state, lifecycle ++ warning ++ custody),
+         {:ok, dsl_state} <- custody_create_guard(dsl_state) do
       changes =
         if warning == [],
           do: [change],
@@ -84,6 +107,20 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
              Builder.build_action(:update, :disable, accept: [], changes: changes) do
         {:ok, Transformer.add_entity(dsl_state, [:actions], disable)}
       end
+    end
+  end
+
+  defp custody_create_guard(state) do
+    if Extension.get_opt(state, [:endpoint], :custodian) do
+      resolver? = not is_nil(Extension.get_opt(state, [:endpoint], :secret_resolver))
+
+      Builder.add_change(
+        state,
+        {AshHooks.Endpoint.Changes.RequireIssuedKeys, byte_resolver?: resolver?},
+        on: [:create]
+      )
+    else
+      {:ok, state}
     end
   end
 
@@ -144,7 +181,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
       if custody?,
         do: [
           change_attribute(fields.previous_kind, arg(:old_kind)),
-          change_attribute(fields.kind, nil)
+          change_attribute(fields.kind, arg(:new_kind))
         ],
         else: []
 
@@ -152,7 +189,13 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
       [prev_ref, ref, created, first_used, prev_created, prev_first_used, prev_retired] ++
         kind_changes
 
-    kind_arguments = if custody?, do: [argument(:old_kind, :term, allow_nil?: true)], else: []
+    kind_arguments =
+      if custody?,
+        do: [
+          argument(:old_kind, :term, allow_nil?: true),
+          argument(:new_kind, :term, allow_nil?: true)
+        ],
+        else: []
 
     {:ok, action} =
       Builder.build_action(:update, fields.roll,

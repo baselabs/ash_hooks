@@ -220,6 +220,7 @@ defmodule AshHooks.Test.RowSecurityCases do
           custodian unquote(ctx.custodian)
           key_registry unquote(ctx.registry)
           key_lifecycle(:on)
+          secret_resolver {AshHooks.Test.RowSecurityCases, :secret}
         end
       end
     )
@@ -1178,6 +1179,45 @@ defmodule AshHooks.Test.RowSecurityCases do
       nil,
       %{type: :custom, metadata: %{}, tenant: tenant}
     )
+  end
+
+  def issuing_phases(ctx) do
+    for tenant <- ["tenant_b", "tenant_a"] do
+      assert {:ok, owner, _} =
+               Endpoint.create_with_key(
+                 ctx.custody_owner,
+                 %{url: "https://hooks.example.test/hook"},
+                 tenant: tenant,
+                 generate: {:standard_webhooks, :v1}
+               )
+
+      assert {:ok, rolled, _} =
+               Endpoint.roll_secret(owner, tenant: tenant, generate: {:standard_webhooks, :v1a})
+
+      assert {:ok, reissued, _} = Endpoint.reissue_secret(rolled, tenant: tenant)
+      assert reissued.tenant_id == tenant
+
+      assert {:ok, byte_owner} =
+               Ash.DataLayer.transaction(
+                 ctx.custody_owner,
+                 fn ->
+                   Ash.create!(
+                     ctx.custody_owner,
+                     %{url: "https://hooks.example.test/byte", secret_ref: "byte-" <> tenant},
+                     tenant: tenant,
+                     authorize?: false,
+                     context: %{data_layer: %{repo: ctx.repo}}
+                   )
+                 end,
+                 nil,
+                 %{type: :custom, metadata: %{}, tenant: tenant}
+               )
+
+      assert {:ok, adopted} = Endpoint.adopt_keys(byte_owner, tenant: tenant)
+      assert adopted.secret_kind == {:standard_webhooks, :v1}
+      assert adopted.tenant_id == tenant
+      assert {:ok, ^adopted} = Endpoint.adopt_keys(adopted, tenant: tenant)
+    end
   end
 
   def registry_phases(ctx) do

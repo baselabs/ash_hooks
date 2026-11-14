@@ -7,6 +7,7 @@ defmodule AshHooks.KeyLifecycle do
   require Ash.Query
   require Ash.Expr
 
+  alias AshHooks.Endpoint.Keys
   alias AshHooks.Errors.Unknown.UnknownError
   alias AshHooks.KeyRegistry.{Storage, Transitions}
   alias AshHooks.{PrimaryKey, Tenancy}
@@ -51,15 +52,37 @@ defmodule AshHooks.KeyLifecycle do
     }
   end
 
-  @spec roll_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
+  @spec roll_secret(struct(), keyword()) ::
+          {:ok, struct()} | {:ok, struct(), binary()} | {:error, term()}
   def roll_secret(endpoint, opts) do
+    if Keyword.has_key?(opts, :material) or Keyword.has_key?(opts, :generate) or
+         (Storage.custodian(endpoint.__struct__) && not Keyword.has_key?(opts, :new_secret_ref)),
+       do: Keys.roll(endpoint, opts),
+       else: roll_reference(endpoint, Keyword.delete(opts, :new_secret_kind))
+  end
+
+  def roll_reference(endpoint, opts) do
     if Storage.custodian(endpoint.__struct__) do
       fields = fields(Keyword.get(opts, :slot, :standard))
 
-      custody_write(endpoint, opts, &roll_incumbent(&1, endpoint, opts, fields))
+      if opts[:new_secret_kind] ||
+           Extension.get_opt(endpoint.__struct__, [:endpoint], :secret_resolver) do
+        custody_write(endpoint, opts, &roll_incumbent(&1, endpoint, opts, fields))
+      else
+        {:error, :secret_resolver_required}
+      end
     else
       do_roll_secret(endpoint, opts)
     end
+  end
+
+  def validate_roll(resource, opts) do
+    fields = fields(Keyword.get(opts, :slot, :standard))
+
+    with :ok <- require_lifecycle(resource, fields),
+         {:ok, _tenant} <- Tenancy.resolve([resource], opts[:tenant]),
+         {:ok, _overlap} <- validate_overlap(resource, opts),
+         do: :ok
   end
 
   defp roll_incumbent(current, endpoint, opts, fields) do
@@ -93,7 +116,7 @@ defmodule AshHooks.KeyLifecycle do
         rolled_at: rolled_at
       }
 
-      params = roll_kind_argument(params, endpoint, fields)
+      params = roll_kind_argument(params, endpoint, fields, opts)
 
       result =
         AshHooks.Phase.bulk(
@@ -133,9 +156,13 @@ defmodule AshHooks.KeyLifecycle do
     end
   end
 
-  defp roll_kind_argument(params, endpoint, fields) do
+  defp roll_kind_argument(params, endpoint, fields, opts) do
     if Storage.custodian(endpoint.__struct__),
-      do: Map.put(params, :old_kind, Map.get(endpoint, fields.kind)),
+      do:
+        Map.merge(params, %{
+          old_kind: Map.get(endpoint, fields.kind),
+          new_kind: opts[:new_secret_kind]
+        }),
       else: params
   end
 

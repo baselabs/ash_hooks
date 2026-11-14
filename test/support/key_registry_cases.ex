@@ -1441,15 +1441,9 @@ defmodule AshHooks.Test.KeyRegistryCases do
     ctx.endpoint
     |> Ash.Changeset.for_create(
       :create,
-      Map.take(params, [
-        :url,
-        :tenant_id,
-        :secret_ref,
-        :previous_secret_ref,
-        :legacy_secret_ref,
-        :legacy_previous_secret_ref
-      ]),
-      tenant: 17
+      Map.take(params, [:url, :tenant_id]),
+      tenant: 17,
+      context: %{ash_hooks_issued_attributes: params}
     )
     |> Ash.Changeset.force_change_attributes(params)
     |> Ash.create!(authorize?: false)
@@ -1506,6 +1500,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
       Keyword.merge(
         [
           custodian: RegistryCustodian,
+          secret_resolver: {CustodySigningCases, :resolve_byte},
           key_registry: ctx.registry,
           key_lifecycle: :on,
           legacy_key_lifecycle: :on
@@ -1547,6 +1542,15 @@ defmodule AshHooks.Test.KeyRegistryCases do
         do: [:destroy, create: :*, update: :*],
         else: [:read, :destroy, create: :*, update: :*]
 
+    attributes =
+      Map.get(ctx, :endpoint_attributes) ||
+        quote do
+          attribute :tenant_id, unquote(tenant_type), allow_nil?: false, public?: true
+        end
+
+    extra_changes = Map.get(ctx, :endpoint_changes)
+    identities = Map.get(ctx, :endpoint_identities)
+
     definitions =
       Code.compile_quoted(
         quote do
@@ -1564,11 +1568,13 @@ defmodule AshHooks.Test.KeyRegistryCases do
             end
 
             attributes do
-              attribute :tenant_id, unquote(tenant_type), allow_nil?: false, public?: true
+              unquote(attributes)
             end
 
             unquote(tenancy(tenancy?))
             unquote(owner_changes)
+            unquote(extra_changes)
+            unquote(identities)
             unquote(resource_filter)
 
             actions do
