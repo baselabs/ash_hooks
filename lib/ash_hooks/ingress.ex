@@ -15,11 +15,14 @@ defmodule AshHooks.Ingress do
 
     * the decoded payload persists before handling; `payload_digest` binds
       it to the signed raw bytes;
-    * a verified body that cannot decode to a map or list is stored with
-      placeholder payload `%{}`, status `:failed_permanent`, and error class
-      `"malformed_payload"` by `:record_malformed`. A newly created malformed
-      row is never claimed or handled; its attempts and fencing token stay 0.
-      A duplicate still drives the surviving row's stored payload;
+    * a verified body that cannot decode to a map or list is stored by
+      `:record_malformed` once its event identity resolves, with placeholder
+      payload `%{}`, status `:failed_permanent`, and error class
+      `"malformed_payload"`. A provider identity callback that rejects the
+      placeholder refuses the request before any write. A newly created
+      malformed row is never claimed or handled; its attempts and fencing
+      token stay 0. A duplicate still drives the surviving row's stored
+      payload;
     * the unique index preserves one row per provider/event/scope identity.
       With the injected writable UUID key, the surviving key distinguishes
       `:created` from `:duplicate`. Custom generated keys use a pre-read;

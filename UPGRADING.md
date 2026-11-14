@@ -34,18 +34,26 @@ on the repo. Early key retirement records its actual time; a previous key contin
 to sign until its stored reference is removed.
 
 Every inbound ledger now has a generated `:record_malformed` create action.
-It uses the same accept list, unique identity, and no-touch upsert as `:ingest`,
-but sets new rows to `:failed_permanent` with error class `"malformed_payload"`.
-Verified bodies that cannot decode to a map or list take this action and are
-never claimed or handled. Their attempts and fencing token remain 0. A duplicate
-still drives the surviving row's stored payload. No schema migration is required;
-restrict direct access to this action along with the other machine actions.
+It uses the same accept list, unique identity, and no-touch upsert as `:ingest`.
+When a verified body cannot decode to a map or list and its event identity
+resolves, ingress writes it with this action: the new row has the placeholder
+payload `%{}`, status `:failed_permanent`, and error class `"malformed_payload"`,
+is never claimed or handled, and keeps attempts and fencing token at 0. A
+provider identity callback that rejects the placeholder refuses the request
+before any write, as before. A duplicate still drives the surviving row's stored
+payload. No schema migration is required; restrict direct access to this action
+along with the other machine actions.
 
-A ledger written by an earlier version can hold a `:received` or
-`:failed_retryable` row with payload `{}` left by a crash before its first mark.
-The reaper drives it as the stored payload says. List these rows with
-`AshHooks.Ingress.list/2` using `status: [:received, :failed_retryable]` and
-the ledger's tenant; an operator decides how to handle them.
+A ledger written by an earlier version can hold a nonterminal row whose payload
+is the placeholder `%{}` from an undecodable body: a `:received` or
+`:failed_retryable` row, which the next duplicate delivery claims, or a
+`:claimed` row with an expired lease, which `AshHooks.Ingress.reap/2` drives.
+Both handle the stored payload. The upgrade does not find or repair these rows,
+and `%{}` can also be a real payload. Review candidates for each tenant: with
+`:inserted_at` and `:id` on the ledger, page through `AshHooks.Ingress.list/2`
+with `status: [:received, :failed_retryable, :claimed]`, passing each
+`next_cursor` as `after:` until it is `nil`; otherwise read the ledger with the
+same status filter. Then decide how to handle each row.
 
 ## Versions >= 2.0.1 and < 3.0.0 → 3.0.0
 
