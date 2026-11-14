@@ -1,10 +1,10 @@
 defmodule AshHooks.Test.Documentation do
   @moduledoc false
 
-  @guides ["README.md", "UPGRADING.md", "usage-rules.md"] ++
-            Path.wildcard("documentation/tutorials/*.md")
-
-  def guides, do: @guides
+  def guides do
+    ["README.md", "UPGRADING.md", "usage-rules.md"] ++
+      Path.wildcard("documentation/tutorials/*.md")
+  end
 
   def blocks(file) do
     file |> File.read!() |> parse(file)
@@ -22,7 +22,7 @@ defmodule AshHooks.Test.Documentation do
     end)
   end
 
-  def all_blocks, do: Enum.flat_map(@guides, &blocks/1)
+  def all_blocks, do: Enum.flat_map(guides(), &blocks/1)
 
   def block(name) do
     [block] = Enum.filter(all_blocks(), &(&1.name == name))

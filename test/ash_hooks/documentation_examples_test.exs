@@ -443,6 +443,70 @@ defmodule AshHooks.DocumentationContentTest do
     assert_public_text!("guide.md", "https://github.com/baselabs/ash_hooks")
   end
 
+  @tag :postgres
+  @tag documented_examples: ["row-security-repo-binding"]
+  test "the row-security repository example binds and clears real tenant transactions" do
+    namespace = Docs.namespace("row-security-repo-binding")
+    Docs.eval("row-security-repo-binding", namespace)
+    repo = Module.concat(namespace, MyApp.Repo)
+    resource = Module.concat(namespace, BindingResource)
+
+    Application.put_env(:my_app, repo, AshHooks.TestPostgres.Repo.config())
+    on_exit(fn -> Application.delete_env(:my_app, repo) end)
+    start_supervised!(repo)
+
+    Code.compile_quoted(
+      quote do
+        defmodule unquote(resource) do
+          use Ash.Resource,
+            data_layer: AshPostgres.DataLayer,
+            domain: nil
+
+          postgres do
+            table "row_security_binding_example"
+            repo(unquote(repo))
+          end
+        end
+      end
+    )
+
+    for tenant <- [nil, "tenant_b", 42, :tenant_a] do
+      expected = if is_nil(tenant), do: nil, else: to_string(tenant)
+
+      assert {:ok, :ok} =
+               Ash.transact(
+                 resource,
+                 fn ->
+                   assert %{rows: [[^expected]]} =
+                            repo.query!(
+                              "SELECT nullif(current_setting('my_app.tenant', true), '')"
+                            )
+
+                   :ok
+                 end,
+                 tenant: tenant
+               )
+
+      assert %{rows: [[nil]]} =
+               repo.query!("SELECT nullif(current_setting('my_app.tenant', true), '')")
+    end
+
+    assert {:error, _} =
+             Ash.transact(
+               resource,
+               fn ->
+                 assert %{rows: [["tenant_b"]]} =
+                          repo.query!("SELECT current_setting('my_app.tenant', true)")
+
+                 repo.rollback(:intentional_rollback)
+               end,
+               tenant: "tenant_b"
+             )
+
+    assert %{rows: [[nil]]} =
+             repo.query!("SELECT nullif(current_setting('my_app.tenant', true), '')")
+  end
+
   for name <- @providers do
     @tag documented_examples: [name]
     test "runs #{name} with actual cryptographic signatures" do

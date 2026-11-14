@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Bounded tenant transactions for every package database phase, with reads on
+  the mutate repository for AshPostgres and transactional AshSqlite resources.
+  The new [row-level security guide](documentation/tutorials/row-security.md)
+  explains repository binding, table and job policies, and per-tenant sweeps.
 - Inbound ledger option `json_decoder` applies an application JSON policy to
   JWS protected headers, claims, and delivered payloads for each request.
 - Optional provider callback `decode_payload/2` receives the request's JSON
@@ -71,6 +75,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `previous_secret`. A consumer importing `:ash_hooks` in `import_deps` no
   longer has `mix format` add parentheses to the documented DSL. The list is
   generated from the DSL and checked for drift.
+- `AshHooks.Delivery.run/2` and `test_send/2` refuse an enclosing transaction
+  with `{:error, :inside_transaction}` before starting work. Previously their
+  monitored child could block or miss uncommitted rows. Inline driver enqueue
+  refusal reports `:enqueue_failed` and leaves the delivery `:pending`.
 - Custody lifecycle retirement checks the persisted owner after each write and
   retains references still held in any slot, including after a concurrent roll
   or a host action that returns an outdated record.

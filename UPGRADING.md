@@ -2,6 +2,31 @@
 
 ## 3.1.0 → 3.2.0
 
+Package database operations now open bounded tenant phases through
+`Ash.transact/3`. An RLS host configures its repository's
+`on_transaction_begin/1` to derive transaction-local settings from
+`reason[:tenant]` using `set_config(name, value, true)`. Row-secured package
+tables must use Ash multitenancy, and host-scheduled sweeps run per tenant
+with `tenant:`. Configure the worker's Oban instance to use the ledger repo;
+its job table can secure rows on `args->>'tenant'`. Bind an enclosing host
+transaction once, with the same tenant. See the
+[row-level security guide](documentation/tutorials/row-security.md).
+
+On AshPostgres and transactional AshSqlite resources, package reads now use
+the mutate repository inside their phase. A host with a function `repo`
+routing `:read` elsewhere will see these reads on its mutate repository,
+where the transaction and tenant binding exist. Data layers without
+transactions retain their behavior and are not RLS-capable.
+
+`AshHooks.Delivery.run/2` and `test_send/2` now return
+`{:error, :inside_transaction}` before starting a process or accessing the
+database when the delivery resource has an enclosing transaction. Their
+monitored child cannot join the caller's connection or see its uncommitted
+rows. Enqueue a job and perform it after commit. A dispatch whose enqueue
+callback invokes the driver inline inside a host transaction reports
+`:enqueue_failed` for that endpoint and leaves the row `:pending` for recovery.
+The child retains the attempt deadline and configured tracer context.
+
 Inbound ledgers can configure `json_decoder` in `inbound_delivery` with an MFA
 `{module, function, args}`. It receives JSON bytes followed by `args` and must
 return `{:ok, map_or_list}` or `{:error, reason}`. The default is
