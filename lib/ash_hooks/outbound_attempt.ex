@@ -14,9 +14,10 @@ defmodule AshHooks.OutboundAttempt do
   :dead_letter`), the classified `reason`, `response_status`,
   `response_snippet`, `response_headers` (allowlisted capture only),
   `latency_ms`, `signing_key_ref` (a store reference, never secret material),
-  `test`, and `attempted_at`. Normal request attempts record duration and the
-  signing-key reference. The HTTP 410 finalization path leaves duration and
-  signing-key reference nil despite receiving a response. The extension also injects
+  `test`, and `attempted_at`. Every attempted request, including one answered
+  with HTTP 410, records its duration and signing-key reference. A 410 disable
+  stored before 3.1.0 carries neither, so its finalization records both as nil.
+  The extension also injects
   the `unique_attempt` identity on `[:delivery_pk, :attempt]`, which
   makes the runtime's history writes idempotent per attempt. Your
   migration carries the matching unique index.

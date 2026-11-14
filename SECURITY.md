@@ -65,7 +65,7 @@ the reporter.
 - Inbound headers are not stored. Decoded payloads and a digest of the signed raw
   body remain in the ledger until the host applies redaction or retention policies.
 
-#Application providers and secret resolvers must provide their own error handling.
+Application providers and secret resolvers must provide their own error handling.
 
 ## Outbound requests
 
