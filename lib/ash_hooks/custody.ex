@@ -87,6 +87,7 @@ defmodule AshHooks.Custody do
   alias Ash.Resource.Info
   alias AshHooks.Custody.{Fingerprint, Key}
   alias AshHooks.Errors
+  alias Spark.Dsl.Extension
 
   @type tenant :: String.t() | nil
   @type ref :: String.t()
@@ -162,6 +163,37 @@ defmodule AshHooks.Custody do
       _ ->
         false
     end
+  end
+
+  @doc false
+  def tenant_options(owner) do
+    [custody_tenant_key: Extension.get_opt(owner, [:endpoint], :custody_tenant_key)]
+  end
+
+  @doc false
+  def sign(%Key{kind: {:sender_hmac, _}}, _input), do: {:error, :kind_not_allowed}
+
+  def sign(%Key{custodian: custodian, ref: ref, tenant: tenant, kind: kind}, input) do
+    result =
+      case custodian.sign(ref, tenant, kind, input) do
+        {:ok, bytes} when is_binary(bytes) -> {:ok, bytes}
+        {:error, _} = error -> error
+        _ -> :invalid_sign_result
+      end
+
+    Errors.from_custody_result(result)
+  end
+
+  @doc false
+  def verify(%Key{custodian: custodian, ref: ref, tenant: tenant, kind: kind}, input, mac) do
+    result =
+      case custodian.verify(ref, tenant, kind, input, mac) do
+        :ok -> :ok
+        {:error, _} = error -> error
+        _ -> :invalid_verify_result
+      end
+
+    Errors.from_custody_result(result)
   end
 
   @doc """

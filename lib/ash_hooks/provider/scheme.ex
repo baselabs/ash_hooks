@@ -22,6 +22,12 @@ defmodule AshHooks.Provider.Scheme do
   (default `","`) and `key_value_separator:` (default `"="`), consider at most 16
   matching signatures, and accept any matching signature.
 
+  HMAC schemes accept opaque `AshHooks.Custody.Key` values and rotation lists
+  mixing custody and byte keys. Key encodings and prefixes apply only to byte
+  keys; signature encodings are decoded before custody verification. Custody
+  failures remain classified. Public-key algorithms use pinned public keys
+  outside custody.
+
   Other options:
 
     * `encoding`: `:hex`, `:hex_upper`, `:hex_any`, `:base64`, or `:base64url`;
@@ -57,6 +63,7 @@ defmodule AshHooks.Provider.Scheme do
   checks run only after successful authentication. Certificates are pinned key
   containers only; no chain, expiration, or revocation validation is performed.
   """
+  alias AshHooks.Custody.Key, as: CustodyKey
   alias AshHooks.Provider.Signature
   alias AshHooks.Provider.Signature.Key
 
@@ -406,6 +413,7 @@ defmodule AshHooks.Provider.Scheme do
   end
 
   defp match_key(key, :hmac, _) when is_binary(key) and key != "", do: {:ok, key}
+  defp match_key(%CustodyKey{} = key, :hmac, _), do: {:ok, key}
   defp match_key(_, :hmac, _), do: invalid()
   defp match_key(key, :ecdsa, algorithm), do: Key.decode(key, {:ecdsa, curve(algorithm)})
   defp match_key(key, type, _), do: Key.decode(key, type)
@@ -553,9 +561,9 @@ defmodule AshHooks.Provider.Scheme do
           opts
       end
 
-    if Enum.any?(signatures, &(apply(Signature, type, [input, &1, keys, opts]) == :ok)),
-      do: :ok,
-      else: invalid()
+    signatures
+    |> Enum.map(&apply(Signature, type, [input, &1, keys, opts]))
+    |> Signature.verification_result()
   end
 
   defp timestamp_text(ctx, _, {:header, name}), do: Signature.header(ctx, name)

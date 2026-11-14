@@ -2,9 +2,9 @@ defmodule AshHooks.Errors do
   @moduledoc """
   Splode error hierarchy for ash_hooks.
 
-  Inbound pipeline failures surface as `:invalid`-class errors (bad signature,
-  missing secret, stale timestamp, unknown event type, malformed payload).
-  Anything unrecognized lands in `:unknown`.
+  Inbound authentication and configuration failures have class `:invalid`.
+  Custody availability failures have class `:unknown`. Unrecognized reasons
+  become contents-free `UnknownError` values.
   """
 
   use Splode,
@@ -43,9 +43,9 @@ defmodule AshHooks.Errors do
   alias AshHooks.Errors.Unknown.{KeyUnavailable, UnknownError}
 
   @doc """
-  Maps a provider callback's reason atom (the `{:error, reason}` shape the
-  behavior returns) to its splode error. Known provider reasons pass `opts`
-  through to `exception/1`; the custody classes ignore options.
+  Maps a provider callback's reason (the `{:error, reason}` shape the
+  behavior returns) to its Splode error. Known provider atoms pass `opts`
+  through to `exception/1`; classified custody errors retain their class.
 
   Unmapped reasons become a contents-free `UnknownError`; backend terms are
   never included in that error.
@@ -70,6 +70,16 @@ defmodule AshHooks.Errors do
   def from_reason(:key_kind_mismatch, _opts), do: KeyKindMismatch.exception([])
   def from_reason(:unknown_key, _opts), do: UnknownKey.exception([])
   def from_reason(:key_unavailable, _opts), do: KeyUnavailable.exception([])
+
+  def from_reason(%module{} = error, _opts)
+      when module in [
+             InvalidSignature,
+             KeyKindMismatch,
+             UnknownKey,
+             UnknownSource,
+             KeyUnavailable
+           ],
+      do: error
 
   def from_reason(_other, _opts), do: unknown_error()
 

@@ -12,12 +12,19 @@ defmodule AshHooks.Legacy do
       separately imported previous secret.
     * header: `x-webhook-signature: t=<unix_ts>,<signature>`.
 
+  `headers/4` also accepts `AshHooks.Custody.Key` values of kind
+  `{:legacy_hmac, :sha256}` for either slot, including mixed byte and custody
+  rotation. Failures return classified errors; sender-only kinds are refused
+  before custody is called. Byte clauses retain their existing behavior.
+
   Use `:dual` to send this envelope alongside Standard Webhooks while receivers
   migrate. New integrations should use `:standard`.
   """
 
   @signature_prefix "v1"
   @previous_signature_prefix "v1prev"
+  alias AshHooks.Custody
+  alias AshHooks.Custody.Key
 
   # -- Signing -------------------------------------------------------
 
@@ -47,8 +54,21 @@ defmodule AshHooks.Legacy do
   end
 
   @doc "The legacy header set: `x-webhook-signature` under `secret` (and optional `previous`)."
-  @spec headers(binary(), binary() | nil, binary(), integer()) :: %{String.t() => String.t()}
-  def headers(secret, previous \\ nil, body, unix_ts) do
+  @spec headers(binary() | Key.t(), binary() | Key.t() | nil, binary(), integer()) ::
+          %{String.t() => String.t()} | {:error, struct() | :kind_not_allowed}
+  def headers(secret, previous \\ nil, body, unix_ts)
+
+  def headers(secret, previous, body, unix_ts)
+      when is_struct(secret, Key) or is_struct(previous, Key) do
+    with {:ok, current} <- custody_mac(secret, body, unix_ts),
+         {:ok, previous} <- custody_mac(previous, body, unix_ts) do
+      signature = "v1=" <> current
+      signature = if previous, do: signature <> ",v1prev=" <> previous, else: signature
+      %{"x-webhook-signature" => header_value(signature, unix_ts)}
+    end
+  end
+
+  def headers(secret, previous, body, unix_ts) do
     signature =
       if previous do
         sign_with_previous(secret, previous, body, unix_ts)
@@ -58,6 +78,21 @@ defmodule AshHooks.Legacy do
 
     %{"x-webhook-signature" => header_value(signature, unix_ts)}
   end
+
+  defp custody_mac(nil, _body, _unix_ts), do: {:ok, nil}
+
+  defp custody_mac(%Key{kind: {:sender_hmac, _}}, _body, _unix_ts),
+    do: {:error, :kind_not_allowed}
+
+  defp custody_mac(%Key{kind: {:legacy_hmac, :sha256}} = key, body, unix_ts) do
+    with {:ok, mac} <- Custody.sign(key, Integer.to_string(unix_ts) <> "." <> body),
+         do: {:ok, Base.encode16(mac, case: :lower)}
+  end
+
+  defp custody_mac(%Key{}, _body, _unix_ts),
+    do: AshHooks.Errors.from_custody_result({:error, :kind_mismatch})
+
+  defp custody_mac(bytes, body, unix_ts), do: {:ok, legacy_mac_hex(bytes, body, unix_ts)}
 
   # -- Verification (the oracle) -------------------------------------
 

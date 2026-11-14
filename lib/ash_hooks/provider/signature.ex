@@ -10,6 +10,11 @@ defmodule AshHooks.Provider.Signature do
   `:hex_upper` uppercase only, `:hex_any` accepts either case, `:base64` and
   `:base64url` accept padded or unpadded strings, and `:raw` accepts bytes.
   Keys may be a single key or a rotation list; empty keys cannot verify.
+  HMAC accepts `AshHooks.Custody.Key` values, including rotation lists mixed
+  with byte keys. It decodes signatures before custody verification and returns
+  classified custody errors. A successful rotation key authenticates the request;
+  otherwise configuration and availability errors take precedence over a MAC
+  mismatch. Byte-only failures keep their existing atom results.
   HMAC evaluates all keys and compares bytes in constant time behind a length guard.
 
   Asymmetric keys may be decoded `:public_key` terms or a PEM containing exactly
@@ -18,11 +23,18 @@ defmodule AshHooks.Provider.Signature do
   Ed25519 also accepts a raw 32-byte public key. Key types must match the algorithm.
   Keys are never fetched from request headers, tokens, or URLs.
   """
+  alias AshHooks.Custody
+  alias AshHooks.Custody.Key, as: CustodyKey
+  alias AshHooks.Errors.Invalid.InvalidSignature
   alias AshHooks.Provider.Signature.Key
 
   @type error ::
           {:error,
-           :invalid_signature | :no_webhook_secret | :stale_timestamp | :malformed_payload}
+           :invalid_signature
+           | :no_webhook_secret
+           | :stale_timestamp
+           | :malformed_payload
+           | struct()}
   @p256 {1, 2, 840, 10_045, 3, 1, 7}
   @p384 {1, 3, 132, 0, 34}
 
@@ -34,13 +46,9 @@ defmodule AshHooks.Provider.Signature do
          digest when digest in [:sha1, :sha256, :sha384, :sha512] <-
            Keyword.get(opts, :digest, :sha256),
          {:ok, received} <- decode(signature, Keyword.get(opts, :encoding, :hex)) do
-      digest = if digest == :sha1, do: :sha, else: digest
-
       keys
-      |> Enum.reduce(false, fn key, matched ->
-        hmac_match(input, received, key, digest) == :ok or matched
-      end)
-      |> result()
+      |> Enum.map(&hmac_match(input, received, &1, digest))
+      |> verification_result()
     else
       {:error, _} = error -> error
       _ -> invalid()
@@ -50,9 +58,36 @@ defmodule AshHooks.Provider.Signature do
   end
 
   defp hmac_match(input, received, key, digest) when is_binary(key),
-    do: compare(:crypto.mac(:hmac, digest, key, input), received)
+    do:
+      compare(
+        :crypto.mac(:hmac, if(digest == :sha1, do: :sha, else: digest), key, input),
+        received
+      )
+
+  defp hmac_match(input, received, %CustodyKey{kind: kind} = key, digest) do
+    if kind in [{:sender_hmac, digest}, {:standard_webhooks, :v1}, {:legacy_hmac, :sha256}] and
+         (elem(kind, 0) == :sender_hmac or digest == :sha256) do
+      Custody.verify(key, input, received)
+    else
+      AshHooks.Errors.from_custody_result({:error, :kind_mismatch})
+    end
+  end
 
   defp hmac_match(_, _, _, _), do: invalid()
+
+  @doc false
+  def verification_result(results) do
+    cond do
+      :ok in results -> :ok
+      error = Enum.find(results, &configuration_error?/1) -> error
+      error = Enum.find(results, &match?({:error, %InvalidSignature{}}, &1)) -> error
+      true -> invalid()
+    end
+  end
+
+  defp configuration_error?({:error, :invalid_signature}), do: false
+  defp configuration_error?({:error, %InvalidSignature{}}), do: false
+  defp configuration_error?({:error, _}), do: true
 
   @doc """
   Verifies RSA; options: `digest:` (`:sha256` default, `:sha384`, `:sha512`),
@@ -136,7 +171,7 @@ defmodule AshHooks.Provider.Signature do
            :ok <- check_claims(payload_bytes, opts) do
         {:ok, payload_bytes}
       else
-        {:error, reason} when is_atom(reason) -> {:error, reason}
+        {:error, _} = error -> error
         _ -> invalid()
       end
     end)

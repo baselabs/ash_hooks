@@ -20,9 +20,16 @@ defmodule AshHooks.Signing do
   `headers_for_mode/5` emits `:standard`, `:dual` (Standard Webhooks and
   legacy), or `:legacy` headers for the delivery runtime. Rotation options
   include the previous key's signature alongside the current signature.
+
+  Signing and header builders also accept `AshHooks.Custody.Key` values.
+  Their kind selects v1 or v1a independently for each slot. Custody failures
+  return `{:error, classified_error}`; sender-only kinds return
+  `{:error, :kind_not_allowed}` before custody is called. Byte clauses retain
+  their existing values and exceptions.
   """
 
-  alias AshHooks.Custody.Fingerprint
+  alias AshHooks.Custody
+  alias AshHooks.Custody.{Fingerprint, Key}
   alias AshHooks.Legacy
 
   @secret_prefix "whsec_"
@@ -109,7 +116,24 @@ defmodule AshHooks.Signing do
   Raises `ArgumentError` on invalid inputs; the send path fails loud on
   config or programming errors.
   """
-  @spec sign(String.t(), integer(), binary(), String.t()) :: String.t()
+  @spec sign(String.t(), integer(), binary(), String.t() | Key.t()) ::
+          String.t() | {:error, struct() | :kind_not_allowed}
+  def sign(_msg_id, _unix_ts, _payload, %Key{kind: {:sender_hmac, _}}),
+    do: {:error, :kind_not_allowed}
+
+  def sign(msg_id, unix_ts, payload, %Key{kind: {:standard_webhooks, version}} = key)
+      when is_binary(msg_id) and msg_id != "" and is_integer(unix_ts) and unix_ts > 0 and
+             is_binary(payload) and version in [:v1, :v1a] do
+    if String.contains?(msg_id, "."),
+      do: raise(ArgumentError, "msg_id must not contain \".\", the canonical-string delimiter")
+
+    with {:ok, signature} <- Custody.sign(key, to_sign(msg_id, unix_ts, payload)),
+         do: Atom.to_string(version) <> "," <> Base.encode64(signature)
+  end
+
+  def sign(_msg_id, _unix_ts, _payload, %Key{}),
+    do: AshHooks.Errors.from_custody_result({:error, :kind_mismatch})
+
   def sign(msg_id, unix_ts, payload, whsec)
       when is_binary(msg_id) and msg_id != "" and is_integer(unix_ts) and unix_ts > 0 and
              is_binary(payload) and is_binary(whsec) do
@@ -127,7 +151,11 @@ defmodule AshHooks.Signing do
   Signs the canonical string with ed25519 under the seed decoded from a
   `whsk_` secret: `"v1a," <> base64(signature)`.
   """
-  @spec sign_ed25519(String.t(), integer(), binary(), String.t()) :: String.t()
+  @spec sign_ed25519(String.t(), integer(), binary(), String.t() | Key.t()) ::
+          String.t() | {:error, struct() | :kind_not_allowed}
+  def sign_ed25519(msg_id, unix_ts, payload, %Key{} = key),
+    do: sign(msg_id, unix_ts, payload, key)
+
   def sign_ed25519(msg_id, unix_ts, payload, whsk)
       when is_binary(msg_id) and msg_id != "" and is_integer(unix_ts) and unix_ts > 0 and
              is_binary(payload) and is_binary(whsk) do
@@ -217,8 +245,14 @@ defmodule AshHooks.Signing do
   append the rotated-out key's signature (space-delimited, per the spec's
   zero-downtime rotation, symmetric and asymmetric alike).
   """
-  @spec headers(String.t(), integer(), binary(), keyword()) :: %{String.t() => String.t()}
-  def headers(msg_id, unix_ts, payload, opts \\ []) do
+  @spec headers(String.t(), integer(), binary(), keyword() | Key.t()) ::
+          %{String.t() => String.t()} | {:error, struct() | :kind_not_allowed}
+  def headers(msg_id, unix_ts, payload, opts \\ [])
+
+  def headers(msg_id, unix_ts, payload, %Key{} = key),
+    do: headers(msg_id, unix_ts, payload, whsec: key)
+
+  def headers(msg_id, unix_ts, payload, opts) do
     signatures =
       []
       |> append_signature(&sign/4, [msg_id, unix_ts, payload], opts[:whsec])
@@ -226,16 +260,21 @@ defmodule AshHooks.Signing do
       |> append_signature(&sign_ed25519/4, [msg_id, unix_ts, payload], opts[:whsk])
       |> append_signature(&sign_ed25519/4, [msg_id, unix_ts, payload], opts[:previous_whsk])
 
-    if signatures == [] do
-      raise ArgumentError,
-            "headers/4 needs at least one of :whsec, :previous_whsec, :whsk or :previous_whsk"
-    end
+    case signatures do
+      {:error, _} = error ->
+        error
 
-    %{
-      "webhook-id" => msg_id,
-      "webhook-timestamp" => Integer.to_string(unix_ts),
-      "webhook-signature" => Enum.join(signatures, " ")
-    }
+      [] ->
+        raise ArgumentError,
+              "headers/4 needs at least one of :whsec, :previous_whsec, :whsk or :previous_whsk"
+
+      signatures ->
+        %{
+          "webhook-id" => msg_id,
+          "webhook-timestamp" => Integer.to_string(unix_ts),
+          "webhook-signature" => Enum.join(signatures, " ")
+        }
+    end
   end
 
   @doc """
@@ -251,14 +290,14 @@ defmodule AshHooks.Signing do
   `:whsec`, `:whsk`, `:previous_whsec`, and `:previous_whsk`.
   """
   @spec headers_for_mode(:legacy | :dual | :standard, String.t(), integer(), binary(), keyword()) ::
-          %{String.t() => String.t()}
+          %{String.t() => String.t()} | {:error, struct() | :kind_not_allowed}
   def headers_for_mode(mode, msg_id, unix_ts, body, opts)
 
   def headers_for_mode(:standard, msg_id, unix_ts, body, opts),
     do: headers(msg_id, unix_ts, body, opts)
 
   def headers_for_mode(:legacy, _msg_id, unix_ts, body, opts) do
-    unless is_binary(opts[:legacy_secret]) and opts[:legacy_secret] != "" do
+    unless signing_key?(opts[:legacy_secret]) do
       raise ArgumentError, ":legacy signing_mode requires :legacy_secret (the incumbent secret)"
     end
 
@@ -266,15 +305,18 @@ defmodule AshHooks.Signing do
   end
 
   def headers_for_mode(:dual, msg_id, unix_ts, body, opts) do
-    unless is_binary(opts[:legacy_secret]) and opts[:legacy_secret] != "" do
+    unless signing_key?(opts[:legacy_secret]) do
       raise ArgumentError, ":dual signing_mode requires :legacy_secret (the incumbent secret)"
     end
 
-    Map.merge(
-      headers(msg_id, unix_ts, body, opts),
-      Legacy.headers(opts[:legacy_secret], opts[:legacy_previous_secret], body, unix_ts)
-    )
+    with standard when is_map(standard) <- headers(msg_id, unix_ts, body, opts),
+         legacy when is_map(legacy) <-
+           Legacy.headers(opts[:legacy_secret], opts[:legacy_previous_secret], body, unix_ts),
+         do: Map.merge(standard, legacy)
   end
+
+  defp signing_key?(%Key{}), do: true
+  defp signing_key?(bytes), do: is_binary(bytes) and bytes != ""
 
   # -- Generation ----------------------------------------------------
 
@@ -456,6 +498,13 @@ defmodule AshHooks.Signing do
 
   defp decode_b64(_other), do: :error
 
+  defp append_signature({:error, _} = error, _sign, _args, _key), do: error
   defp append_signature(list, _sign, _args, nil), do: list
-  defp append_signature(list, sign, args, secret), do: list ++ [apply(sign, args ++ [secret])]
+
+  defp append_signature(list, sign, args, secret) do
+    case apply(sign, args ++ [secret]) do
+      {:error, _} = error -> error
+      signature -> list ++ [signature]
+    end
+  end
 end
