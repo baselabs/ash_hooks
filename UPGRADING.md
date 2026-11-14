@@ -485,7 +485,7 @@ container is now a typespec'd public contract with one NEW status:
 ### Elixir `~> 1.20` required; previously `~> 1.17`
 
 The supported Elixir window is now `~> 1.20`. Applications resolving
-ash_hooks on Elixir 1.17–1.19 get a hard resolver error at deps
+ash_hooks on Elixir 1.17 to 1.19 get a hard resolver error at deps
 loadpaths instead of a compile. An increase in the minimum supported version ships as a minor release, so a `~> 1.0` pin will happily resolve
 1.1.0 and then fail resolution on old Elixirs. If you cannot move to
 Elixir 1.20 yet, pin the floor release instead:

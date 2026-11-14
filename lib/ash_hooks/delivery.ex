@@ -163,7 +163,7 @@ defmodule AshHooks.Delivery do
          UnknownError.exception(
            error:
              inspect(deliv_mod) <>
-               " has no :inserted_at — add `timestamps()` to its attributes " <>
+               " has no :inserted_at; add `timestamps()` to its attributes " <>
                "(and the columns to its migration) to use the list queries"
          )}
 
@@ -172,7 +172,7 @@ defmodule AshHooks.Delivery do
          UnknownError.exception(
            error:
              inspect(deliv_mod) <>
-               " has no :id attribute — keyset pagination's tiebreak requires it " <>
+               " has no :id attribute, which keyset pagination's tiebreak requires " <>
                "(composite-key ledgers are not supported by the list queries)"
          )}
 
@@ -263,7 +263,7 @@ defmodule AshHooks.Delivery do
            UnknownError.exception(
              error:
                inspect(deliv_mod) <>
-                 " does not carry the destroy :prune action (prune_action :none) — " <>
+                 " does not carry the destroy :prune action (prune_action :none); " <>
                  "deletion is the consumer's own surface on an append-only ledger"
            )}
 
@@ -275,7 +275,7 @@ defmodule AshHooks.Delivery do
            UnknownError.exception(
              error:
                inspect(deliv_mod) <>
-                 " has no :inserted_at — add `timestamps()` to its attributes " <>
+                 " has no :inserted_at; add `timestamps()` to its attributes " <>
                  "(and the columns to its migration) to use the retention hooks"
            )}
       end
@@ -792,7 +792,7 @@ defmodule AshHooks.Delivery do
          UnknownError.exception(
            error:
              inspect(deliv_mod) <>
-               " has no :inserted_at — add `timestamps()` to its attributes " <>
+               " has no :inserted_at; add `timestamps()` to its attributes " <>
                "(and the columns to its migration) to use replay"
          )}
       end
@@ -1108,7 +1108,7 @@ defmodule AshHooks.Delivery do
        UnknownError.exception(
          error:
            inspect(resource) <>
-             " does not carry the resend-tracking columns (resend_tracking :off) — " <>
+             " does not carry the resend-tracking columns (resend_tracking :off); " <>
              "declare `resend_tracking :on` under `outbound_delivery` and migrate the " <>
              "four columns to use resend/replay"
        )}

@@ -34,7 +34,7 @@ defmodule AshHooks.Verifiers.ReplayWindowRequiresTimestamp do
         module: resource,
         path: [:webhooks, :inbound, entity.name],
         message:
-          "replay_window_seconds requires a provider with a trustworthy timestamp — " <>
+          "replay_window_seconds requires a provider with a trustworthy timestamp, but " <>
             "#{inspect(provider)} declares none (AshHooks.Provider.timestamp_header/1 is nil)"
     end
   end

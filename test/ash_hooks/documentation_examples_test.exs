@@ -313,6 +313,7 @@ defmodule AshHooks.DocumentationContentTest do
     verify-crm-provider verify-fields-provider verify-date-provider
     verify-migrating-provider verify-classification-provider verify-custom-provider)
   @internal ~r/ADR-\d|\bH\d+\b|\bD3\b|wayfinder|ship report|sirtify|ash_age|by owner decision|review probes?|\bunreleased\b|\bcandidate\b/i
+  @long_dashes ["\u2014", "\u2013"]
   @vendors ~r/comply[ _]?cube|hubspot|twilio|stripe|shopify|woocommerce|shippo|easypost|magento|adobe commerce|bigcommerce|ecwid|squarespace|\bwix\b|salesforce|prestashop|opencart|github|\bhttpbun\b/i
 
   @tag skip: not Code.ensure_loaded?(Phoenix.Endpoint)
@@ -362,6 +363,20 @@ defmodule AshHooks.DocumentationContentTest do
     end
   end
 
+  # Error and raised messages are shipped text too, though no document holds
+  # them: every string literal in lib, read from the parsed source, so comments
+  # (which never reach a developer) are not in scope.
+  test "string literals in lib carry no em or en dash" do
+    offenders =
+      "lib/**/*.ex"
+      |> Path.wildcard()
+      |> Enum.sort()
+      |> Enum.flat_map(&dashed_literals/1)
+
+    assert offenders == [],
+           "em or en dash in lib string literals:\n" <> Enum.join(offenders, "\n")
+  end
+
   test "module documentation links to tested mounting examples" do
     {:ok, modules} = :application.get_key(:ash_hooks, :modules)
 
@@ -394,7 +409,27 @@ defmodule AshHooks.DocumentationContentTest do
       assert_raise ExUnit.AssertionError, fn -> assert_public_text!("guide.md", text) end
     end
 
-    assert_public_text!("CHANGELOG.md", "Removed AshHooks.Provider.Stripe.")
+    version = Mix.Project.config()[:version]
+    released = "## #{version} (November 13, 2026)\n\n- Removed AshHooks.Provider.Stripe.\n"
+    building = "# Changelog\n\n## Unreleased\n\n- A fix.\n\n" <> released
+
+    assert_public_text!("CHANGELOG.md", released)
+    assert_changelog!(building, false)
+
+    for {text, release_build?} <- [
+          {building, true},
+          {"## 0.0.1 (January 1, 2020)\n", false},
+          {released <> "\n## Unreleased\n", false},
+          {released <> "\n1.17\u20131.19\n", false},
+          {released <> "\nA fix \u2014 now.\n", false}
+        ] do
+      assert_raise ExUnit.AssertionError, fn -> assert_changelog!(text, release_build?) end
+    end
+
+    assert_raise ExUnit.AssertionError, fn ->
+      assert_public_text!("guide.md", "range 1\u20132")
+    end
+
     assert_public_text!("guide.md", "https://github.com/baselabs/ash_hooks")
   end
 
@@ -791,9 +826,39 @@ defmodule AshHooks.DocumentationContentTest do
     |> Enum.uniq()
   end
 
-  defp assert_public_text!(path, text) do
+  # The changelog carries one leading `## Unreleased` section while a release is
+  # being built; the release commit renames it to the version heading. A
+  # release tag build refuses it, and the current version always has a section.
+  defp assert_public_text!("CHANGELOG.md", text),
+    do: assert_changelog!(text, System.get_env("GITHUB_REF_TYPE") == "tag")
+
+  defp assert_public_text!(path, text), do: assert_shipped_text!(path, text)
+
+  defp assert_changelog!(text, release_build?) do
+    path = "CHANGELOG.md"
+    version = Mix.Project.config()[:version]
+
+    assert Regex.match?(~r/^## #{Regex.escape(version)} \(/m, text),
+           "#{path}: no section for the current version #{version}"
+
+    text =
+      case Regex.run(~r/^## (.+)$/m, text, capture: :all_but_first) do
+        ["Unreleased"] when release_build? ->
+          flunk("#{path}: an Unreleased section on a release tag build")
+
+        ["Unreleased"] ->
+          String.replace(text, "\n## Unreleased\n", "\n", global: false)
+
+        _ ->
+          text
+      end
+
+    assert_shipped_text!(path, text)
+  end
+
+  defp assert_shipped_text!(path, text) do
     refute Regex.match?(@internal, text), "#{path}: internal vocabulary in shipped text"
-    refute String.contains?(text, "—"), "#{path}: em dash in shipped text"
+    refute String.contains?(text, @long_dashes), "#{path}: em or en dash in shipped text"
 
     text = Regex.replace(~r{https://github\.com/baselabs/ash_hooks[^\s)]*}, text, "")
 
@@ -806,6 +871,27 @@ defmodule AshHooks.DocumentationContentTest do
 
     unless path == "CHANGELOG.md",
       do: refute(Regex.match?(@vendors, text), "#{path}: vendor guidance in shipped text")
+  end
+
+  defp dashed_literals(path) do
+    {_, {_line, found}} =
+      path
+      |> File.read!()
+      |> Code.string_to_quoted!(file: path, columns: false)
+      |> Macro.prewalk({0, []}, fn
+        {_, meta, _} = node, {_line, found} when is_list(meta) ->
+          {node, {Keyword.get(meta, :line, 0), found}}
+
+        binary, {line, found} when is_binary(binary) ->
+          if String.contains?(binary, @long_dashes),
+            do: {binary, {line, ["#{path}:#{line}" | found]}},
+            else: {binary, {line, found}}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    found |> Enum.reverse() |> Enum.uniq()
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:my_app, key)

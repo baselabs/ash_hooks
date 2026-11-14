@@ -138,7 +138,7 @@ defmodule AshHooks.Ingress do
          UnknownError.exception(
            error:
              inspect(resource) <>
-               " has no :inserted_at — add `timestamps()` to its attributes " <>
+               " has no :inserted_at; add `timestamps()` to its attributes " <>
                "(and the columns to its migration) to use the list queries"
          )}
 
@@ -147,7 +147,7 @@ defmodule AshHooks.Ingress do
          UnknownError.exception(
            error:
              inspect(resource) <>
-               " has no :id attribute — keyset pagination's tiebreak requires it"
+               " has no :id attribute, which keyset pagination's tiebreak requires"
          )}
 
       true ->
@@ -254,7 +254,7 @@ defmodule AshHooks.Ingress do
        UnknownError.exception(
          error:
            inspect(resource) <>
-             " has no :inserted_at — add `timestamps()` to its attributes " <>
+             " has no :inserted_at; add `timestamps()` to its attributes " <>
              "(and the columns to its migration) to use the window counts"
        )}
     end
@@ -689,7 +689,7 @@ defmodule AshHooks.Ingress do
        AshHooks.Errors.Unknown.UnknownError.exception(
          error:
            inspect(resource) <>
-             " has no :inserted_at — add `timestamps()` to its attributes " <>
+             " has no :inserted_at; add `timestamps()` to its attributes " <>
              "(and the inserted_at/updated_at columns to its migration) to use the retention hooks"
        )}
     end
@@ -1148,7 +1148,7 @@ defmodule AshHooks.Ingress do
         {:error,
          UnknownError.exception(
            error:
-             "no inbound #{inspect(name)} declaration on #{inspect(resource)} — add one under `webhooks`"
+             "no inbound #{inspect(name)} declaration on #{inspect(resource)}; add one under `webhooks`"
          )}
 
       inbound ->
@@ -1166,7 +1166,7 @@ defmodule AshHooks.Ingress do
        UnknownError.exception(
          error:
            "provider #{inspect(candidate)} does not exist or does not implement " <>
-             "AshHooks.Provider — set the `provider` option on the inbound declaration"
+             "AshHooks.Provider; set the `provider` option on the inbound declaration"
        )}
     end
   end
@@ -1186,7 +1186,7 @@ defmodule AshHooks.Ingress do
          error:
            "inbound #{inspect(name)} declares replay_window_seconds=#{window} but " <>
              "#{inspect(provider)} declares no timestamp header " <>
-             "(AshHooks.Provider.timestamp_header/1 is nil) — remove the window or implement the callback"
+             "(AshHooks.Provider.timestamp_header/1 is nil); remove the window or implement the callback"
        )}
     end
   end
@@ -1412,7 +1412,7 @@ defmodule AshHooks.Ingress do
         {:error,
          MalformedPayload.exception(
            detail:
-             "unknown scope keys #{inspect(unknown)} — scope carries only declared scope_identity slots"
+             "unknown scope keys #{inspect(unknown)}: scope carries only declared scope_identity slots"
          )}
 
       missing != [] ->

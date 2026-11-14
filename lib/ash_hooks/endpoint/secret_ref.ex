@@ -27,11 +27,11 @@ defmodule AshHooks.Endpoint.SecretRef do
       # type itself or a required endpoint persists an unusable reference.
       value == "" ->
         {:error,
-         "must be a non-empty secret REFERENCE — an empty reference cannot resolve a secret"}
+         "must be a non-empty secret REFERENCE; an empty reference cannot resolve a secret"}
 
       Enum.any?(@secret_prefixes, &String.starts_with?(value, &1)) ->
         {:error,
-         "must be a secret REFERENCE, not secret material — store the consumer-side key that resolves the secret, never the secret itself (ADR-0005)"}
+         "must be a secret REFERENCE, not secret material: store the consumer-side key that resolves the secret, never the secret itself (ADR-0005)"}
 
       true ->
         {:ok, value}

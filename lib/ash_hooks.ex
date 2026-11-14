@@ -327,7 +327,7 @@ defmodule AshHooks do
     UnknownError.exception(
       error:
         inspect(resource) <>
-          " carries neither AshHooks.InboundDelivery nor AshHooks.OutboundDelivery — " <>
+          " carries neither AshHooks.InboundDelivery nor AshHooks.OutboundDelivery, and " <>
           "prune_all routes only the package's ledgers"
     )
   end
@@ -382,7 +382,7 @@ defmodule AshHooks do
     if path != [] and Enum.all?(path, &is_atom/1) do
       {:ok, source}
     else
-      {:error, "invalid {:app_env, path} — path must be a non-empty list of atoms"}
+      {:error, "invalid {:app_env, path}: path must be a non-empty list of atoms"}
     end
   end
 
@@ -397,10 +397,10 @@ defmodule AshHooks do
   def validate_secret_source(source) when is_binary(source),
     do:
       {:error,
-       "must be a secret SOURCE — got a literal binary: secrets live in compiled DSL data (ADR-0005); pass {m, f, a}, {:app_env, path}, or a 0-arity function"}
+       "must be a secret SOURCE, not a literal binary: secrets live in compiled DSL data (ADR-0005); pass {m, f, a}, {:app_env, path}, or a 0-arity function"}
 
   def validate_secret_source(other),
     do:
       {:error,
-       "invalid secret source #{inspect(other)} — pass {m, f, a}, {:app_env, path} (non-empty atoms), or a 0/1-arity function"}
+       "invalid secret source #{inspect(other)}: pass {m, f, a}, {:app_env, path} (non-empty atoms), or a 0/1-arity function"}
 end
