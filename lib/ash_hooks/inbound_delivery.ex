@@ -93,8 +93,9 @@ defmodule AshHooks.InboundDelivery do
         `apply(module, function, [bytes | args])`, returning
         `{:ok, map_or_list}` or `{:error, reason}`. Defaults to `Jason.decode/1`.
         Ingress passes the same request-scoped decoder to JWS protected-header,
-        claims, and payload decoding. Errors, exceptions, and scalar results are
-        malformed payloads; invalid claim types remain invalid signatures.
+        claims, and payload decoding. For the payload, errors, exceptions, and
+        scalar results are malformed payloads; a refused protected header and
+        invalid claim types are invalid signatures.
         Explicit declaration `body_format` still takes precedence. A provider with
         a host-defined `decode_payload/1` must also implement `decode_payload/2`
         when this option is configured. Generated `/1` callbacks are exempt;

@@ -413,14 +413,25 @@ defmodule AshHooks.Provider.JsonDecoderTest do
     end
   end
 
-  test "JWS decoder failures are malformed payloads and malformed claim types are InvalidSignature" do
+  test "a refused JWS header is InvalidSignature, a refused payload is terminal, bad claim types are InvalidSignature" do
     provider = combination(:generated, :generated, false)
 
-    for mode <- [:error, :raise, :throw, :exit, :scalar, :invalid, :claims_error, :claims_raise] do
+    for mode <- [:error, :raise, :throw, :exit, :scalar, :invalid] do
       ledger = ledger(provider, mode)
 
-      assert {:error, %AshHooks.Errors.Invalid.MalformedPayload{}} =
+      assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
                Ingress.ingest(ledger, :events, token("{}"), context(ledger))
+    end
+
+    for mode <- [:claims_error, :claims_raise] do
+      ledger = ledger(provider, mode)
+
+      assert {:ok, :created, row} =
+               Ingress.ingest(ledger, :events, token(~s({"id":"evt-#{mode}"})), context(ledger))
+
+      assert_terminal(row)
+      assert {:ok, 0} = Ingress.reap(ledger, tenant: "tenant-a")
+      refute_received {:handled, _}
     end
 
     for claim <- [~s({"exp":"later"}), ~s({"nbf":null})] do
@@ -434,6 +445,18 @@ defmodule AshHooks.Provider.JsonDecoderTest do
 
     assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
              Ingress.ingest(ledger, :events, token("{}"), context(ledger))
+  end
+
+  test "default decoding keeps verifying JWS payloads that are not JSON objects" do
+    for payload <- ["not json", "42", "[1,2]"] do
+      assert {:ok, ^payload} = Signature.jws(token(payload), "key", alg: "HS256")
+    end
+
+    header = Base.url_encode64("not json", padding: false)
+    body = Base.url_encode64("{}", padding: false)
+    mac = :crypto.mac(:hmac, :sha256, "key", header <> "." <> body)
+    forged = header <> "." <> body <> "." <> Base.url_encode64(mac, padding: false)
+    assert {:error, :invalid_signature} = Signature.jws(forged, "key", alg: "HS256")
   end
 
   test "direct scheme decoding uses the supplied decoder and accepts JSON lists" do

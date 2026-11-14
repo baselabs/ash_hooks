@@ -114,9 +114,11 @@ defmodule AshHooks.Provider.Signature do
   Key-location headers are ignored. JSON object `exp` and `nbf` claims must be
   numeric and are checked only after verification, against `now_ms:` or the clock.
   `json_decoder:` accepts a one-argument decoder for both the protected header
-  and claims, defaulting to `Jason.decode/1`. Decoder errors and exceptions
-  return `{:error, :malformed_payload}`; invalid claim types remain
-  `{:error, :invalid_signature}`. The authenticated payload is returned as bytes.
+  and claims, defaulting to `Jason.decode/1`. A header it refuses is
+  `{:error, :invalid_signature}`; a payload it does not decode to a JSON object
+  is not claim-checked; invalid claim types remain `{:error, :invalid_signature}`.
+  The authenticated payload is returned as bytes, so the caller's own decode
+  decides whether it is acceptable.
   """
   @spec jws(binary(), term(), keyword()) :: {:ok, binary()} | error()
   def jws(token, keys, opts) do
@@ -126,7 +128,7 @@ defmodule AshHooks.Provider.Signature do
            [header, payload, signature] <- :binary.split(token, ".", [:global]),
            {:ok, header_bytes} <- decode(header, :base64url),
            {:ok, payload_bytes} <- decode(payload, :base64url),
-           {:ok, header_data} when is_map(header_data) <- decode_json(header_bytes, opts),
+           {:ok, header_data} <- decode_header(header_bytes, opts),
            true <- header_data["alg"] == opts[:alg] and is_binary(opts[:alg]),
            true <-
              Map.get(header_data, "crit", []) == [] and Map.get(header_data, "b64", true) == true,
@@ -275,11 +277,18 @@ defmodule AshHooks.Provider.Signature do
         with :ok <- check_time(Map.fetch(claims, "exp"), now, :exp),
              do: check_time(Map.fetch(claims, "nbf"), now, :nbf)
 
-      {:ok, _} ->
+      _not_a_claims_object ->
         :ok
+    end
+  end
 
-      error ->
-        error
+  # The protected header is read before verification: a header the decoder
+  # refuses cannot be verified, so it is an invalid signature, never a
+  # malformed payload.
+  defp decode_header(bytes, opts) do
+    case decode_json(bytes, opts) do
+      {:ok, header} when is_map(header) -> {:ok, header}
+      _refused -> :invalid_header
     end
   end
 

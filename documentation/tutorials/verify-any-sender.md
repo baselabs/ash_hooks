@@ -495,8 +495,9 @@ request. It is an MFA called with the JSON bytes followed by its configured
 arguments, returning `{:ok, map_or_list}` or `{:error, reason}`; the default
 is `{Jason, :decode, []}`. The same function decodes the protected header,
 claims, and delivered payload. Claims and delivery decode the same payload
-bytes without caching a value between callbacks. Decoder refusals are malformed
-payloads; invalid `exp` or `nbf` types remain invalid signatures.
+bytes without caching a value between callbacks. A payload the decoder refuses
+is a malformed payload; a protected header it refuses is an invalid signature,
+as are invalid `exp` or `nbf` types.
 
 A host-written verifier receives this function as `ctx.json_decoder`.
 Generated payload decoders use it even when verification is overridden.
