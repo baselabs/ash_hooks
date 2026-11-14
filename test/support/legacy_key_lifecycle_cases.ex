@@ -97,6 +97,7 @@ defmodule AshHooks.Test.LegacyKeyLifecycleCases do
     assert is_nil(rolled.legacy_previous_secret_ref)
     assert rolled.legacy_secret_created_at == @clock
     assert is_nil(rolled.legacy_previous_secret_created_at)
+    assert is_nil(rolled.legacy_previous_secret_retired_at)
     assert is_nil(rolled.legacy_secret_first_used_at)
     assert {:ok, again} = roll(rolled, "next")
     assert again.legacy_previous_secret_ref == "installed"

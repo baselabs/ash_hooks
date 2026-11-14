@@ -57,9 +57,8 @@ defmodule AshHooks.KeyLifecycle do
          {:ok, overlap} <- validate_overlap(resource, opts) do
       rolled_at = opts[:now] || DateTime.utc_now()
       rolled_at = DateTime.truncate(rolled_at, :microsecond)
-      retired_at = DateTime.add(rolled_at, overlap, :second)
-
       incumbent = Map.fetch!(endpoint, fields.ref)
+      retired_at = scheduled_retirement(incumbent, rolled_at, overlap)
 
       fence = incumbent_fence(fields, incumbent)
 
@@ -105,6 +104,12 @@ defmodule AshHooks.KeyLifecycle do
       end
     end
   end
+
+  # An empty incumbent leaves no previous key, so nothing is scheduled.
+  defp scheduled_retirement(nil, _rolled_at, _overlap), do: nil
+
+  defp scheduled_retirement(_incumbent, rolled_at, overlap),
+    do: DateTime.add(rolled_at, overlap, :second)
 
   defp incumbent_fence(fields, nil), do: Ash.Expr.expr(is_nil(^Ash.Expr.ref(fields.ref)))
 

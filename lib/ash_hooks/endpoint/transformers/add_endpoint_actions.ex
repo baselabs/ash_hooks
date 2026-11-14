@@ -136,7 +136,9 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
             allow_nil?: fields.option == :legacy_key_lifecycle
           ),
           argument(:old_created_at, :utc_datetime_usec, allow_nil?: true, default: nil),
-          argument(:retired_at, :utc_datetime_usec, allow_nil?: false),
+          argument(:retired_at, :utc_datetime_usec,
+            allow_nil?: fields.option == :legacy_key_lifecycle
+          ),
           argument(:rolled_at, :utc_datetime_usec, allow_nil?: false)
         ],
         changes: changes
