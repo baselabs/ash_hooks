@@ -46,6 +46,23 @@ defmodule AshHooks.TransportTest do
     end
   end
 
+  defmodule Attempt do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.TransportTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.OutboundAttempt]
+
+    sqlite do
+      table("transport_attempts")
+      repo(AshHooks.Test.Repo)
+    end
+
+    actions do
+      defaults([:read])
+    end
+  end
+
   defmodule Domain do
     @moduledoc false
     use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
@@ -53,6 +70,7 @@ defmodule AshHooks.TransportTest do
     resources do
       resource(AshHooks.TransportTest.Endpoint)
       resource(AshHooks.TransportTest.Delivery)
+      resource(AshHooks.TransportTest.Attempt)
     end
   end
 
@@ -100,13 +118,18 @@ defmodule AshHooks.TransportTest do
 
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog, only: [with_log: 1]
+
   alias AshHooks.Delivery, as: DeliveryRuntime
+  alias AshHooks.Test.HttpReceiver
   alias AshHooks.Test.Repo
 
   @endpoints "transport_endpoints"
   @deliveries "transport_deliveries"
+  @attempts "transport_attempts"
   @payload Jason.encode!(%{"order" => 1})
   @secret "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))
+  @resolver_detail "private resolver detail: never persist or emit"
 
   setup_all do
     Repo.query!("""
@@ -137,7 +160,23 @@ defmodule AshHooks.TransportTest do
       "CREATE UNIQUE INDEX IF NOT EXISTS #{@deliveries}_unique_delivery_index ON #{@deliveries} (endpoint_id, event_uuid)"
     )
 
+    Repo.query!("""
+    CREATE TABLE IF NOT EXISTS #{@attempts} (
+      id TEXT PRIMARY KEY, delivery_pk TEXT NOT NULL, endpoint_id TEXT NOT NULL,
+      event_uuid TEXT NOT NULL, event_type TEXT NOT NULL, attempt INTEGER NOT NULL,
+      outcome TEXT NOT NULL, reason TEXT, response_status INTEGER,
+      response_snippet TEXT, response_headers TEXT, latency_ms INTEGER,
+      signing_key_ref TEXT, test INTEGER NOT NULL DEFAULT 0,
+      attempted_at TEXT NOT NULL
+    )
+    """)
+
+    Repo.query!(
+      "CREATE UNIQUE INDEX IF NOT EXISTS #{@attempts}_unique_attempt_index ON #{@attempts} (delivery_pk, attempt)"
+    )
+
     on_exit(fn ->
+      Repo.query!("DROP TABLE IF EXISTS #{@attempts}")
       Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
       Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
     end)
@@ -146,6 +185,7 @@ defmodule AshHooks.TransportTest do
   end
 
   setup do
+    Repo.query!("DELETE FROM #{@attempts}")
     Repo.query!("DELETE FROM #{@deliveries}")
     Repo.query!("DELETE FROM #{@endpoints}")
 
@@ -290,24 +330,214 @@ defmodule AshHooks.TransportTest do
     assert Jason.decode!(body)["test"] == true
   end
 
-  test "every resolver shape resolves or falls back contained" do
+  describe "transport resolver refusal" do
+    setup do
+      {server, port} = HttpReceiver.start()
+      on_exit(fn -> :inets.stop(:httpd, server) end)
+
+      # The registration cast refuses loopback. Seed the row directly, then
+      # explicitly admit this real receiver at both send-time HTTP gates.
+      id = Ash.UUID.generate()
+
+      Repo.query!(
+        "INSERT INTO #{@endpoints} (id, url, status, secret_ref) VALUES (?, ?, 'enabled', 'tr-main')",
+        [id, "http://127.0.0.1:#{port}/200"]
+      )
+
+      handler = "transport-resolution-#{System.unique_integer([:positive])}"
+
+      :ok =
+        :telemetry.attach_many(
+          handler,
+          [
+            [:ash_hooks, :delivery, :attempt],
+            [:ash_hooks, :delivery, :result],
+            [:ash_hooks, :delivery, :backoff],
+            [:ash_hooks, :delivery, :dead_letter],
+            [:ash_hooks, :delivery, :disable],
+            [:ash_hooks, :attempt, :record_failed]
+          ],
+          &__MODULE__.capture_resolution_event/4,
+          self()
+        )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+      %{endpoint: Ash.get!(Endpoint, id, authorize?: false)}
+    end
+
+    for shape <- [:function, :module_function] do
+      @shape shape
+      test "a nil #{@shape} resolver delivers to the real loopback listener", %{
+        endpoint: endpoint
+      } do
+        resolver =
+          if @shape == :function,
+            do: fn _endpoint, _tenant -> nil end,
+            else: {__MODULE__, :http_transport_for}
+
+        row = row!(endpoint, "msg_nil_transport")
+
+        assert :ok =
+                 DeliveryRuntime.run(
+                   %{"endpoint_id" => endpoint.id, "event_uuid" => row.event_uuid},
+                   loopback_config(resolver)
+                 )
+
+        assert_receive {:http_received, request}, 1_000
+        assert request.body == @payload
+
+        assert {:ok, %{id: "msg_nil_transport"}} =
+                 AshHooks.Signing.verify(request.body, request.headers, @secret)
+
+        assert Ash.get!(Delivery, row.id, authorize?: false).status == :succeeded
+
+        assert [%{outcome: :succeeded, response_status: 200}] =
+                 Ash.read!(Attempt, authorize?: false)
+      end
+    end
+
+    for failure <- [
+          :raise,
+          :throw,
+          :exit,
+          :invalid_atom,
+          :invalid_module,
+          :invalid_tuple,
+          :invalid_binary,
+          :module_function_raise
+        ] do
+      @failure failure
+      test "#{@failure} refuses egress and records only transport_resolution", %{
+        endpoint: endpoint
+      } do
+        assert_resolution_refused(endpoint, failing_resolver(@failure))
+      end
+    end
+  end
+
+  defp loopback_config(resolver) do
+    config(resolver,
+      attempts: Attempt,
+      destination_policy: fn _url, _context -> :allow end,
+      http_opts: [validate_destination: false],
+      max_attempts: 2
+    )
+  end
+
+  defp assert_resolution_refused(endpoint, resolver) do
+    row = row!(endpoint, "msg_resolver_refusal")
+
+    {result, logs} =
+      with_log(fn ->
+        DeliveryRuntime.run(
+          %{"endpoint_id" => endpoint.id, "event_uuid" => row.event_uuid},
+          loopback_config(resolver)
+        )
+      end)
+
+    refute_receive {:http_received, _request}, 100
+    assert {:snooze, delay} = result
+    assert delay > 0
+
+    final = Ash.get!(Delivery, row.id, authorize?: false)
+    assert final.status == :failed_retryable
+    assert final.last_error == "transport_resolution"
+    assert final.attempts == 1
+    assert %DateTime{} = final.next_attempt_at
+    assert final.response_status == nil
+    assert final.response_snippet == nil
+
+    assert [attempt] = Ash.read!(Attempt, authorize?: false)
+    assert attempt.outcome == :failed_retryable
+    assert attempt.reason == "transport_resolution"
+    assert attempt.attempt == 1
+    assert attempt.response_status == nil
+    assert attempt.response_snippet == nil
+    assert attempt.response_headers == nil
+    assert attempt.latency_ms == nil
+    assert attempt.signing_key_ref == nil
+
+    events = resolution_events()
+
+    assert {[:ash_hooks, :delivery, :result], %{},
+            %{
+              endpoint_id: endpoint.id,
+              event_uuid: row.event_uuid,
+              status: :failed_retryable,
+              response_status: nil,
+              reason: "transport_resolution"
+            }} in events
+
+    refute Enum.any?(events, fn {name, _, _} -> name == [:ash_hooks, :delivery, :attempt] end)
+
+    # Inspect raw persisted columns as well as emitted metadata, so resource
+    # Inspect implementations cannot hide an accidentally stored resolver term.
+    for surface <- [
+          Repo.query!("SELECT * FROM #{@deliveries} WHERE id = ?", [row.id]).rows,
+          Repo.query!("SELECT * FROM #{@attempts} WHERE id = ?", [attempt.id]).rows,
+          logs,
+          events
+        ] do
+      rendered = inspect(surface, limit: :infinity, printable_limit: :infinity)
+      refute rendered =~ @resolver_detail
+      refute rendered =~ "resolver_private_term"
+      refute rendered =~ "RuntimeError"
+    end
+  end
+
+  defp failing_resolver(:raise), do: &raising_transport_for/2
+
+  defp failing_resolver(:throw),
+    do: fn _, _ -> throw({:resolver_private_term, @resolver_detail}) end
+
+  defp failing_resolver(:exit),
+    do: fn _, _ -> exit({:resolver_private_term, @resolver_detail}) end
+
+  defp failing_resolver(:invalid_atom), do: fn _, _ -> :resolver_private_term end
+  defp failing_resolver(:invalid_module), do: fn _, _ -> String end
+
+  defp failing_resolver(:invalid_tuple),
+    do: fn _, _ -> {:resolver_private_term, @resolver_detail} end
+
+  defp failing_resolver(:invalid_binary), do: fn _, _ -> @resolver_detail end
+  defp failing_resolver(:module_function_raise), do: {__MODULE__, :raising_transport_for}
+
+  def http_transport_for(_endpoint, _tenant), do: nil
+  def raising_transport_for(_endpoint, _tenant), do: raise(@resolver_detail)
+
+  def capture_resolution_event(event, measurements, metadata, owner),
+    do: send(owner, {:resolution_event, event, measurements, metadata})
+
+  defp resolution_events do
+    receive do
+      {:resolution_event, event, measurements, metadata} ->
+        [{event, measurements, metadata} | resolution_events()]
+    after
+      0 -> []
+    end
+  end
+
+  test "resolver failures are contained and a module-function resolver routes" do
     endpoint = endpoint!()
     row = row!(endpoint, "msg_transport_shapes")
 
     run_with = fn resolver ->
       fresh = row!(endpoint, "msg_shapes_#{System.unique_integer()}")
 
-      DeliveryRuntime.run(
-        %{"endpoint_id" => endpoint.id, "event_uuid" => fresh.event_uuid},
-        config(fn _e, _t -> :ok end) |> Keyword.put(:transport, resolver)
-      )
+      result =
+        DeliveryRuntime.run(
+          %{"endpoint_id" => endpoint.id, "event_uuid" => fresh.event_uuid},
+          config(resolver)
+        )
+
+      assert Ash.get!(Delivery, fresh.id, authorize?: false).last_error == "transport_resolution"
+      result
     end
 
-    # an exiting and a throwing resolver fall back contained
+    # Exits, throws, and invalid returns refuse the attempt and retry.
     assert {:snooze, _} = run_with.(fn _e, _t -> exit(:boom) end)
     assert {:snooze, _} = run_with.(fn _e, _t -> throw(:boom) end)
 
-    # a non-module resolution falls back
     assert {:snooze, _} = run_with.(fn _e, _t -> "not-a-module" end)
 
     # an invalid :transport config shape falls back too
@@ -330,7 +560,7 @@ defmodule AshHooks.TransportTest do
 
   def transport_for(_endpoint, _tenant), do: ForwarderTransport
 
-  test "a crashing transport resolver falls back to the HTTP adapter" do
+  test "a crashing transport resolver retries under transport_resolution" do
     endpoint = endpoint!()
     row = row!(endpoint, "msg_transport_bad_resolver")
 
@@ -340,9 +570,6 @@ defmodule AshHooks.TransportTest do
                config(fn _endpoint, _tenant -> raise "resolver crashed" end)
              )
 
-    assert Ash.get!(Delivery, row.id, authorize?: false).last_error in [
-             "nxdomain",
-             "resolve_timeout"
-           ]
+    assert Ash.get!(Delivery, row.id, authorize?: false).last_error == "transport_resolution"
   end
 end

@@ -193,6 +193,9 @@ once; receivers deduplicate using the stable `webhook-id`.
 - `certificate_pin` adds a certificate or public-key digest check to HTTPS using
   the bounded adapter. `AshHooks.DestinationPolicy` can allow or deny destinations.
   `AshHooks.Transport` supplies another transport with the same signing and retries.
+  Its resolver returns `nil` for HTTP or a transport module exporting `request/5`.
+  A raise, throw, exit, or invalid return refuses the attempt with a retryable
+  `transport_resolution` failure, without falling back to HTTP.
 - `AshHooks.OutboundAttempt` records attempt history, including the real request
   duration and signing-key reference for HTTP 410 responses. History-write failures emit telemetry without
   undoing the delivery's completed result transition.

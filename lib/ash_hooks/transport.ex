@@ -18,8 +18,11 @@ defmodule AshHooks.Transport do
   Route per endpoint through the worker option (or direct-run config)
   `transport: {module, function}` / a 2-arity fn receiving the endpoint
   record and tenant, returning the transport module (or `nil` to keep the
-  HTTP adapter). A resolver that crashes, or a non-module return, falls
-  back to the HTTP adapter path; the HTTP guarantees stay the default.
+  HTTP adapter). A transport module must export `request/5`. A resolver
+  that raises, throws, exits, or returns an invalid value refuses the
+  attempt as a retryable `transport_resolution` failure. It does not
+  fall back to HTTP. No exception contents or returned terms are stored
+  or emitted; only the fixed classification is retained.
 
   The callback contract is `AshHooks.Http`'s adapter contract verbatim:
   one `request/5` returning `{:ok, %{status, headers, body}}` or

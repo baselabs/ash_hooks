@@ -35,6 +35,9 @@ defmodule AshHooks.Delivery do
     * 3xx → `:dead_letter` (`redirect_refused`; redirects are never followed)
     * transport error / secret-resolution failure → retryable
       backoff
+    * a transport resolver that raises, throws, exits, or returns an invalid
+      value refuses the attempt and retries under `transport_resolution`;
+      `nil` keeps the HTTP adapter
     * unresolvable DNS at the send-time destination check → retryable
       backoff under `nxdomain` (every family answered authoritatively
       negative) or `resolve_timeout` (resolver outage, congestion, mixed
@@ -1245,14 +1248,17 @@ defmodule AshHooks.Delivery do
   end
 
   defp attempt_enabled(row, endpoint, config, tenant) do
-    transport = resolve_transport(endpoint, config, tenant)
+    case resolve_transport(endpoint, config, tenant) do
+      {:ok, nil} ->
+        attempt_gated(row, endpoint, config, tenant)
 
-    if transport do
-      # a routed transport OWNS destination semantics: the packaged
-      # send-time gate (and the policy seam) describe HTTP destinations
-      send(row, endpoint, config, tenant, transport)
-    else
-      attempt_gated(row, endpoint, config, tenant)
+      {:ok, transport} ->
+        # A routed transport owns destination semantics: the packaged
+        # send-time gate and the policy seam describe HTTP destinations.
+        send(row, endpoint, config, tenant, transport)
+
+      {:error, reason} ->
+        retry(row, error_string(reason), config, tenant, nil)
     end
   end
 
@@ -1584,12 +1590,12 @@ defmodule AshHooks.Delivery do
   # The transport resolver (`transport: {m, f}` or a 2-arity fn of the
   # endpoint record and tenant) routes ONE endpoint's deliveries to the
   # app's own transport module instead of the HTTP adapter. It runs inside
-  # the send path's containment: a crash or a non-module return falls back
-  # to the HTTP adapter — HTTP's guarantees are the default posture.
+  # the send path's containment: nil keeps HTTP; a crash or invalid return
+  # refuses the attempt without retaining any resolver error contents.
   defp resolve_transport(endpoint, config, tenant) do
     case config[:transport] do
       nil ->
-        nil
+        {:ok, nil}
 
       {m, f} when is_atom(m) and is_atom(f) ->
         contained_transport(fn -> apply(m, f, [endpoint, tenant]) end)
@@ -1598,20 +1604,28 @@ defmodule AshHooks.Delivery do
         contained_transport(fn -> resolver.(endpoint, tenant) end)
 
       _invalid ->
-        nil
+        {:ok, nil}
     end
   end
 
   defp contained_transport(fun) do
     case fun.() do
-      module when is_atom(module) and not is_nil(module) -> module
-      _falls_back -> nil
+      nil ->
+        {:ok, nil}
+
+      module when is_atom(module) ->
+        if Code.ensure_loaded?(module) and function_exported?(module, :request, 5),
+          do: {:ok, module},
+          else: {:error, :transport_resolution}
+
+      _invalid ->
+        {:error, :transport_resolution}
     end
   rescue
-    _reason -> nil
+    _reason -> {:error, :transport_resolution}
   catch
-    :exit, _reason -> nil
-    :throw, _value -> nil
+    :exit, _reason -> {:error, :transport_resolution}
+    :throw, _value -> {:error, :transport_resolution}
   end
 
   # ────────────────────────── attempt history ──────────────────────────
@@ -2853,6 +2867,7 @@ defmodule AshHooks.Delivery do
   # the telemetry floor and the last_error ledger floor (#11 R1).
   defp error_string({:secret_resolution, _reason}), do: "secret_resolution"
   defp error_string({:adapter_crash, _inner}), do: "adapter_crash"
+  defp error_string(:transport_resolution), do: "transport_resolution"
 
   defp error_string(term), do: AshHooks.Telemetry.classify_token(term)
 end

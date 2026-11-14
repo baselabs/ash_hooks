@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A transport resolver that raises, throws, exits, or returns an invalid value
+  refuses the attempt as a retryable `transport_resolution` failure instead of
+  falling back to HTTP. Error contents are neither stored nor emitted. Returning
+  `nil` still selects HTTP.
 - Error messages, raised messages and module documentation no longer use em or
   en dashes. Each sentence is rewritten in plain punctuation with its meaning
   unchanged, and a test keeps every string in `lib` free of them.

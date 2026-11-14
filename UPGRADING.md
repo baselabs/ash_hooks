@@ -1,5 +1,18 @@
 # Upgrading
 
+## 3.1.0 → 3.2.0
+
+Transport resolver failures now refuse the attempt instead of falling back to
+HTTP. A resolver that raises, throws, exits, or returns anything other than `nil`
+or a transport module exporting `request/5` causes a retryable
+`transport_resolution` failure. Delivery rows, attempt history, and telemetry
+retain only this fixed classification, without the error contents.
+
+If your resolver relied on HTTP fallback after a failure or an invalid return,
+change it to return `nil` explicitly when HTTP is intended. Fix failing resolvers
+to return a transport module or `nil`; failed attempts retry under the delivery
+row's existing retry policy and attempt ceiling.
+
 ## 3.0.0 → 3.1.0
 
 The Ash floor rises from 3.34.3 to 3.37.2, because three published advisories

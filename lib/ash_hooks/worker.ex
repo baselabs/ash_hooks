@@ -62,8 +62,10 @@ defmodule AshHooks.Worker do
       tenant) returning an `AshHooks.Transport` module for one endpoint's
       deliveries (a developer's local forwarder behind a CLI "listen"
       command, for example), or `nil` to keep the HTTP adapter. The same signing,
-      attempts, and telemetry apply; a crashing resolver or non-module
-      return falls back to the HTTP adapter.
+      attempts, and telemetry apply. A transport module must export `request/5`.
+      A resolver that raises, throws, exits, or returns an invalid value
+      refuses the attempt as a retryable `transport_resolution` failure,
+      without falling back to HTTP or storing or emitting error contents.
     * `:http`: the `AshHooks.Http` adapter (default `AshHooks.Http.Bounded`).
     * `:retryable_statuses`: optional literal list of HTTP statuses/ranges
       that replaces the ordinary retry set. Omit it for 408/429/5xx. 2xx success,
