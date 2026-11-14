@@ -113,7 +113,7 @@ defmodule AshHooks.EndpointHealth do
             {disabled, warned}
 
           total >= policy.min_attempts and share >= policy.failure_share ->
-            sustain_failure(endpoint, share, total, now, tenant, {disabled, warned})
+            sustain_failure(endpoint, share, total, now, policy, tenant, {disabled, warned})
 
           share >= policy.warning_share ->
             {disabled, warned + if(warn(endpoint, share, total, now, tenant), do: 1, else: 0)}
@@ -132,9 +132,10 @@ defmodule AshHooks.EndpointHealth do
   # The disable arm: ONLY a previously-warned endpoint opens the breaker
   # — a first qualifying observation warns and stamps; the next sweep
   # that still qualifies disables and clears
-  defp sustain_failure(endpoint, share, total, now, tenant, {disabled, warned}) do
+  defp sustain_failure(endpoint, share, total, now, policy, tenant, {disabled, warned}) do
     if warned_previously?(endpoint) do
-      if disable_sustained(endpoint, tenant) do
+      if DateTime.diff(now, endpoint.disable_warned_at, :microsecond) >=
+           policy.warning_interval_seconds * 1_000_000 and disable_sustained(endpoint, tenant) do
         clear_warned(endpoint, tenant)
         {disabled + 1, warned}
       else

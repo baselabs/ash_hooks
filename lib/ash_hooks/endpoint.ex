@@ -316,6 +316,11 @@ defmodule AshHooks.Endpoint do
         default: 10,
         doc: "Minimum attempts in the window before the policy may disable."
       ],
+      warning_interval_seconds: [
+        type: :pos_integer,
+        default: 60,
+        doc: "Minimum seconds after the warning marker before sustained failure can disable."
+      ],
       warning_share: [
         type: {:custom, AshHooks.Endpoint, :validate_share, []},
         doc: """
@@ -448,6 +453,8 @@ defmodule AshHooks.Endpoint do
         failure_share:
           Extension.get_opt(resource, [:endpoint, :auto_disable], :failure_share, 0.95),
         min_attempts: Extension.get_opt(resource, [:endpoint, :auto_disable], :min_attempts, 10),
+        warning_interval_seconds:
+          Extension.get_opt(resource, [:endpoint, :auto_disable], :warning_interval_seconds, 60),
         warning_share: warning_share(resource),
         warning_min_attempts:
           Extension.get_opt(resource, [:endpoint, :auto_disable], :warning_min_attempts, nil) ||

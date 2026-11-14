@@ -260,8 +260,10 @@ defmodule AshHooks.EndpointHealthTest do
 
     # Sweep 2: the failure held — NOW the breaker opens, and the warned
     # stamp clears with it
-    assert {:ok, %{disabled: 1, warned: 1}} =
-             AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
+    assert {:ok, %{disabled: 1, warned: 0}} =
+             AshHooks.EndpointHealth.sweep(Endpoint, Attempt,
+               now: DateTime.add(DateTime.utc_now(), 60, :second)
+             )
 
     disabled = Ash.get!(Endpoint, failing.id, authorize?: false)
     assert disabled.status == :disabled
@@ -304,7 +306,9 @@ defmodule AshHooks.EndpointHealthTest do
     assert Ash.get!(Endpoint, flaky.id, authorize?: false).status == :enabled
 
     assert {:ok, %{disabled: 1, warned: 0}} =
-             AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
+             AshHooks.EndpointHealth.sweep(Endpoint, Attempt,
+               now: DateTime.add(DateTime.utc_now(), 60, :second)
+             )
 
     assert Ash.get!(Endpoint, flaky.id, authorize?: false).status == :disabled
   end
@@ -422,7 +426,12 @@ defmodule AshHooks.EndpointHealthTest do
     for n <- 1..4, do: seed_attempt!(failing.id, "s#{n}", :dead_letter, 10)
 
     assert {:ok, %{disabled: 0, warned: 1}} = AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
-    assert {:ok, %{disabled: 1, warned: 0}} = AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
+
+    assert {:ok, %{disabled: 1, warned: 0}} =
+             AshHooks.EndpointHealth.sweep(Endpoint, Attempt,
+               now: DateTime.add(DateTime.utc_now(), 60, :second)
+             )
+
     assert {:ok, %{disabled: 0, warned: 0}} = AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
   end
 
@@ -498,5 +507,25 @@ defmodule AshHooks.EndpointHealthTest do
                endpoint_id: endpoint.id,
                to: DateTime.utc_now()
              )
+  end
+
+  @tag release_fix: 5
+  test "release health enforces the warning interval on early and overlapping sweeps" do
+    endpoint = endpoint!()
+    for n <- 1..4, do: seed_attempt!(endpoint.id, n, :dead_letter, 10)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, %{disabled: 0, warned: 1}} =
+             AshHooks.EndpointHealth.sweep(Endpoint, Attempt, now: now)
+
+    assert {:ok, %{disabled: 0}} = AshHooks.EndpointHealth.sweep(Endpoint, Attempt, now: now)
+
+    assert {:ok, %{disabled: 0}} =
+             AshHooks.EndpointHealth.sweep(Endpoint, Attempt, now: DateTime.add(now, 59, :second))
+
+    assert Ash.get!(Endpoint, endpoint.id, authorize?: false).status == :enabled
+
+    assert {:ok, %{disabled: 1}} =
+             AshHooks.EndpointHealth.sweep(Endpoint, Attempt, now: DateTime.add(now, 60, :second))
   end
 end
