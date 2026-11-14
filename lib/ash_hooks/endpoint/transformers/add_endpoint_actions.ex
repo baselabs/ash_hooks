@@ -61,9 +61,17 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
         []
       end
 
+    custody =
+      if Extension.get_opt(dsl_state, [:endpoint], :custodian) do
+        {:ok, action} = Builder.build_action(:read, :read_custody_owner, pagination: false)
+        [action]
+      else
+        []
+      end
+
     with {:ok, change} <-
            Builder.build_action_change(Builtins.set_attribute(switch, disabled_value)),
-         {:ok, dsl_state} <- add_all(dsl_state, lifecycle ++ warning) do
+         {:ok, dsl_state} <- add_all(dsl_state, lifecycle ++ warning ++ custody) do
       changes =
         if warning == [],
           do: [change],

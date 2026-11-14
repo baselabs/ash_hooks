@@ -94,7 +94,7 @@ defmodule AshHooks.KeyLifecycle do
       params = roll_kind_argument(params, endpoint, fields)
 
       result =
-        lifecycle_query(resource)
+        lifecycle_query(resource, tenant)
         |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
         |> Ash.Query.filter(
           ^fence and
@@ -167,7 +167,7 @@ defmodule AshHooks.KeyLifecycle do
 
   defp roll_conflict(endpoint, tenant, now, fields) do
     with {:ok, current} <-
-           lifecycle_query(endpoint.__struct__)
+           lifecycle_query(endpoint.__struct__, tenant)
            |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
            |> Ash.read_one(authorize?: false, tenant: tenant) do
       {:error, conflict_reason(current, {fields, Map.fetch!(endpoint, fields.ref)}, now)}
@@ -201,7 +201,7 @@ defmodule AshHooks.KeyLifecycle do
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
          :ok <- require_previous_secret(endpoint, fields),
          {:ok, at} <- validate_retirement_time(at, opts[:now] || DateTime.utc_now(), resource) do
-      lifecycle_query(resource)
+      lifecycle_query(resource, tenant)
       |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
       |> Ash.Query.filter(
         ^Ash.Expr.ref(fields.previous_ref) == ^Map.fetch!(endpoint, fields.previous_ref)
@@ -277,7 +277,7 @@ defmodule AshHooks.KeyLifecycle do
       {:ok, endpoint}
     else
       result =
-        lifecycle_query(resource)
+        lifecycle_query(resource, tenant)
         |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
         |> Ash.Query.filter(
           ^Ash.Expr.ref(fields.previous_ref) == ^Map.fetch!(endpoint, fields.previous_ref)
@@ -351,7 +351,7 @@ defmodule AshHooks.KeyLifecycle do
 
   defp custody_write_in_phase(endpoint, tenant, opts, fields, write) do
     owner = endpoint.__struct__
-    query = owner |> Storage.query() |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+    query = owner |> Storage.owner_query(tenant) |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
 
     query =
       if Ash.DataLayer.data_layer(owner) == AshPostgres.DataLayer,
@@ -380,7 +380,7 @@ defmodule AshHooks.KeyLifecycle do
   defp custody_sweep(resource, fields, tenant, now, opts) do
     query =
       resource
-      |> Storage.query()
+      |> Storage.owner_query(tenant)
       |> Ash.Query.filter(
         not is_nil(^Ash.Expr.ref(fields.previous_ref)) and
           ^Ash.Expr.ref(fields.retired_at) <= ^now
@@ -417,8 +417,8 @@ defmodule AshHooks.KeyLifecycle do
       else: {:ok, current}
   end
 
-  defp lifecycle_query(resource) do
-    if Storage.custodian(resource), do: Storage.query(resource), else: Ash.Query.new(resource)
+  defp lifecycle_query(resource, tenant) do
+    if Storage.custodian(resource), do: Storage.owner_query(resource, tenant), else: Ash.Query.new(resource)
   end
 
   defp validate_new_secret_ref(endpoint, ref, fields) do

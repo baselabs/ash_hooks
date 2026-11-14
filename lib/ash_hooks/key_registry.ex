@@ -208,14 +208,10 @@ defmodule AshHooks.KeyRegistry do
     with {:ok, key} <- PrimaryKey.decode(row.owner_resource, row.owner_key),
          {:ok, owner} <-
            row.owner_resource
-           |> Storage.query()
+           |> Storage.owner_query(tenant)
            |> Ash.Query.do_filter(key)
            |> Ash.read_one(authorize?: false, tenant: tenant) do
-      {:ok,
-       is_nil(owner) or
-         not Enum.any?(Transitions.slots(row.owner_resource), fn {ref, kind} ->
-           Map.get(owner, ref) == row.ref and not is_nil(Map.get(owner, kind))
-         end)}
+      {:ok, not Transitions.holds_ref?(owner, row.ref)}
     end
   end
 

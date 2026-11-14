@@ -69,6 +69,12 @@ defmodule AshHooks.KeyRegistry.Storage do
     Ash.Query.set_context(resource, %{data_layer: %{repo: repo(resource)}})
   end
 
+  def owner_query(resource, tenant) do
+    resource
+    |> query()
+    |> Ash.Query.for_read(:read_custody_owner, %{}, authorize?: false, tenant: tenant)
+  end
+
   def context(resource), do: %{data_layer: %{repo: repo(resource)}}
 
   defp tenancy(resource) do

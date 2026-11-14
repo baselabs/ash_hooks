@@ -133,7 +133,7 @@ defmodule AshHooks.KeyRegistry.Transitions do
       end)
 
     case owner
-         |> Storage.query()
+         |> Storage.owner_query(tenant)
          |> Ash.Query.filter(^filter)
          |> Ash.read_one(authorize?: false, tenant: tenant) do
       {:ok, nil} -> {:error, :key_issue_expired}
@@ -151,6 +151,11 @@ defmodule AshHooks.KeyRegistry.Transitions do
         Info.attribute(owner, kind),
         do: {ref, kind}
   end
+
+  def holds_ref?(nil, _ref), do: false
+
+  def holds_ref?(owner, ref),
+    do: Enum.any?(slots(owner.__struct__), fn {field, _kind} -> Map.get(owner, field) == ref end)
 
   def owner_tenant(%owner{} = row) do
     case Info.multitenancy_attribute(owner) do
