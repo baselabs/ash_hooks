@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Endpoint custody key issuance through `create_with_key/3`, `roll_secret/2`
+  with `material:` or `generate:`, and `reissue_secret/2` for lost disclosures.
+  Generation returns a one-time secret or Ed25519 public half without storing
+  the disclosure on the endpoint. Issues commit before storage; attachment,
+  persisted ownership, and replacement retirement share one tenant transaction.
+- `AshHooks.Endpoint.adopt_keys/2` converts every occupied byte slot through
+  its declared resolver while preserving lifecycle timestamps. Existing custody
+  slots remain unchanged. Failed attempts retire their issued references, and
+  the registry sweep disposes of abandoned issues after crashes.
+- Custody endpoints without a byte resolver require `create_with_key/3` for
+  creation and refuse caller-chosen references when rolling. Issuing operations
+  refuse enclosing transactions, unsupported generation kinds, expired issues,
+  and persisted owners that do not hold the issued keys in their intended slots.
+
 - Outbound custody signing for Standard Webhooks and legacy envelopes, including
   mixed custody and byte slots during migration. Slot kind markers select each
   signer; sender-only kinds are refused before custody is called.

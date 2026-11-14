@@ -2,6 +2,61 @@
 
 ## 3.1.0 → 3.2.0
 
+To move outbound endpoints from byte references to custody:
+
+1. Enable key lifecycle and migrate its columns. Before adoption, schedule the
+   retirement of every undated previous key with `schedule_previous_retirement/3`,
+   or remove it with `expire_previous_secret/2`.
+2. Add a key-registry resource on the same transactional data layer, mutate
+   repository, and tenancy as the endpoint. Migrate the registry and per-slot
+   kind columns described below. Declare `custodian` and `key_registry` while
+   keeping the endpoint's `secret_resolver`.
+3. Create new endpoints with `AshHooks.Endpoint.create_with_key/3`, supplying
+   `generate: {:standard_webhooks, :v1}`, `generate: {:standard_webhooks, :v1a}`,
+   or `material:` in the signing API's wire format. Generation returns
+   `{:ok, endpoint, disclosure}`; import returns `{:ok, endpoint}`. v1 discloses
+   the `whsec_` secret; v1a discloses only the `whpk_` public half.
+4. Run `AshHooks.Endpoint.adopt_keys/2` for every existing row under its tenant.
+   Each row's occupied byte slots convert together, with every lifecycle
+   timestamp unchanged. Already adopted slots are left alone, so this process
+   is resumable. Unconverted slots keep signing through their byte resolver.
+   Host byte references never enter the registry.
+5. Confirm that every occupied slot has a kind marker, then remove
+   `secret_resolver`, remove byte material from the host's store, and optionally
+   enable `key_material: :custody_only`.
+
+Custody rolls accept exactly one of `material:` or `generate: kind`; endpoints
+that retain a byte resolver also accept the existing `new_secret_ref:` path.
+Standard slots generate v1 or v1a; legacy slots generate
+`{:legacy_hmac, :sha256}` with `slot: :legacy`. Legacy generation discloses the
+exact 32 random key bytes as a binary. Do not encode those bytes and then use
+the encoding as a different legacy key. Sender HMAC kinds are never generated
+or imported into endpoint slots. The overlap gate and retirement deadlines
+apply to custody and byte keys alike.
+
+Run issuing operations outside an enclosing transaction. They commit the
+registry issue before calling custody, then create or update the owner and
+attach the issue in one transaction. A failed attempt retires its issues;
+after a process crash, the registry sweep retires timed-out issues and destroys
+them. Schedule that sweep as described below and repeat the failed operation.
+
+When a committed generation's one-time disclosure is lost, call
+`AshHooks.Endpoint.reissue_secret/2` with the selected `slot:`. It returns
+`{:ok, endpoint, disclosure}` for a newly generated current key of the same kind.
+The replaced current key stops signing immediately, cutting off a counterparty
+that holds only that key. The previous key and its retirement time are unchanged;
+only that previous key continues through its existing window. Reissue ignores
+the overlap gate, creates no new overlap, and refuses byte slots with `:byte_slot`.
+
+Handle these issuance refusals explicitly:
+
+| Result | Meaning and recovery |
+| --- | --- |
+| `:inside_transaction` | Invoke issuance after the enclosing transaction commits. Nothing was issued. |
+| `:key_issue_expired` | The registry sweep won before attachment, or custody already tombstoned the issue. Repeat the operation for a fresh reference. |
+| `:kind_not_allowed` | This slot cannot generate or import that kind. Use a supported signing kind. Nothing was issued. |
+| `:owner_mismatch` | The create action did not persist exactly one owner holding every issued reference in its intended slot and kind. Fix the action before retrying; its write rolled back. |
+
 Custody endpoints now sign through the endpoint resource's `custodian`, including
 worker deliveries and `test_send`. Current and previous Standard Webhooks slots
 may use different algorithms. Legacy slots use custody with
