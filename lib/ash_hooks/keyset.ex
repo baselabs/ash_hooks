@@ -111,8 +111,6 @@ defmodule AshHooks.Keyset do
     end
   rescue
     _raised -> {:error, :invalid_cursor}
-  catch
-    _kind, _reason -> {:error, :invalid_cursor}
   end
 
   defp apply_cursor(query, nil, _time_field), do: query
