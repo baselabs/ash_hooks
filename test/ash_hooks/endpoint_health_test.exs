@@ -452,4 +452,39 @@ defmodule AshHooks.EndpointHealthTest do
     )
     """)
   end
+
+  @tag release_fix: 3
+  test "release health counts only committed disable writes" do
+    endpoint = endpoint!()
+    for n <- 1..4, do: seed_attempt!(endpoint.id, n, :dead_letter, 10)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    Repo.query!("UPDATE #{@endpoints} SET disable_warned_at = ? WHERE id = ?", [
+      DateTime.to_iso8601(DateTime.add(now, -120, :second)),
+      endpoint.id
+    ])
+
+    Repo.query!(
+      "CREATE TRIGGER release_disable_abort BEFORE UPDATE OF status ON #{@endpoints} WHEN NEW.status = 'disabled' BEGIN SELECT RAISE(ABORT, 'disable rejected'); END"
+    )
+
+    on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS release_disable_abort") end)
+    assert {:ok, %{disabled: 0}} = AshHooks.EndpointHealth.sweep(Endpoint, Attempt, now: now)
+    refute_received {[:ash_hooks, :endpoint, :disable], _}
+    assert Ash.get!(Endpoint, endpoint.id, authorize?: false).disable_warned_at != nil
+  end
+
+  @tag release_fix: 3
+  test "release health counts only committed warning markers" do
+    endpoint = endpoint!()
+    for n <- 1..4, do: seed_attempt!(endpoint.id, n, :dead_letter, 10)
+
+    Repo.query!(
+      "CREATE TRIGGER release_warning_abort BEFORE UPDATE OF disable_warned_at ON #{@endpoints} BEGIN SELECT RAISE(ABORT, 'warning rejected'); END"
+    )
+
+    on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS release_warning_abort") end)
+    assert {:ok, %{warned: 0}} = AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
+    refute_received {[:ash_hooks, :endpoint, :disable_warning], _}
+  end
 end

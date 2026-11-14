@@ -115,8 +115,7 @@ defmodule AshHooks.EndpointHealth do
             sustain_failure(endpoint, share, total, now, tenant, {disabled, warned})
 
           share >= policy.warning_share ->
-            warn(endpoint, share, total, now, tenant)
-            {disabled, warned + 1}
+            {disabled, warned + if(warn(endpoint, share, total, now, tenant), do: 1, else: 0)}
 
           true ->
             clear_warned(endpoint, tenant)
@@ -134,51 +133,49 @@ defmodule AshHooks.EndpointHealth do
   # that still qualifies disables and clears
   defp sustain_failure(endpoint, share, total, now, tenant, {disabled, warned}) do
     if warned_previously?(endpoint) do
-      disable_sustained(endpoint, tenant)
-      clear_warned(endpoint, tenant)
-      {disabled + 1, warned}
+      if disable_sustained(endpoint, tenant) do
+        clear_warned(endpoint, tenant)
+        {disabled + 1, warned}
+      else
+        {disabled, warned}
+      end
     else
-      warn(endpoint, share, total, now, tenant)
-      {disabled, warned + 1}
+      {disabled, warned + if(warn(endpoint, share, total, now, tenant), do: 1, else: 0)}
     end
   end
 
   defp warned_previously?(endpoint), do: Map.get(endpoint, :disable_warned_at) != nil
 
   defp warn(endpoint, share, total, now, tenant) do
-    stamp_warned(endpoint, now, tenant)
+    if stamp_warned(endpoint, now, tenant) do
+      :telemetry.execute(
+        [:ash_hooks, :endpoint, :disable_warning],
+        %{},
+        %{endpoint_id: endpoint_id_of(endpoint), failure_share: share, attempts: total}
+      )
 
-    :telemetry.execute(
-      [:ash_hooks, :endpoint, :disable_warning],
-      %{},
-      %{
-        endpoint_id: endpoint_id_of(endpoint),
-        failure_share: share,
-        attempts: total
-      }
-    )
+      true
+    else
+      false
+    end
   end
 
-  # first warning wins: gated WHERE still nil, so concurrent sweeps
-  # single-winner the stamp (the loser's telemetry is advisory, never a
-  # second disable ticket)
+  # A concurrent sweep can win the marker, but only its committed write warns.
   defp stamp_warned(endpoint, now, tenant) do
     if warned_previously?(endpoint) do
-      :ok
+      false
     else
-      _ =
-        endpoint.__struct__
-        |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(endpoint))
-        |> Ash.Query.filter(is_nil(disable_warned_at))
-        |> Ash.bulk_update(:mark_disable_warned, %{warned_at: now},
-          authorize?: false,
-          return_records?: false,
-          return_errors?: false,
-          strategy: [:atomic],
-          tenant: tenant
-        )
-
-      :ok
+      endpoint.__struct__
+      |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(endpoint))
+      |> Ash.Query.filter(is_nil(disable_warned_at))
+      |> Ash.bulk_update(:mark_disable_warned, %{warned_at: now},
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
+      |> committed?()
     end
   end
 
@@ -206,23 +203,39 @@ defmodule AshHooks.EndpointHealth do
   end
 
   defp disable_sustained(endpoint, tenant) do
-    _ =
+    switch =
+      Spark.Dsl.Extension.get_opt(endpoint.__struct__, [:endpoint], :status_attribute, nil) ||
+        :status
+
+    stamped_at = endpoint.disable_warned_at
+
+    committed =
       endpoint.__struct__
       |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(endpoint))
+      |> Ash.Query.do_filter(%{switch => Map.fetch!(endpoint, switch)})
+      |> Ash.Query.filter(disable_warned_at == ^stamped_at)
       |> Ash.bulk_update(:disable, %{},
         authorize?: false,
-        return_records?: false,
-        return_errors?: false,
+        return_records?: true,
+        return_errors?: true,
         strategy: [:atomic],
         tenant: tenant
       )
+      |> committed?()
 
-    :telemetry.execute(
-      [:ash_hooks, :endpoint, :disable],
-      %{},
-      %{endpoint_id: endpoint_id_of(endpoint), reason: :sustained_failure}
-    )
+    if committed do
+      :telemetry.execute(
+        [:ash_hooks, :endpoint, :disable],
+        %{},
+        %{endpoint_id: endpoint_id_of(endpoint), reason: :sustained_failure}
+      )
+    end
+
+    committed
   end
+
+  defp committed?(%Ash.BulkResult{status: :success, records: [_]}), do: true
+  defp committed?(_), do: false
 
   defp count_failed(rows) do
     Enum.count(rows, &(&1.outcome != :succeeded))

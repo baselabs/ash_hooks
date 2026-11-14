@@ -53,8 +53,16 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
     with {:ok, change} <-
            Builder.build_action_change(Builtins.set_attribute(switch, disabled_value)),
          {:ok, dsl_state} <- add_all(dsl_state, lifecycle ++ warning) do
+      changes =
+        if warning == [],
+          do: [change],
+          else: [
+            change,
+            elem(Builder.build_action_change(Builtins.set_attribute(:disable_warned_at, nil)), 1)
+          ]
+
       with {:ok, disable} <-
-             Builder.build_action(:update, :disable, accept: [], changes: [change]) do
+             Builder.build_action(:update, :disable, accept: [], changes: changes) do
         {:ok, Transformer.add_entity(dsl_state, [:actions], disable)}
       end
     end
