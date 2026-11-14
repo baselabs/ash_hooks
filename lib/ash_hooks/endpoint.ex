@@ -225,22 +225,31 @@ defmodule AshHooks.Endpoint do
            endpoint.__struct__
            |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
            |> Ash.read_one(authorize?: false, tenant: tenant) do
-      case current do
-        %{secret_ref: ref, previous_secret_ref: previous, previous_secret_retired_at: nil}
-        when ref == endpoint.secret_ref and not is_nil(previous) ->
-          {:error, :previous_secret_undated}
-
-        %{secret_ref: ref, previous_secret_ref: previous, previous_secret_retired_at: at}
-        when ref == endpoint.secret_ref and not is_nil(previous) ->
-          if DateTime.compare(at, now) == :gt,
-            do: {:error, :overlap_active},
-            else: {:error, :rolled_underneath}
-
-        _ ->
-          {:error, :rolled_underneath}
-      end
+      {:error, conflict_reason(current, endpoint.secret_ref, now)}
     end
   end
+
+  # The incumbent is unchanged and still holds a previous key: an undated
+  # one refuses until resolved, a dated one inside its window is an active
+  # overlap. Anything else means another writer rolled underneath.
+  defp conflict_reason(
+         %{secret_ref: incumbent, previous_secret_ref: previous, previous_secret_retired_at: nil},
+         incumbent,
+         _now
+       )
+       when not is_nil(previous),
+       do: :previous_secret_undated
+
+  defp conflict_reason(
+         %{secret_ref: incumbent, previous_secret_ref: previous, previous_secret_retired_at: at},
+         incumbent,
+         now
+       )
+       when not is_nil(previous) do
+    if DateTime.compare(at, now) == :gt, do: :overlap_active, else: :rolled_underneath
+  end
+
+  defp conflict_reason(_current, _incumbent, _now), do: :rolled_underneath
 
   @doc """
   Sets the standard previous key's retirement time, including for an undated
