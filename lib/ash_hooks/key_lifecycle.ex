@@ -8,11 +8,14 @@ defmodule AshHooks.KeyLifecycle do
   require Ash.Expr
 
   alias AshHooks.Errors.Unknown.UnknownError
+  alias AshHooks.KeyRegistry.{Storage, Transitions}
   alias AshHooks.{PrimaryKey, Tenancy}
 
   def fields(:standard) do
     %{
       ref: :secret_ref,
+      kind: :secret_kind,
+      previous_kind: :previous_secret_kind,
       created_at: :secret_created_at,
       first_used_at: :secret_first_used_at,
       previous_ref: :previous_secret_ref,
@@ -31,6 +34,8 @@ defmodule AshHooks.KeyLifecycle do
   def fields(:legacy) do
     %{
       ref: :legacy_secret_ref,
+      kind: :legacy_secret_kind,
+      previous_kind: :legacy_previous_secret_kind,
       created_at: :legacy_secret_created_at,
       first_used_at: :legacy_secret_first_used_at,
       previous_ref: :legacy_previous_secret_ref,
@@ -48,6 +53,22 @@ defmodule AshHooks.KeyLifecycle do
 
   @spec roll_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
   def roll_secret(endpoint, opts) do
+    if Storage.custodian(endpoint.__struct__) do
+      fields = fields(Keyword.get(opts, :slot, :standard))
+
+      custody_write(endpoint, opts, &roll_incumbent(&1, endpoint, opts, fields))
+    else
+      do_roll_secret(endpoint, opts)
+    end
+  end
+
+  defp roll_incumbent(current, endpoint, opts, fields) do
+    if Map.fetch!(current, fields.ref) == Map.fetch!(endpoint, fields.ref),
+      do: do_roll_secret(current, opts),
+      else: {:error, :rolled_underneath}
+  end
+
+  defp do_roll_secret(endpoint, opts) do
     resource = endpoint.__struct__
     fields = fields(Keyword.get(opts, :slot, :standard))
 
@@ -62,8 +83,18 @@ defmodule AshHooks.KeyLifecycle do
 
       fence = incumbent_fence(fields, incumbent)
 
+      params = %{
+        new_secret_ref: new_ref,
+        old_ref: incumbent,
+        old_created_at: Map.fetch!(endpoint, fields.created_at),
+        retired_at: retired_at,
+        rolled_at: rolled_at
+      }
+
+      params = roll_kind_argument(params, endpoint, fields)
+
       result =
-        resource
+        lifecycle_query(resource)
         |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
         |> Ash.Query.filter(
           ^fence and
@@ -72,13 +103,7 @@ defmodule AshHooks.KeyLifecycle do
         )
         |> Ash.bulk_update(
           fields.roll,
-          %{
-            new_secret_ref: new_ref,
-            old_ref: incumbent,
-            old_created_at: Map.fetch!(endpoint, fields.created_at),
-            retired_at: retired_at,
-            rolled_at: rolled_at
-          },
+          params,
           authorize?: false,
           return_records?: true,
           return_errors?: true,
@@ -103,6 +128,12 @@ defmodule AshHooks.KeyLifecycle do
           {:error, List.first(result.errors || []) || result}
       end
     end
+  end
+
+  defp roll_kind_argument(params, endpoint, fields) do
+    if Storage.custodian(endpoint.__struct__),
+      do: Map.put(params, :old_kind, Map.get(endpoint, fields.kind)),
+      else: params
   end
 
   # An empty incumbent leaves no previous key, so nothing is scheduled.
@@ -136,7 +167,7 @@ defmodule AshHooks.KeyLifecycle do
 
   defp roll_conflict(endpoint, tenant, now, fields) do
     with {:ok, current} <-
-           endpoint.__struct__
+           lifecycle_query(endpoint.__struct__)
            |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
            |> Ash.read_one(authorize?: false, tenant: tenant) do
       {:error, conflict_reason(current, {fields, Map.fetch!(endpoint, fields.ref)}, now)}
@@ -170,7 +201,7 @@ defmodule AshHooks.KeyLifecycle do
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
          :ok <- require_previous_secret(endpoint, fields),
          {:ok, at} <- validate_retirement_time(at, opts[:now] || DateTime.utc_now(), resource) do
-      resource
+      lifecycle_query(resource)
       |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
       |> Ash.Query.filter(
         ^Ash.Expr.ref(fields.previous_ref) == ^Map.fetch!(endpoint, fields.previous_ref)
@@ -221,8 +252,22 @@ defmodule AshHooks.KeyLifecycle do
 
     with :ok <- require_lifecycle(resource, fields),
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
+      expire_selected(endpoint, tenant, opts, fields)
+    end
+  end
+
+  defp expire_selected(endpoint, tenant, opts, fields) do
+    if Storage.custodian(endpoint.__struct__) do
+      custody_write(endpoint, opts, &expire_unchanged(&1, endpoint, tenant, opts, fields))
+    else
       expire_previous_secret_gated(endpoint, tenant, opts[:now] || DateTime.utc_now(), fields)
     end
+  end
+
+  defp expire_unchanged(current, endpoint, tenant, opts, fields) do
+    if Map.fetch!(current, fields.previous_ref) == Map.fetch!(endpoint, fields.previous_ref),
+      do: expire_previous_secret_gated(current, tenant, opts[:now] || DateTime.utc_now(), fields),
+      else: {:ok, endpoint}
   end
 
   defp expire_previous_secret_gated(endpoint, tenant, retired_at, fields) do
@@ -232,7 +277,7 @@ defmodule AshHooks.KeyLifecycle do
       {:ok, endpoint}
     else
       result =
-        resource
+        lifecycle_query(resource)
         |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
         |> Ash.Query.filter(
           ^Ash.Expr.ref(fields.previous_ref) == ^Map.fetch!(endpoint, fields.previous_ref)
@@ -263,25 +308,117 @@ defmodule AshHooks.KeyLifecycle do
 
     with :ok <- require_lifecycle(resource, fields),
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
-      result =
-        resource
-        |> Ash.Query.filter(
-          not is_nil(^Ash.Expr.ref(fields.previous_ref)) and
-            ^Ash.Expr.ref(fields.retired_at) <= ^now
-        )
-        |> Ash.bulk_update(fields.retire, %{retired_at: now},
-          authorize?: false,
-          return_records?: true,
-          return_errors?: true,
-          strategy: [:atomic],
-          tenant: tenant
-        )
-
-      case result do
-        %Ash.BulkResult{status: :success, records: records} -> {:ok, length(records)}
-        %Ash.BulkResult{} = result -> {:error, List.first(result.errors || []) || result}
+      if Storage.custodian(resource) do
+        custody_sweep(resource, fields, tenant, now, opts)
+      else
+        byte_sweep(resource, fields, tenant, now)
       end
     end
+  end
+
+  defp byte_sweep(resource, fields, tenant, now) do
+    result =
+      resource
+      |> Ash.Query.filter(
+        not is_nil(^Ash.Expr.ref(fields.previous_ref)) and
+          ^Ash.Expr.ref(fields.retired_at) <= ^now
+      )
+      |> Ash.bulk_update(fields.retire, %{retired_at: now},
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
+
+    case result do
+      %Ash.BulkResult{status: :success, records: records} -> {:ok, length(records)}
+      %Ash.BulkResult{} = result -> {:error, List.first(result.errors || []) || result}
+    end
+  end
+
+  defp custody_write(endpoint, opts, write) do
+    owner = endpoint.__struct__
+    fields = fields(Keyword.get(opts, :slot, :standard))
+    registry = Storage.registry(owner)
+
+    with {:ok, tenant} <- Tenancy.resolve([registry], opts[:tenant]) do
+      Storage.phase(registry, owner, tenant, fn ->
+        custody_write_in_phase(endpoint, tenant, opts, fields, write)
+      end)
+    end
+  end
+
+  defp custody_write_in_phase(endpoint, tenant, opts, fields, write) do
+    owner = endpoint.__struct__
+    query = owner |> Storage.query() |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+
+    query =
+      if Ash.DataLayer.data_layer(owner) == AshPostgres.DataLayer,
+        do: Ash.Query.lock(query, :for_update),
+        else: query
+
+    with {:ok, loaded} <- Ash.read_one(query, authorize?: false, tenant: tenant),
+         current = loaded || endpoint,
+         {:ok, updated} <- write.(current),
+         :ok <- retire_displaced(current, updated, fields, tenant, Transitions.now(opts)) do
+      {:ok, updated}
+    end
+  end
+
+  defp retire_displaced(before, updated, fields, tenant, now) do
+    ref = Map.get(before, fields.previous_ref)
+
+    if ref && Map.get(before, fields.previous_kind) &&
+         ref != Map.get(updated, fields.previous_ref) do
+      Transitions.retire(before.__struct__, ref, now, tenant: tenant)
+    else
+      :ok
+    end
+  end
+
+  defp custody_sweep(resource, fields, tenant, now, opts) do
+    query =
+      resource
+      |> Storage.query()
+      |> Ash.Query.filter(
+        not is_nil(^Ash.Expr.ref(fields.previous_ref)) and
+          ^Ash.Expr.ref(fields.retired_at) <= ^now
+      )
+
+    with :ok <- Storage.check(Storage.registry(resource), resource),
+         {:ok, rows} <- Ash.read(query, authorize?: false, tenant: tenant) do
+      Enum.reduce_while(rows, {:ok, 0}, &expire_candidate(&1, &2, fields, tenant, now, opts))
+    end
+  end
+
+  defp expire_candidate(row, {:ok, count}, fields, tenant, now, opts) do
+    result =
+      custody_write(
+        row,
+        Keyword.merge(opts, tenant: tenant, now: now),
+        &expire_if_due(&1, tenant, now, fields)
+      )
+
+    case result do
+      {:ok, updated} ->
+        {:cont, {:ok, count + if(Map.get(updated, fields.previous_ref) == nil, do: 1, else: 0)}}
+
+      error ->
+        {:halt, error}
+    end
+  end
+
+  defp expire_if_due(current, tenant, now, fields) do
+    at = Map.get(current, fields.retired_at)
+
+    if at && DateTime.compare(at, now) != :gt,
+      do: expire_previous_secret_gated(current, tenant, now, fields),
+      else: {:ok, current}
+  end
+
+  defp lifecycle_query(resource) do
+    if Storage.custodian(resource), do: Storage.query(resource), else: Ash.Query.new(resource)
   end
 
   defp validate_new_secret_ref(endpoint, ref, fields) do

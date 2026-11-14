@@ -38,9 +38,16 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
           fields = AshHooks.KeyLifecycle.fields(slot),
           Extension.get_opt(dsl_state, [:endpoint], fields.option, :off) == :on,
           action <- [
-            build_roll_secret(fields),
+            build_roll_secret(
+              fields,
+              not is_nil(Extension.get_opt(dsl_state, [:endpoint], :custodian))
+            ),
             build_schedule_previous_retirement(fields),
-            build_retire_previous_secret(fields) | build_first_used_actions(fields)
+            build_retire_previous_secret(
+              fields,
+              not is_nil(Extension.get_opt(dsl_state, [:endpoint], :custodian))
+            )
+            | build_first_used_actions(fields)
           ],
           do: action
 
@@ -101,7 +108,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
   # across. The runtime's WHERE gate (same incumbent) fences concurrent
   # rolls; the moving values arrive as ARGUMENTS read off the row (the
   # SecretRef type has no atomic-update expression support).
-  defp build_roll_secret(fields) do
+  defp build_roll_secret(fields, custody?) do
     {:ok, prev_ref} =
       Builder.build_action_change(Builtins.set_attribute(fields.previous_ref, arg(:old_ref)))
 
@@ -125,22 +132,35 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
     {:ok, prev_retired} =
       Builder.build_action_change(Builtins.set_attribute(fields.retired_at, arg(:retired_at)))
 
-    changes = [prev_ref, ref, created, first_used, prev_created, prev_first_used, prev_retired]
+    kind_changes =
+      if custody?,
+        do: [
+          change_attribute(fields.previous_kind, arg(:old_kind)),
+          change_attribute(fields.kind, nil)
+        ],
+        else: []
+
+    changes =
+      [prev_ref, ref, created, first_used, prev_created, prev_first_used, prev_retired] ++
+        kind_changes
+
+    kind_arguments = if custody?, do: [argument(:old_kind, :term, allow_nil?: true)], else: []
 
     {:ok, action} =
       Builder.build_action(:update, fields.roll,
         accept: [],
-        arguments: [
-          argument(:new_secret_ref, AshHooks.Endpoint.SecretRef, allow_nil?: false),
-          argument(:old_ref, AshHooks.Endpoint.SecretRef,
-            allow_nil?: fields.option == :legacy_key_lifecycle
-          ),
-          argument(:old_created_at, :utc_datetime_usec, allow_nil?: true, default: nil),
-          argument(:retired_at, :utc_datetime_usec,
-            allow_nil?: fields.option == :legacy_key_lifecycle
-          ),
-          argument(:rolled_at, :utc_datetime_usec, allow_nil?: false)
-        ],
+        arguments:
+          [
+            argument(:new_secret_ref, AshHooks.Endpoint.SecretRef, allow_nil?: false),
+            argument(:old_ref, AshHooks.Endpoint.SecretRef,
+              allow_nil?: fields.option == :legacy_key_lifecycle
+            ),
+            argument(:old_created_at, :utc_datetime_usec, allow_nil?: true, default: nil),
+            argument(:retired_at, :utc_datetime_usec,
+              allow_nil?: fields.option == :legacy_key_lifecycle
+            ),
+            argument(:rolled_at, :utc_datetime_usec, allow_nil?: false)
+          ] ++ kind_arguments,
         changes: changes
       )
 
@@ -149,7 +169,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
 
   # The retirement: the old key's reference leaves the row; its timeline
   # (created, retired — first-used if it ever signed) stays as the record
-  defp build_retire_previous_secret(fields) do
+  defp build_retire_previous_secret(fields, custody?) do
     {:ok, prev_ref} =
       Builder.build_action_change(Builtins.set_attribute(fields.previous_ref, nil))
 
@@ -162,7 +182,8 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
     {:ok, retired_at} =
       Builder.build_action_change(Builtins.set_attribute(fields.retired_at, arg(:retired_at)))
 
-    changes = [prev_ref, prev_created, prev_first_used, retired_at]
+    kind_changes = if custody?, do: [change_attribute(fields.previous_kind, nil)], else: []
+    changes = [prev_ref, prev_created, prev_first_used, retired_at] ++ kind_changes
 
     {:ok, action} =
       Builder.build_action(:update, fields.retire,
@@ -177,6 +198,11 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
       )
 
     action
+  end
+
+  defp change_attribute(name, value) do
+    {:ok, change} = Builder.build_action_change(Builtins.set_attribute(name, value))
+    change
   end
 
   # First-use stamps, written by the delivery runtime at signing time.
