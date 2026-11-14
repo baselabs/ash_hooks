@@ -40,8 +40,9 @@ resolves, ingress writes it with this action: the new row has the placeholder
 payload `%{}`, status `:failed_permanent`, and error class `"malformed_payload"`,
 is never claimed or handled, and keeps attempts and fencing token at 0. A
 provider identity callback that rejects the placeholder refuses the request
-before any write, as before. A duplicate still drives the surviving row's stored
-payload. No schema migration is required; restrict direct access to this action
+before `:record_malformed` runs, as before; with `ingress_tracking :on` that
+refusal is recorded as a rejection row, like any refused request. A duplicate
+still drives the surviving row's stored payload. No schema migration is required; restrict direct access to this action
 along with the other machine actions.
 
 A ledger written by an earlier version can hold a nonterminal row whose payload
