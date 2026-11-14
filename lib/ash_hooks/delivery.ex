@@ -289,54 +289,80 @@ defmodule AshHooks.Delivery do
   defp prune_batch(deliv_mod, older_than, tenant, batch_size, total, opts) do
     require Ash.Query
 
+    result = prune_delivery_batch(deliv_mod, older_than, tenant, batch_size, opts[:attempts])
+
+    case result do
+      {:ok, rows} when length(rows) < batch_size ->
+        {:ok, total + length(rows)}
+
+      {:ok, rows} ->
+        prune_batch(deliv_mod, older_than, tenant, batch_size, total + length(rows), opts)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp prune_delivery_batch(deliv_mod, older_than, tenant, batch_size, attempts_mod) do
+    operation = fn ->
+      result =
+        deliv_mod
+        |> Ash.Query.filter(status in [:succeeded, :dead_letter] and inserted_at < ^older_than)
+        |> Ash.Query.limit(batch_size)
+        |> Ash.bulk_destroy(:prune, %{},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
+
+      case result do
+        %Ash.BulkResult{status: :success, records: rows} ->
+          with :ok <- prune_attempt_history(attempts_mod, rows, tenant), do: {:ok, rows}
+
+        %Ash.BulkResult{} = failure ->
+          bulk_failure(failure)
+      end
+    end
+
+    if attempts_mod do
+      resources = [deliv_mod, attempts_mod]
+
+      if Enum.all?(resources, &Ash.DataLayer.can?(:transact, &1)) do
+        case Ash.transact(resources, operation, tenant: tenant) do
+          {:ok, {:ok, rows}} -> {:ok, rows}
+          {:error, _} = error -> error
+        end
+      else
+        {:error, :transactions_not_supported}
+      end
+    else
+      operation.()
+    end
+  end
+
+  defp prune_attempt_history(nil, _rows, _tenant), do: :ok
+  defp prune_attempt_history(_attempts_mod, [], _tenant), do: :ok
+
+  defp prune_attempt_history(attempts_mod, rows, tenant) do
+    keys = Enum.map(rows, &PrimaryKey.encode(&1))
+
     result =
-      deliv_mod
-      |> Ash.Query.filter(status in [:succeeded, :dead_letter] and inserted_at < ^older_than)
-      |> Ash.Query.limit(batch_size)
+      attempts_mod
+      |> Ash.Query.filter(delivery_pk in ^keys)
       |> Ash.bulk_destroy(:prune, %{},
         authorize?: false,
-        return_records?: true,
+        return_records?: false,
         return_errors?: true,
         strategy: [:atomic],
         tenant: tenant
       )
 
     case result do
-      %Ash.BulkResult{status: :success, records: []} ->
-        {:ok, total}
-
-      %Ash.BulkResult{status: :success, records: rows} when length(rows) < batch_size ->
-        prune_attempt_history(opts[:attempts], rows, tenant)
-        {:ok, total + length(rows)}
-
-      %Ash.BulkResult{status: :success, records: rows} ->
-        prune_attempt_history(opts[:attempts], rows, tenant)
-        prune_batch(deliv_mod, older_than, tenant, batch_size, total + length(rows), opts)
-
-      %Ash.BulkResult{} = result ->
-        bulk_failure(result)
+      %Ash.BulkResult{status: :success} -> :ok
+      %Ash.BulkResult{} = failure -> bulk_failure(failure)
     end
-  end
-
-  # the pruned rows' history goes with them: batch-by-batch, keyed on the
-  # complete encoded delivery keys — history never outlives its row
-  defp prune_attempt_history(nil, _rows, _tenant), do: :ok
-
-  defp prune_attempt_history(attempts_mod, rows, tenant) do
-    keys = Enum.map(rows, &PrimaryKey.encode(&1))
-
-    _ =
-      attempts_mod
-      |> Ash.Query.filter(delivery_pk in ^keys)
-      |> Ash.bulk_destroy(:prune, %{},
-        authorize?: false,
-        return_records?: false,
-        return_errors?: false,
-        strategy: [:atomic],
-        tenant: tenant
-      )
-
-    :ok
   end
 
   @doc """

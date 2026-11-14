@@ -9,6 +9,15 @@ defmodule AshHooks.AttemptHistoryTest do
   status/outcome, event type, and time range with keyset pagination.
   """
 
+  defmodule Repo do
+    @moduledoc false
+    use AshSqlite.Repo, otp_app: :ash_hooks
+    @impl true
+    def write_transactions?, do: true
+    @impl true
+    def min_sqlite_version, do: %Version{major: 3, minor: 54, patch: 1}
+  end
+
   defmodule Endpoint do
     @moduledoc false
     use Ash.Resource,
@@ -18,7 +27,7 @@ defmodule AshHooks.AttemptHistoryTest do
 
     sqlite do
       table("attempt_history_endpoints")
-      repo(AshHooks.Test.Repo)
+      repo(AshHooks.AttemptHistoryTest.Repo)
     end
 
     actions do
@@ -42,7 +51,7 @@ defmodule AshHooks.AttemptHistoryTest do
 
     sqlite do
       table("attempt_history_endpoints")
-      repo(AshHooks.Test.Repo)
+      repo(AshHooks.AttemptHistoryTest.Repo)
     end
 
     actions do
@@ -60,7 +69,7 @@ defmodule AshHooks.AttemptHistoryTest do
 
     sqlite do
       table("attempt_history_deliveries")
-      repo(AshHooks.Test.Repo)
+      repo(AshHooks.AttemptHistoryTest.Repo)
     end
 
     attributes do
@@ -81,7 +90,7 @@ defmodule AshHooks.AttemptHistoryTest do
 
     sqlite do
       table("attempt_history_no_ts")
-      repo(AshHooks.Test.Repo)
+      repo(AshHooks.AttemptHistoryTest.Repo)
     end
 
     actions do
@@ -98,7 +107,7 @@ defmodule AshHooks.AttemptHistoryTest do
 
     sqlite do
       table("attempt_history_attempts")
-      repo(AshHooks.Test.Repo)
+      repo(AshHooks.AttemptHistoryTest.Repo)
     end
 
     actions do
@@ -123,7 +132,6 @@ defmodule AshHooks.AttemptHistoryTest do
 
   alias Ash.Resource.Info, as: ResourceInfo
   alias AshHooks.Delivery, as: DeliveryRuntime
-  alias AshHooks.Test.Repo
 
   @endpoints "attempt_history_endpoints"
   @deliveries "attempt_history_deliveries"
@@ -132,6 +140,10 @@ defmodule AshHooks.AttemptHistoryTest do
   @secret "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))
 
   setup_all do
+    Application.put_env(:ash_hooks, Repo, database: ":memory:", pool_size: 1)
+    start_supervised!(Repo)
+    on_exit(fn -> Application.delete_env(:ash_hooks, Repo) end)
+
     Repo.query!("""
     CREATE TABLE IF NOT EXISTS #{@endpoints} (
       id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
@@ -180,9 +192,8 @@ defmodule AshHooks.AttemptHistoryTest do
     )
 
     on_exit(fn ->
-      Repo.query!("DROP TABLE IF EXISTS #{@attempts}")
-      Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
-      Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
+      # The supervised in-memory repo owns these tables and removes them on shutdown.
+      :ok
     end)
 
     :ok
@@ -834,5 +845,33 @@ defmodule AshHooks.AttemptHistoryTest do
     Repo.query!(
       "CREATE UNIQUE INDEX IF NOT EXISTS #{@attempts}_unique_attempt_index ON #{@attempts} (delivery_pk, attempt)"
     )
+  end
+
+  @tag release_fix: 6
+  test "release prune rolls back deliveries when deleting history fails" do
+    endpoint = endpoint!()
+    row = pending_row!(endpoint, "release-prune-history")
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'dead_letter', inserted_at = '2020-01-01T00:00:00Z' WHERE id = ?",
+      [row.id]
+    )
+
+    Repo.query!(
+      "INSERT INTO #{@attempts} (id, delivery_pk, endpoint_id, event_uuid, event_type, attempt, outcome, attempted_at) VALUES (?, ?, ?, ?, 'order_paid', 1, 'dead_letter', datetime('now'))",
+      [Ash.UUID.generate(), Jason.encode!(%{"id" => row.id}), endpoint.id, row.event_uuid]
+    )
+
+    Repo.query!(
+      "CREATE TRIGGER release_history_abort BEFORE DELETE ON #{@attempts} BEGIN SELECT RAISE(ABORT, 'history retained'); END"
+    )
+
+    on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS release_history_abort") end)
+
+    assert {:error, _} =
+             DeliveryRuntime.prune(Delivery, attempts: Attempt, older_than: DateTime.utc_now())
+
+    assert Ash.get!(Delivery, row.id, authorize?: false).id == row.id
+    assert length(attempts_for(row)) == 1
   end
 end
