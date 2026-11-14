@@ -1062,12 +1062,13 @@ defmodule AshHooks.Test.RowSecurityCases do
     assert endpoint.id == seeded["tenant_a"].id
     split = %{tenant | split: ctx.subscription}
 
+    # A phase that ran would return the operation's integer instead.
     assert {:error, :tenancy_mismatch} =
-             AshHooks.Phase.run([ctx.endpoint, ctx.subscription], split, fn ->
-               send(self(), :phase_ran)
-             end)
-
-    refute_received :phase_ran
+             AshHooks.Phase.run(
+               [ctx.endpoint, ctx.subscription],
+               split,
+               &System.unique_integer/0
+             )
   end
 
   def unbound_access(ctx) do
