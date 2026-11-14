@@ -302,10 +302,11 @@ with `status: [:received, :failed_retryable, :claimed]`, passing each
 same status filter. Then decide how to handle each row.
 
 `use AshHooks.Worker` now refuses at compile time a `:transport` that is not
-`{module, function}`, and a function literal (`fn ... end` or `&fun/arity`) for
-`:delivery_headers` or `:certificate_pin`. A worker that passed a function for
-`:transport` compiled before but sent every delivery through the HTTP adapter;
-move the function into a module and pass `{module, function}`.
+`nil` or `{module, function}`, and a function literal (`fn ... end` or
+`&fun/arity`) for `:delivery_headers` or `:certificate_pin`. A worker that
+passed a function for `:transport` compiled before but sent every delivery
+through the HTTP adapter; move the function into a module and pass
+`{module, function}`.
 
 ## Versions >= 2.0.1 and < 3.0.0 → 3.0.0
 

@@ -229,7 +229,7 @@ defmodule AshHooks.Worker do
   end
 
   defp transport_error(other) do
-    "AshHooks.Worker :transport must be {module, function} " <>
+    "AshHooks.Worker :transport must be nil or {module, function} " <>
       "(f receives the endpoint record and tenant; a 2-arity function is " <>
       "accepted in the direct delivery config). Got: #{Macro.to_string(other)}"
   end
