@@ -289,9 +289,12 @@ defmodule AshHooks.Custody.Conformance do
         tasks =
           for tenant <- ["tenant-a", "tenant-b"],
               do:
-                Task.async(fn ->
-                  {tenant, @custody_custodian.store(ref, @custody_material, tenant, kind)}
-                end)
+                Ash.ProcessHelpers.async(
+                  fn ->
+                    {tenant, @custody_custodian.store(ref, @custody_material, tenant, kind)}
+                  end,
+                  tracer: Application.get_env(:ash, :tracer)
+                )
 
         results = Enum.map(tasks, &Task.await/1)
         assert [{winner, :ok}] = Enum.filter(results, fn {_, result} -> result == :ok end)
@@ -309,11 +312,18 @@ defmodule AshHooks.Custody.Conformance do
           kind = {:standard_webhooks, :v1}
 
           store =
-            Task.async(fn ->
-              @custody_custodian.store(ref, @custody_material, "tenant-a", kind)
-            end)
+            Ash.ProcessHelpers.async(
+              fn ->
+                @custody_custodian.store(ref, @custody_material, "tenant-a", kind)
+              end,
+              tracer: Application.get_env(:ash, :tracer)
+            )
 
-          destroy = Task.async(fn -> @custody_custodian.destroy(ref, destroy_tenant) end)
+          destroy =
+            Ash.ProcessHelpers.async(fn -> @custody_custodian.destroy(ref, destroy_tenant) end,
+              tracer: Application.get_env(:ash, :tracer)
+            )
+
           store_result = Task.await(store)
           destroy_result = Task.await(destroy)
 

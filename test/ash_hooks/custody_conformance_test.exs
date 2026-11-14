@@ -79,4 +79,36 @@ defmodule AshHooks.CustodyConformanceTripwireTest do
       apply(module, test.name, [%{}])
     end
   end
+
+  test "database tasks started by the template receive the configured tracer context" do
+    Custodian.setup_store!()
+    on_exit(&Custodian.drop_store!/0)
+    tracer = AshHooks.Test.RowSecurityTracer
+    previous = Application.get_env(:ash, :tracer)
+    Application.put_env(:ash, :tracer, tracer)
+    on_exit(fn -> Application.put_env(:ash, :tracer, previous) end)
+    context = make_ref()
+    tracer.set_span_context(context)
+    parent = self()
+    handler = {__MODULE__, make_ref()}
+
+    :telemetry.attach(
+      handler,
+      [:ash_hooks, :test, :repo, :query],
+      fn _, _, _, _ ->
+        if self() != parent, do: send(parent, {:custody_context, tracer.get_span_context()})
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    for test <- AshHooks.CustodySqliteConformanceTest.__ex_unit__().tests,
+        Atom.to_string(test.name) =~ "concurrent" do
+      apply(AshHooks.CustodySqliteConformanceTest, test.name, [%{}])
+    end
+
+    assert_receive {:custody_context, ^context}
+    refute_received {:custody_context, nil}
+  end
 end
