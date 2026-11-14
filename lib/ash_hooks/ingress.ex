@@ -20,8 +20,8 @@ defmodule AshHooks.Ingress do
       payload `%{}`, status `:failed_permanent`, and error class
       `"malformed_payload"`. A provider identity callback that rejects the
       placeholder refuses the request before `:record_malformed` runs (with
-      `ingress_tracking :on` the refusal is recorded as a rejection row, like
-      any refused request). A newly created malformed row is never claimed
+      `ingress_tracking :on`, ingress attempts to record the refusal as a
+      rejection row). A newly created malformed row is never claimed
       or handled; its attempts and fencing token stay 0. A duplicate still
       drives the surviving row's stored payload;
     * the unique index preserves one row per provider/event/scope identity.
