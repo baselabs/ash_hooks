@@ -183,7 +183,7 @@ defmodule AshHooks.Worker do
 
   # a literal driver timeout at or above the attempt budget walls off every
   # slow send at the runtime's kill line before the driver's own deadline
-  # fires — an {m, f, a} bundle is resolved per-perform and cannot be
+  # fires; an {m, f, a} bundle is resolved per-perform and cannot be
   # compile-checked
   defp validate_literal_driver_timeout!(literal, attempt_timeout) do
     case Keyword.get(literal, :timeout) do
@@ -199,7 +199,7 @@ defmodule AshHooks.Worker do
 
   # the destination-validation bypass is the TEST seam for loopback
   # listeners; with it on, the driver's send-time check is the only
-  # remaining layer. Refuse to bake it outside :test — a dev/prod worker
+  # remaining layer. Refuse to bake it outside :test; a dev/prod worker
   # must not silently lose the adapter's resolve-and-pin. An {m, f, a}
   # bundle resolves per-perform and cannot be compile-checked
   defp validate_literal_destination_bypass!(literal) do
@@ -299,7 +299,7 @@ defmodule AshHooks.Worker do
   end
 
   # the callback runs OUTSIDE the driver's monitor (it must not consume the
-  # attempt budget); a raise/exit/throw is contained as an invalid config —
+  # attempt budget); a raise/exit/throw is contained as an invalid config;
   # the row is untouched and Oban re-drives the trigger
   defp runtime_overrides(seam, args) do
     overrides = apply(elem(seam, 0), elem(seam, 1), [args])
@@ -487,7 +487,7 @@ defmodule AshHooks.Worker do
   end
 
   defmacro __using__(opts) do
-    # resolved at macro time — `use Oban.Worker` needs literal options,
+    # resolved at macro time: `use Oban.Worker` needs literal options,
     # and the config is baked into the host module as a compile-time term.
     # Module-valued options arrive as alias AST; expand them against the
     # CALLER so the baked config holds modules, not quoted aliases.
@@ -513,7 +513,7 @@ defmodule AshHooks.Worker do
     retry_after_cap = Keyword.get(opts, :retry_after_cap_seconds, 86_400)
 
     # compiled budget tripwires: these are related budgets, and a silent
-    # misfit either stalls rows or walls off every slow send — refuse at
+    # misfit either stalls rows or walls off every slow send; refuse at
     # compile time, where every value but an MFA-resolved http_opts is
     # in hand
     validate_positive_budgets!(
@@ -539,7 +539,7 @@ defmodule AshHooks.Worker do
     # error-class results (attempt timeout, driver crash, endpoint read
     # errors) consume Oban executions in step with row attempts while
     # snooze-class results consume none, so Oban's ceiling must sit above
-    # the row ceiling — only the row ceiling may decide dead-letter
+    # the row ceiling; only the row ceiling may decide dead-letter
     if oban_max_attempts <= delivery_max_attempts do
       raise ArgumentError,
             "AshHooks.Worker :max_attempts (the Oban job ceiling) must exceed " <>
@@ -553,7 +553,7 @@ defmodule AshHooks.Worker do
         nil ->
           nil
 
-        # the module half arrives as alias AST — expand against the caller
+        # the module half arrives as alias AST; expand against the caller
         # (the secret_resolver precedent)
         {m, f} = pair ->
           case {expand.(m), f} do
@@ -573,7 +573,7 @@ defmodule AshHooks.Worker do
         nil ->
           nil
 
-        # the module half arrives as alias AST — expand against the caller
+        # the module half arrives as alias AST; expand against the caller
         # (the secret_resolver precedent); anything that does not resolve
         # to a module atom is the malformed shape, fail-closed at compile
         {m, f} = pair ->
@@ -612,7 +612,7 @@ defmodule AshHooks.Worker do
         nil ->
           nil
 
-        # the module half arrives as alias AST — expand against the caller
+        # the module half arrives as alias AST; expand against the caller
         # (the secret_resolver precedent)
         {m, f} when is_atom(f) ->
           validate_redactor(expand.(m), f)
@@ -630,7 +630,7 @@ defmodule AshHooks.Worker do
         attempts: maybe_expand(Keyword.get(opts, :attempts), expand),
         transport:
           case Keyword.get(opts, :transport) do
-            # the module half arrives as alias AST — expand, then check both
+            # the module half arrives as alias AST; expand, then check both
             {m, f} = pair ->
               case {expand.(m), f} do
                 {module, function} when is_atom(module) and is_atom(function) ->
@@ -673,7 +673,7 @@ defmodule AshHooks.Worker do
         finalization_allowance: finalization_allowance,
         dispatch_route: dispatch_route,
         # the runtime-config seam (per-perform overrides) and the baked
-        # envelope those overrides must fit inside — the compile-time misfit
+        # envelope those overrides must fit inside; the compile-time misfit
         # checks re-run against every resolved set
         runtime_config: runtime_config,
         destination_policy: destination_policy,
@@ -699,7 +699,7 @@ defmodule AshHooks.Worker do
       use Oban.Worker, unquote(oban_opts)
 
       # the job timeout (a stalled peer must not occupy a worker slot
-      # forever — OSS Oban's default is :infinity)
+      # forever; OSS Oban's default is :infinity)
       @impl Oban.Worker
       def timeout(_job), do: unquote(job_timeout)
 
@@ -717,7 +717,7 @@ defmodule AshHooks.Worker do
       # The enqueue seam (`enqueue: {__MODULE__, :enqueue}`) suppresses a
       # duplicate runnable job for the same delivery identity. Terminal jobs
       # do not block a later recovery enqueue. Multitenant deliveries carry
-      # their row tenant in the args (read off the multitenancy attribute —
+      # their row tenant in the args (read off the multitenancy attribute;
       # Ash itself set it from the dispatch tenant at create); single-tenant
       # rows serialize no tenant key at all.
       def enqueue(delivery, _event) do
@@ -800,7 +800,7 @@ defmodule AshHooks.Worker do
 
       # the tenant rides the args only when the ledger carries a
       # multitenancy attribute (undeclared → nil → no key)
-      # the row holds the ATTRIBUTE value; the args carry the TENANT —
+      # the row holds the ATTRIBUTE value; the args carry the TENANT,
       # inverted through the resource's tenant_from_attribute so
       # Delivery.run's forward parse_attribute round-trips for
       # NON-identity parsers too (serializing the attribute value itself

@@ -1,7 +1,7 @@
 defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptIdentity do
   @moduledoc false
   # Injects the attempt-history identity: one row per (delivery, attempt
-  # number) — the idempotency primitive behind the runtime's history
+  # number), the idempotency primitive behind the runtime's history
   # writes. The consumer's migration must carry the matching unique index.
   use Spark.Dsl.Transformer
 

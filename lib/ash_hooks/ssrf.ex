@@ -281,11 +281,11 @@ defmodule AshHooks.Ssrf do
   end
 
   @doc false
-  # Pure classification of the per-family resolution outcomes — public only
+  # Pure classification of the per-family resolution outcomes, public only
   # as the deterministic test seam for the failure vocabulary (the live
   # resolver's answer is environment-dependent). nxdomain requires EVERY
-  # family to have answered authoritatively negative; anything else —
-  # timeout, temporary failure, mixed evidence — is the conservative
+  # family to have answered authoritatively negative; anything else
+  # (timeout, temporary failure, mixed evidence) is the conservative
   # retryable label.
   @spec combine_family_results([
           {:ok, [:inet.ip_address()]}
@@ -355,7 +355,7 @@ defmodule AshHooks.Ssrf do
   # IETF protocol assignments: only PCP and TURN anycast are globally reachable.
   defp ipv4_public?(192, 0, 0, d) when d in [9, 10], do: true
   defp ipv4_public?(192, 0, 0, _), do: false
-  # documentation ranges (TEST-NET-1/2/3) — reserved, never a real destination
+  # documentation ranges (TEST-NET-1/2/3): reserved, never a real destination
   defp ipv4_public?(192, 0, 2, _), do: false
   defp ipv4_public?(192, 88, 99, _), do: false
   defp ipv4_public?(198, 51, 100, _), do: false
@@ -365,8 +365,8 @@ defmodule AshHooks.Ssrf do
   defp ipv4_public?(_, _, _, _), do: true
 
   # Prefix masks per RFC 4291/4193, not single-range checks: fc00::/7
-  # covers fc00–fdff, fe80::/10 covers fe80–febf, ff00::/8 covers
-  # ff00–ffff — naive /16 checks would let fc00::, fe90:: and ff02::
+  # covers fc00 to fdff, fe80::/10 covers fe80 to febf, ff00::/8 covers
+  # ff00 to ffff; naive /16 checks would let fc00::, fe90:: and ff02::
   # through.
   # ::1 is handled by the embedded-v4 reduction below (hi == 0). ULA fc00::/7
   # Globally reachable exceptions within IETF's otherwise non-global 2001::/23.

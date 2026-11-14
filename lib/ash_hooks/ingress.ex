@@ -100,7 +100,7 @@ defmodule AshHooks.Ingress do
   # best-effort sqlite leg): the fenced ops are idempotent or gate-reevaluated,
   # so a bounded wall-clock retry converts busy/locked errors into convergence
   # instead of surfacing them to the caller. Classified NARROWLY by exqlite's
-  # busy/locked error text — no other data layer's errors can match, so e.g.
+  # busy/locked error text; no other data layer's errors can match, so e.g.
   # postgres consumers see zero behavior change.
   @transient_retry_deadline_ms 2_000
   @transient_retry_spacing_ms 100
@@ -324,14 +324,14 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  # a paused source is an operator state, not a failed verification — the
+  # a paused source is an operator state, not a failed verification; the
   # verify telemetry keeps its honest label and no rejection row records
   defp verify_error_class(:source_paused), do: :source_paused
   defp verify_error_class(error), do: error_class(error)
 
   # The failed-verification rejection row (ingress_tracking :on): the
   # digest identity (repeated bad deliveries dedup), a CONSTANT payload
-  # marker — never the unverified request bytes — and the count surface
+  # marker (never the unverified request bytes) and the count surface
   # behind counts/2. Failures here never change the refusal outcome.
   defp record_rejection(_resource, _name, _raw_body, _ctx, :source_paused), do: :ok
 
@@ -370,7 +370,7 @@ defmodule AshHooks.Ingress do
   end
 
   # dialyzer proved (Elixir 1.18 and 1.20 alike) that every error reaching
-  # here is one of the Invalid exception structs — the class is the
+  # here is one of the Invalid exception structs; the class is the
   # underscored final segment.
   defp error_class(error) do
     [_ash_hooks, _errors, _invalid, class] = error.__struct__ |> Module.split()
@@ -482,7 +482,7 @@ defmodule AshHooks.Ingress do
   # the pre-read matches the FULL unique_ingest identity in SQL (provider
   # + external_event_id + every scope slot): filtering the scope in
   # memory would read every sibling scope's row for the same external id
-  # into the process — scope slots exist precisely because external ids
+  # into the process; scope slots exist precisely because external ids
   # repeat across accounts/connections
   defp fetch_ingested(resource, env, tenant) do
     result =
@@ -527,7 +527,7 @@ defmodule AshHooks.Ingress do
          {:ok, key} <- normalize_primary_key(resource, delivery_id) do
       # `now` and the lease are recomputed on EVERY attempt: a retry that
       # spends contention time sleeping must not grant a lease that is
-      # shorter than configured — or already expired.
+      # shorter than configured or already expired.
       result =
         with_transient_retry(fn ->
           attempt_now = now()
@@ -648,7 +648,7 @@ defmodule AshHooks.Ingress do
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
          {:ok, key} <- normalize_primary_key(resource, delivery_id),
          {:ok, delivery} <- read_by_key(resource, key, tenant),
-         # the fence is checked BEFORE the redactor sees the payload — a
+         # the fence is checked BEFORE the redactor sees the payload; a
          # stale token must not receive sensitive bytes through the
          # callback even though the eventual write would be rejected
          #
@@ -694,7 +694,7 @@ defmodule AshHooks.Ingress do
   defp redactor_fun({m, f}) when is_atom(m) and is_atom(f), do: &apply(m, f, [&1])
   defp redactor_fun(fun) when is_function(fun, 1), do: fun
 
-  # sqlite stores timestamps as ISO8601 TEXT compared LEXICALLY — a
+  # sqlite stores timestamps as ISO8601 TEXT compared LEXICALLY; a
   # second-truncated cutoff would sort AFTER same-second usec rows and
   # delete them early. Normalizing to microsecond precision keeps the
   # lexical and chronological orders identical (adversarial finding).
@@ -814,7 +814,7 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  # the redrive invokes the CONSUMER's handle_event — raises, throws,
+  # the redrive invokes the CONSUMER's handle_event; raises, throws,
   # and exits (a GenServer.call timeout in a handler) are all contained
   #
   defp safe_redrive(resource, row, tenant) do
@@ -918,7 +918,7 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  # The handling env for a claimed row is rebuilt from the PERSISTED row —
+  # The handling env for a claimed row is rebuilt from the PERSISTED row:
   # payload, digest, and type come from the ledger of record, so a
   # byte-differing redelivery under the same identity can never process
   # bytes the ledger does not show.
@@ -935,7 +935,7 @@ defmodule AshHooks.Ingress do
     }
   end
 
-  # The reaper drives rows that already passed verification at ingest — no
+  # The reaper drives rows that already passed verification at ingest; no
   # signature to check, so it rebuilds the handling env from the stored row.
   defp redrive(resource, row, tenant) do
     key = PrimaryKey.map(row)
@@ -1035,8 +1035,8 @@ defmodule AshHooks.Ingress do
 
   # Bounded wall-clock retry for transient sqlite write-lock contention:
   # while the result's error classifies as exqlite busy/locked and the
-  # deadline holds, sleep a jittered spacing and re-run. Every other result —
-  # ok, :lease_held, :stale_token, any non-busy error — returns immediately;
+  # deadline holds, sleep a jittered spacing and re-run. Every other result
+  # (ok, :lease_held, :stale_token, any non-busy error) returns immediately;
   # the classifier is the whole safety story.
   defp with_transient_retry(fun),
     do: with_transient_retry(fun, System.monotonic_time(:millisecond))
@@ -1070,7 +1070,7 @@ defmodule AshHooks.Ingress do
   defp transient_sqlite_contention?(%Ash.Error.Unknown.UnknownError{error: inner}) do
     # splode's to_class flatten path can store a raw non-string term here;
     # `to_string` would raise Protocol.UndefinedError and relabel the real
-    # error — inspect it instead.
+    # error; inspect it instead.
     inner = if is_binary(inner), do: inner, else: inspect(inner)
     String.contains?(inner, "Exqlite.Error") and contentiously_busy?(inner)
   end
@@ -1135,7 +1135,7 @@ defmodule AshHooks.Ingress do
   end
 
   # The pause switch: while the declared source resolves true, every
-  # request is refused BEFORE verification, persistence, or handling —
+  # request is refused BEFORE verification, persistence, or handling;
   # the controller answers 5xx and the provider retries; nothing is lost.
   defp check_paused(inbound, _name, tenant) do
     if inbound.paused && resolve_paused(inbound.paused, tenant) == true do
@@ -1162,7 +1162,7 @@ defmodule AshHooks.Ingress do
 
   # Batch senders deliver top-level JSON ARRAYS; providers that
   # only accept maps fail lists closed through their own catch-all clauses
-  # ({:error, :malformed_payload}) — the shape decision belongs to the
+  # ({:error, :malformed_payload}); the shape decision belongs to the
   # provider, not the pipeline.
   defp decode_and_parse(provider, raw_body, format, decoder) do
     case Provider.decode_payload(provider, raw_body, format, decoder) do
@@ -1207,7 +1207,7 @@ defmodule AshHooks.Ingress do
   end
 
   # Runtime backstop for the compile-time verifier: a window on a
-  # timestamp-less scheme silently verifies replays forever — reject before
+  # timestamp-less scheme silently verifies replays forever; reject before
   # anything runs. The verifier cannot see providers that were not loadable
   # at compile time; this check always can.
   defp check_replay_window(%{replay_window_seconds: nil}, _provider, _name), do: :ok
@@ -1361,7 +1361,7 @@ defmodule AshHooks.Ingress do
 
   # The rotation overlap: when the declaration carries a previous_secret
   # source, a failing current-key verification retries the rotated-out key
-  # — both keys verify until the option is removed (the window's end)
+  # so both keys verify until the option is removed (the window's end)
   defp verify_with_previous(
          _provider,
          _raw_body,
@@ -1412,7 +1412,7 @@ defmodule AshHooks.Ingress do
   defp as_secret(_), do: {:error, :no_webhook_secret}
 
   # an app_env walk that steps off the tree (a missing intermediate key)
-  # resolves nothing — never a crash on operator config
+  # resolves nothing, never a crash on operator config
   defp env_walk(_keys, nil), do: nil
   defp env_walk([], acc), do: acc
   defp env_walk([key | rest], acc) when is_list(acc), do: env_walk(rest, Keyword.get(acc, key))
@@ -1518,7 +1518,7 @@ defmodule AshHooks.Ingress do
 
   # error_class is a bounded classification field, never an arbitrary dump:
   # binaries truncate, atoms name themselves, and structures (which can carry
-  # payloads or secrets) classify without their contents. The attribute itself carries no max_length — the cap bounds
+  # payloads or secrets) classify without their contents. The attribute itself carries no max_length; the cap bounds
   # what reaches the TEXT column in any counting mode. Invalid UTF-8
   # collapses to the [binary] placeholder (the redaction floor's convention):
   # the :string write would reject invalid bytes and the failure would never
@@ -1530,7 +1530,7 @@ defmodule AshHooks.Ingress do
   defp error_class_string(term) when is_atom(term), do: Atom.to_string(term)
   defp error_class_string(_term), do: "unclassified"
 
-  # Second-truncated UTC: sqlite stores TEXT ISO8601 and compares lexically —
+  # Second-truncated UTC: sqlite stores TEXT ISO8601 and compares lexically;
   # uniform (fraction-less) precision keeps lexical == chronological.
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)
 

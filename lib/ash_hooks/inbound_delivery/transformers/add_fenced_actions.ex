@@ -1,7 +1,7 @@
 defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   @moduledoc false
   # Injects the fenced-machine action primitives. The conditional gates do
-  # NOT live here — they live in the query filters AshHooks.Ingress builds
+  # NOT live here; they live in the query filters AshHooks.Ingress builds
   # (WHERE-gated updates are the portable fence; see the extension moduledoc).
   use Spark.Dsl.Transformer
 
@@ -15,7 +15,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   def before?(Ash.Resource.Transformers.RequireUniqueActionNames), do: true
   def before?(_), do: false
 
-  # the :ingest accept list keys off the resource's PK shape (H2) — the
+  # the :ingest accept list keys off the resource's PK shape (H2); the
   # fields transformer must have injected (or the consumer declared) it
   # first; Spark's topological order does NOT follow the extension's
   # list order
@@ -54,7 +54,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   end
 
   # H2: `:id` rides the accept list exactly when the resource HAS a
-  # writable `:id` attribute — the shapes that always worked (the
+  # writable `:id` attribute: the shapes that always worked (the
   # package-injected PK; a consumer's writable `:id` beside a differently
   # named PK) keep it, and only the shapes Ash's ValidateAccept rejects
   # (uuid_v7_primary_key & other non-writable ids) drop it. For those the
@@ -75,9 +75,9 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
     {:ok, Transformer.add_entity(dsl_state, [:actions], entity)}
   end
 
-  # No-touch upsert: on conflict nothing is updated — the surviving row is
+  # No-touch upsert: on conflict nothing is updated; the surviving row is
   # returned, so created/duplicate classification compares ids (when the
-  # PK is writable; otherwise Ingress pre-reads the identity — H2).
+  # PK is writable; otherwise Ingress pre-reads the identity, H2).
   # Touching observability columns on conflict is the consumer's choice
   # via their own action; the primitive keeps the fence minimal.
   defp build_ingest(scope, id_accepted, name \\ :ingest) do

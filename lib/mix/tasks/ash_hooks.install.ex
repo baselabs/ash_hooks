@@ -1,5 +1,5 @@
 # Igniter is an optional dev/test dependency; the guard keeps the package
-# compiling where it is absent (ADR-0004 — the ash-core pattern for optional
+# compiling where it is absent (ADR-0004: the ash-core pattern for optional
 # deps, as in ash's own `ash.extend` task).
 if Code.ensure_loaded?(Igniter.Mix.Task) do
   defmodule Mix.Tasks.AshHooks.Install do
@@ -65,11 +65,11 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
       with %Zipper{} = first_arg <- Zipper.down(zipper),
            %Zipper{} = opts <- Zipper.right(first_arg),
            {:ok, opts} <- IK.set_keyword_key(opts, :body_reader, @body_reader_value) do
-        # topmost of the MODIFIED zipper — the edit lives on opts' path
+        # topmost of the MODIFIED zipper; the edit lives on opts' path
         Zipper.topmost(opts)
       else
         _ ->
-          # opts missing or not a keyword list — leave the endpoint alone;
+          # opts missing or not a keyword list: leave the endpoint alone;
           # the README documents the manual step.
           zipper
       end

@@ -1,7 +1,7 @@
 defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
   @moduledoc false
   # Injects the ledger attributes (and a client-writable uuid primary key
-  # when the resource declares none — created/duplicate classification
+  # when the resource declares none; created/duplicate classification
   # compares the surviving row's id against the caller-generated one).
   #
   # Also fail-closes on scope slots before anything consumes them: each
@@ -33,7 +33,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
   end
 
   # The ingress-counting opt-in (default :off): `duplicates` bumps on
-  # every duplicate ingest — an EXISTING schema is never silently widened.
+  # every duplicate ingest; an EXISTING schema is never silently widened.
   defp add_tracking_attributes(dsl_state) do
     case Extension.get_opt(dsl_state, [:inbound_delivery], :ingress_tracking, :off) do
       :off ->

@@ -22,7 +22,7 @@ defmodule AshHooks.OutboundEvent.Transformers.AddEventActions do
   end
 
   # No-touch upsert: a re-dispatch of the same event id returns the
-  # surviving row — the log records each event exactly once.
+  # surviving row; the log records each event exactly once.
   defp build_record do
     Builder.build_action(:create, :record,
       upsert?: true,

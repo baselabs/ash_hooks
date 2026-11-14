@@ -8,13 +8,13 @@ defmodule AshHooks.MixProject do
     [
       app: :ash_hooks,
       version: @version,
-      # CONSUMER-FACING SUPPORT WINDOW: a floor, never a pin — a library
+      # CONSUMER-FACING SUPPORT WINDOW: a floor, never a pin; a library
       # must not force every consumer onto one Elixir build. Floor is 1.20
       # (owner decision 2026-09-16: nothing below 1.20 is supported); CI's
       # floor leg proves the resolver stays coherent at it. The repo's
       # OWN development runs on one pinned toolchain (.tool-versions,
       # mirrored by a dedicated CI leg) and config/config.exs refuses any
-      # OTP release CI does not test — that repo-local enforcement never
+      # OTP release CI does not test; that repo-local enforcement never
       # ships (config/ is excluded from the package). The window,
       # .tool-versions, the OTP allowlist, and the CI matrix move
       # together in ONE commit.
@@ -38,7 +38,7 @@ defmodule AshHooks.MixProject do
       source_url: @source_url,
       homepage_url: @source_url,
       # :ecto_sql is explicit because `use AshSqlite.Repo` (test/support)
-      # macro-emits Ecto.Adapters.SQL delegations — the deps-PLT app
+      # macro-emits Ecto.Adapters.SQL delegations; the deps-PLT app
       # enumeration does not reliably include it, and without it dialyzer
       # reports those delegations as unknown functions. :ash_postgres
       # carries the PG repo's behaviour callbacks (callback_info_missing
@@ -86,7 +86,7 @@ defmodule AshHooks.MixProject do
   defp elixirc_paths(_), do: ["lib"]
 
   defp deps do
-    # Optional at runtime for CONSUMERS (hex metadata) — but listing them here
+    # Optional at runtime for CONSUMERS (hex metadata), but listing them here
     # opts THIS dev build into compiling them (Mix builds a root project's own
     # optional deps). ASH_HOOKS_NO_OPTIONAL=1 drops them from the dep list
     # entirely: the CI no-optional leg uses it to prove the package compiles
@@ -136,7 +136,7 @@ defmodule AshHooks.MixProject do
         {:ash_sqlite, "~> 0.3.1", only: [:dev, :test], runtime: false},
         # The AshPostgres consumer leg (CI's postgres job): exercises the
         # transformers against a uuid_v7-keyed, sole-store-payload consumer
-        # shape — the gaps sqlite alone could not surface. Dev/test-only;
+        # shape: the gaps sqlite alone could not surface. Dev/test-only;
         # the :postgres-tagged suite is excluded unless
         # ASH_HOOKS_POSTGRES=1 starts the repo.
         {:ash_postgres, "~> 2.0", only: [:dev, :test], runtime: false}
@@ -148,7 +148,7 @@ defmodule AshHooks.MixProject do
       maintainers: ["rjpalermo"],
       # The documentation tree ships because shipped docs (UPGRADING.md,
       # CHANGELOG) point adopters at repo-relative paths under it. Subtrees
-      # are named individually — not `documentation` — so untracked files at
+      # are named individually (not `documentation`) so untracked files at
       # its root (.DS_Store) can never ride a glob into the tarball.
       files:
         ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules* SECURITY* CONTRIBUTING* UPGRADING* documentation/tutorials documentation/livebooks documentation/dsls),

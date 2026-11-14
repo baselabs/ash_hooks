@@ -3,7 +3,7 @@ defmodule AshHooks.Verifiers.ReplayWindowRequiresTimestamp do
   # Fail-closed: a `replay_window_seconds` on an inbound declaration is only
   # meaningful when the provider's signature scheme carries a trustworthy
   # timestamp. A window over a timestamp-less scheme silently verifies
-  # replays forever — the verifier rejects the combination at compile time
+  # replays forever; the verifier rejects the combination at compile time
   # when the provider module is resolvable. Unresolvable providers are left
   # to the ingress's runtime fail-closed resolution.
   use Spark.Dsl.Verifier

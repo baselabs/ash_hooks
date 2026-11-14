@@ -73,7 +73,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     def read_body(conn, opts, extra \\ []) do
       # the parser spreads the MFA's arg list positionally, so ONE keyword
       # option arrives as a bare tuple ({:only, [...]}) and a nested list
-      # ([[only: ...]]) as a list — List.wrap normalizes both
+      # ([[only: ...]]) as a list; List.wrap normalizes both
       opts = Keyword.merge(opts, List.wrap(extra))
 
       if caching?(conn, opts) do
@@ -89,7 +89,7 @@ if Code.ensure_loaded?(Plug.Conn) do
           {:ok, chunk, cache(conn, chunk)}
 
         {:more, chunk, conn} ->
-          # large bodies arrive in chunks — accumulate, or the cache would
+          # large bodies arrive in chunks; accumulate, or the cache would
           # hold only the final chunk
           {:more, chunk, cache(conn, chunk)}
 

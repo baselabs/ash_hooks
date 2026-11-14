@@ -2,7 +2,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerIdentity do
   @moduledoc false
   # Injects the unique-ingest identity spanning provider, external event id,
   # and the consumer-declared scope slots. Storage-level uniqueness on this
-  # identity is the idempotency primitive (ADR-0003) — the consumer's
+  # identity is the idempotency primitive (ADR-0003); the consumer's
   # migration must carry the matching unique index.
   use Spark.Dsl.Transformer
 

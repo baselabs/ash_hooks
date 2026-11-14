@@ -2,7 +2,7 @@ defmodule AshHooks.Http.Target do
   @moduledoc false
   # The shared pinning substrate both HTTP adapters consume: resolve the
   # hostname ONCE through Ssrf (every answer public), and connect to the
-  # VALIDATED address — TLS names the ORIGINAL host (SNI + RFC 6125
+  # VALIDATED address; TLS names the ORIGINAL host (SNI + RFC 6125
   # check), the host header carries the original host:port. This is what
   # closes the DNS-rebinding TOCTOU: validation and connection share one
   # resolution (derisk-1).
@@ -61,7 +61,7 @@ defmodule AshHooks.Http.Target do
   end
 
   defp lookup(host, opts) do
-    # uri.host arrives bracketless — URI.new strips IPv6 brackets — so no
+    # uri.host arrives bracketless (URI.new strips IPv6 brackets), so no
     # unwrapping happens here
     case :inet.parse_address(String.to_charlist(host)) do
       {:ok, literal} -> {:ok, literal}
@@ -104,7 +104,7 @@ defmodule AshHooks.Http.Target do
   # verify (SNI disabled, chain validation kept).
   #
   # `cacerts/1` is the injectable trust-store seam (D3, 2026-08-22): the
-  # default is UNCHANGED — the OTP CA store — but a caller (adapter opts
+  # default is UNCHANGED (the OTP CA store), but a caller (adapter opts
   # `[cacerts: der_list]`, threaded from the worker's `:http_opts`) can pin
   # a private CA bundle, which is also how the test suite drives CA-verified
   # loopback sessions against committed local fixtures.

@@ -32,7 +32,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
   end
 
   # The resend-tracking opt-in (default :off): declaring :on injects the
-  # machine columns resend/2 and replay/2 write — an EXISTING schema is
+  # machine columns resend/2 and replay/2 write; an EXISTING schema is
   # never silently widened; the consumer migrates the four columns.
   defp add_resend_attributes(dsl_state) do
     case Extension.get_opt(dsl_state, [:outbound_delivery], :resend_tracking, :off) do

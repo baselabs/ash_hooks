@@ -1,7 +1,7 @@
 defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptActions do
   @moduledoc false
   # Injects the attempt-history machine actions: :record (the runtime's
-  # idempotent create — upsert on unique_attempt, no conflict update, the
+  # idempotent create: upsert on unique_attempt, no conflict update, the
   # surviving row returned) and :prune (the retention destroy).
   use Spark.Dsl.Transformer
 
@@ -22,7 +22,7 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptActions do
     end
   end
 
-  # No-touch upsert: on conflict nothing is updated — the surviving row is
+  # No-touch upsert: on conflict nothing is updated; the surviving row is
   # returned, so a re-drive of the same attempt records exactly once (the
   # dispatch :ingest/:dispatch mirror). The row id is never caller input:
   # idempotency is the (delivery_pk, attempt) identity, so the accept list

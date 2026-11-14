@@ -177,7 +177,7 @@ defmodule AshHooks.EndpointHealth do
     end
   end
 
-  # the marker clears on disable and on recovery below the warning band —
+  # the marker clears on disable and on recovery below the warning band,
   # gated on the value this sweep read, so a concurrent sweeper's stamp
   # is never wiped by stale knowledge. Unstamped endpoints write nothing.
   defp clear_warned(endpoint, tenant) do
@@ -246,7 +246,7 @@ defmodule AshHooks.EndpointHealth do
   # in SQL; the TIME bounds apply in memory over the cast DateTime values.
   # A per-endpoint attempt history is a bounded read (this is one
   # endpoint's rows, not the ledger's), and in-memory bounds compare
-  # identically on every supported data layer — no storage-format text
+  # identically on every supported data layer; no storage-format text
   # comparisons anywhere.
   defp window_attempts(attempts_mod, endpoint_id, opts, tenant) do
     {from, to} = bounds(opts)
@@ -313,7 +313,7 @@ defmodule AshHooks.EndpointHealth do
     }
   end
 
-  # FIRST-ATTEMPT success: the delivery's attempt 1 succeeded — the
+  # FIRST-ATTEMPT success: the delivery's attempt 1 succeeded, the
   # number a "how healthy is this endpoint right now" dashboard wants
   defp first_attempt_successes(rows) do
     rows
@@ -324,7 +324,7 @@ defmodule AshHooks.EndpointHealth do
   end
 
   # EVENTUAL success: the delivery succeeded on ANY attempt (the last
-  # one for a retried delivery) — the receiver-side experience
+  # one for a retried delivery), the receiver-side experience
   defp eventual_successes(rows) do
     rows
     |> Enum.filter(&(&1.outcome == :succeeded))

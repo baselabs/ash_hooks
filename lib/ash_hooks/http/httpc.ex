@@ -50,7 +50,7 @@ defmodule AshHooks.Http.Httpc do
   def request(method, url, headers, body, opts \\ []) do
     deadline = System.monotonic_time(:millisecond) + (opts[:timeout] || @default_timeout)
 
-    # shared pinning substrate (also the test seam — the SSRF obligation
+    # shared pinning substrate (also the test seam; the SSRF obligation
     # lives in the driver's send-time check; adapter resolution is
     # defense-in-depth)
     with {:ok, method} <- normalize_method(method),
@@ -86,7 +86,7 @@ defmodule AshHooks.Http.Httpc do
   defp pinned_request(method, target, headers, body, opts, deadline) do
     # A literal-IP https destination FAILS CLOSED on this adapter: without
     # a hostname there is no RFC 6125 check, and :httpc never hands us the
-    # socket so the iPAddress-SAN floor (cert_san.ex — Bounded enforces it)
+    # socket so the iPAddress-SAN floor (cert_san.ex; Bounded enforces it)
     # cannot run. Chain validation alone would let ANY cert chaining to
     # the trust store authenticate the endpoint IP. Use Bounded (the
     # default adapter) for literal-IP https endpoints.
@@ -118,7 +118,7 @@ defmodule AshHooks.Http.Httpc do
     url = String.to_charlist(URI.to_string(pinned_uri))
 
     # the 4-tuple (with content-type + body) is only valid for
-    # body-carrying methods — GET/HEAD/DELETE take the 2-tuple
+    # body-carrying methods; GET/HEAD/DELETE take the 2-tuple
     request =
       case method do
         m when m in [:post, :put, :patch] ->
@@ -134,11 +134,11 @@ defmodule AshHooks.Http.Httpc do
     end
   end
 
-  # :httpc streams ONLY 2xx (200/206 — see httpc_response.erl's result/2);
+  # :httpc streams ONLY 2xx (200/206; see httpc_response.erl's result/2);
   # every other status arrives as the complete result message, so the
   # status is always recoverable: streamed ⇒ 2xx. A streamed 206 is
   # indistinguishable from a 200 in this client's streaming API and is
-  # recorded as 200 (classification is unaffected — both are 2xx).
+  # recorded as 200 (classification is unaffected; both are 2xx).
   defp collect(req_id, max_body, deadline) do
     receive do
       {:http, {^req_id, :stream_start, headers}} ->
@@ -146,7 +146,7 @@ defmodule AshHooks.Http.Httpc do
 
       {:http, {^req_id, {{_version, status, _phrase}, headers, body}}} ->
         # the transparent path assembles inside :httpc before delivery
-        # (no earlier cut exists in the client API) — truncate OUR
+        # (no earlier cut exists in the client API); truncate OUR
         # retention at the bound; the transient allocation is the
         # documented residual. :httpc delivers its own timeout error
         # message first, so no caller-side backstop fires here.
@@ -168,7 +168,7 @@ defmodule AshHooks.Http.Httpc do
 
   defp stream_body(req_id, headers, status, acc, max_body, deadline) do
     receive do
-      # a mid-stream transport failure is delivered this way — without
+      # a mid-stream transport failure is delivered this way; without
       # this clause the caller stalls to the backstop and loses the
       # reason
       {:http, {^req_id, {:error, reason}}} ->
@@ -209,7 +209,7 @@ defmodule AshHooks.Http.Httpc do
 
   # the pinned URL carries the validated IP; TLS still names the ORIGINAL
   # host (SNI + RFC 6125 hostname check against it). Same :cacerts seam as
-  # Bounded — a pinned private-CA bundle survives an adapter swap. Named
+  # Bounded; a pinned private-CA bundle survives an adapter swap. Named
   # hosts only: pinned_request refuses literal-IP https before this runs.
   defp ssl_options(host, cacerts) do
     [
@@ -223,9 +223,9 @@ defmodule AshHooks.Http.Httpc do
     ]
   end
 
-  # an empty :ssl option on a plain-http request is rejected by :httpc —
+  # an empty :ssl option on a plain-http request is rejected by :httpc;
   # only attach it for https (named hosts only; literal-IP https never
-  # reaches here — pinned_request refuses it first)
+  # reaches here; pinned_request refuses it first)
   defp maybe_put_ssl(options, "https", host, cacerts),
     do: Keyword.put(options, :ssl, ssl_options(host, cacerts))
 
@@ -238,7 +238,7 @@ defmodule AshHooks.Http.Httpc do
     end
   end
 
-  # UNbracketed: URI.to_string brackets a ":"-containing host itself —
+  # UNbracketed: URI.to_string brackets a ":"-containing host itself;
   # pre-wrapping here produced double brackets
   defp format_address(address), do: address |> :inet.ntoa() |> to_string()
 

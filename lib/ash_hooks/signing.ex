@@ -100,7 +100,7 @@ defmodule AshHooks.Signing do
 
   def display_fingerprint(_), do: {:error, :not_a_spec_key}
 
-  # —— Signing ———————————————————————————————————————————————————————
+  # -- Signing -------------------------------------------------------
 
   @doc """
   Signs the canonical string with HMAC-SHA256 under the decoded symmetric
@@ -145,7 +145,7 @@ defmodule AshHooks.Signing do
     "v1a," <> Base.encode64(signature)
   end
 
-  # —— Verification —————————————————————————————————————————————————
+  # -- Verification --------------------------------------------------
 
   @doc """
   Verifies a webhook's `webhook-id` / `webhook-timestamp` /
@@ -209,7 +209,7 @@ defmodule AshHooks.Signing do
     end
   end
 
-  # —— Header assembly ——————————————————————————————————————————————
+  # -- Header assembly -----------------------------------------------
 
   @doc """
   The three Standard Webhooks headers. `:whsec` and/or `:whsk` select the
@@ -276,7 +276,7 @@ defmodule AshHooks.Signing do
     )
   end
 
-  # —— Generation ———————————————————————————————————————————————————
+  # -- Generation ----------------------------------------------------
 
   @doc "A fresh `whsec_`-prefixed secret (24 to 64 decoded bytes, spec band)."
   @spec generate_secret(pos_integer()) :: String.t()
@@ -298,7 +298,7 @@ defmodule AshHooks.Signing do
     @id_prefix <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
   end
 
-  # —— Internals ————————————————————————————————————————————————————
+  # -- Internals -----------------------------------------------------
 
   defp to_sign(msg_id, unix_ts, payload) do
     IO.iodata_to_binary([msg_id, ?., Integer.to_string(unix_ts), ?., payload])
@@ -408,7 +408,7 @@ defmodule AshHooks.Signing do
     end
   end
 
-  # Non-raising twin for the verify path — a malformed key is a fail-closed
+  # Non-raising twin for the verify path: a malformed key is a fail-closed
   # {:error, :invalid_secret}, never an exception.
   defp normalize_public_key(whpk) do
     case decode_asymmetric_secret(whpk, @pub_prefix) do
@@ -439,12 +439,12 @@ defmodule AshHooks.Signing do
   defp decode_b64!(encoded) do
     case decode_b64(encoded) do
       {:ok, decoded} -> decoded
-      # Never echo the value — it may be live secret material (ADR-0005).
+      # Never echo the value; it may be live secret material (ADR-0005).
       :error -> raise ArgumentError, "secret is not valid base64 (#{byte_size(encoded)} bytes)"
     end
   end
 
-  # Tolerate unpadded base64 like the python reference — `padding: false`
+  # Tolerate unpadded base64 like the python reference; `padding: false`
   # accepts any correct unpadded length (appending "==" only rescues
   # length ≡ 2 mod 4, wrongly rejecting the unpadded 32-byte secret form).
   defp decode_b64(encoded) when is_binary(encoded) and encoded != "" do

@@ -47,8 +47,8 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptFields do
 
   defp attributes_spec do
     [
-      # the complete encoded delivery key (AshHooks.PrimaryKey.encode shape)
-      # — the row link, stable under composite and custom delivery keys
+      # the complete encoded delivery key (AshHooks.PrimaryKey.encode shape):
+      # the row link, stable under composite and custom delivery keys
       {:delivery_pk, :map, [allow_nil?: false]},
       {:endpoint_id, :uuid, [allow_nil?: false]},
       {:event_uuid, :string, [allow_nil?: false, constraints: [max_length: 255]]},
@@ -62,7 +62,7 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptFields do
       # allowlisted response headers only (per-endpoint capture opt-in)
       {:response_headers, :map, []},
       {:latency_ms, :integer, [constraints: [min: 0]]},
-      # a secret STORE REFERENCE string — never secret material
+      # a secret STORE REFERENCE string, never secret material
       {:signing_key_ref, :string, [constraints: [max_length: 255]]},
       # test sends flag their history rows (test_tracking deliveries)
       {:test, :boolean, [allow_nil?: false, default: false]},

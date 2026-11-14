@@ -59,9 +59,9 @@ defmodule AshHooks.Tenancy do
 
   # nil = undeclared (OBSERVED against ash 3.33.10: a resource without a
   # multitenancy block introspects as {nil, nil, nil}; a declared block
-  # materializes the schema defaults — global? false when unset). A module
+  # materializes the schema defaults, global? false when unset). A module
   # that is not a resource at all reads the same way: the pre-flight is a
-  # contract check, not a validation — the broken module fails at its own
+  # contract check, not a validation; the broken module fails at its own
   # first Ash call, contained, exactly as before the tenancy floor.
   defp declaration(module) do
     if Spark.Dsl.is?(module, Ash.Resource) do
