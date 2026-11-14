@@ -183,7 +183,8 @@ defmodule AshHooks.OutboundEvent do
            Tenancy.resolve([resource, endpoint.__struct__, deliveries, endpoints], opts[:tenant]),
          {:ok, events} <- replay_targets(resource, opts, tenant),
          {:ok, declaration} <- replay_declaration(resource, deliveries, endpoints, opts),
-         {:ok, route} <- AshHooks.OutboundBinding.route(opts[:enqueue], opts) do
+         {:ok, route} <- AshHooks.OutboundBinding.route(opts[:enqueue], opts),
+         :ok <- validate_rate(opts[:per_second] || 50) do
       opts = Keyword.merge(opts, declaration: declaration, dispatch_route: route)
 
       if opts[:dry_run] do
@@ -196,12 +197,22 @@ defmodule AshHooks.OutboundEvent do
 
   defp replay_events(events, endpoint, deliveries, endpoints, requested_by, opts, tenant) do
     counts =
-      Enum.reduce(events, {0, 0, 0}, fn logged, acc ->
-        replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant, acc)
+      events
+      |> Enum.chunk_every(opts[:per_second] || 50)
+      |> Enum.with_index()
+      |> Enum.reduce({0, 0, 0}, fn {batch, index}, counts ->
+        if index > 0, do: Process.sleep(1_000)
+
+        Enum.reduce(batch, counts, fn logged, acc ->
+          replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant, acc)
+        end)
       end)
 
     {:ok, %{created: elem(counts, 0), re_sent: elem(counts, 1), skipped: elem(counts, 2)}}
   end
+
+  defp validate_rate(rate) when is_integer(rate) and rate > 0, do: :ok
+  defp validate_rate(_), do: {:error, :invalid_per_second}
 
   defp replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant, acc) do
     case fetch_delivery(deliveries, endpoint, logged, tenant) do

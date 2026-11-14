@@ -841,4 +841,30 @@ defmodule AshHooks.EventLogTest do
 
     assert Ash.read!(Delivery, authorize?: false) == []
   end
+
+  @tag release_fix: 14
+  test "release event-log replay spaces its configured batches by a second" do
+    endpoint = endpoint!()
+    for id <- ["rate-one", "rate-two"], do: dispatch!(id)
+
+    callback = fn _, _ ->
+      send(self(), {:replay_tick, System.monotonic_time(:millisecond)})
+      :ok
+    end
+
+    assert {:ok, %{created: 2}} =
+             AshHooks.OutboundEvent.replay(EventLog, endpoint,
+               event_type: "order_paid",
+               deliveries: Delivery,
+               endpoints: Endpoint,
+               declaration: {Emitter, :order_paid},
+               requested_by: "operator",
+               per_second: 1,
+               enqueue: callback
+             )
+
+    assert_received {:replay_tick, first}
+    assert_received {:replay_tick, second}
+    assert second - first >= 1_000
+  end
 end
