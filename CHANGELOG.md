@@ -53,7 +53,7 @@ change; see [UPGRADING.md](UPGRADING.md).
 - Missing-row event-log replay binds the declaration and enqueue route, stores the requester, and enqueues the created delivery and event.
 - Health sweeps count and emit disable telemetry only for successful writes.
 - Endpoint health returns `{:error, :from_required}` for `:to` without `:from`.
-- Health sweeps enforce the full warning interval from the stored warning time, including early and overlapping sweeps.
+- Health sweeps enforce the full warning interval from the stored warning time, including early and overlapping sweeps. The interval is the new `auto_disable` option `warning_interval_seconds` (default 60).
 - Delivery pruning checks history deletion and rolls back the batch on failure, keeping history with its delivery.
 - HTTP 410 history retains the request's actual duration and signing-key reference through disable recovery.
 - Synchronous ingestion contains handler exceptions, exits, and throws and records retryable failures.
