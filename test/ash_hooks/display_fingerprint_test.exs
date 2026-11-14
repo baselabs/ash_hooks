@@ -5,6 +5,10 @@ defmodule AshHooks.DisplayFingerprintTest do
   alias AshHooks.Errors.Invalid.KeyKindMismatch
   alias AshHooks.Test.Custodian
 
+  defmodule MalformedFingerprintCustodian do
+    def fingerprint(_ref, _tenant, _kind), do: {:ok, "not sixteen bytes"}
+  end
+
   # Independent fingerprint vectors, using the fixed seed/key bytes 0 through 31.
   @material :binary.list_to_bin(Enum.to_list(0..31))
   @v1 "SHA256:vMTxUlKthcdCjADlQC2iaQ"
@@ -81,5 +85,20 @@ defmodule AshHooks.DisplayFingerprintTest do
       key = struct!(Custody.Key, custodian: nil, ref: "unused", tenant: nil, kind: kind)
       assert {:error, :no_fingerprint} = Custody.display_fingerprint(key)
     end
+  end
+
+  test "a malformed custodian fingerprint answer is an UnknownError without its contents" do
+    key =
+      struct!(Custody.Key,
+        custodian: MalformedFingerprintCustodian,
+        ref: "ahk_" <> Ash.UUIDv7.generate(),
+        tenant: nil,
+        kind: {:standard_webhooks, :v1}
+      )
+
+    assert {:error, %AshHooks.Errors.Unknown.UnknownError{} = error} =
+             Custody.display_fingerprint(key)
+
+    refute inspect(error) =~ "not sixteen bytes"
   end
 end

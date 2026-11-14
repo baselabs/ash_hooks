@@ -85,6 +85,18 @@ defmodule AshHooks.CustodyTenantTest do
     end
   end
 
+  defmodule ContextOwner do
+    use Ash.Resource, domain: nil, data_layer: Ash.DataLayer.Simple
+
+    attributes do
+      uuid_primary_key(:id)
+    end
+
+    multitenancy do
+      strategy(:context)
+    end
+  end
+
   defmodule Tenant do
     defstruct [:value]
   end
@@ -149,5 +161,10 @@ defmodule AshHooks.CustodyTenantTest do
   test "canonicalization follows ToTenant, parse_attribute, and cast_input with constraints" do
     assert {:ok, "42"} = Custody.canonical_tenant(%Tenant{value: "0042"}, ParsedOwner)
     assert {:ok, "42"} = Custody.canonical_tenant("account:0042", ParsedOwner)
+  end
+
+  test "context multitenancy has no canonical custody tenant" do
+    refute Custody.tenant_type_supported?(ContextOwner)
+    assert {:error, :unsupported_tenant_type} = Custody.canonical_tenant("org", ContextOwner)
   end
 end
