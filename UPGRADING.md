@@ -2,6 +2,44 @@
 
 ## 3.1.0 → 3.2.0
 
+Custody endpoints now sign through the endpoint resource's `custodian`, including
+worker deliveries and `test_send`. Current and previous Standard Webhooks slots
+may use different algorithms. Legacy slots use custody with
+`legacy_key_lifecycle :on`. Each slot's kind marker is authoritative: a nonnull
+marker selects custody, while a null marker selects the endpoint's
+`secret_resolver {module, function}` or the delivery or worker resolver. Keep a
+byte resolver during migration until every occupied slot has a custody marker.
+An occupied unmarked slot without a resolver fails permanently as
+`key_kind_mismatch`; sender HMAC kinds are refused as `kind_not_allowed`.
+Existing byte signing APIs remain supported.
+
+Custody tenant metadata is derived from the owner row inside its database phase,
+independently of a serialized job's tenant spelling. An endpoint whose tenant
+type is not UUID, UUIDv7, integer, string, or ci_string must declare
+`custody_tenant_key {module, function, args}`. The MFA receives the cast tenant
+value followed by its arguments and must return equal UTF-8 binaries whenever
+the database treats two tenants as equal. This equality contract belongs to the
+host and applies to issuance, attachment, and signing. Unsupported types without
+the option fail compilation.
+
+Set `config :ash_hooks, key_material: :custody_only` before compiling resources
+and providers to refuse byte sources. The setting is off by default. It refuses
+endpoint and worker `secret_resolver`, inbound `secret` and `previous_secret`
+in every supported source shape, and provider `webhook_signing_secret/1` and
+`webhook_signing_secret/2` implementations. A custody worker omits its byte
+resolver and reads custody configuration from the endpoint. Direct byte signing
+and verification functions remain supported APIs.
+
+Inbound HMAC primitives and configured HMAC providers accept
+`AshHooks.Custody.Key` values and rotation lists mixing opaque keys and bytes.
+Signature encodings are decoded before verification; configured key encodings
+apply only to byte keys. Public RSA, ECDSA, and Ed25519 verification keys remain
+outside custody. Classified custody failures reach ingress, Plug, and telemetry
+without backend terms. `UnknownSource` returns HTTP 404. Missing keys and kind
+mismatches are configuration failures (HTTP 500 and permanent delivery failures); unavailable custody and
+unexplained answers return HTTP 503 and retry delivery. Invalid authentication
+retains its existing response.
+
 Package database operations now open bounded tenant phases through
 `Ash.transact/3`. An RLS host configures its repository's
 `on_transaction_begin/1` to derive transaction-local settings from

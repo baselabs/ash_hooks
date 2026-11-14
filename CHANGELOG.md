@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Outbound custody signing for Standard Webhooks and legacy envelopes, including
+  mixed custody and byte slots during migration. Slot kind markers select each
+  signer; sender-only kinds are refused before custody is called.
+- Inbound HMAC primitives and configured providers accept opaque custody keys,
+  rotation lists, and mixed byte and custody keys with classified failures.
+- Endpoint option `custody_tenant_key` defines the host's equality contract for
+  custom tenant types. Custody endpoints refuse unsupported types without it.
+- Opt-in `key_material: :custody_only` refuses endpoint and worker byte resolvers,
+  inbound byte-secret sources, and provider signing-secret callbacks at compile time.
+
 - Bounded tenant transactions for every package database phase, with reads on
   the mutate repository for AshPostgres and transactional AshSqlite resources.
   The new [row-level security guide](documentation/tutorials/row-security.md)
