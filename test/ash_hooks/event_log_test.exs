@@ -371,6 +371,7 @@ defmodule AshHooks.EventLogTest do
                AshHooks.OutboundEvent.replay(EventLog, later,
                  event_uuid: "msg_el_replay_new",
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops-replay"
                )
@@ -379,7 +380,7 @@ defmodule AshHooks.EventLogTest do
       assert row.endpoint_id == later.id
       assert row.event_uuid == "msg_el_replay_new"
       assert row.payload == @payload
-      assert row.last_resend_by == nil
+      assert row.last_resend_by == "ops-replay"
     end
 
     test "replaying over an existing TERMINAL row re-arms it, who recorded on the row" do
@@ -402,6 +403,7 @@ defmodule AshHooks.EventLogTest do
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  event_uuid: "msg_el_replay_term",
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops-replay",
                  enqueue: fn _row, _event -> :ok end
@@ -426,6 +428,7 @@ defmodule AshHooks.EventLogTest do
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  event_type: "order_paid",
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops-bulk"
                )
@@ -449,6 +452,7 @@ defmodule AshHooks.EventLogTest do
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  event_uuid: "msg_el_live_row",
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops"
                )
@@ -461,6 +465,7 @@ defmodule AshHooks.EventLogTest do
                AshHooks.OutboundEvent.replay(EventLog, fresh,
                  event_uuid: "msg_el_enqueue",
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops",
                  enqueue: {__MODULE__, :replay_enqueue}
@@ -477,6 +482,7 @@ defmodule AshHooks.EventLogTest do
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  event_uuid: "msg_el_fault",
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops"
                )
@@ -490,6 +496,7 @@ defmodule AshHooks.EventLogTest do
                AshHooks.OutboundEvent.replay(EventLog, endpoint!(),
                  event_uuid: "msg_el_fn_enqueue",
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops",
                  enqueue: fn _logged, _event -> :ok end
@@ -521,6 +528,7 @@ defmodule AshHooks.EventLogTest do
                AshHooks.OutboundEvent.replay(EventLog, terminal_ep,
                  event_uuid: "msg_el_rearm_fail",
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops"
                )
@@ -534,6 +542,7 @@ defmodule AshHooks.EventLogTest do
                AshHooks.OutboundEvent.replay(EventLog, terminal_ep,
                  event_uuid: "msg_el_read_fail",
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops"
                )
@@ -549,6 +558,7 @@ defmodule AshHooks.EventLogTest do
                  from: DateTime.add(DateTime.utc_now(), -60, :second),
                  to: DateTime.add(DateTime.utc_now(), 60, :second),
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops"
                )
@@ -560,6 +570,7 @@ defmodule AshHooks.EventLogTest do
                  event_type: "no.events.of.this.type",
                  limit: 1,
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops"
                )
@@ -567,6 +578,7 @@ defmodule AshHooks.EventLogTest do
       assert {:error, :event_filter_required} =
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops"
                )
@@ -576,6 +588,7 @@ defmodule AshHooks.EventLogTest do
                  event_type: "order_paid",
                  limit: 5_000,
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops"
                )
@@ -628,6 +641,7 @@ defmodule AshHooks.EventLogTest do
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  event_uuid: "x",
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint
                )
 
@@ -635,6 +649,7 @@ defmodule AshHooks.EventLogTest do
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  event_uuid: "msg_el_absent",
                  deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
                  endpoints: Endpoint,
                  requested_by: "ops"
                )
@@ -678,5 +693,33 @@ defmodule AshHooks.EventLogTest do
     Repo.query!(
       "CREATE UNIQUE INDEX IF NOT EXISTS #{@events}_unique_event_index ON #{@events} (event_uuid)"
     )
+  end
+
+  @tag release_fix: 2
+  test "release missing-row replay binds its declaration and stores its requester" do
+    endpoint = endpoint!()
+    {:ok, []} = dispatch!("release-missing-replay")
+
+    assert {:ok, %{created: 1}} =
+             AshHooks.OutboundEvent.replay(EventLog, endpoint,
+               event_uuid: "release-missing-replay",
+               deliveries: Delivery,
+               endpoints: Endpoint,
+               declaration: {Emitter, :order_paid},
+               requested_by: "operator",
+               enqueue: {__MODULE__, :capture_replay}
+             )
+
+    assert_receive {:release_replay, %Delivery{} = row, %AshHooks.Event{} = event}
+    assert row.dispatch_source == AshHooks.OutboundBinding.source(Emitter, :order_paid, Endpoint)
+    assert row.dispatch_route == AshHooks.OutboundBinding.named_route(__MODULE__, :capture_replay)
+    assert row.last_resend_by == "operator"
+    assert row.last_resend_at != nil
+    assert {event.id, event.type, event.payload} == {row.event_uuid, row.event_type, row.payload}
+  end
+
+  def capture_replay(row, event) do
+    send(self(), {:release_replay, row, event})
+    :ok
   end
 end

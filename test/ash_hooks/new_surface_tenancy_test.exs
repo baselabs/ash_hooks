@@ -485,6 +485,7 @@ defmodule AshHooks.NewSurfaceTenancyTest do
              AshHooks.OutboundEvent.replay(EventLog, later_b,
                event_uuid: "msg_ts_b",
                deliveries: Delivery,
+               declaration: {Emitter, :order_paid},
                endpoints: Endpoint,
                requested_by: "ops",
                tenant: org_b
@@ -494,6 +495,7 @@ defmodule AshHooks.NewSurfaceTenancyTest do
              AshHooks.OutboundEvent.replay(EventLog, later_b,
                event_uuid: "msg_ts_b",
                deliveries: Delivery,
+               declaration: {Emitter, :order_paid},
                endpoints: Endpoint,
                requested_by: "ops"
              )
@@ -528,6 +530,7 @@ defmodule AshHooks.NewSurfaceTenancyTest do
              AshHooks.OutboundEvent.replay(EventLog, endpoint,
                event_uuid: event.id,
                deliveries: Delivery,
+               declaration: {Emitter, :order_paid},
                endpoints: Endpoint,
                requested_by: "operator",
                tenant: "tenant-a"
