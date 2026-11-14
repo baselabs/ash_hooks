@@ -55,6 +55,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
       :concurrent_rolls,
       :half_adopted_byte_roll,
       :reissue_overlap,
+      :displaced_signing,
       :reissue_refusals,
       :retained_reference,
       :owner_write_failure,
@@ -81,6 +82,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
       :roll_allowed_kinds,
       :roll_material,
       :reissue_overlap,
+      :displaced_signing,
       :adoption,
       :partial_adoption
     ]
@@ -994,6 +996,37 @@ defmodule AshHooks.Test.KeyIssuingCases do
                  disclosure
                )
     end
+  end
+
+  def displaced_signing(ctx) do
+    session = RealReceiver.open!()
+    on_exit(fn -> RealReceiver.close!(session) end)
+    sink = self()
+    {:ok, owner, _} = create(ctx, attrs: %{url: RealReceiver.url(session)})
+
+    policy = fn _url, _context ->
+      {:ok, fresh, disclosure} = Endpoint.reissue_secret(owner, tenant: 17)
+      assert fresh.secret_ref != owner.secret_ref
+      assert {:ok, _} = KeyRegistry.sweep(ctx.registry, tenant: 17)
+      assert stored(ctx, owner.secret_ref).state == :destroyed
+      send(sink, {:replacement_disclosure, disclosure})
+      :allow
+    end
+
+    assert {:ok, %{status: :succeeded}} =
+             AshHooks.Delivery.test_send(owner,
+               deliveries: ctx.delivery,
+               tenant: 17,
+               type: :checked,
+               payload: @body,
+               destination_policy: policy,
+               http_opts: [validate_destination: false]
+             )
+
+    assert_receive {:replacement_disclosure, disclosure}
+    [request] = RealReceiver.requests!(session)
+    headers = Map.new(request["headers"], &{String.downcase(&1["name"]), &1["value"]})
+    assert {:ok, _} = Signing.verify(@body, headers, disclosure)
   end
 
   def resolve(ref) do

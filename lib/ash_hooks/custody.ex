@@ -183,7 +183,7 @@ defmodule AshHooks.Custody do
         _ -> :invalid_sign_result
       end
 
-    Errors.from_custody_result(result)
+    custody_result(result, ref)
   end
 
   @doc false
@@ -195,8 +195,13 @@ defmodule AshHooks.Custody do
         _ -> :invalid_verify_result
       end
 
-    Errors.from_custody_result(result)
+    custody_result(result, ref)
   end
+
+  defp custody_result({:error, :unknown_ref}, ref),
+    do: {:error, AshHooks.Errors.Invalid.UnknownKey.exception(ref: ref)}
+
+  defp custody_result(result, _ref), do: Errors.from_custody_result(result)
 
   @doc """
   Displays a custody key's fingerprint as `SHA256:` plus unpadded base64url.

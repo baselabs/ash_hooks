@@ -1476,9 +1476,9 @@ defmodule AshHooks.Delivery do
     # check above is the residual guarantee, not a full replacement
     adapter_opts = config[:http_opts] || []
 
-    with {:ok, adapter_opts} <- endpoint_http_opts(adapter_opts, endpoint, config, tenant),
+    with {:ok, endpoint, headers, used_refs} <- signing_headers_with_refresh(row, endpoint, config, tenant),
+         {:ok, adapter_opts} <- endpoint_http_opts(adapter_opts, endpoint, config, tenant),
          :ok <- pin_adapter(adapter, adapter_opts),
-         {:ok, {headers, used_refs}} <- signing_headers(row, endpoint, config, tenant),
          {:ok, headers} <- delivery_headers(headers, row, endpoint, config, tenant) do
       stamp_key_first_used(endpoint, used_refs, config, tenant)
       send_signed(request, endpoint, headers, row, adapter_opts, config, tenant)
@@ -1948,6 +1948,46 @@ defmodule AshHooks.Delivery do
     do: {response[:status], summarize(response[:status], response[:headers])}
 
   # ────────────────────────── signing ──────────────────────────
+
+  defp signing_headers_with_refresh(row, endpoint, config, tenant) do
+    case signing_headers(row, endpoint, config, tenant) do
+      {:error, %UnknownKey{ref: ref}} = error when is_binary(ref) ->
+        with {:ok, {fresh, canonical}} <- AshHooks.Phase.run(config[:endpoints], tenant,
+               &read_signing_endpoint(&1.resource, row.endpoint_id, tenant, config[:endpoints])) do
+          if admitted_signing_ref?(fresh, ref, row.signing_mode || :standard, config) do
+            error
+          else
+            # The destination has already passed its policy. Refresh only the
+            # signing slots on that authorized snapshot, including history and
+            # first-use metadata, without changing the destination mid-attempt.
+            fields = Enum.flat_map([:standard, :legacy], fn slot ->
+              slot |> AshHooks.KeyLifecycle.fields() |> Map.values()
+            end)
+            snapshot = Map.merge(endpoint, Map.take(fresh, fields))
+            refreshed_config = Keyword.put(config, :custody_tenant, canonical)
+            with {:ok, {headers, refs}} <- signing_headers(row, snapshot, refreshed_config, tenant),
+              do: {:ok, snapshot, headers, refs}
+          end
+        end
+
+      {:ok, {headers, refs}} -> {:ok, endpoint, headers, refs}
+      error -> error
+    end
+  end
+
+  defp admitted_signing_ref?(endpoint, ref, mode, config) do
+    slots = case mode do
+      :standard -> [:standard]
+      :legacy -> [:legacy]
+      :dual -> [:standard, :legacy]
+    end
+    Enum.any?(slots, fn slot ->
+      fields = AshHooks.KeyLifecycle.fields(slot)
+      (Map.get(endpoint, fields.ref) == ref and not is_nil(Map.get(endpoint, fields.kind))) or
+        (previous_signing_ref(endpoint, slot, config) == ref and
+          not is_nil(Map.get(endpoint, fields.previous_kind)))
+    end)
+  end
 
   defp signing_headers(row, endpoint, config, tenant) do
     # the worker macro's :tenant_aware_secrets switch: the resolver

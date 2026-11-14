@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Refresh displaced custody references once from their owner during signing
+  and verification, preserving immediate destruction without false dead letters.
+
 - Refuse direct custody-kind input on host actions while preserving byte-only
   reference writes through a configured resolver.
 

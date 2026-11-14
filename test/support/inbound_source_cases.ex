@@ -205,6 +205,7 @@ defmodule AshHooks.Test.InboundSourceCases do
       :roll_gate,
       :concurrent_rolls,
       :reissue,
+      :displaced_verification,
       :concurrent_reissue_roll,
       :retirement,
       :resolution,
@@ -452,6 +453,30 @@ defmodule AshHooks.Test.InboundSourceCases do
       fn -> InboundSource.reissue_secret(row, tenant: 17) end,
       fn -> InboundSource.roll_secret(row, tenant: 17, generate: @kind) end
     ])
+  end
+
+  def displaced_verification(ctx) do
+    {:ok, row, _} = create(ctx)
+
+    assert {:ok, resolved} =
+             Ingress.resolve_source(ctx.source_ledger, :checked,
+               tenant: 17,
+               scope: %{account_id: "account"}
+             )
+
+    {:ok, fresh, disclosure} = InboundSource.reissue_secret(row, tenant: 17)
+    assert fresh.secret_ref != row.secret_ref
+    assert {:ok, _} = KeyRegistry.sweep(ctx.registry, tenant: 17)
+    assert Enum.find(registry_rows(ctx), &(&1.ref == row.secret_ref)).state == :destroyed
+
+    assert {:ok, :created, %{status: :processed}} =
+             ingest(ctx, disclosure, resolved_source: resolved)
+
+    # A missing reference still held by the source remains a configuration error.
+    :ok = ctx.custodian.destroy(fresh.secret_ref, "17")
+
+    assert {:error, %AshHooks.Errors.Invalid.UnknownKey{}} =
+             ingest(ctx, disclosure, id: "still-held")
   end
 
   def retirement(ctx) do
@@ -1175,6 +1200,7 @@ defmodule AshHooks.Test.InboundSourceCases do
         tenant: Keyword.get(opts, :tenant, 17),
         scope: %{account_id: Keyword.get(opts, :account_id, "account")}
       }
+      |> Map.merge(Map.new(Keyword.take(opts, [:resolved_source])))
     )
   end
 

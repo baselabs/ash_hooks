@@ -1325,7 +1325,7 @@ defmodule AshHooks.Ingress do
          :ok <- resolved_pause(resolved),
          :ok <- check_replay_window(inbound, resolved.provider, name),
          :ok <- check_raw_body(raw_body, name),
-         :ok <- verify_resolved(resolved, raw_body, ctx, inbound) do
+         {:ok, resolved} <- verify_resolved(resolved, raw_body, ctx, inbound) do
       digest = content_digest(raw_body)
 
       context = %DeliveryContext{
@@ -1474,12 +1474,34 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  defp verify_resolved(%ResolvedSource{record: nil} = source, body, ctx, inbound) do
+  defp verify_resolved(source, body, ctx, inbound) do
+    case verify_source_keys(source, body, ctx, inbound) do
+      {:error, %AshHooks.Errors.Invalid.UnknownKey{ref: ref}} = error
+          when not is_nil(source.record) and is_binary(ref) ->
+        ledger = Storage.option(source.record.__struct__, :ledger)
+        with {:ok, fresh} <- resolve_source(ledger, source.name,
+               tenant: ctx[:tenant], scope: source.scope) do
+          if Enum.any?(fresh.keys, &(&1.ref == ref)) do
+            error
+          else
+            with :ok <- resolved_pause(fresh),
+                 :ok <- check_replay_window(inbound, fresh.provider, source.name),
+                 :ok <- verify_source_keys(fresh, body, ctx, inbound),
+              do: {:ok, fresh}
+          end
+        end
+
+      :ok -> {:ok, source}
+      error -> error
+    end
+  end
+
+  defp verify_source_keys(%ResolvedSource{record: nil} = source, body, ctx, inbound) do
     with {:ok, secret} <- resolve_secret(source.provider, inbound, source.name, ctx),
          do: verify(source.provider, body, ctx, inbound, secret, source.name)
   end
 
-  defp verify_resolved(%ResolvedSource{keys: []} = source, body, ctx, inbound) do
+  defp verify_source_keys(%ResolvedSource{keys: []} = source, body, ctx, inbound) do
     if source.public_key,
       do:
         verify(
@@ -1493,7 +1515,7 @@ defmodule AshHooks.Ingress do
       else: secret_error(source.name)
   end
 
-  defp verify_resolved(source, body, ctx, inbound) do
+  defp verify_source_keys(source, body, ctx, inbound) do
     Enum.reduce_while(source.keys, {:error, nil}, fn key, {:error, failure} ->
       case verify(source.provider, body, ctx, %{inbound | previous_secret: nil}, key, source.name) do
         :ok ->

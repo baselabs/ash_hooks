@@ -804,7 +804,10 @@ v1 can be generated. For asymmetric senders, register their public key with
 `register_public_key/3` and `kind:`; private keys stay with the sender.
 
 Plug resolves the source once before handshake, then uses its selected provider
-for verification and response policy. Missing rows return 404. Paused rows still
+for verification and response policy. Missing rows return 404.
+A reference destroyed after resolution triggers one fresh source read; verification
+retries only when the owner no longer admits the failed reference. A still-admitted
+reference unknown to custody remains `UnknownKey`. Paused rows still
 reach the provider's paused response policy. Claimed receipts use their stored
 provider alias, payload, and scope, so source deletion, pause, or rotation does
 not stop recovery. During migration, run `adopt_provider_alias/4` outside an
