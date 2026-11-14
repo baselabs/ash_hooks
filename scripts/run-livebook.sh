@@ -2,7 +2,8 @@
 # Headless verification of a .livemd notebook: extracts the elixir cells in
 # order (Livebook evaluates them sequentially in one session; one concatenated
 # script is the same evaluation) and runs them OUTSIDE any mix project
-# (Mix.install requires it). The notebook runs exactly as written.
+# (Mix.install requires it) and outside the checkout. The notebook runs
+# exactly as written.
 #
 #   run-livebook.sh <notebook.livemd>
 #       Resolves every package from hex.pm, as a reader's machine does.
@@ -15,9 +16,14 @@
 #       for a published release. Everything is removed on exit.
 set -euo pipefail
 notebook="$(cd "$(dirname "${1:?usage: run-livebook.sh <notebook.livemd> [--archive <package.tar>]}")" && pwd)/$(basename "$1")"
+# The notebook runs from a directory outside the checkout, as a reader's does:
+# a cell that reads a path relative to the repository fails here instead of
+# passing only because the checkout happened to be the working directory.
 root="$(cd "$(dirname "$0")/.." && pwd)"
-mkdir -p "$root/_build"
-work="$(mktemp -d "$root/_build/notebook.XXXXXX")"
+work="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/ash_hooks-notebook.XXXXXX")" && pwd -P)"
+case "$work/" in
+  "$(cd "$root" && pwd -P)"/*) echo "the notebook work directory must be outside the checkout: $work" >&2; rm -rf "$work"; exit 1 ;;
+esac
 server_pid=""
 cleanup() {
   if [ -n "$server_pid" ]; then kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fi

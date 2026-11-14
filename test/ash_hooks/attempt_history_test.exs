@@ -831,6 +831,24 @@ defmodule AshHooks.AttemptHistoryTest do
       assert {:error, :invalid_cursor} =
                AshHooks.OutboundAttempt.list(Attempt, after: Base.url_encode64("junk"))
     end
+
+    test "a well-formed cursor carrying the wrong value types is a named error" do
+      time = DateTime.to_iso8601(DateTime.utc_now())
+
+      for payload <- [
+            %{"time" => nil, "id" => Ash.UUID.generate()},
+            %{"time" => 5, "id" => Ash.UUID.generate()},
+            %{"time" => %{"at" => time}, "id" => Ash.UUID.generate()},
+            %{"time" => time, "id" => nil},
+            %{"time" => time, "id" => %{"a" => 1}},
+            %{"time" => time, "id" => "not-a-uuid"}
+          ] do
+        cursor = payload |> Jason.encode!() |> Base.url_encode64(padding: false)
+
+        assert {:error, :invalid_cursor} = AshHooks.Delivery.list(Delivery, after: cursor)
+        assert {:error, :invalid_cursor} = AshHooks.OutboundAttempt.list(Attempt, after: cursor)
+      end
+    end
   end
 
   defp recreate_attempts! do

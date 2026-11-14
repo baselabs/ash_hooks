@@ -371,7 +371,7 @@ or throw is contained and recorded as `:failed_retryable` with error class
 `"handler_crashed"`. The handler can be retried through the stored ledger.
 
 For HTTP receipt, configure `AshHooks.BodyReader` before parsers consume the bytes,
-then mount `AshHooks.Plug`. The [README](../../README.md#receive-with-ashhooksplug)
+then mount `AshHooks.Plug`. The [README](../../README.md#mounting-the-plug)
 contains tested Phoenix mounting fragments. Scoped and multitenant routes need a
 stored-endpoint resolver returning the source, scope, connection, and tenant.
 Never trust a path parameter as a module or tenant.

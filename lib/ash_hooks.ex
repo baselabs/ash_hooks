@@ -26,8 +26,7 @@ defmodule AshHooks do
   including attempt history and the event log. Pass `:tenant` or `ctx[:tenant]`
   to every entry point. `AshHooks.Tenancy.resolve/2` validates the resource
   modules touched by each operation, including optional history and event logs.
-  The
-  [adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
+  The [adoption checklist](../tutorials/tenancy-adoption-checklist.md)
   explains the transition.
   """
 
@@ -217,10 +216,11 @@ defmodule AshHooks do
         The declared variant builders older pins resolve to: a map of
         `version => {module, function}` where `f(event) ::
         {:ok, payload_bytes} | {:error, reason}`. An endpoint pinning a
-        version in this map receives that builder's bytes instead of the
-        dispatch payload; a pin on an undeclared version fails that
-        endpoint closed (`:unknown_pinned_version`) before any row is
-        written.
+        version in this map, other than the current `version`, receives
+        that builder's bytes instead of the dispatch payload; a pin on the
+        current `version` receives the dispatch payload; a pin on any other
+        version fails that endpoint closed (`:unknown_pinned_version`)
+        before any row is written.
         """
       ]
     ]

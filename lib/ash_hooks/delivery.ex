@@ -32,7 +32,8 @@ defmodule AshHooks.Delivery do
       HTTP-date; clamped `[1, retry_after_cap_seconds]`), else backoff
     * 410 → `:disable_pending`, then conditional endpoint disable and `:dead_letter`
     * other 4xx → `:dead_letter` (client errors do not self-heal)
-    * 3xx → `:dead_letter` (`redirect_refused`; redirects are never followed)
+    * 3xx → `:dead_letter` (`redirect_refused_<status>`, such as
+      `redirect_refused_302`; redirects are never followed)
     * transport error / secret-resolution failure → retryable
       backoff
     * a transport resolver that raises, throws, exits, or returns an invalid
@@ -902,7 +903,9 @@ defmodule AshHooks.Delivery do
   Options: `:type` (required, atom or nonempty binary), `:payload`, `:signing_mode`,
   `:deliveries` (the delivery resource, required), `:secret_resolver`
   (required, the driver contract), `:max_attempts` (default 1, so a test
-  send reports one attempt's outcome; raise it for a retried test),
+  send reports one attempt's outcome; a higher value permits later retries
+  through the delivery runner or recovery, while `test_send/2` itself
+  performs one attempt),
   plus the driver passthroughs (`:http`, `:http_opts`,
   `:destination_policy`, `:ssrf_check`, `:tenant_aware_secrets`,
   `:attempts`, `:tenant`, `:now`). The endpoint must be live
@@ -1291,8 +1294,8 @@ defmodule AshHooks.Delivery do
 
   # the policy callback runs inside the driver's containment: a crash or a
   # term outside the decision vocabulary is a RETRYABLE failure (the row
-  # climbs the ladder while the app fixes its policy — a policy defect
-  # must not dead-letter deliveries)
+  # retries with backoff while the app fixes its policy and dead-letters
+  # only at its attempt ceiling)
   defp run_destination_policy({m, f}, endpoint, tenant) when is_atom(m) and is_atom(f),
     do:
       safe_destination_policy(fn ->

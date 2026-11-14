@@ -66,6 +66,17 @@ with tarfile.open(fileobj=io.BytesIO(content), mode='r:gz') as inner:
                 assert linked in names, f'package documentation link missing: {member.name} -> {target}'
                 checked_links += 1
     assert checked_links > 0, 'relative documentation link instrument saw no known links'
+    # A link into the repository names the release tag when its file ships in
+    # this package, and never a moving branch, so the text a reader installed
+    # matches the source it links to.
+    repository = re.compile(r'https://github\.com/baselabs/ash_hooks/(?:blob|tree)/([^/\s)]+)/([^\s)#]*)')
+    for member in inner.getmembers():
+        if member.isfile() and member.name.endswith(('.md', '.livemd', '.ex', '.exs')):
+            document = inner.extractfile(member).read().decode()
+            for ref, path in repository.findall(document):
+                assert ref.startswith('v'), f'repository link on a branch: {member.name} -> {ref}/{path}'
+                shipped = path.rstrip('/') in names or any(n.startswith(path.rstrip('/') + '/') for n in names)
+                assert not shipped or ref == 'v' + sys.argv[2], f'repository link to a shipped file names {ref}, not v{sys.argv[2]}: {member.name} -> {path}'
     for member in inner.getmembers():
         path = pathlib.PurePosixPath(member.name)
         assert not path.is_absolute() and '..' not in path.parts, 'unsafe archive path'

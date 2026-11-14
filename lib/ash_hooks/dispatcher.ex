@@ -85,10 +85,12 @@ defmodule AshHooks.Dispatcher do
 
   @doc """
   Fans one event out to every matching subscription's enabled endpoint.
-  Returns `{:ok, results}` with one map per endpoint
-  (`%{endpoint_id:, subscription_id:, status:, error:}` with `status` in
-  `:created | :duplicate | :deferred | :enqueue_failed | :mark_failed |
-  :endpoint_error`), or `{:error, reason}` for global failures.
+  Returns `{:ok, results}`: one map per matching enabled endpoint, plus an
+  `:endpoint_error` entry for each subscription whose endpoint could not be
+  loaded (`%{endpoint_id:, subscription_id:, status:, error:}` with
+  `status` in `:created | :duplicate | :deferred | :enqueue_failed |
+  :mark_failed | :endpoint_error`), or `{:error, reason}` for global
+  failures.
 
   Options:
 

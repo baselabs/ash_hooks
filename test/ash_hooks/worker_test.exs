@@ -1210,6 +1210,40 @@ if Code.ensure_loaded?(Oban) do
         _ = :code.delete(RuntimeWorker)
       end
 
+      test "function literals for resolver options are refused at compilation" do
+        for {option, value, message} <- [
+              {:transport, "fn endpoint, tenant -> nil end", ~r/:transport must be/},
+              {:transport, "&AshHooks.WorkerTest.Secrets.webhook_secret/2",
+               ~r/:transport must be/},
+              {:transport, "AshHooks.WorkerTest.Secrets", ~r/:transport must be/},
+              {:delivery_headers, "fn delivery, endpoint, tenant -> [] end",
+               ~r/:delivery_headers must be/},
+              {:certificate_pin, "&AshHooks.WorkerTest.Secrets.webhook_secret/2",
+               ~r/:certificate_pin must be/}
+            ] do
+          source =
+            String.replace(
+              @worker_base,
+              "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+              "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        #{option}: #{value}"
+            )
+
+          assert_raise ArgumentError, message, fn -> Code.compile_string(source) end
+        end
+
+        literal =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},\n        delivery_headers: [{\"x-tenant-route\", \"blue\"}]"
+          )
+
+        assert [{RuntimeWorker, _beam}] = Code.compile_string(literal)
+      after
+        _ = :code.purge(RuntimeWorker)
+        _ = :code.delete(RuntimeWorker)
+      end
+
       test "defaults (no :oban, no :snippet_redactor, no :http) compile clean" do
         assert [{module, _beam}] = Code.compile_string(@worker_base)
         assert module == RuntimeWorker

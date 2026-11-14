@@ -1,6 +1,8 @@
 defmodule AshHooks.Tenancy do
   @moduledoc """
-  Validates the resource modules supplied to `resolve/2` against a tenant.
+  Validates an operation's resource modules against a tenant.
+
+  `resolve/2` takes the resource modules an entry point touches and the tenant:
 
   * If none declares multitenancy, the tenant passes through unchanged.
   * If all declare attribute multitenancy on the same attribute with

@@ -57,7 +57,7 @@ signature or several structured signatures. The [verification guide](documentati
 explains encodings, signed input, timestamps, rotation, and custom callbacks.
 ash_hooks includes no vendor-specific verifiers; use the sender's signing documentation.
 
-### Receive with AshHooks.Plug
+### Mounting the plug
 
 Configure the raw-body reader in your Phoenix endpoint before the router. This
 fragment is tested inside a complete endpoint and router with a real SQLite ledger.

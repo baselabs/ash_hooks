@@ -337,11 +337,12 @@ defmodule AshHooks.Endpoint do
         doc: """
         Whether the payload-version pinning column is injected (default
         `:off`, leaving existing schemas untouched). With `:on`, the
-        extension injects `pinned_payload_version` (integer, nullable):
-        an endpoint pinning a version its event's declaration carries (in
-        `payload_versions`) receives THAT variant builder's bytes instead
-        of the dispatch payload; a pin on an undeclared version fails the
-        endpoint closed at dispatch. Declaring `:on` requires a migration
+        extension injects `pinned_payload_version` (integer, nullable).
+        Endpoints without a pin, or pinned to the declaration's current
+        `version`, receive the dispatch payload. Other pins select the
+        matching `payload_versions` builder; a pin on a version with no
+        builder fails that endpoint closed at dispatch, before any row is
+        written. Declaring `:on` requires a migration
         for the column.
         """
       ],

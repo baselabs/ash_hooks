@@ -10,7 +10,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     Configure it as the `body_reader` of the endpoint's `Plug.Parsers`,
     `{AshHooks.BodyReader, :read_body, []}` (the installer patches this; a router
     plug cannot recover pre-parse bytes). The README's
-    [Receive with AshHooks.Plug](README.md#3-receive-with-ashhooksplug) section
+    [Mounting the plug](README.md#mounting-the-plug) section
     shows the endpoint and router; the test suite compiles and runs that example
     as written.
 

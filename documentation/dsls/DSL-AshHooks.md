@@ -29,8 +29,7 @@ Configure consistent attribute multitenancy on every resource you enable,
 including attempt history and the event log. Pass `:tenant` or `ctx[:tenant]`
 to every entry point. `AshHooks.Tenancy.resolve/2` validates the resource
 modules touched by each operation, including optional history and event logs.
-The
-[adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
+The [adoption checklist](../tutorials/tenancy-adoption-checklist.md)
 explains the transition.
 
 
@@ -118,7 +117,7 @@ delivered with retry/backoff/dead-letter semantics.
 | [`payload_schema`](#webhooks-outbound-payload_schema){: #webhooks-outbound-payload_schema } | `any` |  | The catalog's payload contract for this event type: a JSON-Schema map, a types module, or any term your docs renderer understands. Data for tooling only; the dispatcher never validates against it. |
 | [`version`](#webhooks-outbound-version){: #webhooks-outbound-version } | `pos_integer` | `1` | The CURRENT payload version of this event type (default 1). Endpoints without a pin receive this version's bytes. |
 | [`events`](#webhooks-outbound-events){: #webhooks-outbound-events } | `atom` |  | The consumer's OutboundEvent resource module (carrying `AshHooks.OutboundEvent`): when set, every dispatch records the event ONCE (id, type, declared version, time, and exact payload bytes), whether or not any endpoint was enabled. The log has its own retention (`AshHooks.OutboundEvent.prune/2`) and answers replays (`AshHooks.OutboundEvent.replay/3`). |
-| [`payload_versions`](#webhooks-outbound-payload_versions){: #webhooks-outbound-payload_versions } | `any` |  | The declared variant builders older pins resolve to: a map of `version => {module, function}` where `f(event) :: {:ok, payload_bytes} \| {:error, reason}`. An endpoint pinning a version in this map receives that builder's bytes instead of the dispatch payload; a pin on an undeclared version fails that endpoint closed (`:unknown_pinned_version`) before any row is written. |
+| [`payload_versions`](#webhooks-outbound-payload_versions){: #webhooks-outbound-payload_versions } | `any` |  | The declared variant builders older pins resolve to: a map of `version => {module, function}` where `f(event) :: {:ok, payload_bytes} \| {:error, reason}`. An endpoint pinning a version in this map, other than the current `version`, receives that builder's bytes instead of the dispatch payload; a pin on the current `version` receives the dispatch payload; a pin on any other version fails that endpoint closed (`:unknown_pinned_version`) before any row is written. |
 
 
 
