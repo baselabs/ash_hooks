@@ -39,12 +39,17 @@ defmodule MyApp.Repo do
 
       tenant ->
         query!("SELECT set_config('my_app.tenant', $1, true)", [
-          to_string(Ash.ToTenant.to_tenant(tenant, nil))
+          to_string(tenant_key(reason, tenant))
         ])
 
         :ok
     end
   end
+
+  defp tenant_key(%{metadata: %{resource: resource}}, tenant),
+    do: Ash.ToTenant.to_tenant(tenant, resource)
+
+  defp tenant_key(_reason, tenant), do: tenant
 end
 ```
 
@@ -53,9 +58,17 @@ and rollback clear it before the pooled connection is reused. Read only
 `reason[:tenant]`; neither a process dictionary nor a worker wrapper supplies
 the tenant.
 
+An action's transaction reason carries the tenant as the caller passed it and
+names the action's resource, so the callback converts it with `Ash.ToTenant`
+for that resource. An `Ash.transact/3` reason names no resource, so its tenant
+must already be the key. Package phases pass the key: each phase converts the
+operation's tenant with every resource it touches and refuses with
+`{:error, :tenancy_mismatch}` when they disagree. Pass the key to your own
+`Ash.transact/3` calls too.
+
 A package phase inside a host transaction joins that transaction and does not
 call the hook again. Bind the outermost transaction with the same tenant, for
-example through `Ash.transact(resources, callback, tenant: tenant)`. Do not mix
+example through `Ash.transact(resources, callback, tenant: key)`. Do not mix
 tenants in that transaction. A raw repository transaction does not invoke
 AshPostgres's Ash transaction hook by itself.
 

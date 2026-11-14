@@ -108,6 +108,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   instead of reducing it to `:invalid_signature`. An `AshHooks.Custody.Key` in
   an RSA, ECDSA or Ed25519 key list reports `KeyKindMismatch` unless another
   key verifies, instead of `InvalidSignature`.
+- Package database phases pass `Ash.transact/3` the tenant key, converted with
+  `Ash.ToTenant` for every resource in the phase, because a transaction reason
+  names no resource. A phase whose resources convert the tenant differently
+  returns `{:error, :tenancy_mismatch}` before opening a transaction. The row
+  security guide's repository callback converts an action's tenant with the
+  resource named in its transaction reason.
 - Run every shipped documentation code block or state why it cannot run in
   the documentation gate. Check consumer formatting for Elixir examples,
   including module documentation, DSL references, and Livebook cells.

@@ -9,7 +9,11 @@ defmodule AshHooks.RowSecurityPostgresTest.Repo do
     tenant = reason[:tenant]
 
     if not is_nil(tenant) do
-      value = to_string(Ash.ToTenant.to_tenant(tenant, nil))
+      value =
+        case reason do
+          %{metadata: %{resource: resource}} -> to_string(Ash.ToTenant.to_tenant(tenant, resource))
+          _transact -> to_string(tenant)
+        end
 
       %{rows: [[setting]]} =
         query!("SELECT set_config('ash_hooks_test.tenant', $1, true)", [value], log: false)
@@ -61,6 +65,12 @@ defmodule AshHooks.RowSecurityPostgresTest do
     @tag configuration: configuration
     test "driver refusal inside a host transaction with #{configuration} reads", context do
       Cases.driver_refusal(context)
+    end
+
+    @tag configuration: configuration
+    test "a struct tenant binds its key for the phase's resources with #{configuration} reads",
+         context do
+      Cases.struct_tenant(context)
     end
 
     @tag configuration: configuration

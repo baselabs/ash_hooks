@@ -18,12 +18,24 @@ defmodule AshHooks.Phase do
     end
   end
 
+  # The reason of an Ash.transact names no resource, so the repository's
+  # transaction-begin callback cannot convert the tenant itself. Every
+  # resource in the phase converts the caller's tenant; they must agree.
   defp transact(resources, tenant, operation) do
     joined? = Enum.any?(resources, &Ash.DataLayer.in_transaction?/1)
 
-    case Ash.transact(resources, fn -> result(operation.(), joined?) end, tenant: tenant) do
-      {:ok, result} -> unwrap(result, joined?)
-      {:error, error} -> {:error, original_error(error)}
+    with {:ok, key} <- tenant_key(resources, tenant) do
+      case Ash.transact(resources, fn -> result(operation.(), joined?) end, tenant: key) do
+        {:ok, result} -> unwrap(result, joined?)
+        {:error, error} -> {:error, original_error(error)}
+      end
+    end
+  end
+
+  defp tenant_key(resources, tenant) do
+    case resources |> Enum.map(&Ash.ToTenant.to_tenant(tenant, &1)) |> Enum.uniq() do
+      [key] -> {:ok, key}
+      _keys -> {:error, :tenancy_mismatch}
     end
   end
 

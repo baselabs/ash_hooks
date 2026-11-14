@@ -121,6 +121,12 @@ defmodule AshHooks.RowSecurityTest do
     end
 
     @tag configuration: configuration
+    test "a struct tenant binds its key for the phase's resources with #{configuration} reads",
+         context do
+      Cases.struct_tenant(context)
+    end
+
+    @tag configuration: configuration
     test "outbound_phases with #{configuration} reads", context do
       Cases.outbound_phases(context)
     end

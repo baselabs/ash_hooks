@@ -9,6 +9,18 @@ defmodule AshHooks.Test.RowSecurityProvider do
     do: {:ok, Base.encode16(:crypto.hash(:sha256, Jason.encode!(payload)))}
 end
 
+defmodule AshHooks.Test.RowSecurityTenant do
+  @moduledoc false
+  # Converts only with a resource, as the protocol's spec requires; `split`
+  # names one resource that converts the tenant to a different key.
+  defstruct [:id, :split]
+
+  defimpl Ash.ToTenant do
+    def to_tenant(%{id: id, split: split}, resource) when is_atom(resource) and resource != nil,
+      do: if(resource == split, do: id <> "_split", else: id)
+  end
+end
+
 defmodule AshHooks.Test.RowSecurityTracer do
   @moduledoc false
   @behaviour Ash.Tracer
@@ -1036,6 +1048,26 @@ defmodule AshHooks.Test.RowSecurityCases do
     after
       0 -> acc
     end
+  end
+
+  def struct_tenant(ctx) do
+    seeded = Map.new(seed(ctx))
+    tenant = %AshHooks.Test.RowSecurityTenant{id: "tenant_a"}
+
+    assert {:ok, [endpoint]} =
+             AshHooks.Phase.run(ctx.endpoint, tenant, fn query ->
+               Ash.read(query, authorize?: false, tenant: tenant)
+             end)
+
+    assert endpoint.id == seeded["tenant_a"].id
+    split = %{tenant | split: ctx.subscription}
+
+    assert {:error, :tenancy_mismatch} =
+             AshHooks.Phase.run([ctx.endpoint, ctx.subscription], split, fn ->
+               send(self(), :phase_ran)
+             end)
+
+    refute_received :phase_ran
   end
 
   def unbound_access(ctx) do
