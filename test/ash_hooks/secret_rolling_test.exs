@@ -494,4 +494,26 @@ defmodule AshHooks.SecretRollingTest do
     end)
     |> Map.new()
   end
+
+  @tag release_fix: 11
+  test "release early retirement records the actual retirement time" do
+    endpoint =
+      Ash.create!(Endpoint, %{url: "https://hooks.example.test/retire", secret_ref: "original"},
+        authorize?: false
+      )
+
+    now = ~U[2026-11-13 12:00:00.000000Z]
+
+    {:ok, rolled} =
+      AshHooks.Endpoint.roll_secret(endpoint,
+        new_secret_ref: "next",
+        overlap_seconds: 3600,
+        now: now
+      )
+
+    actual = DateTime.add(now, 60, :second)
+    assert {:ok, retired} = AshHooks.Endpoint.expire_previous_secret(rolled, now: actual)
+    assert retired.previous_secret_ref == nil
+    assert retired.previous_secret_retired_at == actual
+  end
 end

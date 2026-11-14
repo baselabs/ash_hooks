@@ -139,10 +139,24 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
     {:ok, prev_first_used} =
       Builder.build_action_change(Builtins.set_attribute(:previous_secret_first_used_at, nil))
 
-    changes = [prev_ref, prev_created, prev_first_used]
+    {:ok, retired_at} =
+      Builder.build_action_change(
+        Builtins.set_attribute(:previous_secret_retired_at, arg(:retired_at))
+      )
+
+    changes = [prev_ref, prev_created, prev_first_used, retired_at]
 
     {:ok, action} =
-      Builder.build_action(:update, :retire_previous_secret, accept: [], changes: changes)
+      Builder.build_action(:update, :retire_previous_secret,
+        accept: [],
+        changes: changes,
+        arguments: [
+          argument(:retired_at, :utc_datetime_usec,
+            allow_nil?: false,
+            default: &DateTime.utc_now/0
+          )
+        ]
+      )
 
     action
   end

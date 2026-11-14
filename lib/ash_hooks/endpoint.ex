@@ -179,11 +179,11 @@ defmodule AshHooks.Endpoint do
 
     with :ok <- require_lifecycle(resource),
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
-      expire_previous_secret_gated(endpoint, tenant)
+      expire_previous_secret_gated(endpoint, tenant, opts[:now] || DateTime.utc_now())
     end
   end
 
-  defp expire_previous_secret_gated(endpoint, tenant) do
+  defp expire_previous_secret_gated(endpoint, tenant, retired_at) do
     resource = endpoint.__struct__
 
     if is_nil(endpoint.previous_secret_ref) do
@@ -193,7 +193,9 @@ defmodule AshHooks.Endpoint do
         resource
         |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
         |> Ash.Query.filter(previous_secret_ref == ^endpoint.previous_secret_ref)
-        |> Ash.bulk_update(:retire_previous_secret, %{},
+        |> Ash.bulk_update(
+          :retire_previous_secret,
+          %{retired_at: DateTime.truncate(retired_at, :microsecond)},
           authorize?: false,
           return_records?: true,
           return_errors?: true,
@@ -231,7 +233,7 @@ defmodule AshHooks.Endpoint do
         |> Ash.Query.filter(
           not is_nil(previous_secret_ref) and previous_secret_retired_at <= ^now
         )
-        |> Ash.bulk_update(:retire_previous_secret, %{},
+        |> Ash.bulk_update(:retire_previous_secret, %{retired_at: now},
           authorize?: false,
           return_records?: true,
           return_errors?: true,
