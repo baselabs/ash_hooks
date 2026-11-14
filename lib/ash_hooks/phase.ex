@@ -25,12 +25,14 @@ defmodule AshHooks.Phase do
     joined? = Enum.any?(resources, &Ash.DataLayer.in_transaction?/1)
 
     with {:ok, key} <- tenant_key(resources, tenant) do
-      case Ash.transact(resources, fn -> result(operation.(), joined?) end, tenant: key) do
-        {:ok, result} -> unwrap(result, joined?)
-        {:error, error} -> {:error, original_error(error)}
-      end
+      resources
+      |> Ash.transact(fn -> result(operation.(), joined?) end, tenant: key)
+      |> transacted(joined?)
     end
   end
+
+  defp transacted({:ok, result}, joined?), do: unwrap(result, joined?)
+  defp transacted({:error, error}, _joined?), do: {:error, original_error(error)}
 
   defp tenant_key(resources, tenant) do
     case resources |> Enum.map(&Ash.ToTenant.to_tenant(tenant, &1)) |> Enum.uniq() do
