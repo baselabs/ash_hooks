@@ -133,6 +133,14 @@ owner actions, bulk deletion, cascades, direct SQL, and replacement of a
 slot reference. A rollback of an owner write also rolls back its retirement.
 Disposal uses the row's stored `custody_tenant` after owner deletion.
 
+Custody owners receive the reserved system read action `read_custody_owner`.
+It has no action filter, preparation or pagination, so a host primary read
+that hides a live owner cannot cause disposal. The resource's `base_filter`
+still applies: a row it hides counts as gone. Lifecycle retirement reads the
+persisted owner after a write and retains a reference held in any slot.
+Refusals before a write leave an enclosing host transaction usable; failures
+after an owner write roll back the write and its retirement together.
+
 Unavailable custody is retried with exponential delay capped at one hour.
 Other destroy answers move the obligation to `destroy_failed`, counted in
 the sweep result and reported through
@@ -145,6 +153,12 @@ Schedule `AshHooks.KeyRegistry.prune/2` with `before: timestamp` to remove
 destroyed audit rows by age. It never removes pending obligations or the
 custodian's permanent tombstones. These operator functions perform system
 operations; apply host authorization before exposing them to callers.
+
+A raised exception, exit or missing custodian also parks only that reference
+as `destroy_failed`, with the fixed `unclassified` error and telemetry reason.
+Exception contents do not escape, and subsequent references are still swept.
+Unavailable retry results are fenced by both generation and the read attempt
+count, so delayed results cannot overwrite newer retry state.
 
 `AshHooks.Signing.display_fingerprint/1` accepts spec-shaped key strings;
 `AshHooks.Custody.display_fingerprint/1` accepts opaque spec keys. Ed25519

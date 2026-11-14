@@ -86,6 +86,13 @@ defmodule AshHooks.Endpoint do
   displacement retire custody references in the owner's transaction; the
   separately scheduled registry sweep destroys them after commit. See
   `AshHooks.KeyRegistry` and the migration instructions in UPGRADING.md.
+
+  Custody owners also receive the reserved `read_custody_owner` system action.
+  It has no action filter, preparation or pagination; the resource's own
+  `base_filter` still applies. Lifecycle retirement reads the persisted owner
+  after the write and retains references held in any slot. A refusal before
+  a write leaves an enclosing host transaction usable. A failure after a
+  package write rolls back that write and its registry retirement together.
   """
 
   @statuses [:enabled, :disabled]

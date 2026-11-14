@@ -13,11 +13,18 @@ defmodule AshHooks.KeyRegistry do
   references are destroyed outside transactions using their stored canonical
   `custody_tenant`, even when the owner has been deleted.
 
+  Owner existence uses the injected `read_custody_owner` action, without the
+  host primary read's filters, preparations or pagination. The resource's
+  `base_filter` still applies; a row it hides counts as gone.
+
   Only `:ok` marks a reference destroyed. An unavailable custodian is retried
   with exponential backoff capped at one hour. Other answers park the obligation
   in `:destroy_failed` with a fixed classification and emit
   `[:ash_hooks, :key_registry, :destroy_failed]`, with `count: 1` and metadata
   `registry`, `ref`, and `reason`. Backend answers are never stored or emitted.
+  Raised exceptions, exits and missing custodians park only that reference as
+  `unclassified`; subsequent references are still swept. Unavailable results
+  also match the attempt count they read, preserving newer retry state.
   Operators inspect `pending/2`, repair the cause, then call `rearm/3`.
   `destroy_generation` fences results that were in flight before rearming.
   `prune/2` removes destroyed audit rows only; custody tombstones remain in

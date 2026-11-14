@@ -66,6 +66,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Custody lifecycle retirement checks the persisted owner after each write and
+  retains references still held in any slot, including after a concurrent roll
+  or a host action that returns an outdated record.
+- Lifecycle refusals leave enclosing host transactions usable for custody and
+  byte slots. Failures after an owner write still roll back its retirement.
+- Custody owner reconciliation uses an injected `read_custody_owner` action
+  instead of the host primary read's filters, preparations or pagination.
+  The resource's `base_filter` still defines which rows count as existing.
+- A custodian that raises or exits, or an owner that no longer declares a
+  custodian, parks only that disposal obligation with a fixed classification
+  and telemetry. The sweep continues with subsequent references.
+- Unavailable disposal results match the retry attempt they read, preventing
+  delayed sweeps from overwriting newer retry counts or deadlines.
 - IPv6 destination checks now refuse reserved and unallocated address space,
   including gaps within `2000::/3`, using the IANA allocation registry retrieved
   November 13, 2026. Existing globally reachable special-purpose exceptions and
