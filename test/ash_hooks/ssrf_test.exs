@@ -10,6 +10,148 @@ defmodule AshHooks.SsrfTest do
 
   alias AshHooks.Ssrf
 
+  describe "allocated IPv6 destinations" do
+    for host <- ["4000::1", "3000::1"] do
+      test "refuses unallocated #{host} at registration and resolution" do
+        url = "https://[#{unquote(host)}]/hook"
+        refute Ssrf.registration_safe?(url)
+        refute Ssrf.safe_url?(url)
+        assert {:error, :unsafe} = Ssrf.resolve_public(url)
+      end
+    end
+
+    test "an allocated public address and the existing global exceptions stay admitted" do
+      for host <- [
+            "2606:4700:4700::1111",
+            "2001:1::1",
+            "2001:1::2",
+            "2001:1::3",
+            "2001:3::1",
+            "2001:4:112::1",
+            "2001:20::1",
+            "2001:30::1"
+          ] do
+        assert Ssrf.safe_url?("https://[#{host}]/hook"), host
+      end
+    end
+  end
+
+  describe "resolve_host_public/2" do
+    for {class, hosts} <- [
+          malformed_brackets: [
+            "[",
+            "]",
+            "[]",
+            "[::1",
+            "::1]",
+            "[[::1]]",
+            "[example.com]",
+            "[8.8.8.8]"
+          ],
+          zone_identifiers: ["fe80::1%eth0", "[fe80::1%eth0]", "[fe80::1%25eth0]"],
+          ports: ["example.com:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"],
+          schemes: ["https://example.com", "http:example.com", "//example.com"],
+          paths: [
+            "example.com/hook",
+            "example.com\\hook",
+            "example.com?x=1",
+            "example.com#fragment"
+          ],
+          credentials: ["user@example.com", "user:password@example.com"],
+          whitespace: [" example.com", "example.com ", "exam ple.com", "example.com\u00A0"],
+          empty_labels: ["", ".", "..", ".example.com", "example..com", "example.com.."],
+          invalid_labels: [
+            "-example.com",
+            "example-.com",
+            "_example.com",
+            "éxample.com",
+            String.duplicate("x", 64) <> ".com",
+            Enum.join(List.duplicate(String.duplicate("x", 63), 4), ".")
+          ],
+          non_hosts: [nil, 42, :example, ~c"example.com", %{}, <<0xFF>>]
+        ] do
+      test "#{class} return invalid_host without raising" do
+        for host <- unquote(Macro.escape(hosts)) do
+          assert {:error, :invalid_host} = Ssrf.resolve_host_public(host), inspect(host)
+        end
+      end
+    end
+
+    test "control characters return invalid_host without raising" do
+      for byte <- Enum.to_list(0..31) ++ Enum.to_list(127..159) do
+        host = "exam" <> <<byte::utf8>> <> "ple.com"
+        assert {:error, :invalid_host} = Ssrf.resolve_host_public(host), inspect(host)
+      end
+    end
+
+    test "bare IPv4, bare IPv6 and bracketed IPv6 literals skip DNS" do
+      assert {:ok, [{8, 8, 8, 8}]} = Ssrf.resolve_host_public("8.8.8.8")
+      ip = {0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111}
+      assert {:ok, [^ip]} = Ssrf.resolve_host_public("2606:4700:4700::1111")
+      assert {:ok, [^ip]} = Ssrf.resolve_host_public("[2606:4700:4700::1111]")
+    end
+
+    test "mapped, compatible and NAT64 forms use the embedded IPv4 classifier" do
+      for prefix <- ["::ffff:", "::", "64:ff9b::"] do
+        assert {:error, :unsafe} = Ssrf.resolve_host_public(prefix <> "10.0.0.1")
+        assert {:ok, [_]} = Ssrf.resolve_host_public(prefix <> "8.8.8.8")
+      end
+    end
+
+    test "metadata names are refused case insensitively with or without a trailing dot" do
+      for host <- ["metadata.google.internal", "metadata.goog"],
+          name <- [host, host <> ".", String.upcase(host), String.upcase(host) <> "."] do
+        assert {:error, :unsafe} = Ssrf.resolve_host_public(name)
+        assert {:error, :unsafe} = Ssrf.resolve_public("https://#{name}/hook")
+      end
+    end
+
+    test "options cannot bypass destination checks" do
+      assert {:error, :unsafe} =
+               Ssrf.resolve_host_public("127.0.0.1",
+                 validate_destination: false,
+                 destination_policy: fn _, _ -> :allow end
+               )
+    end
+
+    @tag :ssrf_dns
+    test "a public DNS name accepts a trailing dot and returns every system resolver address" do
+      for host <- ["example.com", "EXAMPLE.COM."] do
+        expected =
+          for family <- [:inet, :inet6],
+              {:ok, {:hostent, _, _, _, _, addresses}} <- [
+                :inet.gethostbyname(String.to_charlist(host), family)
+              ],
+              ip <- addresses,
+              do: ip
+
+        assert expected != []
+        assert {:ok, addresses} = Ssrf.resolve_host_public(host)
+        assert Enum.sort(addresses) == Enum.sort(expected)
+      end
+    end
+
+    @tag :ssrf_dns
+    test "a name resolving to loopback is unsafe" do
+      assert {:error, :unsafe} = Ssrf.resolve_host_public("localhost")
+    end
+
+    @tag :ssrf_dns
+    test "an unresolved name keeps the existing failure vocabulary" do
+      assert {:error, reason} = Ssrf.resolve_host_public("no-such-host-ash-hooks-test.invalid")
+      assert reason in [:nxdomain, :resolve_timeout]
+    end
+
+    test "an expired deadline is honored before querying a real DNS name" do
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, :resolve_timeout} =
+               Ssrf.resolve_host_public("example.com", deadline: started - 1)
+
+      assert System.monotonic_time(:millisecond) - started < 250
+    end
+  end
+
   describe "scheme" do
     test "accepts http and https" do
       assert Ssrf.safe_url?("http://example.com/hook")

@@ -8,12 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `AshHooks.Ssrf.resolve_host_public/2` validates DNS names and IP literals,
+  resolves both address families under a bounded deadline, and returns only
+  public addresses for connection pinning.
 - `AshHooks.Endpoint.schedule_previous_retirement/3` sets a retirement time
   for a standard previous key, including an undated reference adopted with
   `key_lifecycle :on`. Past times and absent previous references are refused.
 
 ### Fixed
 
+- IPv6 destination checks now refuse reserved and unallocated address space,
+  including gaps within `2000::/3`, using the IANA allocation registry retrieved
+  November 13, 2026. Existing globally reachable special-purpose exceptions and
+  IPv4 classification are preserved. This safety correction follows
+  ADR 0010, rule 3.
 - A transport resolver that raises, throws, exits, or returns an invalid value,
   and a `transport` setting that is not a resolver, refuse the attempt as a
   retryable `transport_resolution` failure instead of falling back to HTTP.

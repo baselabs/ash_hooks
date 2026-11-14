@@ -7,11 +7,17 @@ defmodule AshHooks.Ssrf do
   Hostname resolution happens at send time, so registration does not depend
   on the destination's current DNS availability.
 
-  `safe_url?/1` and `resolve_public/2` resolve IPv4 and IPv6 addresses and
-  require a nonempty result containing only public addresses. Private,
-  loopback, link-local, unique-local, shared, and reserved ranges are rejected.
+  `resolve_host_public/2`, `safe_url?/1`, and `resolve_public/2` resolve IPv4
+  and IPv6 addresses and require a nonempty result containing only public
+  addresses. Private, loopback, link-local, unique-local, shared, and reserved
+  ranges are rejected.
   IPv4-mapped and IPv4-compatible IPv6 addresses are classified using their
-  embedded IPv4 address.
+  embedded IPv4 address, as does the NAT64 `64:ff9b::/96` prefix. Other IPv6
+  addresses require an allocated prefix from the IANA IPv6 Global Unicast
+  Address Assignments registry, with non-global special-purpose ranges
+  refused and their globally reachable exceptions retained. Reserved and
+  unallocated space is refused. The allocation table was retrieved on
+  November 13, 2026; new allocations require a package update before admission.
 
   A hostname that fails to resolve fails as `:nxdomain` when every queried
   family returned an authoritative negative answer, and as `:resolve_timeout`
@@ -22,11 +28,96 @@ defmodule AshHooks.Ssrf do
   DNS resolution has a two-second ceiling, shortened by a supplied operation
   deadline. Both supplied HTTP adapters connect to an address from the
   validated result while retaining the original hostname for TLS and HTTP.
+
+  Callers of `resolve_host_public/2` must resolve at every connect, reconnect,
+  redirect, failover, and broker-advertised address. Connect only to an address
+  returned by that call, and keep the original name for TLS verification and
+  server name indication. Resolving again through another connection API
+  would permit DNS rebinding between validation and connection.
   """
 
   @resolve_timeout_ms 2_000
 
   @metadata_hostnames ~w(metadata.google.internal metadata.goog)
+
+  # IANA IPv6 Global Unicast Address Assignments, retrieved 2026-11-13.
+  # Include ALLOCATED entries only, including IANA's special-purpose parent.
+  # More-specific special-purpose rules below take precedence.
+  # https://www.iana.org/assignments/ipv6-unicast-address-assignments/ipv6-unicast-address-assignments.xhtml
+  # Special-purpose registries checked on the same date:
+  # https://www.iana.org/assignments/iana-ipv4-special-registry/
+  # https://www.iana.org/assignments/iana-ipv6-special-registry/
+  @ipv6_allocations ~w(
+    2001::/23
+    2001:200::/23
+    2001:400::/23
+    2001:600::/23
+    2001:800::/22
+    2001:c00::/23
+    2001:e00::/23
+    2001:1200::/23
+    2001:1400::/22
+    2001:1800::/23
+    2001:1a00::/23
+    2001:1c00::/22
+    2001:2000::/19
+    2001:4000::/23
+    2001:4200::/23
+    2001:4400::/23
+    2001:4600::/23
+    2001:4800::/23
+    2001:4a00::/23
+    2001:4c00::/23
+    2001:5000::/20
+    2001:8000::/19
+    2001:a000::/20
+    2001:b000::/20
+    2002::/16
+    2003::/18
+    2400::/12
+    2410::/12
+    2600::/12
+    2610::/23
+    2620::/23
+    2630::/12
+    2800::/12
+    2a00::/12
+    2a10::/12
+    2c00::/12
+  )
+
+  @doc """
+  Resolves a host to a nonempty list containing only public IP addresses.
+
+  Accepts a DNS name with IDNA-encoded ASCII labels and at most one trailing
+  dot, a bare IPv4 literal, or a bare or bracketed IPv6 literal. Malformed
+  brackets, zone identifiers, ports, schemes, paths, credentials, whitespace,
+  control characters, empty labels, and other malformed hosts return
+  `{:error, :invalid_host}` without raising.
+
+  Returns `{:ok, [ip_address]}` only when every resolved address is public.
+  A non-public answer or known metadata hostname returns `{:error, :unsafe}`.
+  Resolution failures return `{:error, :nxdomain | :resolve_timeout}`.
+  There is no destination-policy bypass.
+
+  DNS resolution has a two-second ceiling. The optional `:deadline` is an
+  absolute `System.monotonic_time(:millisecond)` value that can shorten it.
+
+  Resolve at every connect, reconnect, redirect, failover, and broker-advertised
+  address. Connect only to a returned address and retain the original name for
+  TLS verification and server name indication.
+  """
+  @spec resolve_host_public(term(), keyword()) ::
+          {:ok, [:inet.ip_address()]}
+          | {:error, :unsafe | :nxdomain | :resolve_timeout | :invalid_host}
+  def resolve_host_public(host, opts \\ []) do
+    with {:ok, parsed} <- parse_host(host),
+         {:ok, addresses} <- resolve_host(parsed, opts) do
+      if Enum.all?(addresses, &public_address?/1),
+        do: {:ok, addresses},
+        else: {:error, :unsafe}
+    end
+  end
 
   @doc """
   True when `url` is an http(s) URL whose host is not metadata and whose
@@ -60,14 +151,18 @@ defmodule AshHooks.Ssrf do
   The connection target must come from this same result to prevent DNS
   rebinding between validation and connection.
   """
-  @spec resolve_public(term()) ::
+  @spec resolve_public(term(), keyword()) ::
           {:ok, %{uri: URI.t(), addresses: [:inet.ip_address()]}} | {:error, atom()}
   def resolve_public(url, opts \\ [])
 
   def resolve_public(url, opts) when is_binary(url) do
     case URI.new(url) do
       {:ok, %URI{scheme: scheme, host: host} = uri} when scheme in ["http", "https"] ->
-        check_host(uri, host && String.downcase(host), opts)
+        case resolve_host_public(host, opts) do
+          {:ok, addresses} -> {:ok, %{uri: uri, addresses: addresses}}
+          {:error, :invalid_host} -> {:error, :unsafe}
+          {:error, reason} -> {:error, reason}
+        end
 
       _other ->
         {:error, :unsafe}
@@ -75,21 +170,6 @@ defmodule AshHooks.Ssrf do
   end
 
   def resolve_public(_other, _opts), do: {:error, :unsafe}
-
-  defp check_host(_uri, host, _opts) when host in [nil, ""], do: {:error, :unsafe}
-  defp check_host(_uri, host, _opts) when host in @metadata_hostnames, do: {:error, :unsafe}
-
-  defp check_host(uri, host, opts) do
-    case resolve(host, opts) do
-      {:ok, addresses} ->
-        if Enum.all?(addresses, &public_address?/1),
-          do: {:ok, %{uri: uri, addresses: addresses}},
-          else: {:error, :unsafe}
-
-      {:error, dns_error} ->
-        {:error, dns_error}
-    end
-  end
 
   @doc """
   Checks the scheme, metadata hostnames, and literal IP addresses at
@@ -116,35 +196,75 @@ defmodule AshHooks.Ssrf do
   def registration_safe?(_other), do: false
 
   defp literal_host_public?(host) do
-    case :inet.parse_address(String.to_charlist(host_without_brackets(host))) do
+    case :inet.parse_address(String.to_charlist(host)) do
       {:ok, address} -> public_address?(address)
       {:error, _} -> true
     end
   end
 
   defp host_public?(host) do
-    case resolve(host, []) do
-      {:ok, addresses} -> Enum.all?(addresses, &public_address?/1)
+    case resolve_host_public(host) do
+      {:ok, _addresses} -> true
       {:error, _dns_error} -> false
     end
   end
 
-  # Literal IP hosts skip DNS; hostnames resolve — BOTH families, because
-  # ANY answer class can carry the private address that must reject.
-  defp resolve(host, opts) do
-    bare = host_without_brackets(host)
-
-    case :inet.parse_address(String.to_charlist(bare)) do
-      {:ok, address} ->
-        {:ok, [address]}
-
-      {:error, _} ->
-        resolve_hostname(String.to_charlist(bare), opts)
+  defp parse_host(host) when is_binary(host) and byte_size(host) in 1..254 do
+    # Validate bytes before conversion so invalid UTF-8 and all controls are
+    # refused without raising. The only bracketed input is an IPv6 literal.
+    if Regex.match?(~r/\A[a-zA-Z0-9.:\[\]-]+\z/, host) do
+      parse_host_address(host)
+    else
+      {:error, :invalid_host}
     end
   end
 
-  # uri.host arrives bracketless — URI.new strips IPv6 brackets
-  defp host_without_brackets(host), do: host
+  defp parse_host(_other), do: {:error, :invalid_host}
+
+  defp parse_host_address("[" <> rest) do
+    case String.split(rest, "]") do
+      [bare, ""] -> parse_ipv6(bare)
+      _malformed -> {:error, :invalid_host}
+    end
+  end
+
+  defp parse_host_address(host) do
+    case :inet.parse_strict_address(String.to_charlist(host)) do
+      {:ok, address} -> {:ok, address}
+      {:error, _} -> parse_dns_name(host)
+    end
+  end
+
+  defp parse_ipv6(host) do
+    case :inet.parse_strict_address(String.to_charlist(host)) do
+      {:ok, address} when tuple_size(address) == 8 -> {:ok, address}
+      _malformed -> {:error, :invalid_host}
+    end
+  end
+
+  defp parse_dns_name(host) do
+    name = host |> String.downcase() |> String.replace_suffix(".", "")
+
+    if byte_size(name) <= 253 and
+         Enum.all?(String.split(name, "."), &valid_dns_label?/1) do
+      {:ok, {name, host}}
+    else
+      {:error, :invalid_host}
+    end
+  end
+
+  defp valid_dns_label?(label) do
+    byte_size(label) in 1..63 and
+      Regex.match?(~r/\A[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\z/, label)
+  end
+
+  defp resolve_host({name, _host}, _opts) when name in @metadata_hostnames,
+    do: {:error, :unsafe}
+
+  defp resolve_host({_name, host}, opts),
+    do: resolve_hostname(String.to_charlist(host), opts)
+
+  defp resolve_host(address, _opts), do: {:ok, [address]}
 
   defp resolve_hostname(charlist, opts) do
     now = System.monotonic_time(:millisecond)
@@ -180,13 +300,18 @@ defmodule AshHooks.Ssrf do
 
   # Bound send-time resolution by the shared DNS and operation deadlines.
   defp bounded_resolve(charlist, family, deadline) do
-    task = Task.async(fn -> :inet.gethostbyname(charlist, family) end)
     timeout = max(deadline - System.monotonic_time(:millisecond), 0)
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, {:hostent, _, _, _, _, addresses}}} -> {:ok, addresses}
-      {:ok, {:error, :nxdomain}} -> {:error, :nxdomain}
-      _timeout_or_temporary -> {:error, :resolve_timeout}
+    if timeout == 0 do
+      {:error, :resolve_timeout}
+    else
+      task = Task.async(fn -> :inet.gethostbyname(charlist, family) end)
+
+      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+        {:ok, {:ok, {:hostent, _, _, _, _, addresses}}} -> {:ok, addresses}
+        {:ok, {:error, :nxdomain}} -> {:error, :nxdomain}
+        _timeout_or_temporary -> {:error, :resolve_timeout}
+      end
     end
   end
 
@@ -200,6 +325,8 @@ defmodule AshHooks.Ssrf do
   # ::ffff:a.b.c.d and the ipv4-compat ::a.b.c.d both reduce to their v4.
   defp normalize({0, 0, 0, 0, 0, hi, _, _} = address) when hi in [0, 65_535],
     do: embedded_v4(address)
+
+  defp normalize({0x0064, 0xFF9B, 0, 0, 0, 0, _, _} = address), do: embedded_v4(address)
 
   defp normalize(address) when tuple_size(address) == 4, do: address
   defp normalize(address) when tuple_size(address) == 8, do: address
@@ -264,14 +391,16 @@ defmodule AshHooks.Ssrf do
   # 64:ff9b::/96 unwraps its embedded v4
   defp ipv6_public?({0x2002, _, _, _, _, _, _, _}), do: false
 
-  defp ipv6_public?({0x0064, 0xFF9B, 0, 0, 0, 0, hi, lo}),
-    do:
-      ipv4_public?(
-        band(hi, 0xFF00) >>> 8,
-        band(hi, 0x00FF),
-        band(lo, 0xFF00) >>> 8,
-        band(lo, 0x00FF)
-      )
+  for prefix <- @ipv6_allocations do
+    [host, length] = String.split(prefix, "/")
+    {:ok, {first, second, _, _, _, _, _, _}} = :inet.parse_address(String.to_charlist(host))
+    shift = 32 - String.to_integer(length)
+    network = (first <<< 16 ||| second) >>> shift
 
-  defp ipv6_public?(_), do: true
+    defp ipv6_public?({first, second, _, _, _, _, _, _})
+         when (first <<< 16 ||| second) >>> unquote(shift) == unquote(network),
+         do: true
+  end
+
+  defp ipv6_public?(_), do: false
 end

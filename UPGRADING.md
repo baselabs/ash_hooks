@@ -2,6 +2,19 @@
 
 ## 3.1.0 → 3.2.0
 
+IPv6 destinations in reserved or unallocated address space are now refused,
+including unallocated gaps inside `2000::/3`. Registration and send-time checks
+use the IANA allocation table retrieved November 13, 2026. New IANA allocations
+require a package update before admission. Existing globally reachable
+special-purpose exceptions and IPv4 classification are unchanged.
+
+`AshHooks.Ssrf.resolve_host_public/2` adds the same public-address check for DNS
+names and IP literals without requiring an HTTP URL. Call it at every connect,
+reconnect, redirect, failover, and broker-advertised address. Connect only to a
+returned address and keep the original name for TLS verification and server name
+indication. Its two-second resolution ceiling can be shortened with an absolute
+monotonic millisecond `:deadline`; destination policies cannot bypass this check.
+
 Transport resolver failures now refuse the attempt instead of falling back to
 HTTP. A resolver that raises, throws, exits, or returns anything other than `nil`
 or a transport module exporting `request/5` causes a retryable
