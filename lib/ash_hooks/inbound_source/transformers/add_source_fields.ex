@@ -26,9 +26,8 @@ defmodule AshHooks.InboundSource.Transformers.AddSourceFields do
 
     with :ok <- check_roles(state, roles),
          {:ok, state} <- primary_key(state),
-         {:ok, state} <- inject(state, specs),
-         {:ok, state} <- Builder.add_identity(state, :unique_source, roles) do
-      {:ok, state}
+         {:ok, state} <- inject(state, specs) do
+      Builder.add_identity(state, :unique_source, roles)
     end
   end
 

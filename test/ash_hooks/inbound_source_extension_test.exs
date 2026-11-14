@@ -1,6 +1,7 @@
 defmodule AshHooks.InboundSourceExtensionTest do
   use ExUnit.Case, async: false
   alias Ash.Resource.Info
+  alias AshHooks.InboundSource.Transformers.AddSourceFields
   require Spark.Test
 
   defmodule ByteProvider do
@@ -8,6 +9,8 @@ defmodule AshHooks.InboundSourceExtensionTest do
   end
 
   test "injects identity, fields, actions and default acceptance before Ash consumers" do
+    assert AddSourceFields.before?(Ash.Resource.Transformers.AttributesByName)
+
     source = compile_source()
     assert Info.identity(source, :unique_source).keys == [:source, :account_id]
     assert :provider in Info.action(source, :create).accept
@@ -84,7 +87,13 @@ defmodule AshHooks.InboundSourceExtensionTest do
     end
 
     assert compile_source()
-    assert compile_source(source_tenancy: false, ledger_tenancy: false, registry_tenancy: false)
+
+    errors =
+      Spark.Test.dsl_errors do
+        compile_source(source_tenancy: false, ledger_tenancy: false, registry_tenancy: false)
+      end
+
+    assert errors == []
   end
 
   test "source scope matches the ledger in name, type and constraints" do
@@ -197,65 +206,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
           {ledger, AshHooks.InboundDelivery, Keyword.get(opts, :ledger_tenancy, true), :tenant_id,
            Keyword.get(opts, :ledger_tenant_type, :integer)}
         ] do
-      definition =
-        quote do
-          use Ash.Resource,
-            domain: nil,
-            validate_domain_inclusion?: false,
-            data_layer: AshSqlite.DataLayer,
-            extensions:
-              unquote(
-                if Keyword.get(
-                     opts,
-                     if(module == ledger, do: :ledger_extension, else: :registry_extension),
-                     true
-                   ), do: [extension], else: []
-              )
-
-          sqlite do
-            table("source_extension")
-
-            repo(
-              unquote(
-                if module == registry,
-                  do: Keyword.get(opts, :registry_repo, AshHooks.Test.RegistryRepo),
-                  else: AshHooks.Test.RegistryRepo
-              )
-            )
-          end
-
-          attributes do
-            unquote(
-              if not Keyword.get(
-                   opts,
-                   if(module == ledger, do: :ledger_extension, else: :registry_extension),
-                   true
-                 ),
-                 do: quote(do: uuid_primary_key(:id))
-            )
-
-            attribute(unquote(name), unquote(type), allow_nil?: false)
-            attribute(:account_id, :string, allow_nil?: false)
-          end
-
-          unquote(tenancy(tenancy?, name, false))
-
-          unquote(
-            if module == ledger and Keyword.get(opts, :ledger_extension, true) do
-              quote do
-                inbound_delivery do
-                  scope_identity([:account_id])
-                end
-              end
-            end
-          )
-
-          actions do
-            defaults([:read])
-          end
-        end
-
-      compile(module, definition)
+      compile_peer(module, extension, tenancy?, name, type, ledger, registry, opts)
     end
 
     source_options =
@@ -322,6 +273,57 @@ defmodule AshHooks.InboundSourceExtensionTest do
     )
 
     source
+  end
+
+  defp compile_peer(module, extension, tenancy?, name, type, ledger, registry, opts) do
+    extension_key = if module == ledger, do: :ledger_extension, else: :registry_extension
+    extensions = if Keyword.get(opts, extension_key, true), do: [extension], else: []
+    fallback_id = if extensions == [], do: quote(do: uuid_primary_key(:id))
+
+    repo =
+      if module == registry,
+        do: Keyword.get(opts, :registry_repo, AshHooks.Test.RegistryRepo),
+        else: AshHooks.Test.RegistryRepo
+
+    definition =
+      quote do
+        use Ash.Resource,
+          domain: nil,
+          validate_domain_inclusion?: false,
+          data_layer: AshSqlite.DataLayer,
+          extensions: unquote(extensions)
+
+        sqlite do
+          table("source_extension")
+
+          repo(unquote(repo))
+        end
+
+        attributes do
+          unquote(fallback_id)
+
+          attribute(unquote(name), unquote(type), allow_nil?: false)
+          attribute(:account_id, :string, allow_nil?: false)
+        end
+
+        unquote(tenancy(tenancy?, name, false))
+
+        unquote(
+          if module == ledger and Keyword.get(opts, :ledger_extension, true) do
+            quote do
+              inbound_delivery do
+                scope_identity([:account_id])
+              end
+            end
+          end
+        )
+
+        actions do
+          defaults([:read])
+        end
+      end
+
+    compile(module, definition)
   end
 
   defp tenancy(false, _name, _global?), do: nil

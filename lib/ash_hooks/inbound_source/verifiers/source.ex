@@ -11,6 +11,13 @@ defmodule AshHooks.InboundSource.Verifiers.Source do
     registry = Storage.registry(state)
     providers = Extension.get_opt(state, [:inbound_source], :providers)
 
+    with :ok <- verify_ledger(state, ledger),
+         :ok <- verify_registry(state, registry) do
+      verify_providers(state, providers)
+    end
+  end
+
+  defp verify_ledger(state, ledger) do
     cond do
       AshHooks.InboundDelivery not in Spark.extensions(ledger) ->
         error(state, "ledger requires AshHooks.InboundDelivery")
@@ -30,6 +37,13 @@ defmodule AshHooks.InboundSource.Verifiers.Source do
       not AshHooks.Custody.tenant_type_supported?(state, AshHooks.Custody.tenant_options(state)) ->
         error(state, "custodian requires custody_tenant_key for this tenant attribute type")
 
+      true ->
+        :ok
+    end
+  end
+
+  defp verify_registry(state, registry) do
+    cond do
       AshHooks.KeyRegistry not in Spark.extensions(registry) or
         not Storage.compatible?(registry, state) or not compatible_tenancy?(state, registry) ->
         error(state, "key registry requires compatible transactional storage and tenancy")
@@ -37,6 +51,13 @@ defmodule AshHooks.InboundSource.Verifiers.Source do
       Storage.declaration(registry) != Storage.declaration(state) ->
         error(state, "key registry and source require the same mutate repo")
 
+      true ->
+        :ok
+    end
+  end
+
+  defp verify_providers(state, providers) do
+    cond do
       providers == [] or
         length(Keyword.keys(providers)) != length(Enum.uniq(Keyword.keys(providers))) or
           not Enum.all?(providers, fn {name, module} ->
@@ -57,7 +78,7 @@ defmodule AshHooks.InboundSource.Verifiers.Source do
 
   defp compatible_tenancy?(source, target) do
     shape(source) == shape(target) and elem(shape(source), 0) in [nil, :attribute] and
-      not Info.multitenancy_global?(source) and not Info.multitenancy_global?(target)
+      Info.multitenancy_global?(source) != true and Info.multitenancy_global?(target) != true
   end
 
   defp shape(resource) do
