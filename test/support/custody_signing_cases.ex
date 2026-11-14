@@ -91,6 +91,29 @@ defmodule AshHooks.Test.CustodySchemeProvider do
   end
 end
 
+defmodule AshHooks.Test.CustodyRotationProvider do
+  @moduledoc false
+  use AshHooks.Provider
+  alias AshHooks.Provider.Signature
+
+  # the declaration's current and previous secrets name the keys this
+  # provider verifies with, so either may be a custody key; `{:answer, term}`
+  # is a provider that answers outside the verification contract
+  @impl true
+  def verify_signature(body, ctx, secret) do
+    case :ash_hooks |> Application.fetch_env!(:rotation_keys) |> Map.fetch!(secret) do
+      {:answer, answer} -> answer
+      keys -> Signature.hmac(body, ctx.signature, keys)
+    end
+  end
+
+  @impl true
+  def parse_event_type(_payload), do: {:ok, :checked}
+
+  @impl true
+  def handle_event(type, payload), do: {:ok, %AshHooks.Event{type: type, payload: payload}}
+end
+
 defmodule AshHooks.Test.CustodySigningCases do
   @moduledoc false
   import ExUnit.Assertions
@@ -130,6 +153,7 @@ defmodule AshHooks.Test.CustodySigningCases do
       Application.delete_env(:ash_hooks, :verification_keys)
       Application.delete_env(:ash_hooks, :verification_result)
       Application.delete_env(:ash_hooks, :custody_byte_key)
+      Application.delete_env(:ash_hooks, :rotation_keys)
     end)
 
     :ok
@@ -144,6 +168,7 @@ defmodule AshHooks.Test.CustodySigningCases do
       :delivery_errors,
       :inbound_errors,
       :inbound_success,
+      :inbound_previous_key,
       :unknown_source,
       :custom_tenant
     ]
@@ -399,6 +424,60 @@ defmodule AshHooks.Test.CustodySigningCases do
 
       assert row.status == :processed
     end
+  end
+
+  # During a rotation overlap a failed current key falls back to the previous
+  # key. When the previous key could not be checked (its custodian is
+  # unavailable, the key is unknown or of the wrong kind), that failure is the
+  # answer, not the current key's invalid signature: the sender must not be
+  # told a request signed with the previous key is forged.
+  def inbound_previous_key(ctx) do
+    material = :crypto.strong_rand_bytes(32)
+    previous = key!(ctx, @kind, material)
+    previous_ref = previous.ref
+    current = :crypto.strong_rand_bytes(32)
+
+    Application.put_env(:ash_hooks, :rotation_keys, %{
+      "current" => current,
+      "previous" => previous
+    })
+
+    telemetry(self(), [[:ash_hooks, :ingress, :verify]])
+    signature = Base.encode16(:crypto.mac(:hmac, :sha256, material, @body), case: :lower)
+
+    assert {:ok, :created, row} =
+             AshHooks.Ingress.ingest(ctx.ledger, :rotating, @body, %{signature: signature})
+
+    assert row.status == :processed
+
+    for {answer, module, token, _} <- errors() do
+      AnswerCustodian.configure(ctx.custodian, answer, self())
+      assert_inbound_error(ctx, :rotating, module, token)
+      assert_received {:custody_verify, ^previous_ref, _, _}
+    end
+
+    AnswerCustodian.configure(ctx.custodian, :real, self())
+
+    for {answer, module, token} <- [
+          {:private_backend, UnknownError, "unknown_error"},
+          {{:error, :stale_timestamp}, InvalidSignature, "invalid_signature"}
+        ] do
+      Application.put_env(:ash_hooks, :rotation_keys, %{
+        "current" => current,
+        "previous" => {:answer, answer}
+      })
+
+      assert_inbound_error(ctx, :rotating, module, token)
+    end
+
+    # a current key that could not be checked keeps its own failure
+
+    Application.put_env(:ash_hooks, :rotation_keys, %{
+      "current" => %{previous | ref: "absent"},
+      "previous" => current
+    })
+
+    assert_inbound_error(ctx, :rotating, UnknownKey, "unknown_key")
   end
 
   defp assert_inbound_error(ctx, source, module, token) do
@@ -898,6 +977,12 @@ defmodule AshHooks.Test.CustodySigningCases do
             inbound :scheme do
               provider AshHooks.Test.CustodySchemeProvider
               secret fn -> {:ok, "unused"} end
+            end
+
+            inbound :rotating do
+              provider AshHooks.Test.CustodyRotationProvider
+              secret fn -> {:ok, "current"} end
+              previous_secret fn -> {:ok, "previous"} end
             end
           end
         end

@@ -63,9 +63,10 @@ defmodule AshHooks.Ingress do
   require Ash.Query
 
   alias AshHooks.Errors
+  alias AshHooks.Errors.Invalid.{InvalidSignature, KeyKindMismatch, UnknownKey}
   alias AshHooks.Errors.Invalid.MalformedPayload
   alias AshHooks.Errors.Invalid.NoWebhookSecret
-  alias AshHooks.Errors.Unknown.UnknownError
+  alias AshHooks.Errors.Unknown.{KeyUnavailable, UnknownError}
   alias AshHooks.{Info, PrimaryKey, Provider, Tenancy}
   alias Spark.Dsl.Extension
 
@@ -1418,7 +1419,13 @@ defmodule AshHooks.Ingress do
 
   # The rotation overlap: when the declaration carries a previous_secret
   # source, a failing current-key verification retries the rotated-out key
-  # so both keys verify until the option is removed (the window's end)
+  # so both keys verify until the option is removed (the window's end).
+  # When both fail, the current key's failure is the answer unless it is an
+  # invalid signature and the previous key could not be checked at all (an
+  # unavailable, unknown or wrong-kind key, or an unrecognized failure):
+  # then the previous key's failure is reported, as
+  # `AshHooks.Provider.Signature.verification_result/1` ranks a key list, so
+  # a request signed with the previous key is never answered as forged.
   defp verify_with_previous(
          _provider,
          _raw_body,
@@ -1435,12 +1442,27 @@ defmodule AshHooks.Ingress do
       {:ok, previous} ->
         case provider.verify_signature(raw_body, verify_ctx, previous) do
           :ok -> :ok
-          _previous_error -> {:error, Errors.from_reason(reason, provider: name)}
+          previous_result -> {:error, overlap_failure(reason, previous_result, name)}
         end
 
       _no_previous ->
         {:error, Errors.from_reason(reason, provider: name)}
     end
+  end
+
+  defp overlap_failure(reason, previous_result, name) do
+    current = Errors.from_reason(reason, provider: name)
+
+    previous =
+      case previous_result do
+        {:error, previous_reason} -> Errors.from_reason(previous_reason, provider: name)
+        _unknown -> Errors.from_reason(:unknown_error, provider: name)
+      end
+
+    if is_struct(current, InvalidSignature) and
+         previous.__struct__ in [KeyUnavailable, UnknownKey, KeyKindMismatch, UnknownError],
+       do: previous,
+       else: current
   end
 
   defp resolve_previous_secret(%{previous_secret: source}, ctx) do

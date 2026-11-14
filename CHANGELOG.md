@@ -80,6 +80,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- During an inbound rotation overlap, when the current key fails with an
+  invalid signature and the previous key cannot be checked (its key is
+  unavailable, unknown or of the wrong kind, or its verification failed in an
+  unrecognized way), ingress now reports the previous key's failure instead of
+  `InvalidSignature`. A request signed with the previous key is answered as a
+  key or availability failure (500 or 503 from `AshHooks.Plug`), never as a
+  forged request. Request failures such as a stale timestamp still report the
+  current key's result.
 - Run every shipped documentation code block or state why it cannot run in
   the documentation gate. Check consumer formatting for Elixir examples,
   including module documentation, DSL references, and Livebook cells.
