@@ -15,6 +15,11 @@ defmodule AshHooks.Ingress do
 
     * the decoded payload persists before handling; `payload_digest` binds
       it to the signed raw bytes;
+    * a verified body that cannot decode to a map or list is stored with
+      placeholder payload `%{}`, status `:failed_permanent`, and error class
+      `"malformed_payload"` by `:record_malformed`. A newly created malformed
+      row is never claimed or handled; its attempts and fencing token stay 0.
+      A duplicate still drives the surviving row's stored payload;
     * the unique index preserves one row per provider/event/scope identity.
       With the injected writable UUID key, the surviving key distinguishes
       `:created` from `:duplicate`. Custom generated keys use a pre-read;
@@ -392,7 +397,10 @@ defmodule AshHooks.Ingress do
   Persists the decoded payload and signed-body digest before handling via the
   no-touch unique upsert. Classifies `:created` by comparing the surviving
   row's client-generated id against ours. The env carries the resolved
-  tenant (`env[:tenant]`).
+  tenant (`env[:tenant]`). `env[:decode_result]` is `:ok` for decoded payloads
+  (the default when omitted), or `{:error, :malformed_payload}` to record a
+  terminal malformed row via `:record_malformed`. Both actions preserve the
+  surviving row on conflict and share duplicate classification and telemetry.
   """
   @spec ingest_delivery(module(), map()) :: {:ok, boolean(), struct()} | {:error, term()}
   def ingest_delivery(resource, env) do
@@ -432,7 +440,11 @@ defmodule AshHooks.Ingress do
     input = Map.put(input, :id, id)
 
     with_transient_retry(fn ->
-      case Ash.create(resource, input, action: :ingest, authorize?: false, tenant: tenant) do
+      case Ash.create(resource, input,
+             action: ingest_action(env),
+             authorize?: false,
+             tenant: tenant
+           ) do
         {:ok, delivery} ->
           classify_and_emit(env, delivery.id == id, delivery)
 
@@ -452,13 +464,16 @@ defmodule AshHooks.Ingress do
 
   defp pre_read_create(resource, input, env, tenant) do
     with_transient_retry(fn ->
-      Ash.create(resource, input, action: :ingest, authorize?: false, tenant: tenant)
+      Ash.create(resource, input, action: ingest_action(env), authorize?: false, tenant: tenant)
     end)
     |> case do
       {:ok, delivery} -> classify_and_emit(env, true, delivery)
       {:error, error} -> {:error, error}
     end
   end
+
+  defp ingest_action(%{decode_result: {:error, :malformed_payload}}), do: :record_malformed
+  defp ingest_action(_env), do: :ingest
 
   # the pre-read matches the FULL unique_ingest identity in SQL (provider
   # + external_event_id + every scope slot): filtering the scope in
@@ -808,6 +823,9 @@ defmodule AshHooks.Ingress do
 
   # ────────────────────────── internals ──────────────────────────
 
+  defp drive(_resource, %{decode_result: {:error, :malformed_payload}}, delivery, true),
+    do: {:ok, :created, delivery}
+
   defp drive(resource, env, delivery, created?) do
     key = PrimaryKey.map(delivery)
 
@@ -1063,8 +1081,10 @@ defmodule AshHooks.Ingress do
   # resolve/4: provider + inbound entity + secret + verification + decode +
   # digest + external id + parsed type. Nothing here writes to the ledger.
   # A signature-valid but undecodable body persists as `%{}` for providers
-  # without a stable-identity callback and is marked permanently malformed
-  # after the claim. A provider identity callback may reject that decoded
+  # without a stable-identity callback and is recorded permanently malformed
+  # when inserted, without a claim. The decode verdict stays separate from
+  # the parsed event type so the placeholder cannot erase it. A provider
+  # identity callback may reject that decoded
   # shape explicitly; ingress never substitutes the raw digest after a
   # callback error.
   defp resolve(resource, name, raw_body, ctx) do
@@ -1078,7 +1098,8 @@ defmodule AshHooks.Ingress do
          :ok <- check_scope(resource, ctx) do
       digest = content_digest(raw_body)
 
-      {payload, parsed_type} = decode_and_parse(provider, raw_body, inbound.body_format)
+      {payload, parsed_type, decode_result} =
+        decode_and_parse(provider, raw_body, inbound.body_format)
 
       with {:ok, external_event_id} <-
              external_event_id(inbound, provider, payload, digest, name) do
@@ -1091,6 +1112,7 @@ defmodule AshHooks.Ingress do
            digest: digest,
            external_event_id: external_event_id,
            parsed_type: parsed_type,
+           decode_result: decode_result,
            type_string: type_string(parsed_type),
            scope: declared_scope(resource, ctx),
            tenant: ctx[:tenant]
@@ -1132,13 +1154,13 @@ defmodule AshHooks.Ingress do
   defp decode_and_parse(provider, raw_body, format) do
     case Provider.decode_payload(provider, raw_body, format) do
       {:ok, payload} when is_map(payload) or is_list(payload) ->
-        {payload, provider.parse_event_type(payload)}
+        {payload, provider.parse_event_type(payload), :ok}
 
       {:ok, _scalar} ->
-        {%{}, {:error, :malformed_payload}}
+        {%{}, {:error, :malformed_payload}, {:error, :malformed_payload}}
 
       {:error, _} ->
-        {%{}, {:error, :malformed_payload}}
+        {%{}, {:error, :malformed_payload}, {:error, :malformed_payload}}
     end
   end
 

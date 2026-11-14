@@ -33,6 +33,20 @@ back a batch if history deletion fails. For SQLite, enable `write_transactions?/
 on the repo. Early key retirement records its actual time; a previous key continues
 to sign until its stored reference is removed.
 
+Every inbound ledger now has a generated `:record_malformed` create action.
+It uses the same accept list, unique identity, and no-touch upsert as `:ingest`,
+but sets new rows to `:failed_permanent` with error class `"malformed_payload"`.
+Verified bodies that cannot decode to a map or list take this action and are
+never claimed or handled. Their attempts and fencing token remain 0. A duplicate
+still drives the surviving row's stored payload. No schema migration is required;
+restrict direct access to this action along with the other machine actions.
+
+A ledger written by an earlier version can hold a `:received` or
+`:failed_retryable` row with payload `{}` left by a crash before its first mark.
+The reaper drives it as the stored payload says. List these rows with
+`AshHooks.Ingress.list/2` using `status: [:received, :failed_retryable]` and
+the ledger's tenant; an operator decides how to handle them.
+
 ## Versions >= 2.0.1 and < 3.0.0 → 3.0.0
 
 3.0.0 makes inbound verification generic. It removes the vendor-specific

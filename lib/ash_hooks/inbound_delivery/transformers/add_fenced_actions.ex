@@ -26,6 +26,8 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
     scope = Extension.get_opt(dsl_state, [:inbound_delivery], :scope_identity, [])
 
     with {:ok, ingest} <- build_ingest(scope, writable_id_pk?(dsl_state)),
+         {:ok, record_malformed} <-
+           build_ingest(scope, writable_id_pk?(dsl_state), :record_malformed),
          {:ok, claim} <- build_claim(),
          {:ok, mark_processed} <- build_mark_processed(),
          {:ok, mark_failed} <- build_mark_failed(),
@@ -40,6 +42,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
       dsl_state = Transformer.persist(dsl_state, :id_accepted?, writable_id_pk?(dsl_state))
 
       {:ok, dsl_state} = add(dsl_state, :create, ingest)
+      {:ok, dsl_state} = add(dsl_state, :create, record_malformed)
       {:ok, dsl_state} = add(dsl_state, :update, claim)
       {:ok, dsl_state} = add(dsl_state, :update, mark_processed)
       {:ok, dsl_state} = add(dsl_state, :update, redact_payload)
@@ -76,11 +79,22 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   # PK is writable; otherwise Ingress pre-reads the identity — H2).
   # Touching observability columns on conflict is the consumer's choice
   # via their own action; the primitive keeps the fence minimal.
-  defp build_ingest(scope, id_accepted) do
-    Builder.build_action(:create, :ingest,
+  defp build_ingest(scope, id_accepted, name \\ :ingest) do
+    changes =
+      if name == :record_malformed do
+        [
+          change(Builtins.set_attribute(:status, :failed_permanent)),
+          change(Builtins.set_attribute(:error_class, "malformed_payload"))
+        ]
+      else
+        []
+      end
+
+    Builder.build_action(:create, name,
       upsert?: true,
       upsert_identity: :unique_ingest,
       upsert_fields: [],
+      changes: changes,
       accept:
         maybe_accept_id(id_accepted, [
           :provider,
