@@ -801,7 +801,14 @@ time, and a second roll refuses while that overlap remains active. A lost
 current disclosure uses `reissue_secret/2`, preserving the previous key and its
 deadline. Import sender-issued bytes with `material:` and `kind:`; only standard
 v1 can be generated. For asymmetric senders, register their public key with
-`register_public_key/3` and `kind:`; private keys stay with the sender.
+`register_public_key/3` and a required asymmetric `kind:`. Both creation and
+registration validate that the key decodes under that kind before writing.
+Kinds are `{:standard_webhooks, :v1a}` for `whpk_`, `:ed25519`, the six RSA
+PKCS1/PSS algorithms, and the two ECDSA curve/digest algorithms named by
+`AshHooks.Provider.Scheme`. Private keys stay with the sender. Providers receive
+an `AshHooks.Custody.PublicKey` struct that pins the algorithm, digest, padding,
+and curve. HMAC refuses this value with `KeyKindMismatch` (HTTP 500), so a
+provider alias cannot turn published public bytes into an HMAC secret.
 
 Plug resolves the source once before handshake, then uses its selected provider
 for verification and response policy. Missing rows return 404.

@@ -25,10 +25,15 @@ defmodule AshHooks.Provider.Signature do
   in an RSA, ECDSA or Ed25519 key list returns
   `AshHooks.Errors.Invalid.KeyKindMismatch` unless another key verifies, ranked
   as HMAC ranks a rotation list.
+  `AshHooks.Custody.PublicKey` pins an asymmetric algorithm, including its
+  digest, padding and curve. HMAC refuses pinned public keys with
+  `KeyKindMismatch`. Asymmetric verifiers preserve that classification when
+  the pinned kind does not match their algorithm.
   Keys are never fetched from request headers, tokens, or URLs.
   """
   alias AshHooks.Custody
   alias AshHooks.Custody.Key, as: CustodyKey
+  alias AshHooks.Custody.PublicKey
   alias AshHooks.Errors.Invalid.InvalidSignature
   alias AshHooks.Provider.Signature.Key
 
@@ -77,6 +82,9 @@ defmodule AshHooks.Provider.Signature do
     end
   end
 
+  defp hmac_match(_, _, %PublicKey{}, _),
+    do: AshHooks.Errors.from_custody_result({:error, :kind_mismatch})
+
   defp hmac_match(_, _, _, _), do: invalid()
 
   @doc false
@@ -104,7 +112,7 @@ defmodule AshHooks.Provider.Signature do
     padding = Keyword.get(opts, :padding, :pkcs1_v1_5)
 
     if digest in [:sha256, :sha384, :sha512] and padding in [:pkcs1_v1_5, :pss] do
-      asymmetric(input, signature, keys, opts, :rsa, fn bytes, key ->
+      asymmetric(input, signature, keys, opts, :rsa, {:rsa, digest, padding}, fn bytes, key ->
         :public_key.verify(input, digest, bytes, key, rsa_options(padding, digest))
       end)
     else
@@ -137,7 +145,7 @@ defmodule AshHooks.Provider.Signature do
   @spec ed25519(binary(), binary(), term(), keyword()) :: :ok | error()
   def ed25519(input, signature, keys, opts \\ []) do
     safely(fn ->
-      asymmetric(input, signature, keys, opts, :ed25519, fn bytes, key ->
+      asymmetric(input, signature, keys, opts, :ed25519, {:ed25519, :none, nil}, fn bytes, key ->
         :public_key.verify(input, :none, bytes, key)
       end)
     end)
@@ -238,12 +246,12 @@ defmodule AshHooks.Provider.Signature do
     _, _ -> invalid()
   end
 
-  defp asymmetric(input, signature, keys, opts, type, verifier) do
+  defp asymmetric(input, signature, keys, opts, type, algorithm, verifier) do
     with {:ok, keys} <- Key.list(keys),
          true <- is_binary(input) and Keyword.keyword?(opts),
          {:ok, bytes} <- decode(signature, Keyword.get(opts, :encoding, :base64)) do
       keys
-      |> Enum.map(&asymmetric_match(&1, type, bytes, verifier))
+      |> Enum.map(&asymmetric_match(&1, type, algorithm, bytes, verifier))
       |> verification_result()
     else
       {:error, _} = error -> error
@@ -251,10 +259,17 @@ defmodule AshHooks.Provider.Signature do
     end
   end
 
-  defp asymmetric_match(%CustodyKey{}, _type, _bytes, _verifier),
+  defp asymmetric_match(%CustodyKey{}, _type, _algorithm, _bytes, _verifier),
     do: AshHooks.Errors.from_custody_result({:error, :kind_mismatch})
 
-  defp asymmetric_match(key, type, bytes, verifier) do
+  defp asymmetric_match(%PublicKey{} = key, _type, algorithm, bytes, verifier) do
+    with {:ok, decoded} <- PublicKey.decode(key, algorithm),
+         do: result(verifier.(bytes, decoded))
+  catch
+    _, _ -> invalid()
+  end
+
+  defp asymmetric_match(key, type, _algorithm, bytes, verifier) do
     with {:ok, key} <- Key.decode(key, type), do: result(verifier.(bytes, key))
   catch
     _, _ -> invalid()
@@ -265,13 +280,25 @@ defmodule AshHooks.Provider.Signature do
     format = Keyword.get(opts, :format, :der)
 
     if digest in [:sha256, :sha384, :sha512] and format in [:der, :raw] do
-      asymmetric(input, signature, keys, opts, type, fn bytes, key ->
-        :public_key.verify(input, digest, ecdsa_der(bytes, key, format), key)
-      end)
+      asymmetric(
+        input,
+        signature,
+        keys,
+        opts,
+        type,
+        {ecdsa_type(type, digest), digest, nil},
+        fn bytes, key ->
+          :public_key.verify(input, digest, ecdsa_der(bytes, key, format), key)
+        end
+      )
     else
       invalid()
     end
   end
+
+  defp ecdsa_type(:ecdsa, :sha256), do: {:ecdsa, @p256}
+  defp ecdsa_type(:ecdsa, :sha384), do: {:ecdsa, @p384}
+  defp ecdsa_type(type, _digest), do: type
 
   defp ecdsa_der(bytes, _key, :der), do: bytes
 

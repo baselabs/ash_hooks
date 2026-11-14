@@ -8,7 +8,8 @@ A host-owned resource for inbound webhook keys, provider selection and pause.
 Sources use opaque keys through `AshHooks.Custody`. The host owns the data
 layer, policies and migrations. Source and ledger resources must have the
 same tenancy and non-nullable scope attributes. Provider aliases select
-modules from a compile-time allowlist.
+modules from a compile-time allowlist. Each ledger declaration's `source_record`
+must name a source whose `ledger` is that declaring resource.
 
 The extension injects the following attributes for host migrations:
 
@@ -18,7 +19,9 @@ The extension injects the following attributes for host migrations:
 * `:secret_ref` and `:previous_secret_ref` are nullable opaque reference
   strings. `:secret_kind` and `:previous_secret_kind` are nullable terms.
 * `:public_key` and `:public_key_kind` are nullable terms for pinned sender
-  verification material outside custody. `:paused` is a required boolean
+  verification material outside custody. Its kind must be one of
+  `AshHooks.Custody.PublicKey`'s closed asymmetric kinds, and the material
+  must decode under that kind before creation or registration. `:paused` is a required boolean
   defaulting to false.
 * `:secret_created_at`, `:secret_first_used_at`,
   `:previous_secret_created_at`, `:previous_secret_first_used_at` and
@@ -38,7 +41,8 @@ Injected machine actions are `:roll_secret`, `:schedule_previous_retirement`,
 `:expire_previous_secret`, `:register_public_key`, `:pause`, `:unpause`,
 `:mark_current_secret_used`, `:mark_previous_secret_used`, `:set_custody_keys`
 and `:read_custody_owner`. Secret-bearing arguments are sensitive. Direct
-reference input on create is refused; use `create_source/3` to issue and attach
+kind input is refused on host create and update actions. Direct reference
+input without a byte resolver is refused; use `create_source/3` to issue and attach
 references through the key registry.
 
 

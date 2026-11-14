@@ -26,7 +26,9 @@ defmodule AshHooks.Provider do
 
   HMAC verification accepts byte secrets, `AshHooks.Custody.Key` values, and
   rotation lists mixing both. Custody errors remain classified through ingress.
-  Public verification keys remain outside custody.
+  Pinned public verification keys arrive as `AshHooks.Custody.PublicKey`,
+  outside custody. Hand-written providers must preserve this value when
+  calling asymmetric primitives. HMAC refuses it with `KeyKindMismatch`.
 
   `config :ash_hooks, key_material: :custody_only` refuses inbound `secret` and
   `previous_secret` sources (MFA, application environment, zero-argument or
@@ -48,7 +50,8 @@ defmodule AshHooks.Provider do
   @type signature_header_value :: binary()
   @type webhook_secret :: binary()
   @type signature_algorithm :: :hmac_sha256 | :hmac_sha512
-  @type verification_key :: webhook_secret() | AshHooks.Custody.Key.t()
+  @type verification_key ::
+          webhook_secret() | AshHooks.Custody.Key.t() | AshHooks.Custody.PublicKey.t()
   @type verification_keys :: verification_key() | [verification_key()]
   @type signature_error ::
           :invalid_signature

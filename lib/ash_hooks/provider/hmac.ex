@@ -57,7 +57,7 @@ defmodule AshHooks.Provider.Hmac do
   @spec verify_signature(
           binary(),
           map(),
-          binary() | AshHooks.Custody.Key.t() | [binary() | AshHooks.Custody.Key.t()],
+          AshHooks.Provider.verification_keys(),
           keyword()
         ) ::
           :ok | {:error, :invalid_signature | :no_webhook_secret | :stale_timestamp | struct()}
@@ -94,6 +94,7 @@ defmodule AshHooks.Provider.Hmac do
   defp secrets(_, _), do: {:error, :invalid_signature}
 
   defp key?(%AshHooks.Custody.Key{}), do: true
+  defp key?(%AshHooks.Custody.PublicKey{}), do: true
   defp key?(key), do: is_binary(key) and key != ""
 
   defp signature(ctx, opts) do

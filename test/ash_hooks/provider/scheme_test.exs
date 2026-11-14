@@ -489,6 +489,42 @@ defmodule AshHooks.Provider.SchemeTest do
 
       jws = token(%{"alg" => alg}, [], signer)
       assert :ok = Scheme.verify(jws, %{}, key, algorithm: algorithm, signature: :jws_body)
+
+      unless String.starts_with?(alg, "HS") do
+        assert {:ok, pinned} = AshHooks.Custody.PublicKey.new(key, algorithm)
+        assert :ok = Scheme.verify("body", %{headers: %{"sig" => encoded}}, pinned, opts)
+        assert :ok = Scheme.verify(jws, %{}, pinned, algorithm: algorithm, signature: :jws_body)
+
+        assert {:error, :invalid_signature} =
+                 Scheme.verify("changed", %{headers: %{"sig" => encoded}}, pinned, opts)
+
+        assert {:error, %AshHooks.Errors.Invalid.KeyKindMismatch{}} =
+                 Signature.hmac("body", "00", pinned)
+
+        assert {:error, %AshHooks.Errors.Invalid.KeyKindMismatch{}} =
+                 AshHooks.Provider.Hmac.verify_signature("body", %{signature: "00"}, pinned)
+
+        if algorithm == :ecdsa_p256_sha256 do
+          assert {:error, :invalid_signature} =
+                   Signature.ecdsa("body", Base.encode64("short"), pinned, format: :raw)
+        end
+
+        if algorithm == :rsa_pkcs1_sha256 do
+          for different <- [:rsa_pkcs1_sha384, :rsa_pss_sha256] do
+            assert {:error, %AshHooks.Errors.Invalid.KeyKindMismatch{}} =
+                     Scheme.verify("body", %{headers: %{"sig" => encoded}}, pinned,
+                       algorithm: different, signature: {:header, "sig"})
+          end
+        end
+
+        different = if algorithm == :ed25519, do: :rsa_pkcs1_sha256, else: :ed25519
+
+        assert {:error, %AshHooks.Errors.Invalid.KeyKindMismatch{}} =
+                 Scheme.verify("body", %{headers: %{"sig" => encoded}}, pinned,
+                   algorithm: different,
+                   signature: {:header, "sig"}
+                 )
+      end
     end
   end
 

@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Validate pinned public-key kinds before writes and pass typed public keys to
+  providers, preventing an HMAC alias from accepting public-key forgeries.
+
 - Recover stored row tenants through `tenant_from_attribute` before custody
   canonicalization and every tenant option, including non-identity parsers.
 

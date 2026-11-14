@@ -23,7 +23,8 @@ defmodule AshHooks.Test.SourceProvider do
     end
   end
 
-  def verify_signature(body, context, public_key) do
+  def verify_signature(body, context, %AshHooks.Custody.PublicKey{} = public_key) do
+    notify({:pinned_key, public_key})
     Signature.ed25519(body, context.headers["x-signature"], public_key)
   end
 
@@ -235,6 +236,8 @@ defmodule AshHooks.Test.InboundSourceCases do
       :callback_context,
       :composite_context,
       :public_key,
+      :public_key_inputs,
+      :public_key_hmac_confusion,
       :outer_transaction,
       :required_tenant,
       :missing_previous_deadline,
@@ -1039,6 +1042,11 @@ defmodule AshHooks.Test.InboundSourceCases do
                  headers: %{"x-signature" => signature}
                })
 
+      expected_public = row.public_key
+
+      assert_received {:pinned_key,
+                       %AshHooks.Custody.PublicKey{kind: :ed25519, key: ^expected_public}}
+
       {next_public, _} = :crypto.generate_key(:eddsa, :ed25519)
 
       assert {:ok, replaced} =
@@ -1064,6 +1072,55 @@ defmodule AshHooks.Test.InboundSourceCases do
     end
 
     assert registry_rows(ctx) == []
+  end
+
+  def public_key_inputs(ctx) do
+    {public, _} = :crypto.generate_key(:eddsa, :ed25519)
+
+    for {key, kind} <- [
+          {public, nil},
+          {public, @kind},
+          {public, {:sender_hmac, :sha256}},
+          {public, :unknown},
+          {"undecodable", :ed25519}
+        ] do
+      assert {:error, %AshHooks.Errors.Invalid.KeyKindMismatch{}} =
+               create(ctx, public_key: key, kind: kind)
+    end
+
+    assert Ash.read!(ctx.source, tenant: 17, authorize?: false) == []
+    {:ok, row} = create(ctx, public_key: public, kind: :ed25519)
+
+    for {key, kind} <- [{public, nil}, {public, @kind}, {public, :unknown}, {"bad", :ed25519}] do
+      assert {:error, %AshHooks.Errors.Invalid.KeyKindMismatch{}} =
+               InboundSource.register_public_key(row, key, tenant: 17, kind: kind)
+
+      assert reload(row).public_key == public
+    end
+  end
+
+  def public_key_hmac_confusion(ctx) do
+    {public, _} = :crypto.generate_key(:eddsa, :ed25519)
+
+    {:ok, _} =
+      create(ctx, public_key: public, kind: :ed25519, attrs: Map.put(attrs(), :provider, :second))
+
+    body = Jason.encode!(%{"id" => "public-key-hmac"})
+    signature = Base.encode16(:crypto.mac(:hmac, :sha256, public, body), case: :lower)
+
+    assert {:error, %AshHooks.Errors.Invalid.KeyKindMismatch{}} =
+             Ingress.ingest(ctx.source_ledger, :checked, body, %{
+               tenant: 17,
+               scope: %{account_id: "account"},
+               headers: %{"x-signature" => signature}
+             })
+
+    if Code.ensure_loaded?(Plug.Test) do
+      conn = plug(ctx, body, headers: [{"x-signature", signature}])
+      assert conn.status == 500
+    end
+
+    assert receipts(ctx) == []
   end
 
   def required_tenant(ctx) do

@@ -226,6 +226,7 @@ defmodule AshHooks.MixProject do
           AshHooks.Legacy,
           AshHooks.Custody,
           AshHooks.Custody.Key,
+          AshHooks.Custody.PublicKey,
           AshHooks.Custody.Conformance,
           AshHooks.KeyRegistry
         ],

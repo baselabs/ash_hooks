@@ -16,7 +16,9 @@ defmodule AshHooks.InboundSource do
   * `:secret_ref` and `:previous_secret_ref` are nullable opaque reference
     strings. `:secret_kind` and `:previous_secret_kind` are nullable terms.
   * `:public_key` and `:public_key_kind` are nullable terms for pinned sender
-    verification material outside custody. `:paused` is a required boolean
+    verification material outside custody. Its kind must be one of
+    `AshHooks.Custody.PublicKey`'s closed asymmetric kinds, and the material
+    must decode under that kind before creation or registration. `:paused` is a required boolean
     defaulting to false.
   * `:secret_created_at`, `:secret_first_used_at`,
     `:previous_secret_created_at`, `:previous_secret_first_used_at` and
@@ -86,15 +88,23 @@ defmodule AshHooks.InboundSource do
   def expire_previous_secrets(resource, opts \\ []),
     do: KeyLifecycle.expire_previous_secrets(resource, opts)
 
-  @doc "Pins a sender's public verification key outside custody. Options: `:kind`, `:tenant`."
-  def register_public_key(source, public_key, opts \\ []),
-    do:
+  @doc """
+  Pins a sender's public verification key outside custody. The required
+  `:kind` is one of `AshHooks.Custody.PublicKey`'s asymmetric kinds. Invalid
+  kinds or undecodable keys return `KeyKindMismatch` before writing.
+  Option: `:tenant`.
+  """
+  def register_public_key(%resource{} = source, public_key, opts \\ []) do
+    with {:ok, _tenant} <- Tenancy.resolve([resource], opts[:tenant]),
+         {:ok, _pin} <- AshHooks.Custody.PublicKey.new(public_key, opts[:kind]) do
       update(
         source,
         :register_public_key,
         %{public_key: public_key, public_key_kind: opts[:kind]},
         opts
       )
+    end
+  end
 
   @doc "Pauses new requests; authenticated receipts remain recoverable. Option: `:tenant`."
   def pause(source, opts \\ []), do: update(source, :pause, %{}, opts)

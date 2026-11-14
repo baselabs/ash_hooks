@@ -1436,7 +1436,10 @@ defmodule AshHooks.Ingress do
          scope: scope,
          paused?: row.paused,
          keys: keys,
-         public_key: row.public_key,
+         public_key:
+           if(row.public_key,
+             do: %Custody.PublicKey{kind: row.public_key_kind, key: row.public_key}
+           ),
          record: row
        }}
     end
