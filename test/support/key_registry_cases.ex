@@ -7,8 +7,8 @@ defmodule AshHooks.Test.KeyRegistryCases do
   alias AshHooks.KeyRegistry.{Storage, Transitions}
   alias AshHooks.Test.{AnswerCustodian, CustodySigningCases, RegistryCustodian, RegistryOtherRepo}
   alias Spark.Dsl.Extension
-  require Ash.Query
   require Spark.Test
+  require Ash.Query
 
   @clock ~U[2026-11-14 12:00:00.000000Z]
   @kind {:standard_webhooks, :v1}
@@ -1503,7 +1503,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
               public?: true
           end
 
-          unquote(tenancy(Map.get(ctx, :tenancy?, true)))
+          unquote(tenancy(Map.get(ctx, :tenancy?, true), ctx))
 
           actions do
             defaults [:read]
@@ -1590,7 +1590,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
               unquote(attributes)
             end
 
-            unquote(tenancy(tenancy?))
+            unquote(tenancy(tenancy?, ctx))
             unquote(owner_changes)
             unquote(extra_changes)
             unquote(identities)
@@ -1608,16 +1608,26 @@ defmodule AshHooks.Test.KeyRegistryCases do
     name
   end
 
-  defp tenancy(true) do
+  defp tenancy(true, ctx) do
     quote do
       multitenancy do
         strategy :attribute
         attribute :tenant_id
+        unquote(tenant_transform(ctx))
       end
     end
   end
 
-  defp tenancy(false), do: nil
+  defp tenancy(false, _ctx), do: nil
+
+  def tenant_transform(ctx) do
+    if parser = ctx[:tenant_transform] do
+      quote do
+        parse_attribute({unquote(parser), :parse, []})
+        tenant_from_attribute({unquote(parser), :inverse, []})
+      end
+    end
+  end
 
   defp storage(name, repo, table),
     do:

@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Recover stored row tenants through `tenant_from_attribute` before custody
+  canonicalization and every tenant option, including non-identity parsers.
+
 - Refresh displaced custody references once from their owner during signing
   and verification, preserving immediate destruction without false dead letters.
 

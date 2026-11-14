@@ -53,7 +53,7 @@ defmodule AshHooks.KeyRegistry.Transitions do
 
     with {:ok, row} <- owner_by_ref(owner, ref, tenant),
          {:ok, canonical} <-
-           Custody.canonical_tenant(owner_tenant(row), owner, Custody.tenant_options(owner)),
+           Custody.canonical_tenant(Tenancy.from_row(row), owner, Custody.tenant_options(owner)),
          {:ok, issued} <- Ash.read_one(query, authorize?: false, tenant: tenant),
          :ok <- matching_tenant(issued, canonical),
          {:ok, rows} <-
@@ -163,11 +163,4 @@ defmodule AshHooks.KeyRegistry.Transitions do
       Enum.any?(slots(owner.__struct__), fn {field, kind} ->
         Map.get(owner, field) == ref and not is_nil(Map.get(owner, kind))
       end)
-
-  def owner_tenant(%owner{} = row) do
-    case Info.multitenancy_attribute(owner) do
-      nil -> nil
-      attribute -> Map.fetch!(row, attribute)
-    end
-  end
 end

@@ -384,7 +384,7 @@ defmodule AshHooks.Delivery do
   String keys are Oban's JSON round-trip shape; atom keys are tolerated.
   Legacy jobs carrying only `endpoint_id` and `event_uuid` remain readable.
   The tenant arg is the enqueue seam's serialized row tenant
-  (the worker reads it off the multitenancy attribute at enqueue time);
+  (the worker applies `tenant_from_attribute` to the stored attribute);
   `run/2` re-parses it through the resource's tenancy pipeline by passing
   it as the tenant on every data call; a worker restart or replica
   handoff recovers full tenant context from args alone.
@@ -1334,7 +1334,7 @@ defmodule AshHooks.Delivery do
   defp custody_tenant(%resource{} = endpoint) do
     if Extension.get_opt(resource, [:endpoint], :custodian) do
       Custody.canonical_tenant(
-        Transitions.owner_tenant(endpoint),
+        Tenancy.from_row(endpoint),
         resource,
         Custody.tenant_options(resource)
       )
@@ -1476,7 +1476,8 @@ defmodule AshHooks.Delivery do
     # check above is the residual guarantee, not a full replacement
     adapter_opts = config[:http_opts] || []
 
-    with {:ok, endpoint, headers, used_refs} <- signing_headers_with_refresh(row, endpoint, config, tenant),
+    with {:ok, endpoint, headers, used_refs} <-
+           signing_headers_with_refresh(row, endpoint, config, tenant),
          {:ok, adapter_opts} <- endpoint_http_opts(adapter_opts, endpoint, config, tenant),
          :ok <- pin_adapter(adapter, adapter_opts),
          {:ok, headers} <- delivery_headers(headers, row, endpoint, config, tenant) do
@@ -1952,40 +1953,54 @@ defmodule AshHooks.Delivery do
   defp signing_headers_with_refresh(row, endpoint, config, tenant) do
     case signing_headers(row, endpoint, config, tenant) do
       {:error, %UnknownKey{ref: ref}} = error when is_binary(ref) ->
-        with {:ok, {fresh, canonical}} <- AshHooks.Phase.run(config[:endpoints], tenant,
-               &read_signing_endpoint(&1.resource, row.endpoint_id, tenant, config[:endpoints])) do
+        with {:ok, {fresh, canonical}} <-
+               AshHooks.Phase.run(
+                 config[:endpoints],
+                 tenant,
+                 &read_signing_endpoint(&1.resource, row.endpoint_id, tenant, config[:endpoints])
+               ) do
           if admitted_signing_ref?(fresh, ref, row.signing_mode || :standard, config) do
             error
           else
             # The destination has already passed its policy. Refresh only the
             # signing slots on that authorized snapshot, including history and
             # first-use metadata, without changing the destination mid-attempt.
-            fields = Enum.flat_map([:standard, :legacy], fn slot ->
-              slot |> AshHooks.KeyLifecycle.fields() |> Map.values()
-            end)
+            fields =
+              Enum.flat_map([:standard, :legacy], fn slot ->
+                slot |> AshHooks.KeyLifecycle.fields() |> Map.values()
+              end)
+
             snapshot = Map.merge(endpoint, Map.take(fresh, fields))
             refreshed_config = Keyword.put(config, :custody_tenant, canonical)
-            with {:ok, {headers, refs}} <- signing_headers(row, snapshot, refreshed_config, tenant),
-              do: {:ok, snapshot, headers, refs}
+
+            with {:ok, {headers, refs}} <-
+                   signing_headers(row, snapshot, refreshed_config, tenant),
+                 do: {:ok, snapshot, headers, refs}
           end
         end
 
-      {:ok, {headers, refs}} -> {:ok, endpoint, headers, refs}
-      error -> error
+      {:ok, {headers, refs}} ->
+        {:ok, endpoint, headers, refs}
+
+      error ->
+        error
     end
   end
 
   defp admitted_signing_ref?(endpoint, ref, mode, config) do
-    slots = case mode do
-      :standard -> [:standard]
-      :legacy -> [:legacy]
-      :dual -> [:standard, :legacy]
-    end
+    slots =
+      case mode do
+        :standard -> [:standard]
+        :legacy -> [:legacy]
+        :dual -> [:standard, :legacy]
+      end
+
     Enum.any?(slots, fn slot ->
       fields = AshHooks.KeyLifecycle.fields(slot)
+
       (Map.get(endpoint, fields.ref) == ref and not is_nil(Map.get(endpoint, fields.kind))) or
         (previous_signing_ref(endpoint, slot, config) == ref and
-          not is_nil(Map.get(endpoint, fields.previous_kind)))
+           not is_nil(Map.get(endpoint, fields.previous_kind)))
     end)
   end
 

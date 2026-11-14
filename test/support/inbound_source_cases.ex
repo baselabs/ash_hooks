@@ -124,6 +124,7 @@ defmodule AshHooks.Test.InboundSourceCases do
     AnswerCustodian,
     CustodySigningCases,
     KeyIssuingCases,
+    KeyRegistryCases,
     OtherSourceProvider,
     SourceProvider
   }
@@ -198,6 +199,9 @@ defmodule AshHooks.Test.InboundSourceCases do
 
   def cases do
     [
+      :parsed_attach,
+      :parsed_delivery,
+      :parsed_source,
       :creation,
       :direct_ref_refused,
       :import_kinds,
@@ -1171,6 +1175,136 @@ defmodule AshHooks.Test.InboundSourceCases do
     assert {:ok, _, _} = InboundSource.roll_secret(expired, tenant: 17, generate: @kind)
   end
 
+  def parse("tenant:" <> value), do: String.to_integer(value)
+  def parse(_value), do: nil
+  def inverse(value), do: "tenant:" <> Integer.to_string(value)
+
+  defp parsed_context(ctx) do
+    original = ctx
+
+    ctx =
+      Enum.reduce(
+        [:registry, :endpoint, :delivery, :attempt, :source, :source_ledger],
+        ctx,
+        fn field, acc -> Map.put(acc, field, Module.concat(Map.fetch!(ctx, field), Parsed)) end
+      )
+      |> Map.put(:tenant_transform, __MODULE__)
+
+    KeyRegistryCases.compile_registry(ctx)
+
+    KeyRegistryCases.compile_endpoint(ctx, ctx.endpoint,
+      custodian: AnswerCustodian,
+      secret_resolver: nil
+    )
+
+    for {field, extension, table} <- [
+          {:delivery, AshHooks.OutboundDelivery, original.delivery_table},
+          {:attempt, AshHooks.OutboundAttempt, original.attempt_table}
+        ] do
+      CustodySigningCases.compile_outbound_resource(ctx, ctx[field], extension, table, false)
+    end
+
+    compile_source_graph(ctx)
+
+    on_exit(fn ->
+      purge_modules(
+        Enum.map([:registry, :endpoint, :delivery, :attempt, :source, :source_ledger], &ctx[&1])
+      )
+    end)
+
+    ctx
+  end
+
+  def parsed_attach(ctx) do
+    ctx = parsed_context(ctx)
+
+    assert {:ok, owner, _} =
+             AshHooks.Endpoint.create_with_key(
+               ctx.endpoint,
+               %{url: "https://hooks.example.test/parsed"},
+               tenant: "tenant:17",
+               generate: @kind
+             )
+
+    assert owner.tenant_id == 17
+
+    assert [%{state: :attached, custody_tenant: "17"}] =
+             Ash.read!(ctx.registry, tenant: "tenant:17", authorize?: false)
+  end
+
+  def parsed_delivery(ctx) do
+    ctx = parsed_context(ctx)
+    material = :crypto.strong_rand_bytes(32)
+    {:ok, key} = AshHooks.KeyRegistry.Transitions.issue(ctx.endpoint, @kind, tenant: "tenant:17")
+    :ok = ctx.custodian.store(key.ref, material, "17", @kind)
+
+    owner =
+      ctx.endpoint
+      |> Ash.Changeset.for_create(:create, %{url: "https://hooks.example.test/parsed"},
+        tenant: "tenant:17",
+        context: %{
+          ash_hooks_issued_attributes: %{secret_ref: key.ref, secret_kind: @kind, tenant_id: 17}
+        }
+      )
+      |> Ash.create!(authorize?: false)
+
+    row =
+      Ash.create!(
+        ctx.delivery,
+        %{
+          endpoint_id: owner.id,
+          event_uuid: Signing.generate_msg_id(),
+          event_type: "checked",
+          payload: "{}"
+        },
+        action: :dispatch,
+        tenant: "tenant:17",
+        authorize?: false
+      )
+
+    AnswerCustodian.configure(ctx.custodian, {:error, :unavailable}, self())
+
+    assert {:snooze, _} =
+             AshHooks.Delivery.run(
+               %{
+                 "endpoint_id" => owner.id,
+                 "event_uuid" => row.event_uuid,
+                 "tenant" => "tenant:17"
+               },
+               deliveries: ctx.delivery,
+               endpoints: ctx.endpoint,
+               attempts: ctx.attempt,
+               destination_policy: &CustodySigningCases.allow/2
+             )
+
+    assert_received {:custody_sign, _, "17", @kind}
+  end
+
+  def parsed_source(ctx) do
+    ctx = parsed_context(ctx)
+    material = :crypto.strong_rand_bytes(32)
+    {:ok, key} = AshHooks.KeyRegistry.Transitions.issue(ctx.source, @kind, tenant: "tenant:17")
+    :ok = ctx.custodian.store(key.ref, material, "17", @kind)
+
+    ctx.source
+    |> Ash.Changeset.for_create(:create, attrs(),
+      tenant: "tenant:17",
+      context: %{
+        ash_hooks_issued_attributes: %{secret_ref: key.ref, secret_kind: @kind, tenant_id: 17}
+      }
+    )
+    |> Ash.create!(authorize?: false)
+
+    assert {:ok, resolved} =
+             Ingress.resolve_source(ctx.source_ledger, :checked,
+               tenant: "tenant:17",
+               scope: %{account_id: "account"}
+             )
+
+    assert [%{tenant: "17"}] = resolved.keys
+    assert {:ok, _, _} = ingest(ctx, "whsec_" <> Base.encode64(material), tenant: "tenant:17")
+  end
+
   def create(ctx, opts \\ []) do
     {attributes, opts} = Keyword.pop(opts, :attrs, attrs())
     opts = Keyword.merge([tenant: 17, now: @clock], opts)
@@ -1326,6 +1460,7 @@ defmodule AshHooks.Test.InboundSourceCases do
         multitenancy do
           strategy(:attribute)
           attribute(:tenant_id)
+          unquote(KeyRegistryCases.tenant_transform(ctx))
         end
 
         inbound_source do
@@ -1401,6 +1536,7 @@ defmodule AshHooks.Test.InboundSourceCases do
         multitenancy do
           strategy(:attribute)
           attribute(:tenant_id)
+          unquote(KeyRegistryCases.tenant_transform(ctx))
         end
 
         inbound_delivery do

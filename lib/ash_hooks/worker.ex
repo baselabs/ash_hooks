@@ -441,8 +441,6 @@ defmodule AshHooks.Worker do
   defp classify_rejection({:unknown_key, _key}), do: "unknown_key"
   defp classify_rejection(reason) when is_atom(reason), do: Atom.to_string(reason)
 
-  alias Ash.Resource.Info, as: ResourceInfo
-
   @doc false
   def bind_route(delivery, route, tenant) do
     unbound_route = AshHooks.OutboundBinding.unbound_route()
@@ -750,7 +748,7 @@ defmodule AshHooks.Worker do
       # rows serialize no tenant key at all.
       def enqueue(delivery, _event) do
         expected_route = unquote(dispatch_route)
-        tenant = delivery_tenant(delivery)
+        tenant = AshHooks.Tenancy.from_row(delivery)
 
         with {:ok, delivery} <- AshHooks.Worker.bind_route(delivery, expected_route, tenant) do
           args =
@@ -828,26 +826,6 @@ defmodule AshHooks.Worker do
 
           true ->
             {:error, :job_not_runnable}
-        end
-      end
-
-      # the tenant rides the args only when the ledger carries a
-      # multitenancy attribute (undeclared → nil → no key)
-      # the row holds the ATTRIBUTE value; the args carry the TENANT,
-      # inverted through the resource's tenant_from_attribute so
-      # Delivery.run's forward parse_attribute round-trips for
-      # NON-identity parsers too (serializing the attribute value itself
-      # would be double-parsed there)
-      defp delivery_tenant(delivery) do
-        resource = delivery.__struct__
-
-        case ResourceInfo.multitenancy_attribute(resource) do
-          nil ->
-            nil
-
-          attribute ->
-            {m, f, a} = ResourceInfo.multitenancy_tenant_from_attribute(resource)
-            apply(m, f, [Map.get(delivery, attribute) | a])
         end
       end
     end

@@ -47,6 +47,20 @@ defmodule AshHooks.Tenancy do
     end
   end
 
+  @doc """
+  Recovers the tenant from a stored row using its resource's
+  `tenant_from_attribute` callback. Resources without attribute multitenancy
+  return `nil`. Use this value for tenant options and custody canonicalization.
+  """
+  @spec from_row(struct()) :: term()
+  def from_row(%resource{} = row) do
+    if Info.multitenancy_strategy(resource) == :attribute do
+      attribute = Info.multitenancy_attribute(resource)
+      {module, function, arguments} = Info.multitenancy_tenant_from_attribute(resource)
+      apply(module, function, [Map.fetch!(row, attribute) | arguments])
+    end
+  end
+
   defp require_tenant(nil), do: {:error, :tenant_required}
   defp require_tenant(tenant), do: {:ok, tenant}
 

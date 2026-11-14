@@ -1006,7 +1006,7 @@ defmodule AshHooks.Ingress do
         end
 
       context = %DeliveryContext{
-        tenant: receipt_tenant(resource, row),
+        tenant: Tenancy.from_row(row),
         source: row.provider,
         scope: scope,
         provider_alias: if(inbound.source_record, do: row.provider_alias),
@@ -1034,19 +1034,6 @@ defmodule AshHooks.Ingress do
          tenant: tenant,
          context: context
        }}
-    end
-  end
-
-  defp receipt_tenant(resource, row) do
-    case Ash.Resource.Info.multitenancy_attribute(resource) do
-      nil ->
-        nil
-
-      attribute ->
-        {module, function, arguments} =
-          Ash.Resource.Info.multitenancy_tenant_from_attribute(resource)
-
-        apply(module, function, [Map.fetch!(row, attribute) | arguments])
     end
   end
 
@@ -1421,8 +1408,7 @@ defmodule AshHooks.Ingress do
     do: {:error, UnknownSource.exception([])}
 
   defp resolved_row(inbound, row, scope) do
-    tenant_attribute = Ash.Resource.Info.multitenancy_attribute(row.__struct__)
-    tenant = if tenant_attribute, do: Map.fetch!(row, tenant_attribute), else: nil
+    tenant = Tenancy.from_row(row)
 
     with {:ok, provider} <- source_provider(inbound.source_record, row.provider),
          {:ok, canonical} <-
@@ -1477,22 +1463,26 @@ defmodule AshHooks.Ingress do
   defp verify_resolved(source, body, ctx, inbound) do
     case verify_source_keys(source, body, ctx, inbound) do
       {:error, %AshHooks.Errors.Invalid.UnknownKey{ref: ref}} = error
-          when not is_nil(source.record) and is_binary(ref) ->
+      when not is_nil(source.record) and is_binary(ref) ->
         ledger = Storage.option(source.record.__struct__, :ledger)
-        with {:ok, fresh} <- resolve_source(ledger, source.name,
-               tenant: ctx[:tenant], scope: source.scope) do
+
+        with {:ok, fresh} <-
+               resolve_source(ledger, source.name, tenant: ctx[:tenant], scope: source.scope) do
           if Enum.any?(fresh.keys, &(&1.ref == ref)) do
             error
           else
             with :ok <- resolved_pause(fresh),
                  :ok <- check_replay_window(inbound, fresh.provider, source.name),
                  :ok <- verify_source_keys(fresh, body, ctx, inbound),
-              do: {:ok, fresh}
+                 do: {:ok, fresh}
           end
         end
 
-      :ok -> {:ok, source}
-      error -> error
+      :ok ->
+        {:ok, source}
+
+      error ->
+        error
     end
   end
 

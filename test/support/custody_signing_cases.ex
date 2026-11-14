@@ -1014,7 +1014,7 @@ defmodule AshHooks.Test.CustodySigningCases do
     })
   end
 
-  defp compile_outbound_resource(ctx, module, extension, table, inbound?) do
+  def compile_outbound_resource(ctx, module, extension, table, inbound?) do
     storage =
       {ctx.storage, [],
        [
@@ -1043,6 +1043,7 @@ defmodule AshHooks.Test.CustodySigningCases do
                     (
                       strategy(:attribute)
                       attribute(:tenant_id)
+                      unquote(KeyRegistryCases.tenant_transform(ctx))
                     )
                 )
               )
