@@ -83,7 +83,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     @behaviour Plug
     require Logger
 
-    alias AshHooks.{BodyReader, Info, Ingress, Provider}
+    alias AshHooks.{BodyReader, Ingress, Provider}
     alias AshHooks.Errors.Invalid.{InvalidSignature, MalformedPayload, StaleTimestamp}
     alias AshHooks.Errors.Invalid.{KeyKindMismatch, UnknownKey, UnknownSource}
     alias Plug.Conn.Query
@@ -194,11 +194,17 @@ if Code.ensure_loaded?(Plug.Conn) do
     end
 
     defp deliver(conn, raw, context, options) do
-      provider =
-        case Info.inbound(options[:resource], context.source) do
-          nil -> nil
-          inbound -> inbound.provider
-        end
+      case Ingress.resolve_source(options[:resource], context.source, Map.to_list(context)) do
+        {:ok, resolved} ->
+          deliver_resolved(conn, raw, Map.put(context, :resolved_source, resolved), options)
+
+        {:error, error} ->
+          answer(conn, default_response({:error, error}, options))
+      end
+    end
+
+    defp deliver_resolved(conn, raw, context, options) do
+      provider = context.resolved_source.provider
 
       request = %{
         method: conn.method,
@@ -223,7 +229,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     defp ingest(conn, raw, context, provider, options) do
       ctx =
         context
-        |> Map.take([:tenant, :scope, :connection])
+        |> Map.take([:tenant, :scope, :connection, :resolved_source])
         |> Map.merge(%{headers: conn.req_headers, method: conn.method})
         |> signature(conn, Map.get(context, :signature_header, options[:signature_header]))
         |> request_uri(conn, options[:request_uri])

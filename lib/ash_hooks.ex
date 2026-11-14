@@ -47,6 +47,11 @@ defmodule AshHooks do
         required: true,
         doc: "The source identity stored in the inbound delivery ledger."
       ],
+      source_record: [
+        type: :module,
+        doc:
+          "InboundSource resource resolving provider, pause and custody keys by tenant, declaration name and cast scope. Requires record_provider_alias :on on the ledger."
+      ],
       provider: [
         type: :atom,
         doc: """
@@ -70,7 +75,6 @@ defmodule AshHooks do
       ],
       secret: [
         type: {:custom, AshHooks, :validate_secret_source, []},
-        required: true,
         doc: """
         The signing-secret source: an `{M, f, a}` callback, `{:app_env, path}`,
         a 0-arity function (app-global), or a 1-arity function

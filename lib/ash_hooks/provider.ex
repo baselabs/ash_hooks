@@ -395,6 +395,38 @@ defmodule AshHooks.Provider do
 
   @optional_callbacks event_identity: 1
 
+  @doc "Parses the event type with ingest context. Preferred over parse_event_type/1 when exported."
+  @callback parse_event_type(map() | list(), AshHooks.Provider.DeliveryContext.t()) ::
+              {:ok, atom()} | {:error, parse_error()}
+  @doc "Resolves identity with ingest context. Preferred over event_identity/1 when exported."
+  @callback event_identity(map() | list(), AshHooks.Provider.DeliveryContext.t()) ::
+              {:ok, String.t()} | {:error, :malformed_payload}
+  @doc "Handles a receipt with durable context, at ingest and recovery. Preferred over handle_event/2 when exported."
+  @callback handle_event(atom(), map() | list(), AshHooks.Provider.DeliveryContext.t()) ::
+              {:ok, struct()} | {:error, :retry | :permanent, term()}
+  @optional_callbacks parse_event_type: 2, event_identity: 2, handle_event: 3
+
+  @doc false
+  def parse_event_type(provider, payload, context) do
+    if function_exported?(provider, :parse_event_type, 2),
+      do: provider.parse_event_type(payload, context),
+      else: provider.parse_event_type(payload)
+  end
+
+  @doc false
+  def handle_event(provider, type, payload, context) do
+    if function_exported?(provider, :handle_event, 3),
+      do: provider.handle_event(type, payload, context),
+      else: provider.handle_event(type, payload)
+  end
+
+  @doc false
+  def event_identity(provider, payload, context) do
+    if function_exported?(provider, :event_identity, 2),
+      do: provider.event_identity(payload, context),
+      else: event_identity(provider, payload)
+  end
+
   @doc """
   Optional payload decoder, called only after signature verification succeeds.
   Returns a map or list. Providers without it retain JSON decoding. A route's

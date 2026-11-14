@@ -62,12 +62,21 @@ defmodule AshHooks.Ingress do
 
   require Ash.Query
 
-  alias AshHooks.Errors
-  alias AshHooks.Errors.Invalid.{InvalidSignature, KeyKindMismatch, UnknownKey}
-  alias AshHooks.Errors.Invalid.MalformedPayload
-  alias AshHooks.Errors.Invalid.NoWebhookSecret
+  alias AshHooks.{Custody, Errors, Info, Phase, PrimaryKey, Provider, Tenancy}
+
+  alias AshHooks.Errors.Invalid.{
+    InvalidSignature,
+    KeyKindMismatch,
+    MalformedPayload,
+    NoWebhookSecret,
+    UnknownKey,
+    UnknownSource
+  }
+
   alias AshHooks.Errors.Unknown.{KeyUnavailable, UnknownError}
-  alias AshHooks.{Info, PrimaryKey, Provider, Tenancy}
+  alias AshHooks.Inbound.ResolvedSource
+  alias AshHooks.KeyRegistry.Storage
+  alias AshHooks.Provider.DeliveryContext
   alias Spark.Dsl.Extension
 
   @typedoc """
@@ -446,6 +455,11 @@ defmodule AshHooks.Ingress do
       }
       |> Map.merge(env.scope)
 
+    input =
+      if record_provider_alias?(resource),
+        do: Map.put(input, :provider_alias, env[:provider_alias]),
+        else: input
+
     if AshHooks.Info.writable_id?(resource) and Ash.Resource.Info.primary_key(resource) == [:id] do
       ingest_with_supplied_id(resource, input, env, tenant)
     else
@@ -562,7 +576,10 @@ defmodule AshHooks.Ingress do
   """
   @spec claim_delivery(module(), term(), keyword()) ::
           {:ok, non_neg_integer(), struct()} | {:error, :lease_held | term()}
-  def claim_delivery(resource, delivery_id, opts \\ []) do
+  def claim_delivery(resource, delivery_id, opts \\ []),
+    do: claim(resource, delivery_id, opts, nil)
+
+  defp claim(resource, delivery_id, opts, adoption_alias) do
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
          {:ok, key} <- normalize_primary_key(resource, delivery_id) do
       # `now` and the lease are recomputed on EVERY attempt: a retry that
@@ -576,6 +593,7 @@ defmodule AshHooks.Ingress do
           AshHooks.Phase.bulk(
             resource
             |> Ash.Query.do_filter(key)
+            |> claim_alias_filter(adoption_alias)
             |> Ash.Query.filter(
               status == :received or status == :failed_retryable or
                 (status == :claimed and lease_expires_at < ^attempt_now)
@@ -586,7 +604,8 @@ defmodule AshHooks.Ingress do
               return_records?: true,
               return_errors?: true,
               strategy: [:atomic],
-              tenant: tenant
+              tenant: tenant,
+              atomic_update: adoption_update(adoption_alias)
             )
           )
         end)
@@ -848,6 +867,7 @@ defmodule AshHooks.Ingress do
         with_transient_retry(fn ->
           AshHooks.Phase.run(
             resource
+            |> claim_alias_filter(nil)
             |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now),
             tenant,
             &Ash.read!(&1, authorize?: false, tenant: tenant)
@@ -893,18 +913,15 @@ defmodule AshHooks.Ingress do
         # The persisted row is the record of truth: a byte-differing
         # redelivery under the same identity drives the FIRST persisted
         # payload, never the new bytes.
-        handling_env = row_env(env, delivery)
-
-        handle_and_mark(resource, handling_env, key, claimed)
-        |> case do
-          {:ok, final} -> {:ok, result(created?), final}
-          {:error, error} -> {:error, error}
+        with {:ok, handling_env} <- row_env(resource, claimed, env[:tenant]),
+             {:ok, final} <- handle_and_mark(resource, handling_env, key, claimed) do
+          {:ok, result(created?), final}
         end
     end
   end
 
-  defp invoke_handler(provider, type, payload) do
-    provider.handle_event(type, payload)
+  defp invoke_handler(provider, type, payload, context) do
+    Provider.handle_event(provider, type, payload, context)
   rescue
     _reason -> {:error, :retry, :handler_crashed}
   catch
@@ -915,7 +932,7 @@ defmodule AshHooks.Ingress do
     tenant = env[:tenant]
 
     with {:ok, type} <- env.parsed_type,
-         {:ok, _event} <- invoke_handler(env.provider, type, env.payload) do
+         {:ok, _event} <- invoke_handler(env.provider, type, env.payload, env.context) do
       gated_update(resource, delivery_id, claimed.fencing_token, :mark_processed, %{}, tenant)
     else
       {:error, :unknown_event_type} ->
@@ -971,51 +988,197 @@ defmodule AshHooks.Ingress do
   # payload, digest, and type come from the ledger of record, so a
   # byte-differing redelivery under the same identity can never process
   # bytes the ledger does not show.
-  defp row_env(env, row) do
-    parsed_type = env.provider.parse_event_type(row.payload)
-
-    %{
-      env
-      | payload: row.payload,
-        digest: row.payload_digest,
-        external_event_id: row.external_event_id,
-        parsed_type: parsed_type,
-        type_string: type_string(parsed_type)
-    }
-  end
-
-  # The reaper drives rows that already passed verification at ingest; no
-  # signature to check, so it rebuilds the handling env from the stored row.
-  defp redrive(resource, row, tenant) do
-    key = PrimaryKey.map(row)
-
+  defp row_env(resource, row, tenant) do
     with {:ok, inbound} <- fetch_inbound(resource, row.provider),
-         {:ok, provider} <- resolve_provider(inbound, row.provider),
-         {:ok, _token, claimed} <- claim_delivery(resource, key, tenant: tenant) do
-      parsed_type = provider.parse_event_type(row.payload)
+         {:ok, provider} <- receipt_provider(inbound, row) do
+      scope =
+        resource
+        |> Extension.get_opt([:inbound_delivery], :scope_identity, [])
+        |> Map.new(&{&1, Map.fetch!(row, &1)})
 
-      handle_and_mark(
-        resource,
-        redrive_env(row, provider, parsed_type, tenant),
-        key,
-        claimed
-      )
+      key = PrimaryKey.map(row)
+
+      delivery_id =
+        case Map.values(key) do
+          [value] -> value
+          _ -> key
+        end
+
+      context = %DeliveryContext{
+        tenant: receipt_tenant(resource, row),
+        source: row.provider,
+        scope: scope,
+        provider_alias: if(inbound.source_record, do: row.provider_alias),
+        delivery_id: delivery_id,
+        external_event_id: row.external_event_id
+      }
+
+      parsed_type =
+        Provider.parse_event_type(provider, row.payload, %{
+          context
+          | delivery_id: nil,
+            external_event_id: nil
+        })
+
+      {:ok,
+       %{
+         name: row.provider,
+         provider: provider,
+         payload: row.payload,
+         digest: row.payload_digest,
+         external_event_id: row.external_event_id,
+         parsed_type: parsed_type,
+         type_string: type_string(parsed_type),
+         scope: scope,
+         tenant: tenant,
+         context: context
+       }}
     end
   end
 
-  defp redrive_env(row, provider, parsed_type, tenant) do
-    %{
-      name: row.provider,
-      provider: provider,
-      inbound: nil,
-      payload: row.payload,
-      digest: row.payload_digest,
-      external_event_id: row.external_event_id,
-      parsed_type: parsed_type,
-      type_string: type_string(parsed_type),
-      scope: %{},
-      tenant: tenant
-    }
+  defp receipt_tenant(resource, row) do
+    case Ash.Resource.Info.multitenancy_attribute(resource) do
+      nil ->
+        nil
+
+      attribute ->
+        {module, function, arguments} =
+          Ash.Resource.Info.multitenancy_tenant_from_attribute(resource)
+
+        apply(module, function, [Map.fetch!(row, attribute) | arguments])
+    end
+  end
+
+  defp receipt_provider(%{source_record: nil} = inbound, row),
+    do: resolve_provider(inbound, row.provider)
+
+  defp receipt_provider(inbound, row),
+    do: source_provider(inbound.source_record, row.provider_alias)
+
+  # Recovery needs only the receipt and the compile-time provider allowlist.
+  defp redrive(resource, row, tenant) do
+    key = PrimaryKey.map(row)
+
+    with {:ok, _token, claimed} <- claim_delivery(resource, key, tenant: tenant),
+         do: drive_claimed(resource, claimed, tenant)
+  end
+
+  defp drive_claimed(resource, claimed, tenant) do
+    with {:ok, env} <- row_env(resource, claimed, tenant),
+         do: handle_and_mark(resource, env, PrimaryKey.map(claimed), claimed)
+  end
+
+  defp record_provider_alias?(resource),
+    do: Extension.get_opt(resource, [:inbound_delivery], :record_provider_alias, :off) == :on
+
+  defp source_record_names(resource) do
+    resource
+    |> Extension.get_entities([:webhooks])
+    |> Enum.filter(&(is_struct(&1, AshHooks.Inbound) and not is_nil(&1.source_record)))
+    |> Enum.map(& &1.name)
+  end
+
+  defp claim_alias_filter(query, adoption_alias) do
+    case adoption_alias do
+      nil ->
+        resource = Ash.Query.new(query).resource
+        names = source_record_names(resource)
+
+        if names == [],
+          do: query,
+          else: Ash.Query.filter(query, provider not in ^names or not is_nil(provider_alias))
+
+      _alias ->
+        Ash.Query.filter(query, is_nil(provider_alias))
+    end
+  end
+
+  defp adoption_update(adoption_alias) do
+    case adoption_alias do
+      nil -> %{}
+      alias -> %{provider_alias: alias}
+    end
+  end
+
+  @doc false
+  def adopt_provider_alias(source, name, alias, opts) do
+    ledger = Storage.option(source, :ledger)
+    limit = Keyword.get(opts, :limit, 100)
+
+    with :ok <- Phase.outside_transaction(ledger),
+         {:ok, tenant} <- Tenancy.resolve([ledger, source], opts[:tenant]),
+         :ok <- adoption_target(source, ledger, name, alias, opts, limit),
+         {:ok, rows} <- adoption_rows(ledger, name, tenant, limit) do
+      result = Enum.reduce_while(rows, {:ok, 0}, &adopt_row(ledger, tenant, alias, &1, &2))
+
+      with {:ok, driven} <- result,
+           {:ok, remaining} <- adoption_remaining(ledger, name, tenant),
+           do: {:ok, %{driven: driven, remaining: remaining}}
+    end
+  end
+
+  defp adopt_row(ledger, tenant, alias, row, {:ok, count}) do
+    case claim(ledger, PrimaryKey.map(row), [tenant: tenant], alias) do
+      {:ok, _, claimed} ->
+        _ = drive_claimed(ledger, claimed, tenant)
+        {:cont, {:ok, count + 1}}
+
+      {:error, :lease_held} ->
+        {:cont, {:ok, count}}
+
+      error ->
+        {:halt, error}
+    end
+  end
+
+  defp adoption_target(source, ledger, name, alias, opts, limit) do
+    inbound = Info.inbound(ledger, name)
+    providers = Storage.option(source, :providers)
+
+    cond do
+      not (is_integer(limit) and limit > 0) ->
+        {:error, :invalid_limit}
+
+      is_nil(inbound) or inbound.source_record != source ->
+        {:error, :source_mismatch}
+
+      not Keyword.has_key?(providers, alias) ->
+        {:error, :provider_mismatch}
+
+      opts[:expected_provider] && opts[:expected_provider] != providers[alias] ->
+        {:error, :provider_mismatch}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp adoption_rows(ledger, name, tenant, limit) do
+    at = now()
+
+    Phase.run(
+      ledger
+      |> Ash.Query.filter(
+        provider == ^name and is_nil(provider_alias) and
+          (status in [:received, :failed_retryable] or
+             (status == :claimed and lease_expires_at < ^at))
+      )
+      |> Ash.Query.limit(limit),
+      tenant,
+      &Ash.read(&1, authorize?: false, tenant: tenant)
+    )
+  end
+
+  defp adoption_remaining(ledger, name, tenant) do
+    Phase.run(
+      ledger
+      |> Ash.Query.filter(
+        provider == ^name and is_nil(provider_alias) and
+          status in [:received, :failed_retryable, :claimed]
+      ),
+      tenant,
+      &Ash.count(&1, authorize?: false, tenant: tenant)
+    )
   end
 
   defp reload(resource, delivery_id, tenant) do
@@ -1157,24 +1320,30 @@ defmodule AshHooks.Ingress do
     ctx = Map.put(ctx, :json_decoder, decoder)
 
     with {:ok, inbound} <- fetch_inbound(resource, name),
-         :ok <- check_paused(inbound, name, ctx[:tenant]),
-         {:ok, provider} <- resolve_provider(inbound, name),
-         :ok <- check_replay_window(inbound, provider, name),
-         {:ok, secret} <- resolve_secret(provider, inbound, name, ctx),
+         {:ok, resolved} <- request_source(resource, name, ctx),
+         :ok <- resolved_pause(resolved),
+         :ok <- check_replay_window(inbound, resolved.provider, name),
          :ok <- check_raw_body(raw_body, name),
-         :ok <- verify(provider, raw_body, ctx, inbound, secret, name),
-         :ok <- check_scope(resource, ctx) do
+         :ok <- verify_resolved(resolved, raw_body, ctx, inbound) do
       digest = content_digest(raw_body)
 
+      context = %DeliveryContext{
+        tenant: ctx[:tenant],
+        source: name,
+        scope: resolved.scope,
+        provider_alias: resolved.provider_alias
+      }
+
       {payload, parsed_type, decode_result} =
-        decode_and_parse(provider, raw_body, inbound.body_format, decoder)
+        decode_and_parse(resolved.provider, raw_body, inbound.body_format, decoder, context)
 
       with {:ok, external_event_id} <-
-             external_event_id(inbound, provider, payload, digest, name) do
+             external_event_id(inbound, resolved.provider, payload, digest, name, context) do
         {:ok,
          %{
            name: name,
-           provider: provider,
+           provider: resolved.provider,
+           provider_alias: resolved.provider_alias,
            inbound: inbound,
            payload: payload,
            digest: digest,
@@ -1182,9 +1351,191 @@ defmodule AshHooks.Ingress do
            parsed_type: parsed_type,
            decode_result: decode_result,
            type_string: type_string(parsed_type),
-           scope: declared_scope(resource, ctx),
+           scope: resolved.scope,
            tenant: ctx[:tenant]
          }}
+      end
+    end
+  end
+
+  @doc """
+  Resolves one inbound declaration, casting and constraining scope before a
+  source lookup. A source row is read in a tenant phase; an absent row returns
+  `UnknownSource`. Declarations without `source_record` perform no source read.
+  Options: `:tenant`, `:scope`. The returned struct can be passed as
+  `:resolved_source` to ingest, as the HTTP entry point does.
+  """
+  def resolve_source(resource, name, opts \\ []) do
+    with {:ok, inbound} <- fetch_inbound(resource, name),
+         {:ok, scope} <- cast_scope(resource, opts[:scope]),
+         {:ok, tenant} <-
+           Tenancy.resolve(
+             Enum.reject([resource, inbound.source_record], &is_nil/1),
+             opts[:tenant]
+           ) do
+      resolve_declaration(resource, inbound, scope, tenant)
+    end
+  end
+
+  defp resolve_declaration(resource, %{source_record: source} = inbound, scope, tenant)
+       when not is_nil(source),
+       do: source_from_row(resource, inbound, scope, tenant)
+
+  defp resolve_declaration(_resource, inbound, scope, tenant) do
+    with {:ok, provider} <- resolve_provider(inbound, inbound.name) do
+      {:ok,
+       %ResolvedSource{
+         name: inbound.name,
+         provider: provider,
+         scope: scope,
+         paused?: check_paused(inbound, inbound.name, tenant) != :ok
+       }}
+    end
+  end
+
+  defp request_source(_resource, name, %{resolved_source: %ResolvedSource{name: name} = source}),
+    do: {:ok, source}
+
+  defp request_source(resource, name, ctx), do: resolve_source(resource, name, Map.to_list(ctx))
+  defp resolved_pause(%ResolvedSource{paused?: true}), do: {:error, :source_paused}
+  defp resolved_pause(_), do: :ok
+
+  defp source_from_row(ledger, inbound, scope, tenant) do
+    source = inbound.source_record
+    source_attribute = Storage.option(source, :source_attribute, :source)
+
+    Phase.run([ledger, source], tenant, fn ->
+      query =
+        source
+        |> Storage.owner_query(tenant)
+        |> Ash.Query.do_filter(scope)
+        |> Ash.Query.do_filter(%{source_attribute => inbound.name})
+
+      with {:ok, row} <- Ash.read_one(query, authorize?: false, tenant: tenant),
+           do: resolved_row(inbound, row, scope)
+    end)
+  end
+
+  defp resolved_row(_inbound, nil, _scope),
+    do: {:error, UnknownSource.exception([])}
+
+  defp resolved_row(inbound, row, scope) do
+    tenant_attribute = Ash.Resource.Info.multitenancy_attribute(row.__struct__)
+    tenant = if tenant_attribute, do: Map.fetch!(row, tenant_attribute), else: nil
+
+    with {:ok, provider} <- source_provider(inbound.source_record, row.provider),
+         {:ok, canonical} <-
+           Custody.canonical_tenant(
+             tenant,
+             row.__struct__,
+             Custody.tenant_options(row.__struct__)
+           ) do
+      keys =
+        for {field, kind} <- source_slots(row),
+            ref = Map.get(row, field),
+            not is_nil(ref),
+            do: %Custody.Key{
+              ref: ref,
+              kind: Map.get(row, kind),
+              tenant: canonical,
+              custodian: Storage.custodian(row.__struct__)
+            }
+
+      {:ok,
+       %ResolvedSource{
+         name: inbound.name,
+         provider_alias: row.provider,
+         provider: provider,
+         scope: scope,
+         paused?: row.paused,
+         keys: keys,
+         public_key: row.public_key,
+         record: row
+       }}
+    end
+  end
+
+  defp source_slots(row) do
+    previous = row.previous_secret_retired_at
+
+    if previous && DateTime.compare(previous, DateTime.utc_now()) == :gt,
+      do: [{:secret_ref, :secret_kind}, {:previous_secret_ref, :previous_secret_kind}],
+      else: [{:secret_ref, :secret_kind}]
+  end
+
+  defp source_provider(source, alias) do
+    case Keyword.fetch(Storage.option(source, :providers), alias) do
+      {:ok, provider} ->
+        resolve_provider(%{provider: provider}, nil)
+
+      :error ->
+        {:error, UnknownError.exception(error: "source provider alias is outside its allowlist")}
+    end
+  end
+
+  defp verify_resolved(%ResolvedSource{record: nil} = source, body, ctx, inbound) do
+    with {:ok, secret} <- resolve_secret(source.provider, inbound, source.name, ctx),
+         do: verify(source.provider, body, ctx, inbound, secret, source.name)
+  end
+
+  defp verify_resolved(%ResolvedSource{keys: []} = source, body, ctx, inbound) do
+    if source.public_key,
+      do:
+        verify(
+          source.provider,
+          body,
+          ctx,
+          %{inbound | previous_secret: nil},
+          source.public_key,
+          source.name
+        ),
+      else: secret_error(source.name)
+  end
+
+  defp verify_resolved(source, body, ctx, inbound) do
+    Enum.reduce_while(source.keys, {:error, nil}, fn key, {:error, failure} ->
+      case verify(source.provider, body, ctx, %{inbound | previous_secret: nil}, key, source.name) do
+        :ok ->
+          {:halt, stamp_source_used(source.record, key.ref, ctx[:tenant])}
+
+        {:error, reason} ->
+          {:cont, {:error, source_key_failure(failure, reason, source.name)}}
+      end
+    end)
+  end
+
+  defp source_key_failure(nil, reason, _name), do: reason
+
+  defp source_key_failure(failure, reason, name),
+    do: overlap_failure(failure, {:error, reason}, name)
+
+  defp stamp_source_used(row, ref, tenant) do
+    {field, stamp, action} =
+      if row.secret_ref == ref,
+        do: {:secret_ref, :secret_first_used_at, :mark_current_secret_used},
+        else: {:previous_secret_ref, :previous_secret_first_used_at, :mark_previous_secret_used}
+
+    if Map.get(row, stamp) do
+      :ok
+    else
+      query =
+        row.__struct__
+        |> Storage.owner_query(tenant)
+        |> Ash.Query.do_filter(PrimaryKey.filter(row))
+        |> Ash.Query.do_filter(%{field => ref, stamp => [is_nil: true]})
+
+      case Phase.bulk(
+             query,
+             tenant,
+             &Ash.bulk_update(&1, action, %{used_at: DateTime.utc_now()},
+               authorize?: false,
+               tenant: tenant,
+               strategy: [:atomic],
+               return_errors?: true
+             )
+           ) do
+        %Ash.BulkResult{status: :success} -> :ok
+        %Ash.BulkResult{errors: [error | _]} -> {:error, error}
       end
     end
   end
@@ -1219,10 +1570,10 @@ defmodule AshHooks.Ingress do
   # only accept maps fail lists closed through their own catch-all clauses
   # ({:error, :malformed_payload}); the shape decision belongs to the
   # provider, not the pipeline.
-  defp decode_and_parse(provider, raw_body, format, decoder) do
+  defp decode_and_parse(provider, raw_body, format, decoder, context) do
     case Provider.decode_payload(provider, raw_body, format, decoder) do
       {:ok, payload} when is_map(payload) or is_list(payload) ->
-        {payload, provider.parse_event_type(payload), :ok}
+        {payload, Provider.parse_event_type(provider, payload, context), :ok}
 
       {:ok, _scalar} ->
         {%{}, {:error, :malformed_payload}, {:error, :malformed_payload}}
@@ -1506,58 +1857,44 @@ defmodule AshHooks.Ingress do
   # taken by allowlist, so caller scope data can never overwrite the
   # verified ledger identity fields, and unknown keys
   # are rejected rather than silently shaping the ingest input.
-  defp check_scope(resource, ctx) do
-    scope = Map.new(ctx[:scope] || %{})
+  defp cast_scope(resource, supplied) do
+    scope = Map.new(supplied || %{})
     declared = Extension.get_opt(resource, [:inbound_delivery], :scope_identity, [])
+    known = Enum.flat_map(declared, &[&1, Atom.to_string(&1)])
 
-    known = MapSet.new(declared, &Atom.to_string/1)
-
-    unknown =
-      scope
-      |> Map.keys()
-      |> Enum.reject(fn key -> MapSet.member?(known, to_string(key)) end)
-
-    missing =
-      Enum.filter(declared, fn slot ->
-        not Map.has_key?(scope, slot) and not Map.has_key?(scope, Atom.to_string(slot))
-      end)
-
-    cond do
-      unknown != [] ->
-        {:error,
-         MalformedPayload.exception(
-           detail:
-             "unknown scope keys #{inspect(unknown)}: scope carries only declared scope_identity slots"
-         )}
-
-      missing != [] ->
-        {:error,
-         MalformedPayload.exception(detail: "missing scope values for #{inspect(missing)}")}
-
-      true ->
-        :ok
+    if Enum.any?(Map.keys(scope), &(&1 not in known)) do
+      {:error,
+       MalformedPayload.exception(
+         detail: "unknown scope keys: scope carries only declared scope_identity slots"
+       )}
+    else
+      Enum.reduce_while(declared, {:ok, %{}}, &cast_scope_value(resource, scope, &1, &2))
     end
   end
 
-  defp declared_scope(resource, ctx) do
-    scope = Map.new(ctx[:scope] || %{})
-    declared = Extension.get_opt(resource, [:inbound_delivery], :scope_identity, [])
+  defp cast_scope_value(resource, scope, name, {:ok, values}) do
+    value = Map.get(scope, name, Map.get(scope, Atom.to_string(name)))
+    attribute = Ash.Resource.Info.attribute(resource, name)
 
-    Map.new(declared, fn slot ->
-      value =
-        cond do
-          Map.has_key?(scope, slot) -> Map.fetch!(scope, slot)
-          Map.has_key?(scope, Atom.to_string(slot)) -> Map.fetch!(scope, Atom.to_string(slot))
-        end
-
-      {slot, value}
-    end)
+    with false <- is_nil(value),
+         {:ok, cast} <- Ash.Type.cast_input(attribute.type, value, attribute.constraints),
+         {:ok, cast} <- Ash.Type.apply_constraints(attribute.type, cast, attribute.constraints),
+         false <- is_nil(cast) do
+      {:cont, {:ok, Map.put(values, name, cast)}}
+    else
+      _ ->
+        {:halt,
+         {:error,
+          MalformedPayload.exception(
+            detail: "missing or invalid scope value for #{inspect(name)}"
+          )}}
+    end
   end
 
   defp content_digest(raw_body),
     do: :crypto.hash(:sha256, raw_body) |> Base.encode16(case: :lower)
 
-  defp external_event_id(%{event_id: extractor}, _provider, payload, digest, _name)
+  defp external_event_id(%{event_id: extractor}, _provider, payload, digest, _name, _context)
        when is_function(extractor, 1) do
     id =
       case extractor.(payload) do
@@ -1571,8 +1908,8 @@ defmodule AshHooks.Ingress do
     {:ok, id}
   end
 
-  defp external_event_id(_inbound, provider, payload, digest, name) do
-    case Provider.event_identity(provider, payload) do
+  defp external_event_id(_inbound, provider, payload, digest, name, context) do
+    case Provider.event_identity(provider, payload, context) do
       :not_supported ->
         {:ok, digest}
 

@@ -9,7 +9,7 @@ defmodule AshHooks.Endpoint.Changes.RequireIssuedKeys do
         require_resolver(changeset, opts)
 
       attributes ->
-        if opts[:byte_resolver?] or not direct_ref_input?(changeset),
+        if Keyword.get(opts, :byte_resolver?, false) or not direct_ref_input?(changeset),
           do: Ash.Changeset.force_change_attributes(changeset, attributes),
           else: require_resolver(changeset, opts)
     end

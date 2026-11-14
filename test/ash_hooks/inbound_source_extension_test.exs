@@ -179,7 +179,87 @@ defmodule AshHooks.InboundSourceExtensionTest do
     assert_source_error([providers: [checked: ByteProvider]], ~r/custody_only/)
   end
 
+  test "source declarations require durable aliases and accept a ledger JSON decoder" do
+    source = compile_source()
+    declaration = quote(do: inbound(:checked, source_record: unquote(source)))
+
+    errors = Spark.Test.dsl_errors(do: compile_inbound(declaration))
+    assert [{_, errors}] = errors
+    assert Enum.any?(errors, &(Exception.message(&1) =~ "record_provider_alias :on"))
+
+    ledger =
+      compile_inbound(
+        declaration,
+        quote do
+          record_provider_alias(:on)
+          json_decoder({Jason, :decode, []})
+        end
+      )
+
+    assert Info.attribute(ledger, :provider_alias).allow_nil?
+    assert Info.action(ledger, :claim).accept == []
+  end
+
+  test "declarations without a source resource still require a secret" do
+    declaration =
+      quote(do: inbound(:checked, provider: AshHooks.Test.CustodySchemeProvider))
+
+    errors = Spark.Test.dsl_errors(do: compile_inbound(declaration))
+    assert [{_, errors}] = errors
+    assert Enum.any?(errors, &(Exception.message(&1) =~ "requires secret"))
+  end
+
   def canonical_decimal(value), do: Decimal.to_string(Decimal.normalize(value))
+
+  defp compile_inbound(declaration, options \\ nil) do
+    module = Module.concat(__MODULE__, "Declaration#{System.unique_integer([:positive])}")
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+    end)
+
+    compile(
+      module,
+      quote do
+        use Ash.Resource,
+          domain: nil,
+          validate_domain_inclusion?: false,
+          data_layer: AshSqlite.DataLayer,
+          extensions: [AshHooks, AshHooks.InboundDelivery]
+
+        sqlite do
+          table("source_declaration")
+          repo(AshHooks.Test.RegistryRepo)
+        end
+
+        inbound_delivery do
+          scope_identity([:account_id])
+          unquote(options)
+        end
+
+        attributes do
+          attribute(:tenant_id, :integer, allow_nil?: false)
+          attribute(:account_id, :string, allow_nil?: false)
+        end
+
+        multitenancy do
+          strategy(:attribute)
+          attribute(:tenant_id)
+        end
+
+        webhooks do
+          unquote(declaration)
+        end
+
+        actions do
+          defaults([:read])
+        end
+      end
+    )
+
+    module
+  end
 
   defp assert_source_error(opts, message) do
     errors = Spark.Test.dsl_errors(do: compile_source(opts))

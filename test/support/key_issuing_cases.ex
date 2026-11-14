@@ -4,7 +4,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
   import ExUnit.Callbacks, only: [on_exit: 1]
   alias AshHooks.{Endpoint, KeyRegistry, Signing}
   alias AshHooks.KeyRegistry.{Storage, Transitions}
-  alias AshHooks.Test.{CustodySigningCases, KeyRegistryCases, RealReceiver}
+  alias AshHooks.Test.{CustodySigningCases, InboundSourceCases, KeyRegistryCases, RealReceiver}
 
   @kind {:standard_webhooks, :v1}
   @clock ~U[2026-11-14 12:00:00.000000Z]
@@ -14,7 +14,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
     ctx = CustodySigningCases.setup_all(module, layer, repo, prefix)
     endpoint = Module.concat(module, IssuingEndpoint)
 
-    KeyRegistryCases.compile_endpoint(ctx, endpoint,
+    compile_owner(ctx, endpoint,
       custodian: AshHooks.Test.IssuingCustodian,
       secret_resolver: {__MODULE__, :resolve}
     )
@@ -152,7 +152,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
           default: unquote(Macro.escape(@clock))
       end
 
-    KeyRegistryCases.compile_endpoint(Map.put(ctx, :endpoint_attributes, attributes), resource,
+    compile_owner(Map.put(ctx, :endpoint_attributes, attributes), resource,
       custodian: AshHooks.Test.IssuingCustodian
     )
 
@@ -192,15 +192,21 @@ defmodule AshHooks.Test.KeyIssuingCases do
       configured =
         ctx |> Map.put(:endpoint_attributes, attributes) |> Map.put(:endpoint_changes, changes)
 
-      KeyRegistryCases.compile_endpoint(configured, resource,
-        custodian: AshHooks.Test.IssuingCustodian
-      )
+      compile_owner(configured, resource, custodian: AshHooks.Test.IssuingCustodian)
 
       Process.put(:issuing_create_change, shape)
       assert {:ok, owner, _} = create(%{ctx | endpoint: resource})
       persisted = Ash.read_one!(resource, tenant: 17, authorize?: false)
       assert owner.id == persisted.id
       assert stored(ctx, owner.secret_ref).owner_key == AshHooks.PrimaryKey.encode(persisted)
+
+      if ctx[:source_owner?] do
+        assert {:ok, rolled, _} =
+                 AshHooks.InboundSource.roll_secret(persisted, tenant: 17, generate: @kind)
+
+        assert stored(ctx, rolled.secret_ref).owner_key == AshHooks.PrimaryKey.encode(persisted)
+      end
+
       ctx.repo.query!("DELETE FROM #{ctx.endpoint_table}", [], log: false)
     end
   end
@@ -215,7 +221,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
         end
       end
 
-    KeyRegistryCases.compile_endpoint(Map.put(ctx, :endpoint_changes, changes), resource,
+    compile_owner(Map.put(ctx, :endpoint_changes, changes), resource,
       custodian: AshHooks.Test.IssuingCustodian
     )
 
@@ -237,7 +243,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
         end
       end
 
-    KeyRegistryCases.compile_endpoint(Map.put(ctx, :endpoint_identities, identities), resource,
+    compile_owner(Map.put(ctx, :endpoint_identities, identities), resource,
       custodian: AshHooks.Test.IssuingCustodian
     )
 
@@ -263,7 +269,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
   def direct_reference_guard(ctx) do
     resource = Module.concat(ctx.endpoint, WithoutResolver)
 
-    KeyRegistryCases.compile_endpoint(ctx, resource,
+    compile_owner(ctx, resource,
       custodian: AshHooks.Test.IssuingCustodian,
       secret_resolver: nil
     )
@@ -299,7 +305,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
              )
 
     byte = Module.concat(ctx.endpoint, ByteResource)
-    KeyRegistryCases.compile_endpoint(ctx, byte, custodian: nil, key_registry: nil)
+    compile_owner(ctx, byte, custodian: nil, key_registry: nil)
     assert byte_owner!(%{ctx | endpoint: byte}).secret_ref == "byte-current"
 
     assert {:error, :custody_required} =
@@ -333,7 +339,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
     configured = %{ctx | registry: registry, endpoint: resource} |> Map.put(:tenancy?, false)
     KeyRegistryCases.compile_registry(configured)
 
-    KeyRegistryCases.compile_endpoint(configured, resource,
+    compile_owner(configured, resource,
       custodian: AshHooks.Test.IssuingCustodian,
       tenancy?: false
     )
@@ -500,23 +506,31 @@ defmodule AshHooks.Test.KeyIssuingCases do
 
   def owner_write_failure(ctx) do
     resource = Module.concat(ctx.endpoint, ValidatedOwner)
+    field = if ctx[:source_owner?], do: :paused, else: :status
+    value = if ctx[:source_owner?], do: true, else: :disabled
 
     changes =
       quote do
         validations do
-          validate(attribute_equals(:status, :disabled), on: [:update])
+          validate(attribute_equals(unquote(field), unquote(value)), on: [:update])
         end
       end
 
-    KeyRegistryCases.compile_endpoint(Map.put(ctx, :endpoint_changes, changes), resource,
+    compile_owner(Map.put(ctx, :endpoint_changes, changes), resource,
       custodian: AshHooks.Test.IssuingCustodian
     )
 
     configured = %{ctx | endpoint: resource}
     assert {:ok, owner, _} = create(configured)
-    assert {:error, _} = Endpoint.reissue_secret(owner, tenant: 17)
+    assert {:error, _} = owner_api(ctx).reissue_secret(owner, tenant: 17)
     assert stored(ctx, owner.secret_ref).state == :attached
     assert Enum.count(rows(ctx), &(&1.state == :retired)) == 1
+
+    if ctx[:source_owner?] do
+      assert {:error, _} = AshHooks.InboundSource.unpause(owner, tenant: 17)
+      assert {:error, :rolled_underneath} = AshHooks.InboundSource.pause(owner, tenant: 18)
+      assert {:error, :tenant_required} = AshHooks.InboundSource.pause(owner)
+    end
   end
 
   def concurrent_reissue_roll(ctx) do
@@ -622,7 +636,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
     owner = byte_owner!(ctx)
     resource = Module.concat(ctx.endpoint, NoByteResolver)
 
-    KeyRegistryCases.compile_endpoint(ctx, resource,
+    compile_owner(ctx, resource,
       custodian: AshHooks.Test.IssuingCustodian,
       secret_resolver: nil
     )
@@ -719,7 +733,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
         end
       end
 
-    KeyRegistryCases.compile_endpoint(Map.put(ctx, :endpoint_changes, changes), resource,
+    compile_owner(Map.put(ctx, :endpoint_changes, changes), resource,
       custodian: AshHooks.Test.IssuingCustodian
     )
 
@@ -743,8 +757,11 @@ defmodule AshHooks.Test.KeyIssuingCases do
 
   def lost_owner_cas(ctx) do
     {:ok, owner, _} = create(ctx)
-    {:ok, _, _} = Endpoint.roll_secret(owner, tenant: 17, generate: @kind)
-    assert {:error, :rolled_underneath} = Endpoint.roll_secret(owner, tenant: 17, generate: @kind)
+    {:ok, _, _} = owner_api(ctx).roll_secret(owner, tenant: 17, generate: @kind)
+
+    assert {:error, :rolled_underneath} =
+             owner_api(ctx).roll_secret(owner, tenant: 17, generate: @kind)
+
     assert Enum.count(rows(ctx), &(&1.state == :retired)) == 1
   end
 
@@ -759,10 +776,15 @@ defmodule AshHooks.Test.KeyIssuingCases do
     parent = self()
 
     for order <- [:attach, :sweep, :race] do
+      opts =
+        if ctx[:source_owner?],
+          do: [attrs: %{url: url(), account_id: Atom.to_string(order)}],
+          else: []
+
       create_task =
         Task.async(fn ->
           Process.put(:issuing_store_answer, {:pause, parent})
-          create(ctx)
+          create(ctx, opts)
         end)
 
       assert_receive {:stored, creator, ref}, 15_000
@@ -910,11 +932,41 @@ defmodule AshHooks.Test.KeyIssuingCases do
     resolve(ref)
   end
 
+  def source_cases do
+    [
+      :create_failure,
+      :creation_timestamps,
+      :persisted_primary_keys,
+      :owner_mismatch,
+      :identity_conflict,
+      :owner_write_failure,
+      :store_crash_recovery,
+      :lost_owner_cas,
+      :lost_registry_cas,
+      :create_sweep_race
+    ]
+  end
+
+  defp owner_api(%{source_owner?: true}), do: AshHooks.InboundSource
+  defp owner_api(_ctx), do: Endpoint
+
+  defp compile_owner(ctx, resource, opts) do
+    if ctx[:source_owner?],
+      do: InboundSourceCases.compile_source(ctx, resource, opts),
+      else: KeyRegistryCases.compile_endpoint(ctx, resource, opts)
+  end
+
   defp create(ctx, opts \\ []) do
     {attrs, opts} = Keyword.pop(opts, :attrs, %{url: url()})
     opts = Keyword.merge([tenant: 17, now: @clock], opts)
     opts = if opts[:material], do: opts, else: Keyword.put_new(opts, :generate, @kind)
-    Endpoint.create_with_key(ctx.endpoint, attrs, opts)
+
+    if ctx[:source_owner?] do
+      attrs = Map.merge(%{source: :checked, account_id: "account", provider: :first}, attrs)
+      AshHooks.InboundSource.create_source(ctx.endpoint, attrs, opts)
+    else
+      Endpoint.create_with_key(ctx.endpoint, attrs, opts)
+    end
   end
 
   defp byte_owner!(ctx, attrs \\ [], tenant \\ 17) do

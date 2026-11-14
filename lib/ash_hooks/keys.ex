@@ -1,4 +1,4 @@
-defmodule AshHooks.Endpoint.Keys do
+defmodule AshHooks.Keys do
   @moduledoc false
   alias Ash.Resource.Info
   alias AshHooks.{KeyIssuing, KeyLifecycle, Phase, PrimaryKey, Tenancy}
@@ -11,7 +11,7 @@ defmodule AshHooks.Endpoint.Keys do
     with :ok <- Phase.outside_transaction(resource),
          :ok <- require_custody(resource),
          :ok <- KeyLifecycle.validate_roll(resource, opts),
-         {:ok, spec, disclosure} <- input(opts, slot) do
+         {:ok, spec, disclosure} <- input(opts, slot, resource) do
       result =
         KeyIssuing.run(resource, [spec], opts, fn [issued] ->
           KeyLifecycle.roll_reference(
@@ -33,7 +33,7 @@ defmodule AshHooks.Endpoint.Keys do
     with :ok <- Phase.outside_transaction(resource),
          :ok <- require_custody(resource),
          {:ok, kind} <- current_kind(owner, fields),
-         {:ok, spec, disclosure} <- generate(kind, slot) do
+         {:ok, spec, disclosure} <- generate(kind, slot, resource) do
       opts = Keyword.put(opts, :retire, [Map.fetch!(owner, fields.ref)])
 
       result =
@@ -161,15 +161,63 @@ defmodule AshHooks.Endpoint.Keys do
   def create(resource, attrs, opts) do
     with :ok <- Phase.outside_transaction(resource),
          :ok <- require_custody(resource),
-         {:ok, spec, disclosure} <- input(opts, :standard) do
-      result =
-        KeyIssuing.run(resource, [spec], opts, fn issued ->
-          create_owner(resource, attrs, issued, opts)
-        end)
+         {:ok, tenant} <- Tenancy.resolve([resource, Storage.registry(resource)], opts[:tenant]),
+         {:ok, specs, disclosure} <- create_specs(resource, opts) do
+      opts = Keyword.put(opts, :tenant, tenant)
+
+      result = create_with_specs(resource, attrs, specs, opts)
 
       disclose(result, disclosure)
     end
   end
+
+  defp create_with_specs(resource, attrs, [], opts),
+    do: Phase.run(resource, opts[:tenant], fn -> create_owner(resource, attrs, [], opts) end)
+
+  defp create_with_specs(resource, attrs, specs, opts),
+    do:
+      KeyIssuing.run(resource, specs, opts, fn issued ->
+        create_owner(resource, attrs, issued, opts)
+      end)
+
+  defp create_specs(resource, opts) do
+    if Storage.section(resource) == :inbound_source do
+      with {:ok, specs, disclosure} <- source_current(opts),
+           {:ok, previous} <- source_previous(opts, specs) do
+        {:ok, specs ++ previous, disclosure}
+      end
+    else
+      with {:ok, spec, disclosure} <- input(opts, :standard, resource),
+           do: {:ok, [spec], disclosure}
+    end
+  end
+
+  defp source_current(opts) do
+    if not is_nil(opts[:public_key]) and
+         not Enum.any?([:generate, :material, :new_secret_ref], &Keyword.has_key?(opts, &1)) do
+      {:ok, [], nil}
+    else
+      with {:ok, spec, disclosure} <- source_input(opts), do: {:ok, [spec], disclosure}
+    end
+  end
+
+  defp source_previous(opts, current) do
+    if Keyword.has_key?(opts, :previous),
+      do: previous_spec(opts, current, opts[:previous_retires_at]),
+      else: {:ok, []}
+  end
+
+  defp previous_spec(opts, current, %DateTime{}) do
+    kind = Keyword.get(opts, :previous_kind, previous_kind(current))
+
+    with {:ok, spec, nil} <- source_input(material: opts[:previous], kind: kind),
+         do: {:ok, [%{spec | field: :previous_secret_ref, kind_field: :previous_secret_kind}]}
+  end
+
+  defp previous_spec(_opts, _current, nil), do: {:error, :previous_secret_undated}
+  defp previous_spec(_opts, _current, _invalid), do: {:error, :invalid_retirement_time}
+  defp previous_kind([spec]), do: spec.kind
+  defp previous_kind([]), do: nil
 
   defp create_owner(resource, attrs, issued, opts) do
     action = Keyword.get(opts, :action, Info.primary_action!(resource, :create).name)
@@ -179,14 +227,18 @@ defmodule AshHooks.Endpoint.Keys do
       |> KeyIssuing.attributes()
       |> Map.put(:secret_created_at, Transitions.now(opts))
       |> Map.put(:secret_first_used_at, nil)
-      |> tenant_attributes(resource, opts[:tenant])
+      |> creation_attributes(resource, issued, opts)
 
     resource
     |> Ash.Changeset.new()
     |> Ash.Changeset.set_context(
       Map.merge(Storage.context(resource), %{ash_hooks_issued_attributes: attributes})
     )
-    |> Ash.Changeset.for_create(action, attrs, tenant: opts[:tenant])
+    # Ash supplies the source tenant attribute when the create action runs.
+    |> Ash.Changeset.for_create(action, attrs,
+      tenant: opts[:tenant],
+      require?: Storage.section(resource) != :inbound_source
+    )
     |> Ash.create(authorize?: false)
   end
 
@@ -202,12 +254,73 @@ defmodule AshHooks.Endpoint.Keys do
     end
   end
 
-  defp input(opts, slot) do
-    case Enum.filter([:generate, :material, :new_secret_ref], &Keyword.has_key?(opts, &1)) do
-      [:generate] -> generate(opts[:generate], slot)
-      [:material] -> decode(opts[:material], slot)
-      _ -> {:error, :key_input_required}
+  defp creation_attributes(attributes, resource, issued, opts) do
+    if Storage.section(resource) == :inbound_source do
+      attributes =
+        if opts[:public_key],
+          do:
+            Map.merge(attributes, %{
+              public_key: opts[:public_key],
+              public_key_kind: opts[:kind],
+              secret_created_at: nil
+            }),
+          else: attributes
+
+      if Enum.any?(issued, &(&1.field == :previous_secret_ref)),
+        do:
+          Map.merge(attributes, %{
+            previous_secret_created_at: Transitions.now(opts),
+            previous_secret_first_used_at: nil,
+            previous_secret_retired_at: opts[:previous_retires_at]
+          }),
+        else: attributes
+    else
+      tenant_attributes(attributes, resource, opts[:tenant])
     end
+  end
+
+  defp input(opts, slot, resource) do
+    if Storage.section(resource) == :inbound_source do
+      source_input(opts)
+    else
+      case Enum.filter([:generate, :material, :new_secret_ref], &Keyword.has_key?(opts, &1)) do
+        [:generate] -> generate(opts[:generate], slot)
+        [:material] -> decode(opts[:material], slot)
+        _ -> {:error, :key_input_required}
+      end
+    end
+  end
+
+  defp source_input(opts) do
+    case Enum.filter(
+           [:generate, :material, :new_secret_ref, :public_key],
+           &Keyword.has_key?(opts, &1)
+         ) do
+      [:generate] ->
+        source_generate(opts[:generate])
+
+      [:material] ->
+        if source_kind?(opts[:kind]) and is_binary(opts[:material]) and opts[:material] != "",
+          do: {:ok, spec(:standard, opts[:kind], opts[:material]), nil},
+          else: {:error, :invalid_material}
+
+      _ ->
+        {:error, :key_input_required}
+    end
+  end
+
+  defp source_kind?({:standard_webhooks, version}), do: version in [:v1, :v1a]
+  defp source_kind?({:sender_hmac, digest}), do: digest in [:sha1, :sha256, :sha384, :sha512]
+  defp source_kind?({:legacy_hmac, :sha256}), do: true
+  defp source_kind?(_), do: false
+
+  defp source_generate({:standard_webhooks, :v1} = kind), do: generate(kind, :standard)
+  defp source_generate(_), do: {:error, :kind_not_allowed}
+
+  defp generate(kind, slot, resource) do
+    if Storage.section(resource) == :inbound_source,
+      do: source_generate(kind),
+      else: generate(kind, slot)
   end
 
   defp generate(kind, slot) do

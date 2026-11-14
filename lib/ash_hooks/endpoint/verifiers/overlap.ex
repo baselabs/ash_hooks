@@ -2,11 +2,12 @@ defmodule AshHooks.Endpoint.Verifiers.Overlap do
   @moduledoc false
   use Spark.Dsl.Verifier
 
+  alias AshHooks.KeyRegistry.Storage
   alias Spark.Dsl.Verifier
   alias Spark.Error.DslError
 
   def verify(dsl_state) do
-    section = AshHooks.KeyRegistry.Storage.section(dsl_state)
+    section = Storage.section(dsl_state)
     max = Verifier.get_option(dsl_state, [section], :max_overlap_seconds)
     default = Verifier.get_option(dsl_state, [section], :default_overlap_seconds, 86_400)
 

@@ -198,6 +198,8 @@ defmodule AshHooks.Test.RowSecurityCases do
       attempt: Module.concat(namespace, :Attempt),
       event_log: Module.concat(namespace, :EventLog),
       inbound: Module.concat(namespace, :Inbound),
+      source_inbound: Module.concat(namespace, :SourceInbound),
+      source: Module.concat(namespace, :Source),
       worker: Module.concat(namespace, :Worker),
       registry: Module.concat(namespace, :Registry),
       custody_owner: Module.concat(namespace, :CustodyOwner),
@@ -297,6 +299,37 @@ defmodule AshHooks.Test.RowSecurityCases do
       end
     )
 
+    compile_resource(
+      ctx,
+      ctx.source_inbound,
+      [AshHooks, AshHooks.InboundDelivery],
+      quote do
+        inbound_delivery do
+          record_provider_alias(:on)
+        end
+
+        webhooks do
+          inbound :event do
+            source_record unquote(ctx.source)
+          end
+        end
+      end
+    )
+
+    compile_resource(
+      ctx,
+      ctx.source,
+      [AshHooks.InboundSource],
+      quote do
+        inbound_source do
+          ledger unquote(ctx.source_inbound)
+          providers checked: AshHooks.Test.RowSecurityProvider
+          custodian unquote(ctx.custodian)
+          key_registry unquote(ctx.registry)
+        end
+      end
+    )
+
     if Code.ensure_loaded?(Oban) do
       Code.compile_quoted(
         quote do
@@ -340,6 +373,8 @@ defmodule AshHooks.Test.RowSecurityCases do
       ctx.attempt,
       ctx.event_log,
       ctx.inbound,
+      ctx.source_inbound,
+      ctx.source,
       ctx.registry,
       ctx.custody_owner
     ]
@@ -1212,6 +1247,79 @@ defmodule AshHooks.Test.RowSecurityCases do
       nil,
       %{type: :custom, metadata: %{}, tenant: tenant}
     )
+  end
+
+  def source_phases(ctx) do
+    alias AshHooks.InboundSource
+    kind = {:standard_webhooks, :v1}
+    now = DateTime.utc_now()
+
+    for tenant <- ["tenant_b", "tenant_a"] do
+      assert {:ok, source, _} =
+               InboundSource.create_source(ctx.source, %{source: :event, provider: :checked},
+                 tenant: tenant,
+                 generate: kind
+               )
+
+      assert {:ok, resolved} = Ingress.resolve_source(ctx.source_inbound, :event, tenant: tenant)
+      assert resolved.record.tenant_id == tenant
+      assert hd(resolved.keys).tenant == tenant
+      assert {:ok, rolled, _} = InboundSource.roll_secret(source, tenant: tenant, generate: kind)
+      assert {:ok, reissued, disclosure} = InboundSource.reissue_secret(rolled, tenant: tenant)
+      raw = Jason.encode!(%{"type" => "event", "id" => tenant})
+      "whsec_" <> encoded = disclosure
+      signature = :crypto.mac(:hmac, :sha256, Base.decode64!(encoded), raw)
+      signature = Base.encode16(signature, case: :lower)
+
+      assert {:ok, :created, %{status: :processed, tenant_id: ^tenant}} =
+               Ingress.ingest(ctx.source_inbound, :event, raw, %{
+                 tenant: tenant,
+                 headers: %{"x-signature" => signature}
+               })
+
+      assert {:ok, scheduled} =
+               InboundSource.schedule_previous_retirement(reissued, now, tenant: tenant, now: now)
+
+      assert {:ok, 1} =
+               InboundSource.expire_previous_secrets(ctx.source, tenant: tenant, now: now)
+
+      assert {:ok, _} = InboundSource.expire_previous_secret(scheduled, tenant: tenant)
+      assert {:ok, paused} = InboundSource.pause(source, tenant: tenant)
+      assert paused.paused
+      assert {:ok, active} = InboundSource.unpause(paused, tenant: tenant)
+      refute active.paused
+      {public, _} = :crypto.generate_key(:eddsa, :ed25519)
+
+      assert {:ok, _} =
+               InboundSource.register_public_key(active, public, tenant: tenant, kind: :ed25519)
+
+      env = %{
+        tenant: tenant,
+        name: :event,
+        external_event_id: "unadopted-" <> tenant,
+        type_string: "event",
+        payload: %{"type" => "event"},
+        digest: "digest",
+        scope: %{}
+      }
+
+      assert {:ok, true, old} = Ingress.ingest_delivery(ctx.source_inbound, env)
+
+      assert {:error, :lease_held} =
+               Ingress.claim_delivery(ctx.source_inbound, old.id, tenant: tenant)
+
+      assert {:ok, 0} = Ingress.reap(ctx.source_inbound, tenant: tenant)
+
+      assert {:ok, %{driven: 1, remaining: 0}} =
+               InboundSource.adopt_provider_alias(ctx.source, :event, :checked,
+                 tenant: tenant,
+                 expected_provider: AshHooks.Test.RowSecurityProvider
+               )
+
+      assert {:ok, %{records: rows}} = Ingress.list(ctx.source_inbound, tenant: tenant)
+      assert length(rows) == 2
+      assert Enum.all?(rows, &(&1.tenant_id == tenant and &1.status == :processed))
+    end
   end
 
   def issuing_phases(ctx) do

@@ -7,10 +7,9 @@ defmodule AshHooks.KeyLifecycle do
   require Ash.Query
   require Ash.Expr
 
-  alias AshHooks.Endpoint.Keys
   alias AshHooks.Errors.Unknown.UnknownError
   alias AshHooks.KeyRegistry.{Storage, Transitions}
-  alias AshHooks.{PrimaryKey, Tenancy}
+  alias AshHooks.{Keys, PrimaryKey, Tenancy}
 
   def fields(:standard) do
     %{
@@ -52,6 +51,14 @@ defmodule AshHooks.KeyLifecycle do
     }
   end
 
+  def fields(slot, resource) do
+    fields = fields(slot)
+
+    if Storage.section(resource) == :inbound_source,
+      do: %{fields | retire: :expire_previous_secret},
+      else: fields
+  end
+
   @spec roll_secret(struct(), keyword()) ::
           {:ok, struct()} | {:ok, struct(), binary()} | {:error, term()}
   def roll_secret(endpoint, opts) do
@@ -63,7 +70,7 @@ defmodule AshHooks.KeyLifecycle do
 
   def roll_reference(endpoint, opts) do
     if Storage.custodian(endpoint.__struct__) do
-      fields = fields(Keyword.get(opts, :slot, :standard))
+      fields = fields(Keyword.get(opts, :slot, :standard), endpoint.__struct__)
 
       if opts[:new_secret_kind] ||
            Extension.get_opt(endpoint.__struct__, [:endpoint], :secret_resolver) do
@@ -77,7 +84,7 @@ defmodule AshHooks.KeyLifecycle do
   end
 
   def validate_roll(resource, opts) do
-    fields = fields(Keyword.get(opts, :slot, :standard))
+    fields = fields(Keyword.get(opts, :slot, :standard), resource)
 
     with :ok <- require_lifecycle(resource, fields),
          {:ok, _tenant} <- Tenancy.resolve([resource], opts[:tenant]),
@@ -95,7 +102,7 @@ defmodule AshHooks.KeyLifecycle do
 
   defp do_roll_secret(endpoint, opts) do
     resource = endpoint.__struct__
-    fields = fields(Keyword.get(opts, :slot, :standard))
+    fields = fields(Keyword.get(opts, :slot, :standard), resource)
 
     with {:ok, new_ref} <- validate_new_secret_ref(endpoint, opts[:new_secret_ref], fields),
          :ok <- require_lifecycle(resource, fields),
@@ -139,11 +146,7 @@ defmodule AshHooks.KeyLifecycle do
 
       case result do
         %Ash.BulkResult{status: :success, records: [rolled]} ->
-          :telemetry.execute(
-            [:ash_hooks, :endpoint, :roll],
-            %{},
-            %{endpoint_id: PrimaryKey.scalar!(endpoint)}
-          )
+          emit_roll(resource, endpoint)
 
           {:ok, rolled}
 
@@ -153,6 +156,16 @@ defmodule AshHooks.KeyLifecycle do
         %Ash.BulkResult{} = result ->
           {:error, List.first(result.errors || []) || result}
       end
+    end
+  end
+
+  defp emit_roll(resource, endpoint) do
+    if Storage.section(resource) == :endpoint do
+      :telemetry.execute(
+        [:ash_hooks, :endpoint, :roll],
+        %{},
+        %{endpoint_id: PrimaryKey.scalar!(endpoint)}
+      )
     end
   end
 
@@ -178,7 +191,7 @@ defmodule AshHooks.KeyLifecycle do
     do: Ash.Expr.expr(^Ash.Expr.ref(fields.ref) == ^incumbent)
 
   defp validate_overlap(resource, opts) do
-    default = Extension.get_opt(resource, [:endpoint], :default_overlap_seconds, 86_400)
+    default = Storage.option(resource, :default_overlap_seconds, 86_400)
     # nil means "not given", as before validation existed.
     overlap =
       case Keyword.get(opts, :overlap_seconds) do
@@ -186,7 +199,7 @@ defmodule AshHooks.KeyLifecycle do
         given -> given
       end
 
-    max = Extension.get_opt(resource, [:endpoint], :max_overlap_seconds, nil)
+    max = Storage.option(resource, :max_overlap_seconds)
 
     cond do
       not is_integer(overlap) or overlap < 0 -> {:error, :invalid_overlap}
@@ -228,7 +241,7 @@ defmodule AshHooks.KeyLifecycle do
           {:ok, struct()} | {:error, term()}
   def schedule_previous_retirement(endpoint, at, opts) do
     resource = endpoint.__struct__
-    fields = fields(Keyword.get(opts, :slot, :standard))
+    fields = fields(Keyword.get(opts, :slot, :standard), resource)
 
     with :ok <- require_lifecycle(resource, fields),
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
@@ -265,7 +278,7 @@ defmodule AshHooks.KeyLifecycle do
 
   defp validate_retirement_time(%DateTime{} = at, now, resource) do
     at = DateTime.truncate(at, :microsecond)
-    max = Extension.get_opt(resource, [:endpoint], :max_overlap_seconds, nil)
+    max = Storage.option(resource, :max_overlap_seconds)
 
     cond do
       DateTime.compare(at, now) == :lt ->
@@ -284,7 +297,7 @@ defmodule AshHooks.KeyLifecycle do
   @spec expire_previous_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
   def expire_previous_secret(endpoint, opts) do
     resource = endpoint.__struct__
-    fields = fields(Keyword.get(opts, :slot, :standard))
+    fields = fields(Keyword.get(opts, :slot, :standard), resource)
 
     with :ok <- require_lifecycle(resource, fields),
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
@@ -347,7 +360,7 @@ defmodule AshHooks.KeyLifecycle do
   @spec expire_previous_secrets(module(), keyword()) ::
           {:ok, non_neg_integer()} | {:error, term()}
   def expire_previous_secrets(resource, opts) do
-    fields = fields(Keyword.get(opts, :slot, :standard))
+    fields = fields(Keyword.get(opts, :slot, :standard), resource)
     now = opts |> Keyword.get(:now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
 
     with :ok <- require_lifecycle(resource, fields),
@@ -386,7 +399,7 @@ defmodule AshHooks.KeyLifecycle do
 
   defp custody_write(endpoint, opts, write) do
     owner = endpoint.__struct__
-    fields = fields(Keyword.get(opts, :slot, :standard))
+    fields = fields(Keyword.get(opts, :slot, :standard), owner)
     registry = Storage.registry(owner)
 
     with {:ok, tenant} <- Tenancy.resolve([registry], opts[:tenant]),

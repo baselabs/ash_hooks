@@ -88,6 +88,12 @@ defmodule AshHooks.InboundDelivery do
     Configuration of this resource as the inbound webhook ledger.
     """,
     schema: [
+      record_provider_alias: [
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc:
+          "Injects a nullable provider_alias recorded at ingest. Required by source_record declarations. Migrate the column before enabling; adopt nonterminal old receipts with InboundSource.adopt_provider_alias/4."
+      ],
       json_decoder: [
         type: :mfa,
         doc: """

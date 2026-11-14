@@ -24,7 +24,13 @@ defmodule AshHooks.Test.AnswerCustodian do
     {custodian, answer, sink} = config()
     send(sink, {:custody_verify, ref, tenant, kind})
     result = custodian.verify(ref, tenant, kind, input, signature)
-    if answer == :real, do: result, else: answer
+
+    case answer do
+      :real -> result
+      {:for_ref, ^ref, refusal} -> refusal
+      {:for_ref, _, _} -> result
+      other -> other
+    end
   end
 
   def public_key(ref, tenant, kind) do

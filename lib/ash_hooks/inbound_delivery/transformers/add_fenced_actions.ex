@@ -25,6 +25,11 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   def transform(dsl_state) do
     scope = Extension.get_opt(dsl_state, [:inbound_delivery], :scope_identity, [])
 
+    scope =
+      if Extension.get_opt(dsl_state, [:inbound_delivery], :record_provider_alias, :off) == :on,
+        do: [:provider_alias | scope],
+        else: scope
+
     with {:ok, ingest} <- build_ingest(scope, writable_id_pk?(dsl_state)),
          {:ok, record_malformed} <-
            build_ingest(scope, writable_id_pk?(dsl_state), :record_malformed),

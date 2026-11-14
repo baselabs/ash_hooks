@@ -11,6 +11,8 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
 
   alias Ash.Resource.Builder
   alias Ash.Resource.Change.Builtins
+  alias AshHooks.KeyLifecycle
+  alias AshHooks.KeyLifecycle.Actions
   alias Spark.Dsl.{Extension, Transformer}
 
   def before?(Ash.Resource.Transformers.DefaultAccept), do: true
@@ -35,19 +37,19 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
 
     lifecycle =
       for slot <- [:standard, :legacy],
-          fields = AshHooks.KeyLifecycle.fields(slot),
+          fields = KeyLifecycle.fields(slot),
           Extension.get_opt(dsl_state, [:endpoint], fields.option, :off) == :on,
           action <- [
-            AshHooks.KeyLifecycle.Actions.build_roll_secret(
+            Actions.build_roll_secret(
               fields,
               not is_nil(Extension.get_opt(dsl_state, [:endpoint], :custodian))
             ),
-            AshHooks.KeyLifecycle.Actions.build_schedule_previous_retirement(fields),
-            AshHooks.KeyLifecycle.Actions.build_retire_previous_secret(
+            Actions.build_schedule_previous_retirement(fields),
+            Actions.build_retire_previous_secret(
               fields,
               not is_nil(Extension.get_opt(dsl_state, [:endpoint], :custodian))
             )
-            | AshHooks.KeyLifecycle.Actions.build_first_used_actions(fields)
+            | Actions.build_first_used_actions(fields)
           ],
           do: action
 

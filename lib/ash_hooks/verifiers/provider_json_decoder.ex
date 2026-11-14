@@ -18,6 +18,8 @@ defmodule AshHooks.Verifiers.ProviderJsonDecoder do
     :ok
   end
 
+  defp verify_provider!(%{source_record: source}, _state) when not is_nil(source), do: :ok
+
   defp verify_provider!(%{provider: provider, name: name}, dsl_state) do
     Code.ensure_compiled!(provider)
 

@@ -1,6 +1,6 @@
 defmodule AshHooks.Endpoint do
   alias Ash.Resource.Info, as: ResourceInfo
-  alias AshHooks.Endpoint.Keys
+  alias AshHooks.Keys
 
   @moduledoc """
   Configures an Ash resource as an outbound webhook destination, including

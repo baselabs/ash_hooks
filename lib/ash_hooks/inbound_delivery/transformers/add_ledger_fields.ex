@@ -26,10 +26,17 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
     with :ok <- check_scope_slots(dsl_state),
          {:ok, dsl_state} <- add_primary_key(dsl_state),
          {:ok, dsl_state} <- add_attributes(dsl_state),
+         {:ok, dsl_state} <- add_provider_alias(dsl_state),
          {:ok, dsl_state} <- add_tracking_attributes(dsl_state),
          :ok <- validate_primary_key_sources(dsl_state) do
       {:ok, dsl_state}
     end
+  end
+
+  defp add_provider_alias(state) do
+    if Extension.get_opt(state, [:inbound_delivery], :record_provider_alias, :off) == :on,
+      do: Builder.add_new_attribute(state, :provider_alias, :atom),
+      else: {:ok, state}
   end
 
   # The ingress-counting opt-in (default :off): `duplicates` bumps on
@@ -61,7 +68,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
       attribute = attributes[slot]
 
       cond do
-        slot in [:id | reserved_fields()] ->
+        slot in [:id | reserved_fields(dsl_state)] ->
           {:halt,
            {:error,
             DslError.exception(
@@ -122,7 +129,13 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
     end)
   end
 
-  defp reserved_fields, do: Enum.map(attributes_spec(), &elem(&1, 0))
+  defp reserved_fields(state) do
+    fields = Enum.map(attributes_spec(), &elem(&1, 0))
+
+    if Extension.get_opt(state, [:inbound_delivery], :record_provider_alias, :off) == :on,
+      do: [:provider_alias | fields],
+      else: fields
+  end
 
   defp validate_primary_key_sources(dsl_state) do
     resource = Transformer.get_persisted(dsl_state, :resource)
