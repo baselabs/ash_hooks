@@ -210,7 +210,13 @@ defmodule AshHooks.MixProject do
           AshHooks.Delivery,
           AshHooks.Worker
         ],
-        Signing: [AshHooks.Signing, AshHooks.Legacy],
+        Signing: [
+          AshHooks.Signing,
+          AshHooks.Legacy,
+          AshHooks.Custody,
+          AshHooks.Custody.Key,
+          AshHooks.Custody.Conformance
+        ],
         "Inbound verification": [
           AshHooks.Provider,
           AshHooks.Provider.Scheme,

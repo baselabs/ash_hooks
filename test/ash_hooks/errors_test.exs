@@ -29,10 +29,9 @@ defmodule AshHooks.ErrorsTest do
                Errors.from_reason(:malformed_payload, provider: :mock)
     end
 
-    test "raises on an unmapped reason (programming error, fail loud)" do
-      assert_raise ArgumentError, ~r/unmapped webhook reason/, fn ->
-        Errors.from_reason(:not_a_reason, [])
-      end
+    test "unmapped reasons become a contents-free unknown error" do
+      assert %Errors.Unknown.UnknownError{} = error = Errors.from_reason(:not_a_reason, [])
+      refute inspect(error) =~ "not_a_reason"
     end
   end
 

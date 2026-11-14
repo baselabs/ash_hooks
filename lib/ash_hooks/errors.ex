@@ -16,21 +16,26 @@ defmodule AshHooks.Errors do
 
   alias AshHooks.Errors.Invalid.{
     InvalidSignature,
+    KeyKindMismatch,
     MalformedPayload,
     NoWebhookSecret,
     StaleTimestamp,
-    UnknownEventType
+    UnknownEventType,
+    UnknownKey,
+    UnknownSource
   }
+
+  alias AshHooks.Errors.Unknown.{KeyUnavailable, UnknownError}
 
   @doc """
   Maps a provider callback's reason atom (the `{:error, reason}` shape the
-  behavior returns) to its splode error, passing `opts` through to
-  `exception/1`.
+  behavior returns) to its splode error. Known provider reasons pass `opts`
+  through to `exception/1`; the custody classes ignore options.
 
-  Raises on an unmapped reason; that is a programming error on the caller's
-  side, not webhook input.
+  Unmapped reasons become a contents-free `UnknownError`; backend terms are
+  never included in that error.
   """
-  @spec from_reason(atom(), Keyword.t()) :: struct()
+  @spec from_reason(term(), Keyword.t()) :: struct()
   def from_reason(:invalid_signature, opts),
     do: InvalidSignature.exception(opts)
 
@@ -46,6 +51,35 @@ defmodule AshHooks.Errors do
   def from_reason(:malformed_payload, opts),
     do: MalformedPayload.exception(opts)
 
-  def from_reason(other, _opts),
-    do: raise(ArgumentError, "unmapped webhook reason: #{inspect(other)}")
+  def from_reason(:unknown_source, _opts), do: UnknownSource.exception([])
+  def from_reason(:key_kind_mismatch, _opts), do: KeyKindMismatch.exception([])
+  def from_reason(:unknown_key, _opts), do: UnknownKey.exception([])
+  def from_reason(:key_unavailable, _opts), do: KeyUnavailable.exception([])
+
+  def from_reason(_other, _opts), do: unknown_error()
+
+  @doc false
+  @spec from_custody_result(term()) ::
+          :ok | {:ok, term()} | {:error, struct() | atom()}
+  def from_custody_result(:ok), do: :ok
+  def from_custody_result({:ok, value}), do: {:ok, value}
+
+  def from_custody_result({:error, :invalid_signature}),
+    do: {:error, InvalidSignature.exception([])}
+
+  def from_custody_result({:error, :unavailable}), do: {:error, KeyUnavailable.exception([])}
+  def from_custody_result({:error, :unknown_ref}), do: {:error, UnknownKey.exception([])}
+
+  def from_custody_result({:error, reason})
+      when reason in [:kind_mismatch, :not_signable, :no_public_half],
+      do: {:error, KeyKindMismatch.exception([])}
+
+  def from_custody_result({:error, reason})
+      when reason in [:no_fingerprint, :invalid_material, :tenant_mismatch],
+      do: {:error, reason}
+
+  def from_custody_result({:error, :ref_destroyed}), do: {:error, :key_issue_expired}
+  def from_custody_result(_other), do: {:error, unknown_error()}
+
+  defp unknown_error, do: UnknownError.exception(error: "unrecognized webhook failure")
 end

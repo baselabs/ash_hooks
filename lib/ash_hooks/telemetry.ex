@@ -87,6 +87,10 @@ defmodule AshHooks.Telemetry do
   Returns the first eight hexadecimal characters of a secret's SHA-256 hash
   for correlation. Collisions are possible; do not use this fingerprint as a
   unique identifier or authentication credential.
+
+  This correlation-only hash has a different domain from display key
+  fingerprints. It does not protect a weak or predictable secret from
+  offline guessing; show fingerprints only for securely generated keys.
   """
   @spec fingerprint(binary()) :: String.t()
   def fingerprint(secret) when is_binary(secret) do
@@ -114,7 +118,8 @@ defmodule AshHooks.Telemetry do
     max_attempts no_secret nxdomain reconcile_pending resolve_timeout
     secret_resolution signing_failed source_conflict stale_row timeout
     tls_alert truncated_body unsafe_destination unresolved_host
-    unresolved_route worker_route_mismatch)
+    unresolved_route worker_route_mismatch unknown_source key_kind_mismatch
+    unknown_key key_unavailable)
 
   def classify_token(term) when is_atom(term), do: classify_token(Atom.to_string(term))
 

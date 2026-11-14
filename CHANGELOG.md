@@ -14,6 +14,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `AshHooks.Endpoint.schedule_previous_retirement/3` sets a retirement time
   for a standard previous key, including an undated reference adopted with
   `key_lifecycle :on`. Past times and absent previous references are refused.
+- `AshHooks.Custody`, a public key-custody behaviour with kind assertions,
+  canonical tenant identities, global tenant binding, and permanent reference
+  tombstones; `AshHooks.Custody.Key` carries opaque key metadata.
+- `AshHooks.Custody.Conformance`, test support for custodians covering key
+  bounds, signatures, fingerprints, tenant isolation, and store/destroy ordering.
+  ExUnit is required only by the consumer's tests.
+- `AshHooks.Signing.display_fingerprint/1` for spec-shaped keys and
+  `AshHooks.Custody.display_fingerprint/1` for opaque spec keys, using a
+  domain-separated fingerprint shared by both halves of an Ed25519 pair.
+  Sender and legacy keys have no display fingerprint. Fingerprints do not
+  protect weak secrets against offline guessing.
+- Classified `UnknownSource`, `KeyKindMismatch`, `UnknownKey`, and
+  `KeyUnavailable` errors with fixed telemetry reason tokens.
 
 ### Fixed
 
@@ -22,6 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   November 13, 2026. Existing globally reachable special-purpose exceptions and
   IPv4 classification are preserved. This safety correction follows
   ADR 0010, rule 3.
+- Unrecognized callback reasons become contents-free `UnknownError` values
+  instead of raising or exposing backend terms.
 - A transport resolver that raises, throws, exits, or returns an invalid value,
   and a `transport` setting that is not a resolver, refuse the attempt as a
   retryable `transport_resolution` failure instead of falling back to HTTP.

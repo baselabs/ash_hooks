@@ -22,6 +22,7 @@ defmodule AshHooks.Signing do
   include the previous key's signature alongside the current signature.
   """
 
+  alias AshHooks.Custody.Fingerprint
   alias AshHooks.Legacy
 
   @secret_prefix "whsec_"
@@ -38,6 +39,66 @@ defmodule AshHooks.Signing do
           | :timestamp_out_of_tolerance
           | :invalid_signature
           | :invalid_secret
+
+  @doc """
+  Displays a spec key's fingerprint as `SHA256:` plus unpadded base64url.
+
+  The digest is the first 16 bytes of
+  `SHA-256("ash_hooks key fingerprint v1\\0" <> kind_label <> "\\0" <> key_bytes)`.
+  `whsec_` uses the label `standard_webhooks.v1` and its 24 to 64 decoded
+  HMAC bytes. `whsk_` and `whpk_` use `standard_webhooks.v1a` and the Ed25519
+  public key, deriving it first for a 32-byte seed. Both halves of a pair
+  therefore display the same fingerprint. Other inputs return
+  `{:error, :not_a_spec_key}`.
+
+  Safe to show for securely generated keys. This truncated, domain-separated
+  hash does not protect weak or predictable secrets from offline guessing.
+  It is distinct from `AshHooks.Telemetry.fingerprint/1`, which is for
+  correlation only. Opaque custody keys use `AshHooks.Custody.display_fingerprint/1`.
+  """
+  @spec display_fingerprint(term()) :: {:ok, String.t()} | {:error, :not_a_spec_key}
+  def display_fingerprint(@secret_prefix <> encoded) do
+    case decode_b64(encoded) do
+      {:ok, bytes} when byte_size(bytes) in 24..64 ->
+        {:ok,
+         bytes
+         |> then(&Fingerprint.digest({:standard_webhooks, :v1}, &1))
+         |> Fingerprint.display()}
+
+      _ ->
+        {:error, :not_a_spec_key}
+    end
+  end
+
+  def display_fingerprint(@priv_prefix <> _ = key) do
+    case decode_asymmetric_secret(key, @priv_prefix) do
+      {:ok, seed} ->
+        {public, _} = :crypto.generate_key(:eddsa, :ed25519, seed)
+
+        {:ok,
+         public
+         |> then(&Fingerprint.digest({:standard_webhooks, :v1a}, &1))
+         |> Fingerprint.display()}
+
+      _ ->
+        {:error, :not_a_spec_key}
+    end
+  end
+
+  def display_fingerprint(@pub_prefix <> _ = key) do
+    case decode_asymmetric_secret(key, @pub_prefix) do
+      {:ok, public} ->
+        {:ok,
+         public
+         |> then(&Fingerprint.digest({:standard_webhooks, :v1a}, &1))
+         |> Fingerprint.display()}
+
+      _ ->
+        {:error, :not_a_spec_key}
+    end
+  end
+
+  def display_fingerprint(_), do: {:error, :not_a_spec_key}
 
   # —— Signing ———————————————————————————————————————————————————————
 

@@ -15,6 +15,25 @@ returned address and keep the original name for TLS verification and server name
 indication. Its two-second resolution ceiling can be shortened with an absolute
 monotonic millisecond `:deadline`; destination policies cannot bypass this check.
 
+Key-custody implementers can adopt the `AshHooks.Custody` behaviour and run
+`AshHooks.Custody.Conformance` against a fresh real store in their test suite.
+The contract requires global reference uniqueness, atomic tenant binding,
+kind assertions, and permanent tombstones. ExUnit is needed only in tests.
+`AshHooks.Custody.canonical_tenant/3` follows the owner's Ash create path;
+types other than UUID, UUIDv7, integer, string, and ci_string require an
+equality-preserving `custody_tenant_key` MFA option. The module documentation
+defines the callback and canonicalization contracts.
+
+`AshHooks.Signing.display_fingerprint/1` accepts spec-shaped key strings;
+`AshHooks.Custody.display_fingerprint/1` accepts opaque spec keys. Ed25519
+private and public halves display the same fingerprint. Sender and legacy
+material has no display fingerprint. Show fingerprints only for securely
+generated keys; they do not protect weak secrets from offline guessing.
+
+Unrecognized provider reasons now return a contents-free `UnknownError`
+instead of raising. The new `UnknownSource`, `KeyKindMismatch`, `UnknownKey`,
+and retryable `KeyUnavailable` classes have fixed telemetry reason tokens.
+
 Transport resolver failures now refuse the attempt instead of falling back to
 HTTP. A resolver that raises, throws, exits, or returns anything other than `nil`
 or a transport module exporting `request/5` causes a retryable
