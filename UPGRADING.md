@@ -9,9 +9,9 @@ return `{:ok, map_or_list}` or `{:error, reason}`. The default is
 and payload decoding; JWS protected headers, claims, and delivery use that
 decoder, with claims and delivery interpreting the same payload bytes without
 a cache. Decoder errors, exceptions, and non-map, non-list values are malformed
-payloads and are recorded terminal as described below. A protected header the
-decoder refuses cannot be verified and is an invalid signature; malformed claim
-types remain invalid signatures.
+payloads, recorded by `:record_malformed` as described under 3.0.0 → 3.1.0. A
+protected header the decoder refuses cannot be verified and is an invalid
+signature; malformed claim types remain invalid signatures.
 
 Before configuring this option, add `decode_payload/2` to any provider with a
 host-defined `decode_payload/1`, including overrides emitted by compile hooks.
