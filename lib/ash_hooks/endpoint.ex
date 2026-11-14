@@ -204,7 +204,13 @@ defmodule AshHooks.Endpoint do
 
   defp validate_overlap(resource, opts) do
     default = Extension.get_opt(resource, [:endpoint], :default_overlap_seconds, 86_400)
-    overlap = Keyword.get(opts, :overlap_seconds, default)
+    # nil means "not given", as before validation existed.
+    overlap =
+      case Keyword.get(opts, :overlap_seconds) do
+        nil -> default
+        given -> given
+      end
+
     max = Extension.get_opt(resource, [:endpoint], :max_overlap_seconds, nil)
 
     cond do
@@ -215,27 +221,24 @@ defmodule AshHooks.Endpoint do
   end
 
   defp roll_conflict(endpoint, tenant, now) do
-    result =
-      endpoint.__struct__
-      |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-      |> Ash.read_one(authorize?: false, tenant: tenant)
+    with {:ok, current} <-
+           endpoint.__struct__
+           |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+           |> Ash.read_one(authorize?: false, tenant: tenant) do
+      case current do
+        %{secret_ref: ref, previous_secret_ref: previous, previous_secret_retired_at: nil}
+        when ref == endpoint.secret_ref and not is_nil(previous) ->
+          {:error, :previous_secret_undated}
 
-    case result do
-      {:ok, %{secret_ref: ref, previous_secret_ref: previous, previous_secret_retired_at: nil}}
-      when ref == endpoint.secret_ref and not is_nil(previous) ->
-        {:error, :previous_secret_undated}
+        %{secret_ref: ref, previous_secret_ref: previous, previous_secret_retired_at: at}
+        when ref == endpoint.secret_ref and not is_nil(previous) ->
+          if DateTime.compare(at, now) == :gt,
+            do: {:error, :overlap_active},
+            else: {:error, :rolled_underneath}
 
-      {:ok, %{secret_ref: ref, previous_secret_ref: previous, previous_secret_retired_at: at}}
-      when ref == endpoint.secret_ref and not is_nil(previous) ->
-        if DateTime.compare(at, now) == :gt,
-          do: {:error, :overlap_active},
-          else: {:error, :rolled_underneath}
-
-      {:ok, _} ->
-        {:error, :rolled_underneath}
-
-      {:error, _} = error ->
-        error
+        _ ->
+          {:error, :rolled_underneath}
+      end
     end
   end
 

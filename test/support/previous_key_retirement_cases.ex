@@ -419,7 +419,7 @@ defmodule AshHooks.Test.PreviousKeyRetirementCases do
       end
 
       test "non-integer overlap is refused without changing the row" do
-        for overlap <- [1.5, "60", :invalid, nil, false], do: assert_invalid_overlap(overlap)
+        for overlap <- [1.5, "60", :invalid, false], do: assert_invalid_overlap(overlap)
       end
 
       test "the built-in default overlap is one day" do
@@ -427,6 +427,19 @@ defmodule AshHooks.Test.PreviousKeyRetirementCases do
 
         assert {:ok, rolled} =
                  Lifecycle.roll_secret(endpoint, new_secret_ref: "next", now: @clock)
+
+        assert rolled.previous_secret_retired_at == DateTime.add(@clock, 86_400)
+      end
+
+      test "an explicit nil overlap uses the default, as it did before validation" do
+        endpoint = endpoint_without_previous!()
+
+        assert {:ok, rolled} =
+                 Lifecycle.roll_secret(endpoint,
+                   new_secret_ref: "next",
+                   overlap_seconds: nil,
+                   now: @clock
+                 )
 
         assert rolled.previous_secret_retired_at == DateTime.add(@clock, 86_400)
       end
