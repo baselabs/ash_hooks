@@ -38,6 +38,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
       :attachment_guards,
       :storage_configuration,
       :unscoped_disposal,
+      :configured_issue_timeout,
       :primary_identity,
       :scheduled_destruction,
       :stale_lifecycle_expiry,
@@ -911,6 +912,22 @@ defmodule AshHooks.Test.KeyRegistryCases do
     assert {:error, :ref_destroyed} = ctx.custodian.store(row.ref, @material, nil, @kind)
   end
 
+  def configured_issue_timeout(ctx) do
+    registry = unique(ctx, "TimedRegistry")
+    endpoint = unique(ctx, "TimedEndpoint")
+    ctx = %{ctx | registry: registry, endpoint: endpoint} |> Map.put(:issue_timeout, 60)
+    compile_registry(ctx)
+    on_exit(fn -> purge([registry, endpoint]) end)
+    compile_endpoint(ctx, endpoint, [])
+    assert Extension.get_opt(registry, [:key_registry], :issue_timeout) == 60
+
+    {:ok, row} = issue(ctx)
+    assert {:ok, _} = sweep(ctx, now: DateTime.add(@clock, 59))
+    assert stored(ctx, row).state == :issued
+    assert {:ok, _} = sweep(ctx, now: DateTime.add(@clock, 61))
+    assert stored(ctx, row).state == :destroyed
+  end
+
   def primary_identity(ctx) do
     registry = unique(ctx, "AdditionalPrimaryKey")
     on_exit(fn -> purge([registry]) end)
@@ -1427,6 +1444,8 @@ defmodule AshHooks.Test.KeyRegistryCases do
   defp compile_registry(ctx) do
     storage = storage(ctx.storage, Map.get(ctx, :registry_repo, ctx.repo), ctx.registry_table)
     primary_key = if Map.get(ctx, :extra_pk?, false), do: quote(do: uuid_primary_key(:id))
+    timeout = Map.get(ctx, :issue_timeout)
+    issue_timeout = if timeout, do: quote(do: issue_timeout(unquote(timeout)))
 
     Code.compile_quoted(
       quote do
@@ -1439,6 +1458,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
           unquote(storage)
 
           key_registry do
+            unquote(issue_timeout)
           end
 
           attributes do
