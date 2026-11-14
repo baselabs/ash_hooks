@@ -9,11 +9,29 @@ defmodule AshHooks.Test.SourceProvider do
   @impl true
   def verify_signature(body, context, %AshHooks.Custody.Key{} = key) do
     digest = if elem(key.kind, 0) == :sender_hmac, do: elem(key.kind, 1), else: :sha256
-    Signature.hmac(body, context.headers["x-signature"], key, digest: digest)
+
+    with :ok <- Signature.hmac(body, context.headers["x-signature"], key, digest: digest),
+         :ok <- check_timestamp(context) do
+      if context.headers["x-json-check"] == "required" do
+        case Jason.decode(body) do
+          {:ok, _} -> :ok
+          {:error, _} -> {:error, :malformed_payload}
+        end
+      else
+        :ok
+      end
+    end
   end
 
   def verify_signature(body, context, public_key) do
     Signature.ed25519(body, context.headers["x-signature"], public_key)
+  end
+
+  defp check_timestamp(context) do
+    case context.headers["x-timestamp"] do
+      nil -> :ok
+      timestamp -> Signature.check_timestamp(timestamp, context, 60)
+    end
   end
 
   @impl true
@@ -195,6 +213,7 @@ defmodule AshHooks.Test.InboundSourceCases do
       :first_use_failure,
       :previous_key,
       :overlap_failure,
+      :overlap_stale_timestamp,
       :declaration_context,
       :two_tenants,
       :unknown_source,
@@ -589,6 +608,33 @@ defmodule AshHooks.Test.InboundSourceCases do
                AshHooks.Plug.init(resource: ctx.source_ledger, source: :checked)
              ) == {503, [{"retry-after", "60"}], ""}
     end
+  end
+
+  def overlap_stale_timestamp(ctx) do
+    previous = :crypto.strong_rand_bytes(32)
+
+    {:ok, _, current} =
+      create(ctx, previous: previous, previous_retires_at: DateTime.add(DateTime.utc_now(), 60))
+
+    for secret <- [current, "whsec_" <> Base.encode64(previous)] do
+      assert {:error, %AshHooks.Errors.Invalid.StaleTimestamp{} = error} =
+               ingest(ctx, secret, headers: %{"x-timestamp" => "1"})
+
+      if Code.ensure_loaded?(Plug.Test) do
+        assert {400, [], ""} = AshHooks.Plug.default_response({:error, error}, [])
+      end
+    end
+
+    for secret <- [current, "whsec_" <> Base.encode64(previous)] do
+      assert {:error, %AshHooks.Errors.Invalid.MalformedPayload{} = error} =
+               ingest(ctx, secret, body: "{", headers: %{"x-json-check" => "required"})
+
+      if Code.ensure_loaded?(Plug.Test) do
+        assert {400, [], ""} = AshHooks.Plug.default_response({:error, error}, [])
+      end
+    end
+
+    assert receipts(ctx) == []
   end
 
   def declaration_context(ctx) do
@@ -1117,16 +1163,21 @@ defmodule AshHooks.Test.InboundSourceCases do
   defp attrs, do: %{source: :checked, account_id: "account", provider: :first}
 
   def ingest(ctx, disclosure, opts \\ []) do
-    body = Jason.encode!(%{"id" => Keyword.get(opts, :id, "event")})
+    body = Keyword.get(opts, :body, Jason.encode!(%{"id" => Keyword.get(opts, :id, "event")}))
     "whsec_" <> encoded = disclosure
     key = Base.decode64!(encoded)
     signature = Base.encode16(:crypto.mac(:hmac, :sha256, key, body), case: :lower)
 
-    Ingress.ingest(ctx.source_ledger, :checked, body, %{
-      headers: %{"x-signature" => signature},
-      tenant: Keyword.get(opts, :tenant, 17),
-      scope: %{account_id: Keyword.get(opts, :account_id, "account")}
-    })
+    Ingress.ingest(
+      ctx.source_ledger,
+      :checked,
+      body,
+      %{
+        headers: Map.merge(%{"x-signature" => signature}, Keyword.get(opts, :headers, %{})),
+        tenant: Keyword.get(opts, :tenant, 17),
+        scope: %{account_id: Keyword.get(opts, :account_id, "account")}
+      }
+    )
   end
 
   defp adopt(ctx, opts \\ []),

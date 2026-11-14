@@ -66,14 +66,12 @@ defmodule AshHooks.Ingress do
 
   alias AshHooks.Errors.Invalid.{
     InvalidSignature,
-    KeyKindMismatch,
     MalformedPayload,
     NoWebhookSecret,
-    UnknownKey,
     UnknownSource
   }
 
-  alias AshHooks.Errors.Unknown.{KeyUnavailable, UnknownError}
+  alias AshHooks.Errors.Unknown.UnknownError
   alias AshHooks.Inbound.ResolvedSource
   alias AshHooks.KeyRegistry.Storage
   alias AshHooks.Provider.DeliveryContext
@@ -1810,10 +1808,9 @@ defmodule AshHooks.Ingress do
         _unknown -> Errors.from_reason(:unknown_error, provider: name)
       end
 
-    if is_struct(current, InvalidSignature) and
-         previous.__struct__ in [KeyUnavailable, UnknownKey, KeyKindMismatch, UnknownError],
-       do: previous,
-       else: current
+    if is_struct(current, InvalidSignature) and not is_struct(previous, InvalidSignature),
+      do: previous,
+      else: current
   end
 
   defp resolve_previous_secret(%{previous_secret: source}, ctx) do

@@ -12,6 +12,24 @@ defmodule AshHooks.ErrorsTest do
   }
 
   describe "from_reason/2" do
+    test "preserves every classified package error" do
+      for module <- [
+            InvalidSignature,
+            MalformedPayload,
+            NoWebhookSecret,
+            StaleTimestamp,
+            UnknownEventType,
+            Errors.Invalid.UnknownSource,
+            Errors.Invalid.UnknownKey,
+            Errors.Invalid.KeyKindMismatch,
+            Errors.Unknown.KeyUnavailable,
+            Errors.Unknown.UnknownError
+          ] do
+        error = module.exception([])
+        assert Errors.from_reason(error, provider: :other) === error
+      end
+    end
+
     test "maps every provider reason atom to its error def" do
       assert %InvalidSignature{provider: :mock} =
                Errors.from_reason(:invalid_signature, provider: :mock)

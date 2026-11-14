@@ -499,7 +499,7 @@ defmodule AshHooks.Test.CustodySigningCases do
 
     for {answer, module, token} <- [
           {:private_backend, UnknownError, "unknown_error"},
-          {{:error, :stale_timestamp}, InvalidSignature, "invalid_signature"}
+          {{:error, :stale_timestamp}, AshHooks.Errors.Invalid.StaleTimestamp, "stale_timestamp"}
         ] do
       Application.put_env(:ash_hooks, :rotation_keys, %{
         "current" => current,
@@ -554,7 +554,7 @@ defmodule AshHooks.Test.CustodySigningCases do
           {{:error, :unknown_source}, UnknownSource, "unknown_source"},
           {{:error, UnknownSource.exception([])}, UnknownSource, "unknown_source"},
           {{:error, {:private_backend, "private_backend"}}, UnknownError, "unknown_error"},
-          {{:error, UnknownError.exception(error: "private_backend")}, UnknownError,
+          {{:error, UnknownError.exception(error: "unrecognized webhook failure")}, UnknownError,
            "unknown_error"},
           {{:private_backend, "private_backend"}, UnknownError, "unknown_error"}
         ] do
@@ -789,6 +789,7 @@ defmodule AshHooks.Test.CustodySigningCases do
   end
 
   defp status(InvalidSignature), do: 400
+  defp status(AshHooks.Errors.Invalid.StaleTimestamp), do: 400
   defp status(UnknownSource), do: 404
 
   defp status(module)

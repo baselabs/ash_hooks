@@ -45,7 +45,7 @@ defmodule AshHooks.Errors do
   @doc """
   Maps a provider callback's reason (the `{:error, reason}` shape the
   behavior returns) to its Splode error. Known provider atoms pass `opts`
-  through to `exception/1`; classified custody errors retain their class.
+  through to `exception/1`; classified package errors pass through unchanged.
 
   Unmapped reasons become a contents-free `UnknownError`; backend terms are
   never included in that error.
@@ -75,9 +75,16 @@ defmodule AshHooks.Errors do
       when module in [
              InvalidSignature,
              KeyKindMismatch,
+             MalformedPayload,
+             NoWebhookSecret,
+             StaleTimestamp,
+             UnknownEventType,
              UnknownKey,
              UnknownSource,
-             KeyUnavailable
+             KeyUnavailable,
+             UnknownError,
+             AshHooks.Errors.Invalid,
+             AshHooks.Errors.Unknown
            ],
       do: error
 
