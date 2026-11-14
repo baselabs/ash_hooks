@@ -216,7 +216,8 @@ defmodule AshHooks.OutboundEvent do
         case Delivery.resend(row,
                requested_by: requested_by,
                endpoints: endpoints,
-               enqueue: opts[:enqueue]
+               enqueue: opts[:enqueue],
+               tenant: tenant
              ) do
           {:ok, _} -> bump(acc, 1)
           {:error, _reason} -> bump(acc, 2)

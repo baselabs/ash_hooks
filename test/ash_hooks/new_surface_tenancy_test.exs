@@ -508,4 +508,32 @@ defmodule AshHooks.NewSurfaceTenancyTest do
     assert {:error, :tenant_required} =
              AshHooks.OutboundEvent.prune(EventLog, older_than: DateTime.utc_now())
   end
+
+  @tag release_fix: 1
+  test "release replay rearms a terminal delivery in its tenant" do
+    endpoint = tenant_endpoint!("tenant-a")
+
+    Ash.create!(Subscription, %{endpoint_id: endpoint.id, event_types: ["order_paid"]},
+      tenant: "tenant-a",
+      authorize?: false
+    )
+
+    {:ok, event} =
+      AshHooks.Event.new(type: :order_paid, payload: @payload, id: "release-replay-tenant")
+
+    {:ok, [_]} = AshHooks.dispatch(Emitter, :order_paid, event, tenant: "tenant-a")
+    Repo.query!("UPDATE #{@deliveries} SET status = 'dead_letter' WHERE org_id = ?", ["tenant-a"])
+
+    assert {:ok, %{re_sent: 1, skipped: 0}} =
+             AshHooks.OutboundEvent.replay(EventLog, endpoint,
+               event_uuid: event.id,
+               deliveries: Delivery,
+               endpoints: Endpoint,
+               requested_by: "operator",
+               tenant: "tenant-a"
+             )
+
+    assert [%{status: :pending, last_resend_by: "operator"}] =
+             Ash.read!(Delivery, tenant: "tenant-a", authorize?: false)
+  end
 end
