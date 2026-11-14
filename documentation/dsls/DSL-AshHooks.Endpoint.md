@@ -76,6 +76,18 @@ The lifecycle helpers perform system writes (`authorize?: false`) after
 checking tenancy. Authorize application callers before exposing rolling,
 retirement scheduling, or immediate retirement to them.
 
+With `custodian Module`, declare `key_registry Resource` and
+`key_lifecycle :on`. The registry uses `AshHooks.KeyRegistry`, the same
+transactional AshPostgres or AshSqlite data layer, mutate repo and tenancy.
+Migrate nullable `:term` columns `secret_kind` and `previous_secret_kind`;
+with legacy lifecycle also migrate `legacy_secret_kind` and
+`legacy_previous_secret_kind`. Each kind marks only its adjacent reference
+as custody-owned. A null kind leaves the slot under its host byte resolver.
+Rolling moves kinds with their references. Expiration and ended-window
+displacement retire custody references in the owner's transaction; the
+separately scheduled registry sweep destroys them after commit. See
+`AshHooks.KeyRegistry` and the migration instructions in UPGRADING.md.
+
 
 ## endpoint
 Configuration of this resource as the outbound webhook endpoint.
@@ -92,6 +104,8 @@ Configuration of this resource as the outbound webhook endpoint.
 
 | Name | Type | Default | Docs |
 |------|------|---------|------|
+| [`custodian`](#endpoint-custodian){: #endpoint-custodian } | `module` |  | Opaque-key custodian implementing AshHooks.Custody. Requires key_lifecycle :on and key_registry. Injects a kind marker beside each enabled signing slot's reference; migrate these columns before enabling. |
+| [`key_registry`](#endpoint-key_registry){: #endpoint-key_registry } | `module` |  | Host resource using AshHooks.KeyRegistry, on the same transactional AshPostgres or AshSqlite data layer, mutate repo and tenancy as this endpoint. |
 | [`status_attribute`](#endpoint-status_attribute){: #endpoint-status_attribute } | `atom` |  | The consumer's enable/disable attribute the package maps onto (e.g. `active`). When set, `status` is not injected; the mapped attribute is the one durable switch: the dispatcher skips endpoints whose value is outside `enabled_values`, and the 410 auto-disable sets it to `disabled_value`. The attribute must be declared in the resource's own `attributes` block (not another extension's injection), and `enabled_values`/`disabled_value` must be spelled out explicitly, or compilation fails closed. |
 | [`version_pinning`](#endpoint-version_pinning){: #endpoint-version_pinning } | `:off \| :on` | `:off` | Whether the payload-version pinning column is injected (default `:off`, leaving existing schemas untouched). With `:on`, the extension injects `pinned_payload_version` (integer, nullable): an endpoint pinning a version its event's declaration carries (in `payload_versions`) receives THAT variant builder's bytes instead of the dispatch payload; a pin on an undeclared version fails the endpoint closed at dispatch. Declaring `:on` requires a migration for the column. |
 | [`key_lifecycle`](#endpoint-key_lifecycle){: #endpoint-key_lifecycle } | `:off \| :on` | `:off` | Whether the signing-key lifecycle columns are injected (default `:off`, leaving existing schemas untouched). With `:on`, the extension injects `secret_created_at`, `secret_first_used_at`, `secret_retired_at`, `previous_secret_created_at`, `previous_secret_first_used_at`, and `previous_secret_retired_at` (the scheduled deadline while the previous reference remains, then the actual retirement time when the reference is removed). Signing omits the standard previous key at its deadline, before the sweep removes its reference. An undated previous key keeps signing and blocks rolling until `schedule_previous_retirement/3` or `expire_previous_secret/2` resolves it; the sweep skips it. An active overlap refuses another roll with `:overlap_active`; expire the previous key before rolling again immediately, or wait for the window to end. An ended window permits rolling before the sweep. `roll_secret/2`, `schedule_previous_retirement/3`, `expire_previous_secret/2` (one endpoint), and `expire_previous_secrets/2` (a resource) accept optional arguments. Declaring `:on` requires a migration for the six columns. Timestamps only, never secret material. |

@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `decode_payload/1`; generated decoders honor the policy directly.
 - `AshHooks.Provider.Conformance` checks that a hand-written `decode_payload/2`
   uses the supplied JSON decoder. ExUnit is required only in consumer tests.
+- `AshHooks.KeyRegistry`, a host-resource extension for durable custody-key
+  disposal. Issued references survive crashes, attachment and retirement share
+  the owner's transaction, and sweeps reconcile every owner deletion path.
+  Destruction uses the recorded canonical tenant outside transactions, retries
+  outages with capped exponential backoff, and parks classified final failures.
+  Operators can inspect `pending/2`, repair and `rearm/3`, and `prune/2` old
+  destroyed rows. Generation fences reject stale destruction results.
+- Endpoint options `custodian` and `key_registry` inject per-slot kind markers
+  with lifecycle tracking. Each slot's marker distinguishes custody references
+  from host byte references; rolling moves the marker with its reference, and
+  expiration retires custody references in the owner transaction.
 - Subscription option `pausable :on` injects a nonnullable boolean `paused`
   column, defaulting to `false`. Paused subscriptions create no new delivery
   rows; existing deliveries continue. The default `:off` keeps existing schemas

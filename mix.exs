@@ -217,7 +217,8 @@ defmodule AshHooks.MixProject do
           AshHooks.Legacy,
           AshHooks.Custody,
           AshHooks.Custody.Key,
-          AshHooks.Custody.Conformance
+          AshHooks.Custody.Conformance,
+          AshHooks.KeyRegistry
         ],
         "Inbound verification": [
           AshHooks.Provider,
@@ -248,7 +249,7 @@ defmodule AshHooks.MixProject do
         "format --check-formatted",
         "compile --warnings-as-errors",
         "credo --strict",
-        "spark.cheat_sheets --extensions AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery --check",
+        "spark.cheat_sheets --extensions AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery,AshHooks.KeyRegistry --check",
         "docs --warnings-as-errors",
         "cmd ./scripts/check-package.sh",
         # The documentation's mounting examples, compiled and run as written.

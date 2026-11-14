@@ -79,6 +79,73 @@ types other than UUID, UUIDv7, integer, string, and ci_string require an
 equality-preserving `custody_tenant_key` MFA option. The module documentation
 defines the callback and canonicalization contracts.
 
+For durable custody disposal, add a host Ash resource with
+`extensions: [AshHooks.KeyRegistry]`. Configure its table and mutate repo with
+the host's `postgres` or `sqlite` section and register it in the host domain.
+The registry and every owner must use the same data layer and mutate repo,
+with transaction support, and the same multitenancy strategy and tenant
+attribute type. SQLite repos must enable `write_transactions?/0`. Function
+repos are checked at each transition, including their dynamic repo instance;
+a mismatch returns a configuration error before the transition writes.
+
+Generate and apply the registry migration before declaring it on an endpoint.
+The registry requires `ref` as its sole primary key; omit a generated `id` primary key.
+The extension injects these columns in addition to the host's tenant attribute:
+
+| Columns | Ash type and database requirements |
+| --- | --- |
+| `ref` | `:string`, primary key, not null, up to 40 characters |
+| `kind` | `:term`, binary (`bytea` on PostgreSQL, `blob` on SQLite), not null |
+| `owner_resource` | `:atom`, text, not null; retains the issuing resource module |
+| `owner_key` | `:map`, nullable JSON; complete persisted primary key, set on attachment |
+| `state` | `:atom`, text, not null, default `issued`; admits `issued`, `attached`, `retired`, `destroy_failed`, `destroyed` |
+| `custody_tenant` | `:string`, nullable canonical custody tenant; separate from the database tenant attribute |
+| `issued_at`, `inserted_at`, `updated_at` | `:utc_datetime_usec`, not null |
+| `destroy_after`, `next_attempt_at` | `:utc_datetime_usec`, nullable |
+| `attempts`, `destroy_generation` | `:integer`, not null, default zero, non-negative |
+| `last_error` | `:string`, nullable, at most 64 characters; fixed classification only |
+
+Keep resource modules named by registry rows available until their obligations
+have been destroyed and pruned. The optional registry DSL setting
+`issue_timeout` is seconds, defaulting to 900 (15 minutes). Set it longer than
+the custodian's store timeout. Registry rows exist before custody receives a
+reference, so a crashed or timed-out issuance can still be destroyed. Permanent
+custodian tombstones refuse delayed stores after timeout destruction.
+
+On outbound owners, declare `custodian` with the custody module and
+`key_registry` with the new resource. Both require `key_lifecycle :on`.
+First migrate nullable binary `:term` columns `secret_kind` and
+`previous_secret_kind`. With `legacy_key_lifecycle :on`, also migrate
+`legacy_secret_kind` and `legacy_previous_secret_kind`. A kind marks that
+slot as a custody reference. Existing byte references keep null kinds and
+their existing resolver; do not mark them as custody references. Rolling
+moves a kind together with its reference. Expiration, the lifecycle sweep,
+and rolling past an ended window retire displaced custody references in the
+same transaction as the owner write. Byte references never enter custody
+or the registry.
+
+Schedule `AshHooks.KeyRegistry.sweep/2` beside the lifecycle sweeps for every
+tenant. Pass `:tenant` on multitenant resources and an optional UTC `:now` for
+an application clock. The registry sweep refuses an enclosing transaction
+with `{:error, :inside_transaction}`. It commits each retirement or owner
+reconciliation before calling custody outside any transaction. It handles
+owner actions, bulk deletion, cascades, direct SQL, and replacement of a
+slot reference. A rollback of an owner write also rolls back its retirement.
+Disposal uses the row's stored `custody_tenant` after owner deletion.
+
+Unavailable custody is retried with exponential delay capped at one hour.
+Other destroy answers move the obligation to `destroy_failed`, counted in
+the sweep result and reported through
+`[:ash_hooks, :key_registry, :destroy_failed]`. Alert on that event and inspect
+`AshHooks.KeyRegistry.pending/2` with the tenant. After repairing the cause,
+call `AshHooks.KeyRegistry.rearm/3` with the registry, reference, and tenant.
+It resets retry state and increments `destroy_generation`, fencing answers
+already in flight. Automatic sweeps skip failed rows until they are rearmed.
+Schedule `AshHooks.KeyRegistry.prune/2` with `before: timestamp` to remove
+destroyed audit rows by age. It never removes pending obligations or the
+custodian's permanent tombstones. These operator functions perform system
+operations; apply host authorization before exposing them to callers.
+
 `AshHooks.Signing.display_fingerprint/1` accepts spec-shaped key strings;
 `AshHooks.Custody.display_fingerprint/1` accepts opaque spec keys. Ed25519
 private and public halves display the same fingerprint. Sender and legacy
