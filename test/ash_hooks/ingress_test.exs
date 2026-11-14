@@ -8,6 +8,14 @@ defmodule AshHooks.IngressTest do
   deliveries process exactly once.
   """
 
+  defmodule RaisingProvider do
+    use AshHooks.Provider, verify: [algorithm: :hmac_sha256, signature: {:header, "x-signature"}]
+    @impl true
+    def handle_event(_, %{"kind" => "raise"}), do: raise("handler failure")
+    def handle_event(_, %{"kind" => "exit"}), do: exit(:handler_failure)
+    def handle_event(_, %{"kind" => "throw"}), do: throw(:handler_failure)
+  end
+
   defmodule Ledger do
     @moduledoc false
     use Ash.Resource,
@@ -33,6 +41,11 @@ defmodule AshHooks.IngressTest do
     end
 
     webhooks do
+      inbound :raising do
+        provider(AshHooks.IngressTest.RaisingProvider)
+        secret {AshHooks.IngressTest, :secret, []}
+      end
+
       inbound :counter do
         provider(AshHooks.CountingProvider)
         secret {AshHooks.IngressTest, :secret, []}
@@ -837,14 +850,15 @@ defmodule AshHooks.IngressTest do
       assert [%{status: :claimed}] = rows()
     end
 
-    test "a crashing re-drive is contained (reap counts it out, never raises)" do
+    test "a crashing re-drive records a retryable failure" do
       row = stranded_received_row("evt_crash")
       {:ok, _, _} = Ingress.claim_delivery(Ledger, row.id)
       expire_lease("evt_crash")
 
       CountingProvider.put_outcome(fn -> raise "handler exploded" end)
 
-      assert {:ok, 0} = Ingress.reap(Ledger)
+      assert {:ok, 1} = Ingress.reap(Ledger)
+      assert [%{status: :failed_retryable, error_class: "handler_crashed"}] = rows()
     end
   end
 
@@ -930,5 +944,16 @@ defmodule AshHooks.IngressTest do
   defmodule SquashingRedactor do
     @moduledoc false
     def call(_payload), do: %{"squashed" => true}
+  end
+
+  for kind <- ["raise", "exit", "throw"] do
+    @tag release_fix: 8
+    test "release synchronous ingestion records handler #{kind} as retryable" do
+      raw = Jason.encode!(%{"kind" => unquote(kind)})
+      context = %{headers: %{"x-signature" => sign(raw)}, scope: %{account_id: "acct-1"}}
+      assert {:ok, :created, row} = AshHooks.Ingress.ingest(Ledger, :raising, raw, context)
+      assert row.status == :failed_retryable
+      assert row.error_class == "handler_crashed"
+    end
   end
 end

@@ -830,11 +830,19 @@ defmodule AshHooks.Ingress do
     end
   end
 
+  defp invoke_handler(provider, type, payload) do
+    provider.handle_event(type, payload)
+  rescue
+    _reason -> {:error, :retry, :handler_crashed}
+  catch
+    kind, _reason when kind in [:exit, :throw] -> {:error, :retry, :handler_crashed}
+  end
+
   defp handle_and_mark(resource, env, delivery_id, claimed) do
     tenant = env[:tenant]
 
     with {:ok, type} <- env.parsed_type,
-         {:ok, _event} <- env.provider.handle_event(type, env.payload) do
+         {:ok, _event} <- invoke_handler(env.provider, type, env.payload) do
       gated_update(resource, delivery_id, claimed.fencing_token, :mark_processed, %{}, tenant)
     else
       {:error, :unknown_event_type} ->
