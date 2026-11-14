@@ -63,7 +63,6 @@ defmodule AshHooks.SsrfTest do
           invalid_labels: [
             "-example.com",
             "example-.com",
-            "_example.com",
             "éxample.com",
             String.duplicate("x", 64) <> ".com",
             Enum.join(List.duplicate(String.duplicate("x", 63), 4), ".")
@@ -134,6 +133,16 @@ defmodule AshHooks.SsrfTest do
     @tag :ssrf_dns
     test "a name resolving to loopback is unsafe" do
       assert {:error, :unsafe} = Ssrf.resolve_host_public("localhost")
+    end
+
+    @tag :ssrf_dns
+    test "underscore labels resolve instead of being refused as malformed" do
+      for host <- ["_service.no-such-host-ash-hooks-test.invalid", "no_such_host.invalid"] do
+        assert {:error, reason} = Ssrf.resolve_host_public(host), host
+        assert reason in [:nxdomain, :resolve_timeout], host
+        assert {:error, url_reason} = Ssrf.resolve_public("https://#{host}/hook")
+        assert url_reason in [:nxdomain, :resolve_timeout], host
+      end
     end
 
     @tag :ssrf_dns

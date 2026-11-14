@@ -89,8 +89,8 @@ defmodule AshHooks.Ssrf do
   @doc """
   Resolves a host to a nonempty list containing only public IP addresses.
 
-  Accepts a DNS name with IDNA-encoded ASCII labels and at most one trailing
-  dot, a bare IPv4 literal, or a bare or bracketed IPv6 literal. Malformed
+  Accepts a DNS name with IDNA-encoded ASCII labels (letters, digits,
+  underscores, and inner hyphens) and at most one trailing dot, a bare IPv4 literal, or a bare or bracketed IPv6 literal. Malformed
   brackets, zone identifiers, ports, schemes, paths, credentials, whitespace,
   control characters, empty labels, and other malformed hosts return
   `{:error, :invalid_host}` without raising.
@@ -212,7 +212,7 @@ defmodule AshHooks.Ssrf do
   defp parse_host(host) when is_binary(host) and byte_size(host) in 1..254 do
     # Validate bytes before conversion so invalid UTF-8 and all controls are
     # refused without raising. The only bracketed input is an IPv6 literal.
-    if Regex.match?(~r/\A[a-zA-Z0-9.:\[\]-]+\z/, host) do
+    if Regex.match?(~r/\A[a-zA-Z0-9_.:\[\]-]+\z/, host) do
       parse_host_address(host)
     else
       {:error, :invalid_host}
@@ -253,9 +253,12 @@ defmodule AshHooks.Ssrf do
     end
   end
 
+  # DNS carries underscore labels (service names, some provider hosts), and
+  # URL hosts with them resolved before this check existed. Safety comes from
+  # classifying every resolved address, not from the label alphabet.
   defp valid_dns_label?(label) do
     byte_size(label) in 1..63 and
-      Regex.match?(~r/\A[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\z/, label)
+      Regex.match?(~r/\A[a-zA-Z0-9_](?:[a-zA-Z0-9_-]*[a-zA-Z0-9_])?\z/, label)
   end
 
   defp resolve_host({name, _host}, _opts) when name in @metadata_hostnames,
