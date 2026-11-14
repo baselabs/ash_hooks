@@ -48,6 +48,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A verified body that did not decode to a map or list could be rebuilt from
+  its empty placeholder, handled, and marked processed. It is now recorded
+  permanently malformed when written and never handled. Duplicate deliveries
+  still drive the surviving row's stored payload.
 - IPv6 destination checks now refuse reserved and unallocated address space,
   including gaps within `2000::/3`, using the IANA allocation registry retrieved
   November 13, 2026. Existing globally reachable special-purpose exceptions and

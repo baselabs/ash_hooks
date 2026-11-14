@@ -20,8 +20,11 @@ The extension injects the ledger fields (provider, external ids, payload +
 digest, the fenced state machine's status/token/lease/attempts), the
 `unique_ingest` identity spanning provider + external event id + the
 declared scope slots, and the action primitives used by
-`AshHooks.Ingress`. These include ingest, claim/finalize/renew, payload
-redaction, bounded retention, and explicit legacy identity adoption.
+`AshHooks.Ingress`. These include ingest, terminal malformed recording
+(`:record_malformed`), claim/finalize/renew, payload redaction, bounded
+retention, and explicit legacy identity adoption. `:record_malformed` shares
+`:ingest`'s accept list and no-touch upsert identity, setting new rows to
+`:failed_permanent` with error class `"malformed_payload"`.
 
 The uniqueness identity must be backed by a unique index on the
 consumer's data layer. Storage-level uniqueness preserves one ledger row

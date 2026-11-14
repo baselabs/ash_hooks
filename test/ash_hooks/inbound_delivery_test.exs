@@ -230,6 +230,23 @@ defmodule AshHooks.InboundDeliveryTest do
   end
 
   describe "fenced actions" do
+    test ":record_malformed shares the ingest identity and accept list for every key shape" do
+      for ledger <- [
+            Ledger,
+            GeneratedCompositeKeyLedger,
+            DefaultedCompositeKeyLedger,
+            SoleWritableIdKeyLedger
+          ] do
+        ingest = Info.action(ledger, :ingest)
+        malformed = Info.action(ledger, :record_malformed)
+        assert malformed.type == :create
+        assert malformed.upsert? == true
+        assert malformed.upsert_identity == ingest.upsert_identity
+        assert malformed.upsert_fields == []
+        assert malformed.accept == ingest.accept
+      end
+    end
+
     test ":ingest is a no-touch upsert on the unique identity" do
       action = Info.action(Ledger, :ingest)
 
