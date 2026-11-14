@@ -1509,8 +1509,12 @@ defmodule AshHooks.Delivery do
 
       for {ref_field, stamp_field, action} <- [
             {:secret_ref, :secret_first_used_at, :mark_current_secret_used},
-            {:previous_secret_ref, :previous_secret_first_used_at, :mark_previous_secret_used}
+            {:previous_secret_ref, :previous_secret_first_used_at, :mark_previous_secret_used},
+            {:legacy_secret_ref, :legacy_secret_first_used_at, :mark_legacy_current_secret_used},
+            {:legacy_previous_secret_ref, :legacy_previous_secret_first_used_at,
+             :mark_legacy_previous_secret_used}
           ],
+          ResourceInfo.attribute(resource, stamp_field),
           ref = used_refs[ref_field],
           not is_nil(ref),
           is_nil(Map.get(endpoint, stamp_field)) do
@@ -1837,12 +1841,13 @@ defmodule AshHooks.Delivery do
     tenant_aware? = config[:tenant_aware_secrets] == true
 
     with {:ok, secret} <- resolve(endpoint.secret_ref, resolver, tenant, tenant_aware?),
-         previous_ref = previous_signing_ref(endpoint, config),
+         previous_ref = previous_signing_ref(endpoint, :standard, config),
+         legacy_previous_ref = previous_signing_ref(endpoint, :legacy, config),
          {:ok, previous} <-
            resolve_opt(previous_ref, resolver, tenant, tenant_aware?),
          {:ok, legacy} <- resolve_opt(endpoint.legacy_secret_ref, resolver, tenant, tenant_aware?),
          {:ok, legacy_previous} <-
-           resolve_opt(endpoint.legacy_previous_secret_ref, resolver, tenant, tenant_aware?) do
+           resolve_opt(legacy_previous_ref, resolver, tenant, tenant_aware?) do
       opts =
         sw_secret(secret)
         |> Keyword.merge(sw_previous(previous))
@@ -1875,6 +1880,7 @@ defmodule AshHooks.Delivery do
         endpoint
         |> Map.take(fields)
         |> Map.replace(:previous_secret_ref, previous_ref)
+        |> Map.replace(:legacy_previous_secret_ref, legacy_previous_ref)
         |> Map.reject(fn {_slot, ref} -> is_nil(ref) end)
 
       {:ok, {Map.put(headers, "content-type", "application/json"), used_refs}}
@@ -1883,13 +1889,15 @@ defmodule AshHooks.Delivery do
     ArgumentError -> {:error, :signing_failed}
   end
 
-  defp previous_signing_ref(endpoint, config) do
-    if ResourceInfo.attribute(endpoint.__struct__, :secret_created_at) &&
-         endpoint.previous_secret_retired_at &&
-         DateTime.compare(endpoint.previous_secret_retired_at, now(config)) != :gt do
+  defp previous_signing_ref(endpoint, slot, config) do
+    fields = AshHooks.KeyLifecycle.fields(slot)
+    at = Map.get(endpoint, fields.retired_at)
+
+    if ResourceInfo.attribute(endpoint.__struct__, fields.created_at) && at &&
+         DateTime.compare(at, now(config)) != :gt do
       nil
     else
-      endpoint.previous_secret_ref
+      Map.get(endpoint, fields.previous_ref)
     end
   end
 

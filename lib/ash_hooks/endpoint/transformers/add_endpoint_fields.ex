@@ -48,16 +48,14 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
   # behind roll_secret/expire — an EXISTING schema is never silently
   # widened; the consumer migrates the six columns when adopting.
   defp add_lifecycle_attributes(dsl_state) do
-    case Extension.get_opt(dsl_state, [:endpoint], :key_lifecycle, :off) do
-      :off ->
-        {:ok, dsl_state}
+    specs =
+      for slot <- [:standard, :legacy],
+          fields = AshHooks.KeyLifecycle.fields(slot),
+          Extension.get_opt(dsl_state, [:endpoint], fields.option, :off) == :on,
+          spec <- lifecycle_attributes_spec(slot),
+          do: spec
 
-      :on ->
-        Enum.reduce_while(lifecycle_attributes_spec(), {:ok, dsl_state}, fn {name, type, opts},
-                                                                            {:ok, dsl_state} ->
-          {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
-        end)
-    end
+    inject(dsl_state, specs)
   end
 
   # The auto-disable policy's warned marker: `disable_warned_at` carries
@@ -83,15 +81,19 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
       :__missing__
   end
 
-  defp lifecycle_attributes_spec do
-    [
-      {:secret_created_at, :utc_datetime_usec, []},
-      {:secret_first_used_at, :utc_datetime_usec, []},
-      {:secret_retired_at, :utc_datetime_usec, []},
-      {:previous_secret_created_at, :utc_datetime_usec, []},
-      {:previous_secret_first_used_at, :utc_datetime_usec, []},
-      {:previous_secret_retired_at, :utc_datetime_usec, []}
+  defp lifecycle_attributes_spec(slot) do
+    fields = AshHooks.KeyLifecycle.fields(slot)
+
+    names = [
+      fields.created_at,
+      fields.first_used_at,
+      fields.previous_created_at,
+      fields.previous_first_used_at,
+      fields.retired_at
     ]
+
+    names = if slot == :standard, do: [:secret_retired_at | names], else: names
+    Enum.map(names, &{&1, :utc_datetime_usec, []})
   end
 
   # The per-endpoint response-capture opt-in (default :off): declaring
@@ -134,7 +136,9 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
     reserved =
       (Enum.map(attributes_spec(), &elem(&1, 0)) -- [:status]) ++
         Enum.map(capture_attributes_spec(), &elem(&1, 0)) ++
-        Enum.map(lifecycle_attributes_spec(), &elem(&1, 0)) ++
+        Enum.flat_map([:standard, :legacy], fn slot ->
+          Enum.map(lifecycle_attributes_spec(slot), &elem(&1, 0))
+        end) ++
         [:pinned_payload_version, :disable_warned_at]
 
     cond do

@@ -39,6 +39,18 @@ defmodule AshHooks.Endpoint do
   date is inferred when lifecycle tracking is adopted. Without lifecycle
   tracking, previous keys keep signing until their references are removed.
 
+  With `legacy_key_lifecycle :on` (requires `key_lifecycle :on`), the legacy
+  slot follows the same lifecycle. Migrate its five nullable timestamps:
+  `legacy_secret_created_at`, `legacy_secret_first_used_at`,
+  `legacy_previous_secret_created_at`, `legacy_previous_secret_first_used_at`,
+  and `legacy_previous_secret_retired_at`. The actions
+  `:mark_legacy_current_secret_used` and `:mark_legacy_previous_secret_used`
+  record first use with the same reference fence. The lifecycle helpers
+  accept `slot: :standard | :legacy`, defaulting to `:standard`, and operate
+  only on the selected slot. Overlap defaults and caps apply to both slots.
+  An empty legacy incumbent installs the new key without a previous key.
+  With the legacy option off, no legacy timestamps or actions are injected.
+
   With `status_attribute` set, the extension uses that attribute instead of
   injecting `status`. The dispatcher skips endpoints whose
   mapped value is outside `enabled_values`, and the 410 auto-disable flips
@@ -106,9 +118,9 @@ defmodule AshHooks.Endpoint do
   end
 
   @doc """
-  Rolls the endpoint's signing secret reference with an overlap window:
-  the incumbent reference moves to `previous_secret_ref` and the new reference
-  takes its place. Both keys sign before `previous_secret_retired_at`;
+  Rolls the selected signing slot with an overlap window. The incumbent
+  reference moves to that slot's previous reference and the new reference
+  takes its place. Both keys sign before the previous key's retirement time;
   at that instant, signing stops using the previous key independently of
   `expire_previous_secrets/2`, which removes expired references.
 
@@ -130,7 +142,9 @@ defmodule AshHooks.Endpoint do
         )
 
   Options: `:new_secret_ref` (required, a fresh store reference; rolling
-  onto the incumbent is `{:error, :same_reference}`), `:overlap_seconds`
+  onto the selected incumbent or previous reference is `{:error, :same_reference}`),
+  `:slot` (`:standard` by default, or `:legacy` with `legacy_key_lifecycle :on`),
+  `:overlap_seconds`
   (a non-negative integer, defaulting to the resource's
   `default_overlap_seconds` or 86,400 when unset), `:now` (the application
   clock), `:tenant`. A negative or non-integer overlap returns
@@ -149,8 +163,8 @@ defmodule AshHooks.Endpoint do
   end
 
   @doc """
-  Sets the standard previous key's retirement time, including for an undated
-  previous reference adopted with `key_lifecycle :on`. The key signs only
+  Sets the selected previous key's retirement time, including for an undated
+  previous reference adopted with lifecycle tracking. The key signs only
   before that time; the sweep can remove its reference afterward.
 
   `at` must be a `DateTime` at or after the application clock. A past time
@@ -163,24 +177,28 @@ defmodule AshHooks.Endpoint do
   If the resource declares `max_overlap_seconds`, a retirement time beyond
   that many seconds from now returns `{:error, {:overlap_exceeds_max, max}}`.
 
-  Options: `:now` (the application clock, default UTC now) and `:tenant`
+  Options: `:slot` (`:standard` by default, or `:legacy` with
+  `legacy_key_lifecycle :on`), `:now` (the application clock, default UTC now),
+  and `:tenant`
   (required on multitenant resources). Requires `key_lifecycle :on`.
   Authorize the caller before invoking this system write.
   """
-  @spec schedule_previous_retirement(struct(), DateTime.t(), keyword()) ::
+  @spec schedule_previous_retirement(struct(), term(), keyword()) ::
           {:ok, struct()} | {:error, term()}
   def schedule_previous_retirement(endpoint, at, opts \\ []) do
     AshHooks.KeyLifecycle.schedule_previous_retirement(endpoint, at, opts)
   end
 
   @doc """
-  Retires one endpoint's previous signing key at once: the old reference
-  leaves the row and `previous_secret_retired_at` records the actual retirement
+  Retires one endpoint's selected previous signing key at once: the old
+  reference leaves the row and its retirement timestamp records the actual retirement
   time, including early removal. A row with no previous key is returned unchanged.
   This also resolves an undated previous reference without assigning it an
   overlap window.
 
-  `:now` supplies the application clock (default UTC now). `:tenant` applies to the gated write (required on multitenant
+  `:slot` selects `:standard` (default) or `:legacy` (requires
+  `legacy_key_lifecycle :on`). `:now` supplies the application clock (default UTC now).
+  `:tenant` applies to the gated write (required on multitenant
   resources; the tenancy pre-flight runs before it).
   """
   @spec expire_previous_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
@@ -189,14 +207,15 @@ defmodule AshHooks.Endpoint do
   end
 
   @doc """
-  The scheduled retirement sweep: expires every endpoint whose previous
-  key's overlap window has ended (`previous_secret_retired_at <= now`).
+  The scheduled retirement sweep: expires every endpoint whose selected
+  previous key's overlap window has ended (retirement time at or before now).
   Schedule it alongside your retention sweeps. Signing already omits dated
   previous keys at their deadline. Undated previous references are skipped;
   resolve them with `schedule_previous_retirement/3` or
   `expire_previous_secret/2`. Returns `{:ok, retired_count}`.
 
-  Options: `:now` (the application clock) and `:tenant` (required on
+  Options: `:slot` (`:standard` by default, or `:legacy` with
+  `legacy_key_lifecycle :on`), `:now` (the application clock), and `:tenant` (required on
   multitenant resources).
   """
   @spec expire_previous_secrets(module(), keyword()) ::
@@ -323,10 +342,25 @@ defmodule AshHooks.Endpoint do
         secret material.
         """
       ],
+      legacy_key_lifecycle: [
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc: """
+        Opts the legacy signing slot into the same lifecycle as standard keys.
+        Requires `key_lifecycle :on`. Injects five nullable `utc_datetime_usec`
+        columns: `legacy_secret_created_at`, `legacy_secret_first_used_at`,
+        `legacy_previous_secret_created_at`, `legacy_previous_secret_first_used_at`,
+        and `legacy_previous_secret_retired_at`. Migrate these columns before
+        enabling. Lifecycle helpers accept `slot: :legacy`; the default remains
+        `slot: :standard`. The same overlap gate, defaults, caps, retirement
+        scheduling, sweep, and fenced first-use stamps apply to each slot.
+        Signing omits a dated legacy previous key at its retirement instant.
+        """
+      ],
       max_overlap_seconds: [
         type: :pos_integer,
         doc: """
-        Optional maximum overlap for standard signing keys, in seconds.
+        Optional maximum overlap for each enabled signing slot, in seconds.
         `roll_secret/2` refuses a longer overlap with
         `{:error, {:overlap_exceeds_max, max}}`. Retirement scheduling
         refuses a deadline beyond that many seconds from the application
@@ -336,7 +370,7 @@ defmodule AshHooks.Endpoint do
       default_overlap_seconds: [
         type: :non_neg_integer,
         doc: """
-        Default standard key overlap in seconds when `roll_secret/2`
+        Default overlap for each enabled signing slot in seconds when `roll_secret/2`
         receives no `:overlap_seconds`. If unset, the default is 86,400.
         Zero stops the old key signing at the roll instant. Must not exceed
         `max_overlap_seconds` when a maximum is configured.
@@ -428,6 +462,7 @@ defmodule AshHooks.Endpoint do
     ],
     verifiers: [
       AshHooks.Endpoint.Verifiers.Overlap,
+      AshHooks.Endpoint.Verifiers.LegacyLifecycle,
       AshHooks.Verifiers.MultitenancyNoBypass
     ]
 end

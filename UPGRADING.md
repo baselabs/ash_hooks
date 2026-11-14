@@ -89,8 +89,33 @@ below the effective default. A roll above the maximum, or retirement
 scheduling beyond that many seconds from the application clock, returns
 `{:error, {:overlap_exceeds_max, max}}`.
 
-There is no new schema requirement. Resources without `key_lifecycle :on`
-and the legacy signing slots retain their existing retirement behavior.
+Legacy lifecycle tracking is optional. Resources that leave
+`legacy_key_lifecycle :off` retain their existing schema and legacy signing
+behavior. To opt in, first migrate five nullable `utc_datetime_usec` columns:
+`legacy_secret_created_at`, `legacy_secret_first_used_at`,
+`legacy_previous_secret_created_at`, `legacy_previous_secret_first_used_at`,
+and `legacy_previous_secret_retired_at`. Then declare both
+`key_lifecycle :on` and `legacy_key_lifecycle :on` under `endpoint`.
+Compilation refuses the legacy option without the standard lifecycle option.
+No timestamp is inferred for existing legacy keys.
+
+The four endpoint lifecycle helpers (`roll_secret/2`,
+`schedule_previous_retirement/3`, `expire_previous_secret/2`, and
+`expire_previous_secrets/2`) accept `slot: :legacy` to operate on legacy keys.
+They default to `slot: :standard`. Each changes only its selected slot; run
+retirement sweeps for both enabled slots. Overlap defaults and caps apply to
+both. An empty legacy incumbent installs the new key without a previous key.
+A new reference matching the selected slot's incumbent or previous reference
+returns `{:error, :same_reference}`.
+
+A dated legacy previous key stops signing at its retirement instant, before
+any sweep. Undated legacy previous references keep signing, block rolling,
+and are skipped by the sweep until scheduled or expired. The injected
+`:mark_legacy_current_secret_used` and `:mark_legacy_previous_secret_used`
+actions stamp only keys that signed, using atomic reference checks to avoid
+stamping replacements during a concurrent roll. Authorize application callers
+before exposing any lifecycle helpers; they perform system writes after the
+same tenancy preflight as the standard slot.
 
 ## 3.0.0 → 3.1.0
 

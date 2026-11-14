@@ -34,15 +34,15 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
       Extension.get_opt(dsl_state, [:endpoint], :disabled_value, :disabled)
 
     lifecycle =
-      if Extension.get_opt(dsl_state, [:endpoint], :key_lifecycle, :off) == :on do
-        [
-          build_roll_secret(),
-          build_schedule_previous_retirement(),
-          build_retire_previous_secret() | build_first_used_actions()
-        ]
-      else
-        []
-      end
+      for slot <- [:standard, :legacy],
+          fields = AshHooks.KeyLifecycle.fields(slot),
+          Extension.get_opt(dsl_state, [:endpoint], fields.option, :off) == :on,
+          action <- [
+            build_roll_secret(fields),
+            build_schedule_previous_retirement(fields),
+            build_retire_previous_secret(fields) | build_first_used_actions(fields)
+          ],
+          do: action
 
     # the warned-marker write ships WITH the auto_disable policy that
     # reads it — declaring the policy is declaring the column + action
@@ -72,14 +72,12 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
     end
   end
 
-  defp build_schedule_previous_retirement do
+  defp build_schedule_previous_retirement(fields) do
     {:ok, retired_at} =
-      Builder.build_action_change(
-        Builtins.set_attribute(:previous_secret_retired_at, arg(:retired_at))
-      )
+      Builder.build_action_change(Builtins.set_attribute(fields.retired_at, arg(:retired_at)))
 
     {:ok, action} =
-      Builder.build_action(:update, :schedule_previous_retirement,
+      Builder.build_action(:update, fields.schedule,
         accept: [],
         arguments: [argument(:retired_at, :utc_datetime_usec, allow_nil?: false)],
         changes: [retired_at]
@@ -103,40 +101,40 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
   # across. The runtime's WHERE gate (same incumbent) fences concurrent
   # rolls; the moving values arrive as ARGUMENTS read off the row (the
   # SecretRef type has no atomic-update expression support).
-  defp build_roll_secret do
+  defp build_roll_secret(fields) do
     {:ok, prev_ref} =
-      Builder.build_action_change(Builtins.set_attribute(:previous_secret_ref, arg(:old_ref)))
+      Builder.build_action_change(Builtins.set_attribute(fields.previous_ref, arg(:old_ref)))
 
     {:ok, ref} =
-      Builder.build_action_change(Builtins.set_attribute(:secret_ref, arg(:new_secret_ref)))
+      Builder.build_action_change(Builtins.set_attribute(fields.ref, arg(:new_secret_ref)))
 
     {:ok, created} =
-      Builder.build_action_change(Builtins.set_attribute(:secret_created_at, arg(:rolled_at)))
+      Builder.build_action_change(Builtins.set_attribute(fields.created_at, arg(:rolled_at)))
 
     {:ok, first_used} =
-      Builder.build_action_change(Builtins.set_attribute(:secret_first_used_at, nil))
+      Builder.build_action_change(Builtins.set_attribute(fields.first_used_at, nil))
 
     {:ok, prev_created} =
       Builder.build_action_change(
-        Builtins.set_attribute(:previous_secret_created_at, arg(:old_created_at))
+        Builtins.set_attribute(fields.previous_created_at, arg(:old_created_at))
       )
 
     {:ok, prev_first_used} =
-      Builder.build_action_change(Builtins.set_attribute(:previous_secret_first_used_at, nil))
+      Builder.build_action_change(Builtins.set_attribute(fields.previous_first_used_at, nil))
 
     {:ok, prev_retired} =
-      Builder.build_action_change(
-        Builtins.set_attribute(:previous_secret_retired_at, arg(:retired_at))
-      )
+      Builder.build_action_change(Builtins.set_attribute(fields.retired_at, arg(:retired_at)))
 
     changes = [prev_ref, ref, created, first_used, prev_created, prev_first_used, prev_retired]
 
     {:ok, action} =
-      Builder.build_action(:update, :roll_secret,
+      Builder.build_action(:update, fields.roll,
         accept: [],
         arguments: [
           argument(:new_secret_ref, AshHooks.Endpoint.SecretRef, allow_nil?: false),
-          argument(:old_ref, AshHooks.Endpoint.SecretRef, allow_nil?: false),
+          argument(:old_ref, AshHooks.Endpoint.SecretRef,
+            allow_nil?: fields.option == :legacy_key_lifecycle
+          ),
           argument(:old_created_at, :utc_datetime_usec, allow_nil?: true, default: nil),
           argument(:retired_at, :utc_datetime_usec, allow_nil?: false),
           argument(:rolled_at, :utc_datetime_usec, allow_nil?: false)
@@ -149,25 +147,23 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
 
   # The retirement: the old key's reference leaves the row; its timeline
   # (created, retired — first-used if it ever signed) stays as the record
-  defp build_retire_previous_secret do
+  defp build_retire_previous_secret(fields) do
     {:ok, prev_ref} =
-      Builder.build_action_change(Builtins.set_attribute(:previous_secret_ref, nil))
+      Builder.build_action_change(Builtins.set_attribute(fields.previous_ref, nil))
 
     {:ok, prev_created} =
-      Builder.build_action_change(Builtins.set_attribute(:previous_secret_created_at, nil))
+      Builder.build_action_change(Builtins.set_attribute(fields.previous_created_at, nil))
 
     {:ok, prev_first_used} =
-      Builder.build_action_change(Builtins.set_attribute(:previous_secret_first_used_at, nil))
+      Builder.build_action_change(Builtins.set_attribute(fields.previous_first_used_at, nil))
 
     {:ok, retired_at} =
-      Builder.build_action_change(
-        Builtins.set_attribute(:previous_secret_retired_at, arg(:retired_at))
-      )
+      Builder.build_action_change(Builtins.set_attribute(fields.retired_at, arg(:retired_at)))
 
     changes = [prev_ref, prev_created, prev_first_used, retired_at]
 
     {:ok, action} =
-      Builder.build_action(:update, :retire_previous_secret,
+      Builder.build_action(:update, fields.retire,
         accept: [],
         changes: changes,
         arguments: [
@@ -204,10 +200,10 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
     action
   end
 
-  defp build_first_used_actions do
+  defp build_first_used_actions(fields) do
     for {action_name, attribute} <- [
-          {:mark_current_secret_used, :secret_first_used_at},
-          {:mark_previous_secret_used, :previous_secret_first_used_at}
+          {fields.mark_current, fields.first_used_at},
+          {fields.mark_previous, fields.previous_first_used_at}
         ] do
       {:ok, stamp} =
         Builder.build_action_change(Builtins.set_attribute(attribute, arg(:used_at)))

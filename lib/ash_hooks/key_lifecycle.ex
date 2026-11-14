@@ -5,35 +5,78 @@ defmodule AshHooks.KeyLifecycle do
   alias Spark.Dsl.Extension
 
   require Ash.Query
+  require Ash.Expr
 
   alias AshHooks.Errors.Unknown.UnknownError
   alias AshHooks.{PrimaryKey, Tenancy}
 
-  @spec roll_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
-  def roll_secret(endpoint, opts \\ []) do
-    resource = endpoint.__struct__
+  def fields(:standard) do
+    %{
+      ref: :secret_ref,
+      created_at: :secret_created_at,
+      first_used_at: :secret_first_used_at,
+      previous_ref: :previous_secret_ref,
+      previous_created_at: :previous_secret_created_at,
+      previous_first_used_at: :previous_secret_first_used_at,
+      retired_at: :previous_secret_retired_at,
+      roll: :roll_secret,
+      retire: :retire_previous_secret,
+      schedule: :schedule_previous_retirement,
+      mark_current: :mark_current_secret_used,
+      mark_previous: :mark_previous_secret_used,
+      option: :key_lifecycle
+    }
+  end
 
-    with {:ok, new_ref} <- validate_new_secret_ref(endpoint, opts[:new_secret_ref]),
-         :ok <- require_lifecycle(resource),
+  def fields(:legacy) do
+    %{
+      ref: :legacy_secret_ref,
+      created_at: :legacy_secret_created_at,
+      first_used_at: :legacy_secret_first_used_at,
+      previous_ref: :legacy_previous_secret_ref,
+      previous_created_at: :legacy_previous_secret_created_at,
+      previous_first_used_at: :legacy_previous_secret_first_used_at,
+      retired_at: :legacy_previous_secret_retired_at,
+      roll: :roll_legacy_secret,
+      retire: :retire_legacy_previous_secret,
+      schedule: :schedule_legacy_previous_retirement,
+      mark_current: :mark_legacy_current_secret_used,
+      mark_previous: :mark_legacy_previous_secret_used,
+      option: :legacy_key_lifecycle
+    }
+  end
+
+  @spec roll_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
+  def roll_secret(endpoint, opts) do
+    resource = endpoint.__struct__
+    fields = fields(Keyword.get(opts, :slot, :standard))
+
+    with {:ok, new_ref} <- validate_new_secret_ref(endpoint, opts[:new_secret_ref], fields),
+         :ok <- require_lifecycle(resource, fields),
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
          {:ok, overlap} <- validate_overlap(resource, opts) do
       rolled_at = opts[:now] || DateTime.utc_now()
       rolled_at = DateTime.truncate(rolled_at, :microsecond)
       retired_at = DateTime.add(rolled_at, overlap, :second)
 
+      incumbent = Map.fetch!(endpoint, fields.ref)
+
+      fence = incumbent_fence(fields, incumbent)
+
       result =
         resource
         |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
         |> Ash.Query.filter(
-          secret_ref == ^endpoint.secret_ref and
-            (is_nil(previous_secret_ref) or previous_secret_retired_at <= ^rolled_at)
+          ^fence and
+            (is_nil(^Ash.Expr.ref(fields.previous_ref)) or
+               ^Ash.Expr.ref(fields.retired_at) <= ^rolled_at)
         )
         |> Ash.bulk_update(
-          :roll_secret,
+          fields.roll,
           %{
             new_secret_ref: new_ref,
-            old_ref: endpoint.secret_ref,
-            old_created_at: endpoint.secret_created_at,
+            old_ref: incumbent,
+            old_created_at: Map.fetch!(endpoint, fields.created_at),
             retired_at: retired_at,
             rolled_at: rolled_at
           },
@@ -55,13 +98,18 @@ defmodule AshHooks.KeyLifecycle do
           {:ok, rolled}
 
         %Ash.BulkResult{status: :success, records: []} ->
-          roll_conflict(endpoint, tenant, rolled_at)
+          roll_conflict(endpoint, tenant, rolled_at, fields)
 
         %Ash.BulkResult{} = result ->
           {:error, List.first(result.errors || []) || result}
       end
     end
   end
+
+  defp incumbent_fence(fields, nil), do: Ash.Expr.expr(is_nil(^Ash.Expr.ref(fields.ref)))
+
+  defp incumbent_fence(fields, incumbent),
+    do: Ash.Expr.expr(^Ash.Expr.ref(fields.ref) == ^incumbent)
 
   defp validate_overlap(resource, opts) do
     default = Extension.get_opt(resource, [:endpoint], :default_overlap_seconds, 86_400)
@@ -81,50 +129,48 @@ defmodule AshHooks.KeyLifecycle do
     end
   end
 
-  defp roll_conflict(endpoint, tenant, now) do
+  defp roll_conflict(endpoint, tenant, now, fields) do
     with {:ok, current} <-
            endpoint.__struct__
            |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
            |> Ash.read_one(authorize?: false, tenant: tenant) do
-      {:error, conflict_reason(current, endpoint.secret_ref, now)}
+      {:error, conflict_reason(current, {fields, Map.fetch!(endpoint, fields.ref)}, now)}
     end
   end
 
   # The incumbent is unchanged and still holds a previous key: an undated
   # one refuses until resolved, a dated one inside its window is an active
   # overlap. Anything else means another writer rolled underneath.
-  defp conflict_reason(
-         %{secret_ref: incumbent, previous_secret_ref: previous, previous_secret_retired_at: nil},
-         incumbent,
-         _now
-       )
-       when not is_nil(previous),
-       do: :previous_secret_undated
-
-  defp conflict_reason(
-         %{secret_ref: incumbent, previous_secret_ref: previous, previous_secret_retired_at: at},
-         incumbent,
-         now
-       )
-       when not is_nil(previous) do
-    if DateTime.compare(at, now) == :gt, do: :overlap_active, else: :rolled_underneath
+  defp conflict_reason(current, {fields, incumbent}, now) do
+    if current && Map.fetch!(current, fields.ref) == incumbent &&
+         Map.fetch!(current, fields.previous_ref) do
+      previous_conflict(Map.fetch!(current, fields.retired_at), now)
+    else
+      :rolled_underneath
+    end
   end
 
-  defp conflict_reason(_current, _incumbent, _now), do: :rolled_underneath
+  defp previous_conflict(nil, _now), do: :previous_secret_undated
 
-  @spec schedule_previous_retirement(struct(), DateTime.t(), keyword()) ::
+  defp previous_conflict(at, now),
+    do: if(DateTime.compare(at, now) == :gt, do: :overlap_active, else: :rolled_underneath)
+
+  @spec schedule_previous_retirement(struct(), term(), keyword()) ::
           {:ok, struct()} | {:error, term()}
-  def schedule_previous_retirement(endpoint, at, opts \\ []) do
+  def schedule_previous_retirement(endpoint, at, opts) do
     resource = endpoint.__struct__
+    fields = fields(Keyword.get(opts, :slot, :standard))
 
-    with :ok <- require_lifecycle(resource),
+    with :ok <- require_lifecycle(resource, fields),
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
-         :ok <- require_previous_secret(endpoint),
+         :ok <- require_previous_secret(endpoint, fields),
          {:ok, at} <- validate_retirement_time(at, opts[:now] || DateTime.utc_now(), resource) do
       resource
       |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-      |> Ash.Query.filter(previous_secret_ref == ^endpoint.previous_secret_ref)
-      |> Ash.bulk_update(:schedule_previous_retirement, %{retired_at: at},
+      |> Ash.Query.filter(
+        ^Ash.Expr.ref(fields.previous_ref) == ^Map.fetch!(endpoint, fields.previous_ref)
+      )
+      |> Ash.bulk_update(fields.schedule, %{retired_at: at},
         authorize?: false,
         return_records?: true,
         return_errors?: true,
@@ -139,8 +185,11 @@ defmodule AshHooks.KeyLifecycle do
     end
   end
 
-  defp require_previous_secret(%{previous_secret_ref: nil}), do: {:error, :no_previous_secret}
-  defp require_previous_secret(_endpoint), do: :ok
+  defp require_previous_secret(endpoint, fields) do
+    if is_nil(Map.fetch!(endpoint, fields.previous_ref)),
+      do: {:error, :no_previous_secret},
+      else: :ok
+  end
 
   defp validate_retirement_time(%DateTime{} = at, now, resource) do
     at = DateTime.truncate(at, :microsecond)
@@ -161,27 +210,30 @@ defmodule AshHooks.KeyLifecycle do
   defp validate_retirement_time(_at, _now, _resource), do: {:error, :invalid_retirement_time}
 
   @spec expire_previous_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
-  def expire_previous_secret(endpoint, opts \\ []) do
+  def expire_previous_secret(endpoint, opts) do
     resource = endpoint.__struct__
+    fields = fields(Keyword.get(opts, :slot, :standard))
 
-    with :ok <- require_lifecycle(resource),
+    with :ok <- require_lifecycle(resource, fields),
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
-      expire_previous_secret_gated(endpoint, tenant, opts[:now] || DateTime.utc_now())
+      expire_previous_secret_gated(endpoint, tenant, opts[:now] || DateTime.utc_now(), fields)
     end
   end
 
-  defp expire_previous_secret_gated(endpoint, tenant, retired_at) do
+  defp expire_previous_secret_gated(endpoint, tenant, retired_at, fields) do
     resource = endpoint.__struct__
 
-    if is_nil(endpoint.previous_secret_ref) do
+    if is_nil(Map.fetch!(endpoint, fields.previous_ref)) do
       {:ok, endpoint}
     else
       result =
         resource
         |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-        |> Ash.Query.filter(previous_secret_ref == ^endpoint.previous_secret_ref)
+        |> Ash.Query.filter(
+          ^Ash.Expr.ref(fields.previous_ref) == ^Map.fetch!(endpoint, fields.previous_ref)
+        )
         |> Ash.bulk_update(
-          :retire_previous_secret,
+          fields.retire,
           %{retired_at: DateTime.truncate(retired_at, :microsecond)},
           authorize?: false,
           return_records?: true,
@@ -200,17 +252,19 @@ defmodule AshHooks.KeyLifecycle do
 
   @spec expire_previous_secrets(module(), keyword()) ::
           {:ok, non_neg_integer()} | {:error, term()}
-  def expire_previous_secrets(resource, opts \\ []) do
+  def expire_previous_secrets(resource, opts) do
+    fields = fields(Keyword.get(opts, :slot, :standard))
     now = opts |> Keyword.get(:now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
 
-    with :ok <- require_lifecycle(resource),
+    with :ok <- require_lifecycle(resource, fields),
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
       result =
         resource
         |> Ash.Query.filter(
-          not is_nil(previous_secret_ref) and previous_secret_retired_at <= ^now
+          not is_nil(^Ash.Expr.ref(fields.previous_ref)) and
+            ^Ash.Expr.ref(fields.retired_at) <= ^now
         )
-        |> Ash.bulk_update(:retire_previous_secret, %{retired_at: now},
+        |> Ash.bulk_update(fields.retire, %{retired_at: now},
           authorize?: false,
           return_records?: true,
           return_errors?: true,
@@ -225,12 +279,12 @@ defmodule AshHooks.KeyLifecycle do
     end
   end
 
-  defp validate_new_secret_ref(endpoint, ref) do
+  defp validate_new_secret_ref(endpoint, ref, fields) do
     cond do
       not (is_binary(ref) and ref != "") ->
         {:error, :new_secret_ref_required}
 
-      ref == endpoint.secret_ref ->
+      ref in [Map.get(endpoint, fields.ref), Map.get(endpoint, fields.previous_ref)] ->
         {:error, :same_reference}
 
       true ->
@@ -238,23 +292,20 @@ defmodule AshHooks.KeyLifecycle do
     end
   end
 
-  defp require_lifecycle(resource) do
-    if lifecycle?(resource) do
+  defp require_lifecycle(resource, fields) do
+    if ResourceInfo.attribute(resource, fields.created_at) do
       :ok
     else
-      {:error, lifecycle_error(resource)}
+      {:error, lifecycle_error(resource, fields)}
     end
   end
 
-  defp lifecycle?(resource), do: ResourceInfo.attribute(resource, :secret_created_at) != nil
-
-  defp lifecycle_error(resource) do
+  defp lifecycle_error(resource, fields) do
     UnknownError.exception(
       error:
         inspect(resource) <>
-          " does not carry the key-lifecycle columns (key_lifecycle :off); " <>
-          "declare `key_lifecycle :on` under `endpoint` and migrate the six " <>
-          "columns to roll signing secrets"
+          " does not carry the key-lifecycle columns; declare `" <>
+          Atom.to_string(fields.option) <> " :on` under `endpoint` and migrate its columns"
     )
   end
 end

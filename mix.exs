@@ -43,7 +43,9 @@ defmodule AshHooks.MixProject do
       # reports those delegations as unknown functions. :ash_postgres
       # carries the PG repo's behaviour callbacks (callback_info_missing
       # on a fresh PLT, CI 2026-10-05).
-      dialyzer: [plt_add_apps: [:mix, :ash_sqlite, :ash_postgres, :ecto_sql]],
+      # Shared test cases run as ordinary functions so coverage sees their code.
+      # Their assertions and cleanup callbacks require ExUnit in the test PLT.
+      dialyzer: [plt_add_apps: [:mix, :ash_sqlite, :ash_postgres, :ecto_sql, :ex_unit]],
       # Require 100% in Mix's declared coverage surface. ignore_modules
       # excludes entire modules, not individual lines: generated Spark
       # entities, named test fixtures, three Ash types, and the installer.

@@ -1,6 +1,8 @@
 defmodule AshHooks.EndpointOverlapVerifierTest do
   use ExUnit.Case, async: false
 
+  alias Ash.Resource.Info, as: ResourceInfo
+
   require Spark.Test
 
   test "a maximum below the built-in effective default is rejected" do
@@ -62,6 +64,64 @@ defmodule AshHooks.EndpointOverlapVerifierTest do
     end
   end
 
+  test "legacy lifecycle requires the standard lifecycle" do
+    module = fixture_module()
+
+    errors =
+      Spark.Test.dsl_errors do
+        compile_endpoint(module, key_lifecycle: :off, legacy_key_lifecycle: :on)
+      end
+
+    assert [{^module, [%Spark.Error.DslError{} = error]}] = errors
+    assert error.path == [:endpoint, :legacy_key_lifecycle]
+    assert Exception.message(error) =~ "requires key_lifecycle :on"
+  end
+
+  test "legacy lifecycle off injects no legacy timestamps or actions" do
+    for opts <- [[], [legacy_key_lifecycle: :off]] do
+      module = fixture_module()
+      compile_endpoint(module, opts)
+
+      for field <- legacy_fields() do
+        assert is_nil(ResourceInfo.attribute(module, field))
+      end
+
+      for action <- [:mark_legacy_current_secret_used, :mark_legacy_previous_secret_used] do
+        assert is_nil(ResourceInfo.action(module, action))
+      end
+    end
+  end
+
+  test "legacy lifecycle on injects five nullable timestamps and first-use actions" do
+    module = fixture_module()
+    compile_endpoint(module, legacy_key_lifecycle: :on)
+
+    standard_roll = ResourceInfo.action(module, :roll_secret)
+    legacy_roll = ResourceInfo.action(module, :roll_legacy_secret)
+    refute Enum.find(standard_roll.arguments, &(&1.name == :old_ref)).allow_nil?
+    assert Enum.find(legacy_roll.arguments, &(&1.name == :old_ref)).allow_nil?
+
+    for field <- legacy_fields() do
+      attribute = ResourceInfo.attribute(module, field)
+      assert attribute.type == Ash.Type.UtcDatetimeUsec
+      assert attribute.allow_nil?
+    end
+
+    for action <- [:mark_legacy_current_secret_used, :mark_legacy_previous_secret_used] do
+      assert ResourceInfo.action(module, action).type == :update
+    end
+  end
+
+  defp legacy_fields do
+    [
+      :legacy_secret_created_at,
+      :legacy_secret_first_used_at,
+      :legacy_previous_secret_created_at,
+      :legacy_previous_secret_first_used_at,
+      :legacy_previous_secret_retired_at
+    ]
+  end
+
   defp fixture_module do
     module = Module.concat(__MODULE__, "Endpoint#{System.unique_integer([:positive])}")
 
@@ -74,6 +134,7 @@ defmodule AshHooks.EndpointOverlapVerifierTest do
   end
 
   defp compile_endpoint(module, opts) do
+    {lifecycle, opts} = Keyword.pop(opts, :key_lifecycle, :on)
     options = Enum.map(opts, fn {name, value} -> {name, [], [value]} end)
 
     Code.compile_quoted(
@@ -92,7 +153,7 @@ defmodule AshHooks.EndpointOverlapVerifierTest do
           end
 
           endpoint do
-            key_lifecycle(:on)
+            key_lifecycle(unquote(lifecycle))
             unquote_splicing(options)
           end
 

@@ -12,6 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   column, defaulting to `false`. Paused subscriptions create no new delivery
   rows; existing deliveries continue. The default `:off` keeps existing schemas
   unchanged. Applications pause and resume through ordinary updates.
+- Endpoint option `legacy_key_lifecycle :on` opts legacy signing keys into
+  overlap validation, retirement scheduling, signing deadlines, and fenced
+  first-use timestamps. It requires `key_lifecycle :on` and a migration for
+  five nullable timestamp columns; the default is `:off`.
+- Endpoint lifecycle helpers accept `slot: :standard | :legacy` (default
+  `:standard`). Rolling validates a new reference against both the incumbent
+  and previous reference of the selected slot. Each operation leaves the
+  other slot unchanged.
+
 - `AshHooks.Ssrf.resolve_host_public/2` validates DNS names and IP literals,
   resolves both address families under a bounded deadline, and returns only
   public addresses for connection pinning.
