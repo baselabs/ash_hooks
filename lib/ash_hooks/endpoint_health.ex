@@ -47,6 +47,7 @@ defmodule AshHooks.EndpointHealth do
   @spec stats(module(), keyword()) :: {:ok, stats()} | {:error, term()}
   def stats(attempts_mod, opts \\ []) do
     with {:ok, endpoint_id} <- require_endpoint_id(opts[:endpoint_id]),
+         :ok <- validate_bounds(opts),
          {:ok, tenant} <- Tenancy.resolve([attempts_mod], opts[:tenant]),
          {:ok, rows} <- window_attempts(attempts_mod, endpoint_id, opts, tenant) do
       {:ok, compute_stats(rows)}
@@ -274,6 +275,10 @@ defmodule AshHooks.EndpointHealth do
   defp in_window?(attempted_at, from, to) do
     DateTime.compare(attempted_at, from) != :lt and
       (is_nil(to) or DateTime.compare(attempted_at, to) != :gt)
+  end
+
+  defp validate_bounds(opts) do
+    if is_nil(opts[:from]) and not is_nil(opts[:to]), do: {:error, :from_required}, else: :ok
   end
 
   defp bounds(opts) do

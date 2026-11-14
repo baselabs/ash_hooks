@@ -487,4 +487,16 @@ defmodule AshHooks.EndpointHealthTest do
     assert {:ok, %{warned: 0}} = AshHooks.EndpointHealth.sweep(Endpoint, Attempt)
     refute_received {[:ash_hooks, :endpoint, :disable_warning], _}
   end
+
+  @tag release_fix: 4
+  test "release health rejects an upper bound without a lower bound" do
+    endpoint = endpoint!()
+    seed_attempt!(endpoint.id, 1, :succeeded, 10)
+
+    assert {:error, :from_required} =
+             AshHooks.EndpointHealth.stats(Attempt,
+               endpoint_id: endpoint.id,
+               to: DateTime.utc_now()
+             )
+  end
 end
