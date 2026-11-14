@@ -236,6 +236,8 @@ defmodule AshHooks.KeyRegistry do
                    destroy_generation == ^row.destroy_generation
                )
 
+             query = fence_attempt(query, row, result)
+
              Transitions.cas(query, Map.put(values, :state, state), tenant)
            end) do
       report_destroy_failure(registry, row, state, values, rows)
@@ -247,6 +249,11 @@ defmodule AshHooks.KeyRegistry do
        )}
     end
   end
+
+  defp fence_attempt(query, row, {:error, :unavailable}),
+    do: Ash.Query.filter(query, attempts == ^row.attempts)
+
+  defp fence_attempt(query, _row, _result), do: query
 
   defp report_destroy_failure(registry, row, :destroy_failed, values, [_ | _]) do
     reason = if values.last_error == "tenant_mismatch", do: :tenant_mismatch, else: :unclassified
