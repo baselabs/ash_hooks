@@ -35,8 +35,10 @@ defmodule AshHooks.Provider do
   @type signature_header_value :: binary()
   @type webhook_secret :: binary()
   @type signature_algorithm :: :hmac_sha256 | :hmac_sha512
-  @type signature_error :: :invalid_signature | :no_webhook_secret | :stale_timestamp
+  @type signature_error ::
+          :invalid_signature | :no_webhook_secret | :stale_timestamp | :malformed_payload
   @type parse_error :: :unknown_event_type | :malformed_payload
+  @type json_decoder :: (binary() -> {:ok, map() | list()} | {:error, term()})
   @type http_response :: {pos_integer(), [{String.t(), String.t()}], iodata()}
   @type ingest_outcome :: {:ok, :created | :duplicate, struct()} | {:error, term()}
   @type handshake_request :: %{
@@ -94,12 +96,17 @@ defmodule AshHooks.Provider do
       secrets keyed by organization) reads it here.
     * `:replay_window_seconds`: the declaration override when configured;
       absent when the provider should use its own default.
+    * `:json_decoder`: an optional one-argument function for JSON bytes.
+      Ingress supplies the ledger's decoder on every request. Use it for
+      protected JWS headers and claims, defaulting to `Jason.decode/1` for
+      direct calls without the key.
 
   A provider whose scheme needs only the signature reads `:signature` and
   ignores the rest.
   """
   @type verify_context :: %{
           optional(:replay_window_seconds) => pos_integer(),
+          optional(:json_decoder) => json_decoder(),
           signature: signature_header_value() | nil,
           headers: %{optional(String.t()) => String.t()},
           header_list: [{String.t(), String.t()}],
@@ -192,6 +199,12 @@ defmodule AshHooks.Provider do
 
     quote do
       @behaviour AshHooks.Provider
+      Module.register_attribute(__MODULE__, :ash_hooks_provider_definitions,
+        accumulate: true,
+        persist: true
+      )
+
+      @on_definition {AshHooks.Provider, :__on_definition__}
 
       # dispatched dynamically: Elixir resolves same-name local calls at
       # COMPILE time, so a plain `webhook_signing_secret(connection)` here
@@ -209,8 +222,35 @@ defmodule AshHooks.Provider do
       end
 
       defoverridable webhook_signing_secret: 2
+      @ash_hooks_provider_generated true
       unquote(configured)
+      @ash_hooks_provider_generated false
     end
+  end
+
+  @doc false
+  def __on_definition__(env, _kind, name, args, _guards, _body) do
+    callback = {name, length(args)}
+
+    if callback in [verify_signature: 3, decode_payload: 1] do
+      origin =
+        if Module.get_attribute(env.module, :ash_hooks_provider_generated),
+          do: :generated,
+          else: :host
+
+      Module.put_attribute(env.module, :ash_hooks_provider_definitions, {callback, origin})
+    end
+  end
+
+  @doc false
+  def generated_callback?(provider, callback) do
+    origins =
+      for definitions <-
+            Keyword.get_values(provider.__info__(:attributes), :ash_hooks_provider_definitions),
+          {^callback, origin} <- definitions,
+          do: origin
+
+    origins != [] and Enum.all?(origins, &(&1 == :generated))
   end
 
   # Options are rebuilt inside the module on each call, so they may use
@@ -321,13 +361,32 @@ defmodule AshHooks.Provider do
   for malformed input. Decoder failures normally become permanent
   malformed-payload rows. If the provider's identity callback cannot derive
   an identity, ingress returns an error before creating the accepted row.
+  A host-defined `/1` needs `decode_payload/2` on ledgers configuring
+  `json_decoder`. Generated JWS decoders use the request's decoder in ingress;
+  direct calls to their `/1` use `Jason.decode/1`.
   """
   @callback decode_payload(raw_body()) :: {:ok, map() | list()} | {:error, term()}
+
+  @doc """
+  Optional request-aware decoder, called with verified bytes and the ledger's
+  one-argument JSON decoder. Decode JSON only through that function, including
+  JSON inside an envelope. Return its map or list, or an error for malformed input.
+
+  This callback takes precedence over a host-defined `decode_payload/1`.
+  A generated `decode_payload/1` instead uses its configured scheme with the
+  request's decoder. Direct calls of that generated `/1` use `Jason.decode/1`.
+  An explicit declaration `body_format` takes precedence over both callbacks.
+  Ledgers configuring `json_decoder` require this callback when the provider
+  has a host-defined `/1`. Run `AshHooks.Provider.Conformance` in your tests
+  to check that `/2` honors the supplied decoder.
+  """
+  @callback decode_payload(raw_body(), json_decoder()) ::
+              {:ok, map() | list()} | {:error, term()}
 
   @doc "Optional payload format, defaulting to JSON; `:form` opts into flat form decoding."
   @callback body_format() :: :json | :form
 
-  @optional_callbacks decode_payload: 1, body_format: 0
+  @optional_callbacks decode_payload: 1, decode_payload: 2, body_format: 0
 
   @doc """
   Optional signature location: `:header` (default) requires the host-supplied
@@ -362,31 +421,50 @@ defmodule AshHooks.Provider do
   end
 
   @doc false
-  def decode_payload(provider, raw_body, format) do
+  def decode_payload(provider, raw_body, format, json_decoder \\ &Jason.decode/1) do
     cond do
       format ->
-        decode_body(raw_body, format)
+        decode_body(raw_body, format, json_decoder)
+
+      generated_callback?(provider, {:decode_payload, 1}) ->
+        Scheme.decode_payload(raw_body, provider.__ash_hooks_scheme__(), json_decoder)
+
+      function_exported?(provider, :decode_payload, 2) ->
+        provider.decode_payload(raw_body, json_decoder)
 
       function_exported?(provider, :decode_payload, 1) ->
         provider.decode_payload(raw_body)
 
       function_exported?(provider, :body_format, 0) ->
-        decode_body(raw_body, provider.body_format())
+        decode_body(raw_body, provider.body_format(), json_decoder)
 
       true ->
-        decode_body(raw_body, :json)
+        decode_body(raw_body, :json, json_decoder)
     end
   end
 
   @doc false
-  def decode_body(raw_body, :json), do: Jason.decode(raw_body)
+  def decode_body(raw_body, format, json_decoder \\ &Jason.decode/1)
+  def decode_body(raw_body, :json, json_decoder), do: decode_json(raw_body, json_decoder)
 
-  def decode_body(raw_body, :form) do
+  def decode_body(raw_body, :form, _json_decoder) do
     payload = URI.decode_query(raw_body)
 
     if Enum.all?(payload, fn {name, value} -> String.valid?(name) and String.valid?(value) end),
       do: {:ok, payload},
       else: {:error, :malformed_payload}
+  end
+
+  @doc false
+  def decode_json(bytes, decoder) do
+    case decoder.(bytes) do
+      {:ok, value} when is_map(value) or is_list(value) -> {:ok, value}
+      _ -> {:error, :malformed_payload}
+    end
+  rescue
+    _ -> {:error, :malformed_payload}
+  catch
+    _, _ -> {:error, :malformed_payload}
   end
 
   @doc """

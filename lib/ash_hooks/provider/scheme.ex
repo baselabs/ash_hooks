@@ -220,18 +220,24 @@ defmodule AshHooks.Provider.Scheme do
   def signature_source(%__MODULE__{signature: :jws_body}), do: :body
   def signature_source(%__MODULE__{}), do: :request
 
-  @doc "Decodes a JWS body's payload to a JSON map or list; this helper does not authenticate it."
-  def decode_payload(raw_body, %__MODULE__{signature: :jws_body}) when is_binary(raw_body) do
+  @doc """
+  Decodes a JWS body's payload to a map or list through the supplied JSON
+  decoder, defaulting to `Jason.decode/1`. This helper does not authenticate it.
+  """
+  def decode_payload(raw_body, scheme, json_decoder \\ &Jason.decode/1)
+
+  def decode_payload(raw_body, %__MODULE__{signature: :jws_body}, json_decoder)
+      when is_binary(raw_body) do
     with [_, payload, _] <- :binary.split(raw_body, ".", [:global]),
          {:ok, bytes} <- Base.url_decode64(payload, padding: false),
-         {:ok, value} when is_map(value) or is_list(value) <- Jason.decode(bytes) do
+         {:ok, value} <- AshHooks.Provider.decode_json(bytes, json_decoder) do
       {:ok, value}
     else
       _ -> {:error, :malformed_payload}
     end
   end
 
-  def decode_payload(_, _), do: {:error, :malformed_payload}
+  def decode_payload(_, _, _), do: {:error, :malformed_payload}
 
   @doc """
   The default deduplication identity of a configured JWS-body provider: the
@@ -517,7 +523,11 @@ defmodule AshHooks.Provider.Scheme do
   defp authenticate(_input, signatures, keys, ctx, %__MODULE__{signature: :jws_body} = scheme) do
     {_, _, alg} = @algorithms[scheme.algorithm]
 
-    case Signature.jws(hd(signatures), keys, alg: alg, now_ms: ctx[:now_ms]) do
+    case Signature.jws(hd(signatures), keys,
+           alg: alg,
+           now_ms: ctx[:now_ms],
+           json_decoder: Map.get(ctx, :json_decoder, &Jason.decode/1)
+         ) do
       {:ok, _} -> :ok
       error -> error
     end

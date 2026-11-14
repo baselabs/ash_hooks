@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Inbound ledger option `json_decoder` applies an application JSON policy to
+  JWS protected headers, claims, and delivered payloads for each request.
+- Optional provider callback `decode_payload/2` receives the request's JSON
+  decoder. Ledgers configuring `json_decoder` require it for host-defined
+  `decode_payload/1`; generated decoders honor the policy directly.
+- `AshHooks.Provider.Conformance` checks that a hand-written `decode_payload/2`
+  uses the supplied JSON decoder. ExUnit is required only in consumer tests.
 - Subscription option `pausable :on` injects a nonnullable boolean `paused`
   column, defaulting to `false`. Paused subscriptions create no new delivery
   rows; existing deliveries continue. The default `:off` keeps existing schemas

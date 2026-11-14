@@ -221,6 +221,7 @@ defmodule AshHooks.MixProject do
         ],
         "Inbound verification": [
           AshHooks.Provider,
+          AshHooks.Provider.Conformance,
           AshHooks.Provider.Scheme,
           AshHooks.Provider.Signature,
           AshHooks.Provider.Event,

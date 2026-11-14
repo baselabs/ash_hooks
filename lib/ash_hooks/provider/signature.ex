@@ -20,7 +20,9 @@ defmodule AshHooks.Provider.Signature do
   """
   alias AshHooks.Provider.Signature.Key
 
-  @type error :: {:error, :invalid_signature | :no_webhook_secret | :stale_timestamp}
+  @type error ::
+          {:error,
+           :invalid_signature | :no_webhook_secret | :stale_timestamp | :malformed_payload}
   @p256 {1, 2, 840, 10_045, 3, 1, 7}
   @p384 {1, 3, 132, 0, 34}
 
@@ -111,6 +113,10 @@ defmodule AshHooks.Provider.Signature do
   as do padded segments (RFC 7515 encodes them without `=`).
   Key-location headers are ignored. JSON object `exp` and `nbf` claims must be
   numeric and are checked only after verification, against `now_ms:` or the clock.
+  `json_decoder:` accepts a one-argument decoder for both the protected header
+  and claims, defaulting to `Jason.decode/1`. Decoder errors and exceptions
+  return `{:error, :malformed_payload}`; invalid claim types remain
+  `{:error, :invalid_signature}`. The authenticated payload is returned as bytes.
   """
   @spec jws(binary(), term(), keyword()) :: {:ok, binary()} | error()
   def jws(token, keys, opts) do
@@ -120,7 +126,7 @@ defmodule AshHooks.Provider.Signature do
            [header, payload, signature] <- :binary.split(token, ".", [:global]),
            {:ok, header_bytes} <- decode(header, :base64url),
            {:ok, payload_bytes} <- decode(payload, :base64url),
-           {:ok, header_data} when is_map(header_data) <- Jason.decode(header_bytes),
+           {:ok, header_data} when is_map(header_data) <- decode_json(header_bytes, opts),
            true <- header_data["alg"] == opts[:alg] and is_binary(opts[:alg]),
            true <-
              Map.get(header_data, "crit", []) == [] and Map.get(header_data, "b64", true) == true,
@@ -262,17 +268,23 @@ defmodule AshHooks.Provider.Signature do
   defp digest("512"), do: :sha512
 
   defp check_claims(payload, opts) do
-    case Jason.decode(payload) do
+    case decode_json(payload, opts) do
       {:ok, claims} when is_map(claims) ->
         now = (opts[:now_ms] || System.system_time(:millisecond)) / 1000
 
         with :ok <- check_time(Map.fetch(claims, "exp"), now, :exp),
              do: check_time(Map.fetch(claims, "nbf"), now, :nbf)
 
-      _ ->
+      {:ok, _} ->
         :ok
+
+      error ->
+        error
     end
   end
+
+  defp decode_json(bytes, opts),
+    do: AshHooks.Provider.decode_json(bytes, Keyword.get(opts, :json_decoder, &Jason.decode/1))
 
   defp check_time(:error, _, _), do: :ok
   defp check_time({:ok, time}, _, _) when not is_number(time), do: invalid()

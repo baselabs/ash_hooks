@@ -11,6 +11,7 @@ spark_locals_without_parens = [
   signing_mode: 1,
   endpoints: 1,
   inbound_delivery: 1,
+  json_decoder: 1,
   scope_identity: 1,
   subscription: 1,
   endpoint_resource: 1,

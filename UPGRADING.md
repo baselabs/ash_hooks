@@ -2,6 +2,52 @@
 
 ## 3.1.0 → 3.2.0
 
+Inbound ledgers can configure `json_decoder` in `inbound_delivery` with an MFA
+`{module, function, args}`. It receives JSON bytes followed by `args` and must
+return `{:ok, map_or_list}` or `{:error, reason}`. The default is
+`{Jason, :decode, []}`. Ingress supplies one decoder per request to verification
+and payload decoding; JWS protected headers, claims, and delivery use that
+decoder, with claims and delivery interpreting the same payload bytes without
+a cache. Decoder errors, exceptions, and non-map, non-list values are malformed
+payloads. A refusal after successful verification is recorded terminal as
+described below; malformed claim types remain invalid signatures.
+
+Before configuring this option, add `decode_payload/2` to any provider with a
+host-defined `decode_payload/1`, including overrides emitted by compile hooks.
+Use only the supplied function for JSON decoding, including JSON inside an
+envelope. The ledger's compile-time verifier refuses a host `/1` without `/2`,
+even when explicitly configuring the default MFA. A generated JWS `/1` is
+exempt and uses the request's decoder in ingress, independently of verifier
+overrides. Direct calls to a generated `/1` still use `Jason.decode/1`.
+
+This provider preserves its direct-call decoder and honors request policy:
+
+<!-- tested: upgrade-json-decoder-provider -->
+```elixir
+defmodule MyApp.Webhooks.JsonProvider do
+  use AshHooks.Provider,
+    verify: [algorithm: :hmac_sha256, signature: {:header, "x-orders-signature"}]
+
+  @impl true
+  def decode_payload(bytes), do: Jason.decode(bytes)
+
+  @impl true
+  def decode_payload(bytes, json_decoder), do: json_decoder.(bytes)
+end
+```
+
+Run `AshHooks.Provider.Conformance` with `provider: YourProvider` in your test
+suite to check the supplied-decoder contract. For envelopes, pass
+`payload: verified_bytes` matching the provider's input and test each supported
+shape. The template compiles without ExUnit in the package's runtime dependencies.
+
+Decode precedence is unchanged: an explicit inbound `body_format`, then the
+provider's decoder, then `body_format/0`, then JSON. For a host-defined decoder,
+`decode_payload/2` precedes `/1`; a generated decoder uses its scheme with the
+request policy. Explicit `body_format` on a JWS route still decodes the compact
+token as the specified format. Ledgers without `json_decoder` keep accepting
+existing providers and use the default JSON policy.
+
 Subscriptions can opt in to `pausable :on` in their `subscription` section.
 Before enabling it, migrate the subscription table to add `paused`, a boolean
 column with `NOT NULL` and default `false`, including existing rows. Applications

@@ -59,7 +59,10 @@ defmodule AshHooks do
         Opt-in payload decoding for this route. `:form` decodes
         application/x-www-form-urlencoded names and values without interpreting
         bracket notation. Verification still receives the exact raw bytes.
-        When unset, use the provider's `decode_payload/1` callback or JSON.
+        When unset, use the provider's decoder, then its `body_format/0`, then JSON.
+        JSON uses the ledger's `inbound_delivery.json_decoder`. A generated
+        decoder uses that policy; otherwise `decode_payload/2` precedes a
+        host-defined `decode_payload/1`.
         The request Content-Type never enables a decoder implicitly.
         """
       ],

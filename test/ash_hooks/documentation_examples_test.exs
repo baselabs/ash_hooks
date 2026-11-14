@@ -482,6 +482,17 @@ defmodule AshHooks.DocumentationContentTest do
     end
   end
 
+  @tag documented_examples: ["upgrade-json-decoder-provider"]
+  test "the decoder migration example keeps direct calls and honors the request decoder" do
+    provider = Docs.compile("upgrade-json-decoder-provider")
+    body = ~s({"original":true})
+    assert {:ok, %{"original" => true}} = provider.decode_payload(body)
+    sentinel = %{"from_request_decoder" => true}
+    decoder = fn ^body -> {:ok, sentinel} end
+
+    assert {:ok, ^sentinel} = AshHooks.Provider.decode_payload(provider, body, nil, decoder)
+  end
+
   @tag documented_examples: ["verify-form-provider"]
   test "form recipe signs sorted form fields and checks the JSON body digest" do
     module = Docs.compile("verify-form-provider")

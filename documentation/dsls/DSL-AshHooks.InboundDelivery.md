@@ -53,6 +53,16 @@ event IDs, and scope keys. Payloads can contain personal information.
 Define read policies in your domain; the extension does not inject them.
 The README's retention and security section explains these obligations.
 
+Configure `json_decoder` to enforce a JSON policy for this ledger, such as
+duplicate-member rejection. The MFA receives bytes followed by its configured
+arguments and returns `{:ok, map_or_list}` or `{:error, reason}`. The default
+is `{Jason, :decode, []}`. Ingress carries one decoder through each request,
+including JWS protected headers, claims, and the delivered payload. Claims
+and delivery decode the same bytes without caching the result.
+Providers with a host-defined `decode_payload/1` need `decode_payload/2`
+before this option is configured; generated decoders use the policy directly.
+See `AshHooks.Provider.Conformance` for the provider test contract.
+
 
 ## inbound_delivery
 Configuration of this resource as the inbound webhook ledger.
@@ -67,6 +77,7 @@ Configuration of this resource as the inbound webhook ledger.
 
 | Name | Type | Default | Docs |
 |------|------|---------|------|
+| [`json_decoder`](#inbound_delivery-json_decoder){: #inbound_delivery-json_decoder } | `mfa` |  | JSON decoding policy for every request on this ledger. Called as `apply(module, function, [bytes \| args])`, returning `{:ok, map_or_list}` or `{:error, reason}`. Defaults to `Jason.decode/1`. Ingress passes the same request-scoped decoder to JWS protected-header, claims, and payload decoding. Errors, exceptions, and scalar results are malformed payloads; invalid claim types remain invalid signatures. Explicit declaration `body_format` still takes precedence. A provider with a host-defined `decode_payload/1` must also implement `decode_payload/2` when this option is configured. Generated `/1` callbacks are exempt; their direct calls always use the default decoder. Hand-written `/2` implementations must decode JSON only through the function supplied to them. |
 | [`ingress_tracking`](#inbound_delivery-ingress_tracking){: #inbound_delivery-ingress_tracking } | `:off \| :on` | `:off` | With `:on`, injects a `duplicates` counter and attempts to store a payload-less `:failed_verification` rejection row per source, scope, and raw-body digest. Repeated rejected bodies share one row. `failed_verification` counts stored rows, not rejected requests. Duplicate accepted deliveries increment `duplicates`. Requires a migration for that column. |
 | [`scope_identity`](#inbound_delivery-scope_identity){: #inbound_delivery-scope_identity } | `list(atom)` | `[]` | Consumer-declared attributes extending the unique-ingest identity. Provider event ids are not globally unique (across accounts etc.), so the identity is `[:provider, :external_event_id \| scope_identity]`. Each slot must be a non-nullable attribute on this resource (verifier rejects otherwise) and its value must be supplied on every ingest. |
 | [`lease_seconds`](#inbound_delivery-lease_seconds){: #inbound_delivery-lease_seconds } | `pos_integer` | `30` | Default claim lease duration. When a claim's lease expires the row becomes claimable again (reaper path); the stale owner can no longer mark it. |

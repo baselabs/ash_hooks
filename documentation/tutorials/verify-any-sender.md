@@ -490,6 +490,22 @@ so the same signed content counts once even if it arrives with a differently
 encoded signature. The example pins RS256 and loads a PEM-encoded RSA public key
 from the secret source.
 
+The ledger's `inbound_delivery.json_decoder` sets the JSON policy for each
+request. It is an MFA called with the JSON bytes followed by its configured
+arguments, returning `{:ok, map_or_list}` or `{:error, reason}`; the default
+is `{Jason, :decode, []}`. The same function decodes the protected header,
+claims, and delivered payload. Claims and delivery decode the same payload
+bytes without caching a value between callbacks. Decoder refusals are malformed
+payloads; invalid `exp` or `nbf` types remain invalid signatures.
+
+A host-written verifier receives this function as `ctx.json_decoder`.
+Generated payload decoders use it even when verification is overridden.
+Direct calls to the generated `decode_payload/1` use `Jason.decode/1`.
+Providers overriding that decoder must add `decode_payload/2` before a ledger
+configures `json_decoder`, and decode JSON only through the supplied function.
+Use `AshHooks.Provider.Conformance` in provider tests to enforce that contract.
+See the tested migration example in `UPGRADING.md`.
+
 ### A timestamp in another format
 
 When the timestamp is not Unix seconds or milliseconds, read it with a host

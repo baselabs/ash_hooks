@@ -1092,6 +1092,15 @@ defmodule AshHooks.Ingress do
   # shape explicitly; ingress never substitutes the raw digest after a
   # callback error.
   defp resolve(resource, name, raw_body, ctx) do
+    {module, function, args} =
+      Extension.get_opt(resource, [:inbound_delivery], :json_decoder, {Jason, :decode, []})
+
+    decoder = fn bytes ->
+      Provider.decode_json(bytes, fn input -> apply(module, function, [input | args]) end)
+    end
+
+    ctx = Map.put(ctx, :json_decoder, decoder)
+
     with {:ok, inbound} <- fetch_inbound(resource, name),
          :ok <- check_paused(inbound, name, ctx[:tenant]),
          {:ok, provider} <- resolve_provider(inbound, name),
@@ -1103,7 +1112,7 @@ defmodule AshHooks.Ingress do
       digest = content_digest(raw_body)
 
       {payload, parsed_type, decode_result} =
-        decode_and_parse(provider, raw_body, inbound.body_format)
+        decode_and_parse(provider, raw_body, inbound.body_format, decoder)
 
       with {:ok, external_event_id} <-
              external_event_id(inbound, provider, payload, digest, name) do
@@ -1155,8 +1164,8 @@ defmodule AshHooks.Ingress do
   # only accept maps fail lists closed through their own catch-all clauses
   # ({:error, :malformed_payload}) — the shape decision belongs to the
   # provider, not the pipeline.
-  defp decode_and_parse(provider, raw_body, format) do
-    case Provider.decode_payload(provider, raw_body, format) do
+  defp decode_and_parse(provider, raw_body, format, decoder) do
+    case Provider.decode_payload(provider, raw_body, format, decoder) do
       {:ok, payload} when is_map(payload) or is_list(payload) ->
         {payload, provider.parse_event_type(payload), :ok}
 
@@ -1298,7 +1307,8 @@ defmodule AshHooks.Ingress do
             header_list: header_list,
             method: ctx[:method],
             request_uri: ctx[:request_uri],
-            tenant: ctx[:tenant]
+            tenant: ctx[:tenant],
+            json_decoder: ctx.json_decoder
           }
           |> maybe_put_replay_window(inbound)
 
