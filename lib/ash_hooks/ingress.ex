@@ -379,13 +379,21 @@ defmodule AshHooks.Ingress do
     )
   end
 
-  # dialyzer proved (Elixir 1.18 and 1.20 alike) that every error reaching
-  # here is one of the Invalid exception structs; the class is the
-  # underscored final segment.
-  defp error_class(error) do
-    [_ash_hooks, _errors, _invalid, class] = error.__struct__ |> Module.split()
-    Macro.underscore(class) |> String.to_atom()
+  for {module, token} <- [
+        {AshHooks.Errors.Invalid.InvalidSignature, :invalid_signature},
+        {AshHooks.Errors.Invalid.NoWebhookSecret, :no_webhook_secret},
+        {AshHooks.Errors.Invalid.StaleTimestamp, :stale_timestamp},
+        {AshHooks.Errors.Invalid.UnknownEventType, :unknown_event_type},
+        {AshHooks.Errors.Invalid.MalformedPayload, :malformed_payload},
+        {AshHooks.Errors.Invalid.UnknownSource, :unknown_source},
+        {AshHooks.Errors.Invalid.KeyKindMismatch, :key_kind_mismatch},
+        {AshHooks.Errors.Invalid.UnknownKey, :unknown_key},
+        {AshHooks.Errors.Unknown.KeyUnavailable, :key_unavailable}
+      ] do
+    defp error_class(%unquote(module){}), do: unquote(token)
   end
+
+  defp error_class(_), do: :unknown_error
 
   # The duplicate counter (ingress_tracking :on): bumped on every
   # duplicate ingest through the gated machine action; failures never
@@ -1364,6 +1372,9 @@ defmodule AshHooks.Ingress do
 
           {:error, reason} ->
             verify_with_previous(provider, raw_body, verify_ctx, inbound, reason, name)
+
+          _unknown ->
+            {:error, Errors.from_reason(:unknown_error, provider: name)}
         end
 
       :error ->
@@ -1424,7 +1435,7 @@ defmodule AshHooks.Ingress do
       {:ok, previous} ->
         case provider.verify_signature(raw_body, verify_ctx, previous) do
           :ok -> :ok
-          {:error, _previous_reason} -> {:error, Errors.from_reason(reason, provider: name)}
+          _previous_error -> {:error, Errors.from_reason(reason, provider: name)}
         end
 
       _no_previous ->

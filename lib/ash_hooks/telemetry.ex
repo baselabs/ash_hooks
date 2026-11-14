@@ -127,7 +127,7 @@ defmodule AshHooks.Telemetry do
     secret_resolution signing_failed source_conflict stale_row timeout
     tls_alert truncated_body unsafe_destination unresolved_host
     unresolved_route worker_route_mismatch unknown_source key_kind_mismatch
-    unknown_key key_unavailable)
+    unknown_key key_unavailable invalid_signature unknown_error kind_not_allowed)
 
   def classify_token(term) when is_atom(term), do: classify_token(Atom.to_string(term))
 

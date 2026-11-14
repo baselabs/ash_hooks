@@ -17,6 +17,7 @@ defmodule AshHooks.KeyRegistryPostgresTest do
   end
 
   for name <- Cases.cases() do
+    if name == :canonical_disposal_tenant, do: @tag(:real_receiver)
     @tag registry_case: name
     test "registry #{name}", context do
       ExUnit.CaptureLog.capture_log(fn -> apply(Cases, unquote(name), [context]) end)

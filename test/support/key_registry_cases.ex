@@ -5,7 +5,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
   alias Ash.Resource.Info
   alias AshHooks.KeyRegistry
   alias AshHooks.KeyRegistry.{Storage, Transitions}
-  alias AshHooks.Test.{RegistryCustodian, RegistryOtherRepo}
+  alias AshHooks.Test.{AnswerCustodian, CustodySigningCases, RegistryCustodian, RegistryOtherRepo}
   alias Spark.Dsl.Extension
   require Spark.Test
 
@@ -436,10 +436,16 @@ defmodule AshHooks.Test.KeyRegistryCases do
   end
 
   def canonical_disposal_tenant(ctx) do
+    endpoint = Module.concat(ctx.endpoint, CanonicalSigning)
+    compile_endpoint(ctx, endpoint, custodian: AnswerCustodian)
+    ctx = %{ctx | endpoint: endpoint}
+    AnswerCustodian.configure(ctx.custodian, :real, self())
+    on_exit(fn -> AnswerCustodian.clear() end)
     {:ok, row} = issue(ctx, tenant: "017")
     assert row.custody_tenant == "17"
     assert :ok = ctx.custodian.store(row.ref, @material, "17", @kind)
     owner = attach!(ctx, row)
+    CustodySigningCases.canonical_worker(ctx, owner)
     Ash.destroy!(owner, authorize?: false, tenant: "17")
     assert {:ok, _} = sweep(ctx, tenant: "017")
     assert stored(ctx, row).state == :destroyed
@@ -1456,7 +1462,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
     |> Ash.update!(authorize?: false)
   end
 
-  defp compile_registry(ctx) do
+  def compile_registry(ctx) do
     storage = storage(ctx.storage, Map.get(ctx, :registry_repo, ctx.repo), ctx.registry_table)
     primary_key = if Map.get(ctx, :extra_pk?, false), do: quote(do: uuid_primary_key(:id))
     timeout = Map.get(ctx, :issue_timeout)
@@ -1478,7 +1484,11 @@ defmodule AshHooks.Test.KeyRegistryCases do
 
           attributes do
             unquote(primary_key)
-            attribute :tenant_id, :integer, allow_nil?: false, default: 17, public?: true
+
+            attribute :tenant_id, unquote(Map.get(ctx, :tenant_type, :integer)),
+              allow_nil?: false,
+              default: 17,
+              public?: true
           end
 
           unquote(tenancy(Map.get(ctx, :tenancy?, true)))
@@ -1491,7 +1501,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
     )
   end
 
-  defp compile_endpoint(ctx, name, opts) do
+  def compile_endpoint(ctx, name, opts) do
     settings =
       Keyword.merge(
         [
@@ -1510,7 +1520,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
     {primary_filter?, settings} = Keyword.pop(settings, :primary_filter?, false)
     {base_filter?, settings} = Keyword.pop(settings, :base_filter?, false)
     settings = Keyword.delete(settings, :repo) |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-    options = Enum.map(settings, fn {key, value} -> {key, [], [value]} end)
+    options = Enum.map(settings, fn {key, value} -> {key, [], [Macro.escape(value)]} end)
     storage = storage(ctx.storage, repo, ctx.endpoint_table)
 
     owner_changes =

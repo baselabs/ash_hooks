@@ -72,8 +72,12 @@ defmodule AshHooks.Delivery do
   require Ash.Query
 
   alias Ash.Resource.Info, as: ResourceInfo
-  alias AshHooks.Errors.Unknown.UnknownError
+  alias AshHooks.Custody
+  alias AshHooks.Custody.Key
+  alias AshHooks.Errors.Invalid.{InvalidSignature, KeyKindMismatch, UnknownKey}
+  alias AshHooks.Errors.Unknown.{KeyUnavailable, UnknownError}
   alias AshHooks.Http.Headers
+  alias AshHooks.KeyRegistry.Transitions
   alias AshHooks.{OutboundBinding, PrimaryKey, Signing, Tenancy}
   alias Spark.Dsl.Extension
 
@@ -397,8 +401,9 @@ defmodule AshHooks.Delivery do
   `{:error, :inside_transaction}` before starting a process or accessing the
   database. Enqueue a job for execution after the host transaction commits.
 
-  Required config keys are `:deliveries`, `:endpoints`, and
-  `:secret_resolver`. `:attempt_timeout` defaults to 25,000 ms and
+  Required config keys are `:deliveries` and `:endpoints`. Byte slots need
+  `:secret_resolver` here or on the endpoint resource; custody slots read the
+  endpoint's custodian and kind markers. `:attempt_timeout` defaults to 25,000 ms and
   `:finalization_allowance` to 5,000 ms. Retry defaults are 10 attempts,
   2-second base backoff, 3,600-second maximum backoff, and an 86,400-second
   `Retry-After` cap. Omitted or `nil` retry options use these defaults.
@@ -927,7 +932,7 @@ defmodule AshHooks.Delivery do
 
   Options: `:type` (required, atom or nonempty binary), `:payload`, `:signing_mode`,
   `:deliveries` (the delivery resource, required), `:secret_resolver`
-  (required, the driver contract), `:max_attempts` (default 1, so a test
+  (the byte-slot driver contract, optional for custody endpoints), `:max_attempts` (default 1, so a test
   send reports one attempt's outcome; a higher value permits later retries
   through an explicit `run/2` call, while `test_send/2` itself invokes the
   runner once),
@@ -1287,15 +1292,13 @@ defmodule AshHooks.Delivery do
     case AshHooks.Phase.run(
            config[:endpoints],
            tenant,
-           &Ash.get(&1.resource, row.endpoint_id,
-             authorize?: false,
-             tenant: tenant,
-             context: AshHooks.Phase.context(config[:endpoints])
-           )
+           &read_signing_endpoint(&1.resource, row.endpoint_id, tenant, config[:endpoints])
          ) do
       # the ONE enabled-check (H4): the injected status attribute or the
       # consumer-mapped switch; exactly one attribute dead-letters
-      {:ok, endpoint} ->
+      {:ok, {endpoint, custody_tenant}} ->
+        config = Keyword.put(config, :custody_tenant, custody_tenant)
+
         if AshHooks.Endpoint.enabled?(endpoint) do
           attempt_enabled(row, endpoint, config, tenant)
         else
@@ -1313,6 +1316,30 @@ defmodule AshHooks.Delivery do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp read_signing_endpoint(resource, id, tenant, endpoints) do
+    with {:ok, endpoint} <-
+           Ash.get(resource, id,
+             authorize?: false,
+             tenant: tenant,
+             context: AshHooks.Phase.context(endpoints)
+           ),
+         {:ok, custody_tenant} <- custody_tenant(endpoint) do
+      {:ok, {endpoint, custody_tenant}}
+    end
+  end
+
+  defp custody_tenant(%resource{} = endpoint) do
+    if Extension.get_opt(resource, [:endpoint], :custodian) do
+      Custody.canonical_tenant(
+        Transitions.owner_tenant(endpoint),
+        resource,
+        Custody.tenant_options(resource)
+      )
+    else
+      {:ok, nil}
     end
   end
 
@@ -1459,6 +1486,13 @@ defmodule AshHooks.Delivery do
       {:error, reason}
       when reason in [:certificate_pin_resolution_failed, :certificate_pin_requires_bounded] ->
         dead_letter(row, error_string(reason), config, tenant)
+
+      {:error, %error{} = reason}
+      when error in [KeyKindMismatch, UnknownKey] ->
+        dead_letter(row, error_string(reason), config, tenant)
+
+      {:error, :kind_not_allowed} ->
+        dead_letter(row, "kind_not_allowed", config, tenant)
 
       # secret-resolution and signing failures are RETRYABLE (the
       # classification table): config is fixable while the row climbs
@@ -1916,19 +1950,23 @@ defmodule AshHooks.Delivery do
   # ────────────────────────── signing ──────────────────────────
 
   defp signing_headers(row, endpoint, config, tenant) do
-    resolver = config[:secret_resolver]
     # the worker macro's :tenant_aware_secrets switch: the resolver
     # contract becomes f(ref, tenant): explicit, no arity magic
-    tenant_aware? = config[:tenant_aware_secrets] == true
-
-    with {:ok, secret} <- resolve(endpoint.secret_ref, resolver, tenant, tenant_aware?),
+    with {:ok, secret} <- resolve_slot(endpoint, :secret_ref, endpoint.secret_ref, config, tenant),
          previous_ref = previous_signing_ref(endpoint, :standard, config),
          legacy_previous_ref = previous_signing_ref(endpoint, :legacy, config),
          {:ok, previous} <-
-           resolve_opt(previous_ref, resolver, tenant, tenant_aware?),
-         {:ok, legacy} <- resolve_opt(endpoint.legacy_secret_ref, resolver, tenant, tenant_aware?),
+           resolve_slot(endpoint, :previous_secret_ref, previous_ref, config, tenant),
+         {:ok, legacy} <-
+           resolve_slot(endpoint, :legacy_secret_ref, endpoint.legacy_secret_ref, config, tenant),
          {:ok, legacy_previous} <-
-           resolve_opt(legacy_previous_ref, resolver, tenant, tenant_aware?) do
+           resolve_slot(
+             endpoint,
+             :legacy_previous_secret_ref,
+             legacy_previous_ref,
+             config,
+             tenant
+           ) do
       opts =
         sw_secret(secret)
         |> Keyword.merge(sw_previous(previous))
@@ -1936,7 +1974,7 @@ defmodule AshHooks.Delivery do
 
       mode = row.signing_mode || :standard
 
-      headers =
+      result =
         Signing.headers_for_mode(
           mode,
           row.event_uuid,
@@ -1964,11 +2002,53 @@ defmodule AshHooks.Delivery do
         |> Map.replace(:legacy_previous_secret_ref, legacy_previous_ref)
         |> Map.reject(fn {_slot, ref} -> is_nil(ref) end)
 
-      {:ok, {Map.put(headers, "content-type", "application/json"), used_refs}}
+      case result do
+        {:error, _} = error -> error
+        headers -> {:ok, {Map.put(headers, "content-type", "application/json"), used_refs}}
+      end
     end
   rescue
     ArgumentError -> {:error, :signing_failed}
   end
+
+  defp resolve_slot(_endpoint, field, nil, _config, _tenant) when field != :secret_ref,
+    do: {:ok, nil}
+
+  defp resolve_slot(%resource{} = endpoint, field, ref, config, tenant) do
+    custodian = Extension.get_opt(resource, [:endpoint], :custodian)
+    kind_field = Keyword.get(Transitions.slots(resource), field)
+    kind = kind_field && Map.get(endpoint, kind_field)
+
+    resolver =
+      Extension.get_opt(resource, [:endpoint], :secret_resolver) ||
+        config[:secret_resolver]
+
+    cond do
+      match?({:sender_hmac, _}, kind) ->
+        {:error, :kind_not_allowed}
+
+      custodian && kind ->
+        {:ok,
+         %Key{
+           custodian: custodian,
+           ref: ref,
+           tenant: config[:custody_tenant],
+           kind: kind
+         }}
+
+      custodian && is_nil(resolver) ->
+        {:error, KeyKindMismatch.exception([])}
+
+      true ->
+        resolve_byte_slot(field, ref, resolver, tenant, config[:tenant_aware_secrets] == true)
+    end
+  end
+
+  defp resolve_byte_slot(:secret_ref, ref, resolver, tenant, tenant_aware?),
+    do: resolve(ref, resolver, tenant, tenant_aware?)
+
+  defp resolve_byte_slot(_field, ref, resolver, tenant, tenant_aware?),
+    do: resolve_opt(ref, resolver, tenant, tenant_aware?)
 
   defp previous_signing_ref(endpoint, slot, config) do
     fields = AshHooks.KeyLifecycle.fields(slot)
@@ -2036,8 +2116,14 @@ defmodule AshHooks.Delivery do
   defp sw_previous(secret), do: sw_option(:previous, secret)
 
   defp sw_option(kind, secret) do
+    asymmetric? =
+      case secret do
+        %Key{kind: key_kind} -> key_kind == {:standard_webhooks, :v1a}
+        bytes when is_binary(bytes) -> String.starts_with?(bytes, "whsk_")
+      end
+
     key =
-      case {kind, String.starts_with?(secret, "whsk_")} do
+      case {kind, asymmetric?} do
         {:base, true} -> :whsk
         {:base, false} -> :whsec
         {:previous, true} -> :previous_whsk
@@ -2989,6 +3075,12 @@ defmodule AshHooks.Delivery do
   defp error_string({:secret_resolution, _reason}), do: "secret_resolution"
   defp error_string({:adapter_crash, _inner}), do: "adapter_crash"
   defp error_string(:transport_resolution), do: "transport_resolution"
+
+  defp error_string(%KeyKindMismatch{}), do: "key_kind_mismatch"
+  defp error_string(%UnknownKey{}), do: "unknown_key"
+  defp error_string(%KeyUnavailable{}), do: "key_unavailable"
+  defp error_string(%InvalidSignature{}), do: "invalid_signature"
+  defp error_string(%UnknownError{}), do: "unknown_error"
 
   defp error_string(term), do: AshHooks.Telemetry.classify_token(term)
 end

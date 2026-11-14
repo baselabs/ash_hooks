@@ -85,6 +85,7 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     alias AshHooks.{BodyReader, Info, Ingress, Provider}
     alias AshHooks.Errors.Invalid.{InvalidSignature, MalformedPayload, StaleTimestamp}
+    alias AshHooks.Errors.Invalid.{KeyKindMismatch, UnknownKey, UnknownSource}
     alias Plug.Conn.Query
 
     @mfa {:tuple, [:atom, :atom, {:list, :any}]}
@@ -157,7 +158,9 @@ if Code.ensure_loaded?(Plug.Conn) do
     Terminal rows (`:processed`, `:failed_permanent`, `:superseded`) get 200;
     other successful ledger outcomes get 500 so the sender retries. Typed
     invalid-signature, stale-timestamp and malformed-payload errors get 400.
-    Everything else gets 503 with `retry-after` from `options[:retry_after]`.
+    `UnknownSource` gets 404; `KeyKindMismatch` and `UnknownKey` get 500.
+    `KeyUnavailable` and unrecognized failures get 503 with `retry-after`
+    from `options[:retry_after]`.
     All default bodies are empty. Custom policies' responses are never amended.
     """
     @spec default_response(Provider.ingest_outcome(), keyword()) :: Provider.http_response()
@@ -171,6 +174,12 @@ if Code.ensure_loaded?(Plug.Conn) do
 
         {:error, %error{}} when error in [InvalidSignature, StaleTimestamp, MalformedPayload] ->
           {400, [], ""}
+
+        {:error, %UnknownSource{}} ->
+          {404, [], ""}
+
+        {:error, %error{}} when error in [KeyKindMismatch, UnknownKey] ->
+          {500, [], ""}
 
         _ ->
           {503, retry_header(options), ""}
