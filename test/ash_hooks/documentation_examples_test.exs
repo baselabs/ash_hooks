@@ -364,8 +364,7 @@ defmodule AshHooks.DocumentationContentTest do
   end
 
   # Error and raised messages are shipped text too, though no document holds
-  # them: every string literal in lib, read from the parsed source, so comments
-  # (which never reach a developer) are not in scope.
+  # them. Check every string literal in lib, read from the parsed source.
   test "string literals in lib carry no em or en dash" do
     offenders =
       "lib/**/*.ex"
@@ -375,6 +374,17 @@ defmodule AshHooks.DocumentationContentTest do
 
     assert offenders == [],
            "em or en dash in lib string literals:\n" <> Enum.join(offenders, "\n")
+  end
+
+  test "shipped Elixir source carries no em or en dash" do
+    offenders =
+      for path <- Enum.sort(["mix.exs" | Path.wildcard("lib/**/*.ex")]),
+          {text, line} <- path |> File.stream!() |> Stream.with_index(1),
+          String.contains?(text, @long_dashes),
+          do: "#{path}:#{line}"
+
+    assert offenders == [],
+           "em or en dash in shipped Elixir source:\n" <> Enum.join(offenders, "\n")
   end
 
   test "module documentation links to tested mounting examples" do
