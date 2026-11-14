@@ -26,6 +26,15 @@ for rotation and the legacy envelope). All four are
 path including consumer-defined actions: secrets live behind consumer
 callbacks; store references to those secrets in the endpoint rows.
 
+With `key_lifecycle :on`, a standard previous key signs only before its
+`previous_secret_retired_at`, even if the retirement sweep is delayed.
+A stored previous reference without a retirement time is an undated state:
+it keeps signing, the sweep skips it, and `roll_secret/2` refuses it with
+`{:error, :previous_secret_undated}`. Resolve it with
+`schedule_previous_retirement/3` or `expire_previous_secret/2`. No retirement
+date is inferred when lifecycle tracking is adopted. Without lifecycle
+tracking, previous keys keep signing until their references are removed.
+
 With `status_attribute` set, the extension uses that attribute instead of
 injecting `status`. The dispatcher skips endpoints whose
 mapped value is outside `enabled_values`, and the 410 auto-disable flips
@@ -46,6 +55,10 @@ expose it to application callers. The 410 rule uses it as a system write
 callers to disable endpoints. See `AshHooks.OutboundDelivery` for the
 delivery ledger's action policy requirements.
 
+The lifecycle helpers perform system writes (`authorize?: false`) after
+checking tenancy. Authorize application callers before exposing rolling,
+retirement scheduling, or immediate retirement to them.
+
 
 ## endpoint
 Configuration of this resource as the outbound webhook endpoint.
@@ -64,7 +77,7 @@ Configuration of this resource as the outbound webhook endpoint.
 |------|------|---------|------|
 | [`status_attribute`](#endpoint-status_attribute){: #endpoint-status_attribute } | `atom` |  | The consumer's enable/disable attribute the package maps onto (e.g. `active`). When set, `status` is not injected; the mapped attribute is the one durable switch: the dispatcher skips endpoints whose value is outside `enabled_values`, and the 410 auto-disable sets it to `disabled_value`. The attribute must be declared in the resource's own `attributes` block (not another extension's injection), and `enabled_values`/`disabled_value` must be spelled out explicitly, or compilation fails closed. |
 | [`version_pinning`](#endpoint-version_pinning){: #endpoint-version_pinning } | `:off \| :on` | `:off` | Whether the payload-version pinning column is injected (default `:off`, leaving existing schemas untouched). With `:on`, the extension injects `pinned_payload_version` (integer, nullable): an endpoint pinning a version its event's declaration carries (in `payload_versions`) receives THAT variant builder's bytes instead of the dispatch payload; a pin on an undeclared version fails the endpoint closed at dispatch. Declaring `:on` requires a migration for the column. |
-| [`key_lifecycle`](#endpoint-key_lifecycle){: #endpoint-key_lifecycle } | `:off \| :on` | `:off` | Whether the signing-key lifecycle columns are injected (default `:off`, leaving existing schemas untouched). With `:on`, the extension injects `secret_created_at`, `secret_first_used_at`, `secret_retired_at`, `previous_secret_created_at`, `previous_secret_first_used_at`, and `previous_secret_retired_at` (the scheduled deadline while the previous reference remains, then the actual retirement time when the reference is removed). `roll_secret/2`, `expire_previous_secret/2` (one endpoint), and `expire_previous_secrets/2` (a resource) accept optional arguments. Declaring `:on` requires a migration for the six columns. Timestamps only, never secret material. |
+| [`key_lifecycle`](#endpoint-key_lifecycle){: #endpoint-key_lifecycle } | `:off \| :on` | `:off` | Whether the signing-key lifecycle columns are injected (default `:off`, leaving existing schemas untouched). With `:on`, the extension injects `secret_created_at`, `secret_first_used_at`, `secret_retired_at`, `previous_secret_created_at`, `previous_secret_first_used_at`, and `previous_secret_retired_at` (the scheduled deadline while the previous reference remains, then the actual retirement time when the reference is removed). Signing omits the standard previous key at its deadline, before the sweep removes its reference. An undated previous key keeps signing and blocks rolling until `schedule_previous_retirement/3` or `expire_previous_secret/2` resolves it; the sweep skips it. `roll_secret/2`, `schedule_previous_retirement/3`, `expire_previous_secret/2` (one endpoint), and `expire_previous_secrets/2` (a resource) accept optional arguments. Declaring `:on` requires a migration for the six columns. Timestamps only, never secret material. |
 | [`response_capture_attributes`](#endpoint-response_capture_attributes){: #endpoint-response_capture_attributes } | `:off \| :on` | `:off` | Whether the per-endpoint response-capture columns are injected (default `:off`, leaving existing schemas untouched). With `:on`, the extension injects `response_capture` (boolean, default `false`), `response_capture_max_bytes` (integer, default 2048), `response_capture_retention_seconds` (integer, default 30 days), and `response_header_allowlist` (string array, default none). Capture is still per ROW: an endpoint records response bodies in its attempt history only when its `response_capture` value is `true`. The captured bytes are bounded by the row's cap, pass the package's redaction floor, and only allowlisted response header names are kept. Declaring `:on` requires a migration for the four new columns. |
 | [`enabled_values`](#endpoint-enabled_values){: #endpoint-enabled_values } | `list(any)` |  | Required with `status_attribute`: the mapped attribute's values that make the endpoint deliverable (e.g. `[true]`). A defaulted list against a boolean or custom-enum switch would silently match nothing (zero deliveries, no error), so the mapping refuses to compile without it. |
 | [`disabled_value`](#endpoint-disabled_value){: #endpoint-disabled_value } | `any` |  | REQUIRED with `status_attribute`: the value the injected `:disable` action (and the 410 auto-disable) writes to the mapped attribute (e.g. `false`). |

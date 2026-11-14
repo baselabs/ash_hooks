@@ -1382,9 +1382,9 @@ defmodule AshHooks.Delivery do
 
     with {:ok, adapter_opts} <- endpoint_http_opts(adapter_opts, endpoint, config, tenant),
          :ok <- pin_adapter(adapter, adapter_opts),
-         {:ok, headers} <- signing_headers(row, endpoint, config, tenant),
+         {:ok, {headers, used_refs}} <- signing_headers(row, endpoint, config, tenant),
          {:ok, headers} <- delivery_headers(headers, row, endpoint, config, tenant) do
-      stamp_key_first_used(endpoint, config, tenant)
+      stamp_key_first_used(endpoint, used_refs, config, tenant)
       send_signed(request, endpoint, headers, row, adapter_opts, config, tenant)
     else
       {:error, reason}
@@ -1498,57 +1498,39 @@ defmodule AshHooks.Delivery do
   end
 
   # First-use stamps for the key lifecycle (key_lifecycle :on resources):
-  # written at signing time — a key that signed was used, whatever the
-  # receiver said. WHERE-gated on the stamp still being nil, so
-  # steady-state sends stop writing; failures never break the send.
-  defp stamp_key_first_used(endpoint, config, tenant) do
+  # A key that signed was used, whatever the receiver said. Each atomic
+  # write checks that the same ref still occupies its slot and its stamp
+  # is nil. Stamp failures never break the send.
+  defp stamp_key_first_used(endpoint, used_refs, config, tenant) do
     resource = endpoint.__struct__
 
     if ResourceInfo.attribute(resource, :secret_first_used_at) do
       used_at = now(config)
 
-      stamp_first_used(
-        resource,
-        endpoint,
-        :mark_current_secret_used,
-        :secret_first_used_at,
-        used_at,
-        tenant
-      )
+      for {ref_field, stamp_field, action} <- [
+            {:secret_ref, :secret_first_used_at, :mark_current_secret_used},
+            {:previous_secret_ref, :previous_secret_first_used_at, :mark_previous_secret_used}
+          ],
+          ref = used_refs[ref_field],
+          not is_nil(ref),
+          is_nil(Map.get(endpoint, stamp_field)) do
+        require Ash.Expr
 
-      if endpoint.previous_secret_ref do
-        stamp_first_used(
-          resource,
-          endpoint,
-          :mark_previous_secret_used,
-          :previous_secret_first_used_at,
-          used_at,
-          tenant
-        )
+        fence =
+          Ash.Expr.expr(^Ash.Expr.ref(ref_field) == ^ref and is_nil(^Ash.Expr.ref(stamp_field)))
+
+        _ =
+          resource
+          |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+          |> Ash.Query.filter(^fence)
+          |> Ash.bulk_update(action, %{used_at: used_at},
+            authorize?: false,
+            return_records?: false,
+            return_errors?: false,
+            strategy: [:atomic],
+            tenant: tenant
+          )
       end
-    end
-  end
-
-  defp stamp_first_used(resource, endpoint, action, field, used_at, tenant) do
-    if Map.get(endpoint, field) do
-      :ok
-    else
-      require Ash.Expr
-      nil_stamp = Ash.Expr.expr(is_nil(^Ash.Expr.ref(field)))
-
-      _ =
-        resource
-        |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-        |> Ash.Query.filter(^nil_stamp)
-        |> Ash.bulk_update(action, %{used_at: used_at},
-          authorize?: false,
-          return_records?: false,
-          return_errors?: false,
-          strategy: [:atomic],
-          tenant: tenant
-        )
-
-      :ok
     end
   end
 
@@ -1855,8 +1837,9 @@ defmodule AshHooks.Delivery do
     tenant_aware? = config[:tenant_aware_secrets] == true
 
     with {:ok, secret} <- resolve(endpoint.secret_ref, resolver, tenant, tenant_aware?),
+         previous_ref = previous_signing_ref(endpoint, config),
          {:ok, previous} <-
-           resolve_opt(endpoint.previous_secret_ref, resolver, tenant, tenant_aware?),
+           resolve_opt(previous_ref, resolver, tenant, tenant_aware?),
          {:ok, legacy} <- resolve_opt(endpoint.legacy_secret_ref, resolver, tenant, tenant_aware?),
          {:ok, legacy_previous} <-
            resolve_opt(endpoint.legacy_previous_secret_ref, resolver, tenant, tenant_aware?) do
@@ -1876,10 +1859,38 @@ defmodule AshHooks.Delivery do
           opts
         )
 
-      {:ok, Map.put(headers, "content-type", "application/json")}
+      fields =
+        case mode do
+          :standard ->
+            [:secret_ref, :previous_secret_ref]
+
+          :legacy ->
+            [:legacy_secret_ref, :legacy_previous_secret_ref]
+
+          :dual ->
+            [:secret_ref, :previous_secret_ref, :legacy_secret_ref, :legacy_previous_secret_ref]
+        end
+
+      used_refs =
+        endpoint
+        |> Map.take(fields)
+        |> Map.replace(:previous_secret_ref, previous_ref)
+        |> Map.reject(fn {_slot, ref} -> is_nil(ref) end)
+
+      {:ok, {Map.put(headers, "content-type", "application/json"), used_refs}}
     end
   rescue
     ArgumentError -> {:error, :signing_failed}
+  end
+
+  defp previous_signing_ref(endpoint, config) do
+    if ResourceInfo.attribute(endpoint.__struct__, :secret_created_at) &&
+         endpoint.previous_secret_retired_at &&
+         DateTime.compare(endpoint.previous_secret_retired_at, now(config)) != :gt do
+      nil
+    else
+      endpoint.previous_secret_ref
+    end
   end
 
   # No ref means no secret — checked FIRST so a config-shaped resolver can

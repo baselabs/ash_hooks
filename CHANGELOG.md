@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- `AshHooks.Endpoint.schedule_previous_retirement/3` sets a retirement time
+  for a standard previous key, including an undated reference adopted with
+  `key_lifecycle :on`. Past times and absent previous references are refused.
+
 ### Fixed
 
 - A transport resolver that raises, throws, exits, or returns an invalid value,
@@ -13,6 +19,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   retryable `transport_resolution` failure instead of falling back to HTTP.
   Error contents are neither stored nor emitted. Returning `nil` still selects
   HTTP.
+- With `key_lifecycle :on`, outbound signing omits the standard previous key
+  at its retirement instant, even before the sweep removes its reference.
+  Retired references are never resolved. First-use timestamps are written
+  only for keys that signed, with atomic reference checks that prevent a
+  concurrent roll from stamping replacement keys. Undated previous keys keep
+  signing, are skipped by the sweep, and refuse rolling until explicitly
+  scheduled or expired.
 - Error messages, raised messages and module documentation no longer use em or
   en dashes. Each sentence is rewritten in plain punctuation with its meaning
   unchanged, and a test keeps every string in `lib` free of them.

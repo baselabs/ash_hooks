@@ -13,6 +13,30 @@ change it to return `nil` explicitly when HTTP is intended. Fix failing resolver
 to return a transport module or `nil`; failed attempts retry under the delivery
 row's existing retry policy and attempt ceiling.
 
+With `key_lifecycle :on`, a standard previous signing key stops signing at
+`previous_secret_retired_at`, using the delivery's configured application
+clock. A delayed retirement sweep no longer extends its signing window, and
+the secret resolver is not called for that retired reference. Keep scheduling
+`AshHooks.Endpoint.expire_previous_secrets/2` to remove expired references.
+First-use timestamps record only keys that signed and cannot stamp replacement
+references during a concurrent roll. Attempt history still identifies the
+current signing key, and telemetry payloads are unchanged.
+
+When adopting lifecycle tracking, an existing `previous_secret_ref` with no
+retirement time remains undated. It continues signing, the sweep skips it,
+and `AshHooks.Endpoint.roll_secret/2` returns
+`{:error, :previous_secret_undated}`. Set an explicit retirement time with
+`AshHooks.Endpoint.schedule_previous_retirement/3`, or retire it immediately
+with `AshHooks.Endpoint.expire_previous_secret/2`. Scheduling accepts a
+`DateTime` at or after the application clock; a past time returns
+`{:error, :retirement_in_past}`, and a missing previous reference returns
+`{:error, :no_previous_secret}`. Supply `:now` consistently when using an
+application clock and `:tenant` for multitenant resources. No retirement date
+is inferred from deployment time.
+
+There is no new schema requirement. Resources without `key_lifecycle :on`
+and the legacy signing slots retain their existing retirement behavior.
+
 ## 3.0.0 → 3.1.0
 
 The Ash floor rises from 3.34.3 to 3.37.2, because three published advisories

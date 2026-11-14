@@ -12,8 +12,11 @@ defmodule AshHooks.Test.PreviousKeyRetirementCases do
     endpoint_storage = storage(storage, prefix <> "_endpoints", repo)
     delivery_storage = storage(storage, prefix <> "_deliveries", repo)
 
+    # Emit the same resource fixtures and ExUnit cases for both real data layers.
+    # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
     quote do
       use ExUnit.Case, async: false
+      @moduletag unquote(if storage == :postgres, do: [postgres: true], else: [])
 
       defmodule Endpoint do
         @moduledoc false
@@ -101,8 +104,8 @@ defmodule AshHooks.Test.PreviousKeyRetirementCases do
           response_snippet TEXT, last_error TEXT, next_attempt_at #{time_type},
           dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
           dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
-          attempt_token TEXT, send_lease_expires_at #{time_type},
-          enqueue_token TEXT, enqueue_lease_expires_at #{time_type}, endpoint_snapshot #{map_type},
+          attempt_token #{id_type}, send_lease_expires_at #{time_type},
+          enqueue_token #{id_type}, enqueue_lease_expires_at #{time_type}, endpoint_snapshot #{map_type},
           inserted_at #{time_type} NOT NULL, updated_at #{time_type} NOT NULL
         )
         """)
@@ -147,13 +150,14 @@ defmodule AshHooks.Test.PreviousKeyRetirementCases do
         {endpoint, session} = endpoint!(@clock)
         row = delivery!(endpoint)
         key = keys()["current"]
+        parent = self()
 
         resolver = fn
           "current" ->
             {:ok, key}
 
           "previous" ->
-            send(self(), :retired_ref_resolved)
+            send(parent, :retired_ref_resolved)
             {:error, :retired}
         end
 
@@ -288,6 +292,63 @@ defmodule AshHooks.Test.PreviousKeyRetirementCases do
                  Lifecycle.schedule_previous_retirement(expired, @clock, now: @clock)
       end
 
+      test "scheduling refuses invalid times and a replaced previous reference" do
+        endpoint = lifecycle_endpoint!(nil)
+
+        assert {:error, :invalid_retirement_time} =
+                 Lifecycle.schedule_previous_retirement(endpoint, nil, now: @clock)
+
+        replaced =
+          endpoint
+          |> Ash.Changeset.for_update(:update, %{previous_secret_ref: "replacement"})
+          |> Ash.update!(authorize?: false)
+
+        assert {:error, :previous_secret_changed} =
+                 Lifecycle.schedule_previous_retirement(endpoint, @clock, now: @clock)
+
+        stored = Ash.get!(Endpoint, endpoint.id, authorize?: false)
+        assert stored.previous_secret_ref == replaced.previous_secret_ref
+        assert is_nil(stored.previous_secret_retired_at)
+      end
+
+      test "scheduling defaults to the current UTC clock" do
+        endpoint = lifecycle_endpoint!(nil)
+        at = DateTime.add(DateTime.utc_now(), 3_600)
+        assert {:ok, scheduled} = Lifecycle.schedule_previous_retirement(endpoint, at)
+        assert scheduled.previous_secret_retired_at == at
+      end
+
+      @tag :real_receiver
+      test "legacy-only deliveries never stamp standard keys that did not sign" do
+        {endpoint, session} = endpoint!(DateTime.add(@clock, 60))
+
+        endpoint =
+          endpoint
+          |> Ash.Changeset.for_update(:update, %{legacy_secret_ref: "legacy"})
+          |> Ash.update!(authorize?: false)
+
+        keys = Map.put(keys(), "legacy", :crypto.strong_rand_bytes(32))
+        row = delivery!(endpoint, :legacy)
+        assert :ok = deliver(row, keys)
+
+        # Legacy sends have no Standard Webhooks id header to select on.
+        [request] = received_requests!(session)
+        headers = request_headers(request)
+        refute Map.has_key?(headers, "webhook-signature")
+
+        assert {:ok, _} =
+                 AshHooks.Legacy.verify(
+                   keys["legacy"],
+                   @body,
+                   headers["x-webhook-signature"],
+                   System.system_time(:second)
+                 )
+
+        stored = Ash.get!(Endpoint, endpoint.id, authorize?: false)
+        assert is_nil(stored.secret_first_used_at)
+        assert is_nil(stored.previous_secret_first_used_at)
+      end
+
       defp keys do
         Map.new(["current", "previous"], fn ref ->
           {ref, "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))}
@@ -335,15 +396,19 @@ defmodule AshHooks.Test.PreviousKeyRetirementCases do
         {lifecycle_endpoint!(retired_at, receiver_root() <> "/" <> session), session}
       end
 
-      defp delivery!(endpoint) do
+      defp delivery!(endpoint, mode \\ :standard) do
         Ash.create!(
           Delivery,
           %{
             event_uuid: "msg_" <> Ash.UUID.generate(),
             event_type: "retirement",
+            signing_mode: mode,
             payload: @body,
             endpoint_id: endpoint.id
-          }, action: :dispatch, authorize?: false)
+          },
+          action: :dispatch,
+          authorize?: false
+        )
       end
 
       defp deliver(row, keys, opts \\ []) do
@@ -363,22 +428,31 @@ defmodule AshHooks.Test.PreviousKeyRetirementCases do
       end
 
       defp received_headers!(session, row) do
+        [headers] =
+          for request <- received_requests!(session),
+              headers = request_headers(request),
+              headers["webhook-id"] == row.event_uuid,
+              do: headers
+
+        headers
+      end
+
+      defp request_headers(request) do
+        Map.new(request["headers"], &{String.downcase(&1["name"]), &1["value"]})
+      end
+
+      defp received_requests!(session) do
         {:ok, %{status: 200, body: body}} =
           Bounded.request(
             :get,
             receiver_root() <> "/api/session/" <> session <> "/requests",
             %{},
-            "", validate_destination: false, max_body_bytes: 1_048_576)
+            "",
+            validate_destination: false,
+            max_body_bytes: 1_048_576
+          )
 
-        requests = Jason.decode!(body)
-
-        [headers] =
-          for request <- requests,
-              headers = Map.new(request["headers"], &{String.downcase(&1["name"]), &1["value"]}),
-              headers["webhook-id"] == row.event_uuid,
-              do: headers
-
-        headers
+        Jason.decode!(body)
       end
     end
   end

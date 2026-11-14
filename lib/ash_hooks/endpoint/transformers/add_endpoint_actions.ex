@@ -35,7 +35,11 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
 
     lifecycle =
       if Extension.get_opt(dsl_state, [:endpoint], :key_lifecycle, :off) == :on do
-        [build_roll_secret(), build_retire_previous_secret() | build_first_used_actions()]
+        [
+          build_roll_secret(),
+          build_schedule_previous_retirement(),
+          build_retire_previous_secret() | build_first_used_actions()
+        ]
       else
         []
       end
@@ -66,6 +70,22 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
         {:ok, Transformer.add_entity(dsl_state, [:actions], disable)}
       end
     end
+  end
+
+  defp build_schedule_previous_retirement do
+    {:ok, retired_at} =
+      Builder.build_action_change(
+        Builtins.set_attribute(:previous_secret_retired_at, arg(:retired_at))
+      )
+
+    {:ok, action} =
+      Builder.build_action(:update, :schedule_previous_retirement,
+        accept: [],
+        arguments: [argument(:retired_at, :utc_datetime_usec, allow_nil?: false)],
+        changes: [retired_at]
+      )
+
+    action
   end
 
   defp add_all(dsl_state, entities) do
@@ -163,8 +183,8 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
 
   # First-use stamps, written by the delivery runtime at signing time.
   # Two actions, one per key slot: the runtime WHERE-gates each on the
-  # stamp still being nil (and, for the previous slot, the reference still
-  # being the one that signed), so steady-state sends stop writing.
+  # stamp still being nil and the reference still being the one that
+  # signed, so steady-state sends stop writing.
   # The warned-marker machine write: the sweep stamps `disable_warned_at`
   # on its first warning (gated WHERE still nil — concurrent sweeps
   # single-winner) and clears it on disable or recovery (gated on the

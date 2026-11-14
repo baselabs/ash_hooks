@@ -208,9 +208,14 @@ once; receivers deduplicate using the stable `webhook-id`.
   batch in dry run; repeated calls can select skipped rows again and return no cursor.
 - `:standard` signing uses `secret_ref`. `:legacy` and `:dual` also need
   `legacy_secret_ref`. References resolve through your secret store.
-- Key rolling keeps both keys signing until `previous_secret_ref` is cleared.
-  Schedule `AshHooks.Endpoint.expire_previous_secrets/2`. The retirement timestamp
-  records the actual removal time, including early retirement.
+- With `key_lifecycle :on`, key rolling keeps both standard keys signing
+  before `previous_secret_retired_at`; the previous key stops at that instant
+  even if the sweep is delayed. Schedule `AshHooks.Endpoint.expire_previous_secrets/2`
+  to remove expired references. An undated previous reference keeps signing,
+  is skipped by the sweep, and refuses rolling until
+  `AshHooks.Endpoint.schedule_previous_retirement/3` sets its deadline or
+  `AshHooks.Endpoint.expire_previous_secret/2` removes it. Without lifecycle
+  tracking, previous keys sign until their references are removed.
 - Endpoint health uses recorded durations, including failed attempts. Eventual
   successes include first-attempt successes. Explicit time bounds need `:from`.
   Supplying `:to` without `:from` returns `{:error, :from_required}`. Health sweeps

@@ -25,6 +25,15 @@ defmodule AshHooks.Endpoint do
   path including consumer-defined actions: secrets live behind consumer
   callbacks; store references to those secrets in the endpoint rows.
 
+  With `key_lifecycle :on`, a standard previous key signs only before its
+  `previous_secret_retired_at`, even if the retirement sweep is delayed.
+  A stored previous reference without a retirement time is an undated state:
+  it keeps signing, the sweep skips it, and `roll_secret/2` refuses it with
+  `{:error, :previous_secret_undated}`. Resolve it with
+  `schedule_previous_retirement/3` or `expire_previous_secret/2`. No retirement
+  date is inferred when lifecycle tracking is adopted. Without lifecycle
+  tracking, previous keys keep signing until their references are removed.
+
   With `status_attribute` set, the extension uses that attribute instead of
   injecting `status`. The dispatcher skips endpoints whose
   mapped value is outside `enabled_values`, and the 410 auto-disable flips
@@ -44,6 +53,10 @@ defmodule AshHooks.Endpoint do
   (`authorize?: false`). A permissive resource policy can otherwise allow
   callers to disable endpoints. See `AshHooks.OutboundDelivery` for the
   delivery ledger's action policy requirements.
+
+  The lifecycle helpers perform system writes (`authorize?: false`) after
+  checking tenancy. Authorize application callers before exposing rolling,
+  retirement scheduling, or immediate retirement to them.
   """
 
   @statuses [:enabled, :disabled]
@@ -95,9 +108,14 @@ defmodule AshHooks.Endpoint do
   @doc """
   Rolls the endpoint's signing secret reference with an overlap window:
   the incumbent reference moves to `previous_secret_ref` and the new reference
-  takes its place. Both keys sign while the previous reference remains stored.
-  Schedule `expire_previous_secrets/2` to remove expired references; signing
-  can continue past the deadline if that sweep is delayed.
+  takes its place. Both keys sign before `previous_secret_retired_at`;
+  at that instant, signing stops using the previous key independently of
+  `expire_previous_secrets/2`, which removes expired references.
+
+  An undated previous reference refuses the roll with
+  `{:error, :previous_secret_undated}`. Schedule its retirement with
+  `schedule_previous_retirement/3` or remove it with `expire_previous_secret/2`
+  before rolling.
 
       {:ok, rolled} =
         AshHooks.Endpoint.roll_secret(endpoint,
@@ -130,6 +148,7 @@ defmodule AshHooks.Endpoint do
         resource
         |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
         |> Ash.Query.filter(secret_ref == ^endpoint.secret_ref)
+        |> Ash.Query.filter(is_nil(previous_secret_ref) or not is_nil(previous_secret_retired_at))
         |> Ash.bulk_update(
           :roll_secret,
           %{
@@ -157,7 +176,7 @@ defmodule AshHooks.Endpoint do
           {:ok, rolled}
 
         %Ash.BulkResult{status: :success, records: []} ->
-          {:error, :rolled_underneath}
+          roll_conflict(endpoint, tenant)
 
         %Ash.BulkResult{} = result ->
           {:error, List.first(result.errors || []) || result}
@@ -165,10 +184,84 @@ defmodule AshHooks.Endpoint do
     end
   end
 
+  defp roll_conflict(endpoint, tenant) do
+    with {:ok, current} <-
+           endpoint.__struct__
+           |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+           |> Ash.read_one(authorize?: false, tenant: tenant) do
+      case current do
+        %{secret_ref: ref, previous_secret_ref: previous, previous_secret_retired_at: nil}
+        when ref == endpoint.secret_ref and not is_nil(previous) ->
+          {:error, :previous_secret_undated}
+
+        _ ->
+          {:error, :rolled_underneath}
+      end
+    end
+  end
+
+  @doc """
+  Sets the standard previous key's retirement time, including for an undated
+  previous reference adopted with `key_lifecycle :on`. The key signs only
+  before that time; the sweep can remove its reference afterward.
+
+  `at` must be a `DateTime` at or after the application clock. A past time
+  returns `{:error, :retirement_in_past}`, an invalid value returns
+  `{:error, :invalid_retirement_time}`, and an endpoint without a previous
+  reference returns `{:error, :no_previous_secret}`. The atomic write checks
+  that the previous reference is still the one supplied; a concurrent change
+  returns `{:error, :previous_secret_changed}`.
+
+  Options: `:now` (the application clock, default UTC now) and `:tenant`
+  (required on multitenant resources). Requires `key_lifecycle :on`.
+  Authorize the caller before invoking this system write.
+  """
+  @spec schedule_previous_retirement(struct(), DateTime.t(), keyword()) ::
+          {:ok, struct()} | {:error, term()}
+  def schedule_previous_retirement(endpoint, at, opts \\ []) do
+    resource = endpoint.__struct__
+
+    with :ok <- require_lifecycle(resource),
+         {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
+         :ok <- require_previous_secret(endpoint),
+         {:ok, at} <- validate_retirement_time(at, opts[:now] || DateTime.utc_now()) do
+      resource
+      |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+      |> Ash.Query.filter(previous_secret_ref == ^endpoint.previous_secret_ref)
+      |> Ash.bulk_update(:schedule_previous_retirement, %{retired_at: at},
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
+      |> case do
+        %Ash.BulkResult{status: :success, records: [scheduled]} -> {:ok, scheduled}
+        %Ash.BulkResult{status: :success, records: []} -> {:error, :previous_secret_changed}
+        %Ash.BulkResult{} = result -> {:error, List.first(result.errors || []) || result}
+      end
+    end
+  end
+
+  defp require_previous_secret(%{previous_secret_ref: nil}), do: {:error, :no_previous_secret}
+  defp require_previous_secret(_endpoint), do: :ok
+
+  defp validate_retirement_time(%DateTime{} = at, now) do
+    at = DateTime.truncate(at, :microsecond)
+
+    if DateTime.compare(at, now) == :lt,
+      do: {:error, :retirement_in_past},
+      else: {:ok, at}
+  end
+
+  defp validate_retirement_time(_at, _now), do: {:error, :invalid_retirement_time}
+
   @doc """
   Retires one endpoint's previous signing key at once: the old reference
   leaves the row and `previous_secret_retired_at` records the actual retirement
   time, including early removal. A row with no previous key is returned unchanged.
+  This also resolves an undated previous reference without assigning it an
+  overlap window.
 
   `:now` supplies the application clock (default UTC now). `:tenant` applies to the gated write (required on multitenant
   resources; the tenancy pre-flight runs before it).
@@ -214,9 +307,10 @@ defmodule AshHooks.Endpoint do
   @doc """
   The scheduled retirement sweep: expires every endpoint whose previous
   key's overlap window has ended (`previous_secret_retired_at <= now`).
-  Schedule it alongside your retention sweeps. Signing uses the previous key
-  until its reference is removed, even after the scheduled deadline. Returns
-  `{:ok, retired_count}`.
+  Schedule it alongside your retention sweeps. Signing already omits dated
+  previous keys at their deadline. Undated previous references are skipped;
+  resolve them with `schedule_previous_retirement/3` or
+  `expire_previous_secret/2`. Returns `{:ok, retired_count}`.
 
   Options: `:now` (the application clock) and `:tenant` (required on
   multitenant resources).
@@ -383,7 +477,13 @@ defmodule AshHooks.Endpoint do
         `secret_retired_at`, `previous_secret_created_at`,
         `previous_secret_first_used_at`, and `previous_secret_retired_at`
         (the scheduled deadline while the previous reference remains, then the
-        actual retirement time when the reference is removed). `roll_secret/2`, `expire_previous_secret/2` (one endpoint), and
+        actual retirement time when the reference is removed). Signing omits
+        the standard previous key at its deadline, before the sweep removes
+        its reference. An undated previous key keeps signing and blocks
+        rolling until `schedule_previous_retirement/3` or
+        `expire_previous_secret/2` resolves it; the sweep skips it.
+        `roll_secret/2`, `schedule_previous_retirement/3`,
+        `expire_previous_secret/2` (one endpoint), and
         `expire_previous_secrets/2` (a resource) accept optional arguments.
         Declaring `:on`
         requires a migration for the six columns. Timestamps only, never

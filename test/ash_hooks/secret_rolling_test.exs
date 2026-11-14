@@ -370,6 +370,9 @@ defmodule AshHooks.SecretRollingTest do
 
     assert {:error, %AshHooks.Errors.Unknown.UnknownError{}} =
              AshHooks.Endpoint.expire_previous_secrets(PlainEndpoint)
+
+    assert {:error, %AshHooks.Errors.Unknown.UnknownError{}} =
+             AshHooks.Endpoint.schedule_previous_retirement(plain, DateTime.utc_now())
   end
 
   test "the gated writes fence concurrent moves and surface storage faults" do
@@ -420,6 +423,22 @@ defmodule AshHooks.SecretRollingTest do
       )
 
     Repo.query!("""
+    CREATE TRIGGER schedule_abort
+    BEFORE UPDATE OF previous_secret_retired_at ON #{@endpoints}
+    BEGIN
+      SELECT RAISE(ABORT, 'forced schedule rejection');
+    END
+    """)
+
+    assert {:error, %Ash.Error.Unknown{}} =
+             AshHooks.Endpoint.schedule_previous_retirement(
+               rolled,
+               DateTime.add(DateTime.utc_now(), 3_600)
+             )
+
+    Repo.query!("DROP TRIGGER schedule_abort")
+
+    Repo.query!("""
     CREATE TRIGGER retire_abort
     BEFORE UPDATE OF previous_secret_ref ON #{@endpoints}
     BEGIN
@@ -436,6 +455,7 @@ defmodule AshHooks.SecretRollingTest do
   after
     Repo.query!("DROP TRIGGER IF EXISTS roll_abort")
     Repo.query!("DROP TRIGGER IF EXISTS retire_abort")
+    Repo.query!("DROP TRIGGER IF EXISTS schedule_abort")
   end
 
   test "the default clock arm and the retire race" do

@@ -468,6 +468,20 @@ defmodule AshHooks.NewSurfaceTenancyTest do
     assert {:error, :tenant_required} =
              AshHooks.Endpoint.roll_secret(a_endpoint, new_secret_ref: "ts-#{org_a}-v3")
 
+    retirement = DateTime.add(DateTime.utc_now(), 3_600)
+
+    assert {:error, :tenant_required} =
+             AshHooks.Endpoint.schedule_previous_retirement(rolled, retirement)
+
+    assert {:error, :previous_secret_changed} =
+             AshHooks.Endpoint.schedule_previous_retirement(rolled, retirement, tenant: org_b)
+
+    assert {:ok, scheduled} =
+             AshHooks.Endpoint.schedule_previous_retirement(rolled, retirement, tenant: org_a)
+
+    assert scheduled.org_id == org_a
+    assert scheduled.previous_secret_retired_at == retirement
+
     assert {:ok, retired} = AshHooks.Endpoint.expire_previous_secret(rolled, tenant: org_a)
     assert retired.previous_secret_ref == nil
 
