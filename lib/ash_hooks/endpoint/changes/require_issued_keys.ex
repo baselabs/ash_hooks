@@ -31,7 +31,11 @@ defmodule AshHooks.Endpoint.Changes.RequireIssuedKeys do
       else:
         Ash.Changeset.add_error(changeset,
           field: :secret_ref,
-          message: "custody endpoints without a secret_resolver require create_with_key/3"
+          message:
+            if(opts[:source?],
+              do: "custody sources require create_source/3",
+              else: "custody endpoints without a secret_resolver require create_with_key/3"
+            )
         )
   end
 end

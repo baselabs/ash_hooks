@@ -87,7 +87,6 @@ defmodule AshHooks.Custody do
   alias Ash.Resource.Info
   alias AshHooks.Custody.{Fingerprint, Key}
   alias AshHooks.Errors
-  alias Spark.Dsl.Extension
 
   @type tenant :: String.t() | nil
   @type ref :: String.t()
@@ -167,7 +166,7 @@ defmodule AshHooks.Custody do
 
   @doc false
   def tenant_options(owner) do
-    [custody_tenant_key: Extension.get_opt(owner, [:endpoint], :custody_tenant_key)]
+    [custody_tenant_key: AshHooks.KeyRegistry.Storage.option(owner, :custody_tenant_key)]
   end
 
   @doc false

@@ -5,8 +5,15 @@ defmodule AshHooks.KeyRegistry.Storage do
   alias AshHooks.Errors.Invalid.KeyKindMismatch
   alias Spark.Dsl.Extension
 
-  def registry(owner), do: Extension.get_opt(owner, [:endpoint], :key_registry)
-  def custodian(owner), do: Extension.get_opt(owner, [:endpoint], :custodian)
+  def section(owner) do
+    if Extension.get_opt(owner, [:inbound_source], :ledger), do: :inbound_source, else: :endpoint
+  end
+
+  def option(owner, name, default \\ nil),
+    do: Extension.get_opt(owner, [section(owner)], name, default)
+
+  def registry(owner), do: option(owner, :key_registry)
+  def custodian(owner), do: option(owner, :custodian)
 
   def supported?(resource) do
     Ash.DataLayer.data_layer(resource) in [AshPostgres.DataLayer, AshSqlite.DataLayer] and
@@ -45,7 +52,7 @@ defmodule AshHooks.KeyRegistry.Storage do
 
   def phase(registry, owner, tenant, fun) do
     with :ok <- check(registry, owner) do
-      AshHooks.Phase.run(owner, tenant, fn -> phase_result(fun.()) end)
+      AshHooks.Phase.run([owner, registry], tenant, fn -> phase_result(fun.()) end)
     end
   end
 
