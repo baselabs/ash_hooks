@@ -76,14 +76,14 @@ defmodule AshHooks.Delivery do
 
   # The ADR-0005 snippet floor (amended 2026-08-22): markers are
   # case-blind (NFKC folds homoglyphs, never case) and tolerate ≤3
-  # separator chars at EVERY internal juncture — the split-token evasion
+  # separator chars at EVERY internal juncture: the split-token evasion
   # class ("whs-ec_…", "wh-sk_…", "whs.ec …", form-encoded "Bearer+…").
-  # The entropy rule dies on any ≥16-char union-alphabet run — markerless
+  # The entropy rule dies on any ≥16-char union-alphabet run: markerless
   # base32/hex/base64url material. Bearer keeps its own dot-bearing
   # material class (JWT separators).
   # A defp, NOT a module attribute: an attribute's value is injected into
   # every consuming function body at compile time, and a %Regex{} carries
-  # the compiled re_pattern — a reference on OTP 28, which Elixir < 1.19
+  # the compiled re_pattern, a reference on OTP 28, which Elixir < 1.19
   # cannot escape ("cannot inject attribute ... cannot escape
   # #Reference"). The window floor is 1.20, so that combination is
   # out-of-window today; the defp keeps the escape class dead if the
@@ -102,7 +102,7 @@ defmodule AshHooks.Delivery do
   @summary_max 120
   # the decode chain runs as a bounded fixpoint: a JSON \u0025 escape can
   # materialize "%" only AFTER the percent layers have run, so one linear
-  # pass is not closed under composition — re-decode until stable
+  # pass is not closed under composition; re-decode until stable
   @decode_passes 8
 
   # the ONLY content-type tokens summarize/1 may ever emit besides "other"
@@ -603,7 +603,7 @@ defmodule AshHooks.Delivery do
   end
 
   # :missing is a COMPLETED delivery (the durable row is the record), not a
-  # failure — normalized to :ok so the with-chain stays flat
+  # failure; normalize it to :ok so the with-chain stays flat
   defp fetch_row_result(deliv_mod, args, tenant) do
     case fetch_row(deliv_mod, args, tenant) do
       {:ok, row} -> {:ok, row}
@@ -612,7 +612,7 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  # the tenant rides args in its JSON round-trip shape (string/integer —
+  # the tenant rides args in its JSON round-trip shape (string/integer,
   # never stringified: Ash.ToTenant accepts those verbatim, and the
   # resource's parse_attribute is applied by Ash itself)
   defp value(args, name) do
@@ -863,7 +863,7 @@ defmodule AshHooks.Delivery do
   defp merge_counts({r1, s1}, {r2, s2}), do: {r1 + r2, s1 + s2}
 
   # a row is skipped when its endpoint is not live OR its re-arm lost a
-  # race (a concurrent writer moved the row) — both are counted, never
+  # race (a concurrent writer moved the row); both are counted, never
   # fatal to the sweep
   defp replay_batch(batch, requested_by, opts, endpoints, tenant) do
     Enum.reduce(batch, {0, 0}, fn row, counts ->
@@ -966,9 +966,9 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  # a fresh event id per send keeps the {endpoint, event} identity unique —
+  # a fresh event id per send keeps the {endpoint, event} identity unique;
   # test sends never collide with (or suppress) each other
-  # a broken application clock must not break payload synthesis — the
+  # a broken application clock must not break payload synthesis; the
   # marker's timestamp falls back to the wall clock (the driver still
   # enforces the clock contract where it governs durable state)
   defp synthetic_now(opts) do
@@ -1053,7 +1053,7 @@ defmodule AshHooks.Delivery do
 
   # The row's attempt series: monotonic lifetime attempts minus the ladder
   # baseline a resend set. Without resend tracking (no column) the series
-  # IS the lifetime count — the pre-2.2 gate unchanged.
+  # IS the lifetime count, keeping the pre-2.2 gate unchanged.
   defp series_attempts(row), do: row.attempts - Map.get(row, :resend_baseline, 0)
 
   @doc """
@@ -1188,7 +1188,7 @@ defmodule AshHooks.Delivery do
   end
 
   # the enqueue seam, contained like the dispatcher's (a raise/exit/throw
-  # is an enqueue failure, never a resend failure — the re-arm is durable)
+  # is an enqueue failure, never a resend failure; the re-arm is durable)
   defp enqueue_seam_result(nil, _row), do: :ok
 
   defp enqueue_seam_result({m, f}, row) when is_atom(m) and is_atom(f),
@@ -1225,7 +1225,7 @@ defmodule AshHooks.Delivery do
   defp attempt_claimed(row, config, tenant) do
     case Ash.get(config[:endpoints], row.endpoint_id, authorize?: false, tenant: tenant) do
       # the ONE enabled-check (H4): the injected status attribute or the
-      # consumer-mapped switch — exactly one attribute dead-letters
+      # consumer-mapped switch; exactly one attribute dead-letters
       {:ok, endpoint} ->
         if AshHooks.Endpoint.enabled?(endpoint) do
           attempt_enabled(row, endpoint, config, tenant)
@@ -1233,7 +1233,7 @@ defmodule AshHooks.Delivery do
           dead_letter(row, "endpoint_disabled", config, tenant)
         end
 
-      # only a GONE endpoint row is terminal — a transient read error must
+      # only a GONE endpoint row is terminal; a transient read error must
       # retry, never permanently dead-letter
       {:error, %Ash.Error.Invalid{errors: reasons}} = error ->
         if Enum.all?(reasons, &is_struct(&1, Ash.Error.Query.NotFound)) do
@@ -1323,8 +1323,8 @@ defmodule AshHooks.Delivery do
     # send-time re-check: full DNS re-resolution by default (ADR-0005);
     # the seam is injectable so deterministic tests use the
     # literal-only variant. The default runs the tri-state resolver so an
-    # UNRESOLVABLE host retries under its honest label — a resolver
-    # outage is transport, not a verdict on the destination — and only a
+    # UNRESOLVABLE host retries under its honest label (a resolver
+    # outage is transport, not a verdict on the destination), and only a
     # validated-unsafe answer dead-letters. (The boolean `safe_url?/1`
     # folded both into one `false`, dead-lettering DNS outages as
     # "unsafe_destination" at attempts == 1.)
@@ -1338,7 +1338,7 @@ defmodule AshHooks.Delivery do
             dead_letter(row, "unsafe_destination", config, tenant)
 
           # nxdomain (authoritative negative) vs resolve_timeout (outage,
-          # congestion, mixed evidence) — both retry; the row ceiling
+          # congestion, mixed evidence): both retry; the row ceiling
           # terminalizes a dead domain carrying the honest label
           {:error, dns_error} when dns_error in [:nxdomain, :resolve_timeout] ->
             retry(row, Atom.to_string(dns_error), config, tenant, nil)
@@ -1373,7 +1373,7 @@ defmodule AshHooks.Delivery do
     # adapter opts seam (test listeners' validate_destination: false; real
     # consumers' timeout overrides and a pinned :cacerts trust bundle for
     # private-CA endpoints). Consumer-trusted config like :ssrf_check: it
-    # CAN disable the adapter's destination pin — the driver's send-time
+    # CAN disable the adapter's destination pin; the driver's send-time
     # check above is the residual guarantee, not a full replacement
     adapter_opts = config[:http_opts] || []
 
@@ -1461,7 +1461,7 @@ defmodule AshHooks.Delivery do
         history = attempt_history(endpoint, response, started)
         record(row, endpoint, response, config, tenant, history)
 
-      # a pin-time SSRF refusal is a caught rebinding flip — terminal, per
+      # a pin-time SSRF refusal is a caught rebinding flip, terminal per
       # the classification table (never burn the retry ceiling on it).
       # The request WAS attempted (the refusal came from inside it), so
       # its duration and signing key ride the history row.
@@ -1495,7 +1495,7 @@ defmodule AshHooks.Delivery do
   end
 
   # First-use stamps for the key lifecycle (key_lifecycle :on resources):
-  # written at signing time — a key that signed was used, whatever the
+  # written at signing time: a key that signed was used, whatever the
   # receiver said. WHERE-gated on the stamp still being nil, so
   # steady-state sends stop writing; failures never break the send.
   defp stamp_key_first_used(endpoint, config, tenant) do
@@ -1549,7 +1549,7 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  # an adapter RAISE must not crash the job out of the row-owned policy —
+  # an adapter RAISE must not crash the job out of the row-owned policy;
   # classify it as a retryable transport failure. The start stamp rides
   # EVERY outcome: a request that failed still RAN for a measurable time,
   # and the attempt history records it (failed_request_history). The try
@@ -1568,11 +1568,11 @@ defmodule AshHooks.Delivery do
   end
 
   # The failed-request history: the request was ATTEMPTED (transport
-  # error, pin-time refusal, adapter crash) — its duration and the
+  # error, pin-time refusal, adapter crash); its duration and the
   # signing key that signed it are facts; no response exists to
   # summarize, so the response-derived fields stay nil. Pre-send failures
   # (destination policy, DNS at the gate, secret resolution) never reach
-  # here and keep latency nil — no request, no duration.
+  # here and keep latency nil: no request, no duration.
   defp failed_request_history(endpoint, started) do
     %{
       latency_ms: max(System.monotonic_time(:millisecond) - started, 0),
@@ -1588,7 +1588,7 @@ defmodule AshHooks.Delivery do
   # endpoint record and tenant) routes ONE endpoint's deliveries to the
   # app's own transport module instead of the HTTP adapter. It runs inside
   # the send path's containment: a crash or a non-module return falls back
-  # to the HTTP adapter — HTTP's guarantees are the default posture.
+  # to the HTTP adapter; HTTP's guarantees are the default posture.
   defp resolve_transport(endpoint, config, tenant) do
     case config[:transport] do
       nil ->
@@ -1620,7 +1620,7 @@ defmodule AshHooks.Delivery do
   # ────────────────────────── attempt history ──────────────────────────
 
   # The per-attempt audit record: latency, the signing key REFERENCE (the
-  # endpoint's secret store reference string — never secret material), and
+  # endpoint's secret store reference string, never secret material), and
   # the per-endpoint-opt-in response capture (bounded bytes, redaction
   # floor, allowlisted headers only). Without an :attempts resource
   # configured, none of this work happens.
@@ -1680,7 +1680,7 @@ defmodule AshHooks.Delivery do
     |> Map.new()
   end
 
-  # a BYTE cap that still lands on a UTF-8 boundary — a raw binary_part
+  # a BYTE cap that still lands on a UTF-8 boundary; a raw binary_part
   # can split a codepoint and collapse the whole capture to [binary]
   defp utf8_byte_cap(binary, max_bytes) when byte_size(binary) <= max_bytes, do: binary
 
@@ -1693,7 +1693,7 @@ defmodule AshHooks.Delivery do
 
   # One history row per attempt, written AFTER the fenced result succeeds.
   # The unique (delivery_pk, attempt) identity makes re-drives idempotent;
-  # a history write failure NEVER fails the send — it surfaces as
+  # a history write failure NEVER fails the send; it surfaces as
   # [:ash_hooks, :attempt, :record_failed] telemetry and the delivery row
   # remains the contract.
   defp record_attempt(row, outcome, reason, summary, history, config, tenant) do
@@ -1754,7 +1754,7 @@ defmodule AshHooks.Delivery do
   defp attempt_snippet(nil, _history), do: nil
 
   # the exact-bytes column's name is consumer-configurable (`payload_attribute`,
-  # H1) — every runtime read goes through the row's own resource config
+  # H1); every runtime read goes through the row's own resource config
   defp payload_bytes(row), do: Map.get(row, AshHooks.Info.payload_attribute(row.__struct__))
 
   defp record(row, _endpoint, %{status: status} = response, config, tenant, history)
@@ -1766,7 +1766,7 @@ defmodule AshHooks.Delivery do
   # worker seeing org_a's endpoint id) cannot even resolve org_a's
   # endpoint (the tenant-scoped fetch dead-letters it as endpoint_gone
   # first), and the disable write itself is tenant-filtered. The matched
-  # count is checked — a zero-match "success" (the endpoint vanished
+  # count is checked: a zero-match "success" (the endpoint vanished
   # between fetch and write) is surfaced, never counted as a completed
   # circuit-break.
   defp record(row, endpoint, %{status: 410} = response, config, tenant, history) do
@@ -1803,7 +1803,7 @@ defmodule AshHooks.Delivery do
   end
 
   defp record(row, _endpoint, %{status: status} = response, config, tenant, history) do
-    # The retryable 5xx class: Retry-After is honored here exactly as on 408/429 —
+    # The retryable 5xx class: Retry-After is honored here exactly as on 408/429;
     # a 503 carrying the header names the receiver's own recovery window, and the
     # parser/clamp path is shared (absent/malformed header → nil → backoff).
     if retryable_status?(status, config[:retryable_statuses]) do
@@ -1840,7 +1840,7 @@ defmodule AshHooks.Delivery do
   defp signing_headers(row, endpoint, config, tenant) do
     resolver = config[:secret_resolver]
     # the worker macro's :tenant_aware_secrets switch: the resolver
-    # contract becomes f(ref, tenant) — explicit, no arity magic
+    # contract becomes f(ref, tenant): explicit, no arity magic
     tenant_aware? = config[:tenant_aware_secrets] == true
 
     with {:ok, secret} <- resolve(endpoint.secret_ref, resolver, tenant, tenant_aware?),
@@ -1871,7 +1871,7 @@ defmodule AshHooks.Delivery do
     ArgumentError -> {:error, :signing_failed}
   end
 
-  # No ref means no secret — checked FIRST so a config-shaped resolver can
+  # No ref means no secret; checked FIRST so a config-shaped resolver can
   # never be misclassified as a missing reference (and vice versa).
   defp resolve(ref, _resolver, _tenant, _tenant_aware?)
        when not is_binary(ref) or ref == "",
@@ -1894,7 +1894,7 @@ defmodule AshHooks.Delivery do
 
   # a resolver whose shape does not match the declared contract (e.g. a
   # 1-arity resolver under :tenant_aware_secrets) classifies as a
-  # retryable secret-resolution failure — a crash here would burn the job
+  # retryable secret-resolution failure; a crash here would burn the job
   # without a classified ledger write
   defp resolve(_ref, _resolver, _tenant, _tenant_aware?),
     do: {:error, {:secret_resolution, :invalid_resolver}}
@@ -1918,7 +1918,7 @@ defmodule AshHooks.Delivery do
   defp resolve_opt(_nil, _resolver, _tenant, _tenant_aware?), do: {:ok, nil}
 
   # the resolved binary's prefix selects the SW option slot; unprefixed
-  # material signs symmetric (v1) — the references' Signing contract
+  # material signs symmetric (v1), per the references' Signing contract
   defp sw_secret(secret), do: sw_option(:base, secret)
 
   defp sw_previous(nil), do: []
@@ -2514,7 +2514,7 @@ defmodule AshHooks.Delivery do
 
   # The WHERE gate IS the fence (portable pattern): id + a status set the
   # transition legitimately starts from. :mark_sending re-drives :sending
-  # (crash recovery — at-least-once, receivers dedup by webhook-id); the
+  # (crash recovery: at-least-once, receivers dedup by webhook-id); the
   # reconcile marks are owned by the attempt that flipped to :sending.
   defp fenced_update(row, config, action, input, statuses, tenant) do
     now = now(config)
@@ -2601,7 +2601,7 @@ defmodule AshHooks.Delivery do
         dt
 
       _rfc1123 ->
-        # "Mon, 01 Jan 2026 00:00:00 GMT" — parse the fields tolerantly
+        # "Mon, 01 Jan 2026 00:00:00 GMT": parse the fields tolerantly
         with [_wd, date, month, year, time, "GMT"] <- String.split(string, " "),
              {:ok, month_n} <- month_number(month),
              {d, ""} <- Integer.parse(date),
@@ -2694,7 +2694,7 @@ defmodule AshHooks.Delivery do
       body
       |> decode_fixpoint(@decode_passes)
       |> apply_redaction_patterns()
-      # strip control bytes — a hostile NUL would make the post-send
+      # strip control bytes; a hostile NUL would make the post-send
       # ledger write fail on TEXT columns AFTER a successful send
       #
       |> String.replace(~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/, "")
@@ -2723,19 +2723,19 @@ defmodule AshHooks.Delivery do
     case apply_snippet_redactor(body, config[:snippet_redactor]) do
       {:ok, material} ->
         # the combined string re-capped so the 2048 attribute constraint
-        # holds WITH the marker inside it — a byte cap bounds codepoints
+        # holds WITH the marker inside it; a byte cap bounds codepoints
         # and graphemes alike, in either counting mode
         AshHooks.BoundedText.cap(@captured_prefix <> redact(material), @snippet_max)
 
       :sanitize ->
-        # crash / invalid / nil callback return: the sanitized summary —
+        # crash / invalid / nil callback return: the sanitized summary,
         # no marker (it promises captured material exists; here none does)
         summarize(response[:status], response[:headers])
     end
   end
 
   # The consumer callback ({m, f} | fun, like :secret_resolver) sees the
-  # RAW body — consumer tokens need raw input — and its output is
+  # RAW body (consumer tokens need raw input), and its output is
   # type-checked, size-bounded, and caught (raise/exit/throw): a broken
   # callback can never poison the send or leak past the floor.
   defp apply_snippet_redactor(body, nil), do: {:ok, body}
@@ -2756,7 +2756,7 @@ defmodule AshHooks.Delivery do
   defp redactor_fun(fun) when is_function(fun, 1), do: fun
 
   # ── the floor's decode chain ──
-  # One pass: percent (×2 — double-encoded disguises) → JSON \u unescape →
+  # One pass: percent (×2 for double-encoded disguises) → JSON \u unescape →
   # NFKC. The pass re-runs until stable: json_unescape can produce % that
   # the percent step must then decode (probed composed evasion), and NFKC
   # must see every decoded layer (a percent-encoded fullwidth marker
@@ -2776,7 +2776,7 @@ defmodule AshHooks.Delivery do
   end
 
   # a decode that would MATERIALIZE invalid UTF-8 ("%FF"-class escapes)
-  # is refused — the floor's output must never fail the ledger's TEXT
+  # is refused; the floor's output must never fail the ledger's TEXT
   # write post-send (the re-send poison class)
   defp decode_step(input, decoder) do
     case decoder.(input) do
@@ -2786,7 +2786,7 @@ defmodule AshHooks.Delivery do
 
   # NFKC folds fullwidth homoglyphs (ｗｈｓｅｃ → whsec) and leaves ordinary
   # Cyrillic prose untouched (probed); invalid UTF-8 falls back to the
-  # input — the patterns and entropy rule still run over it
+  # input; the patterns and entropy rule still run over it
   defp normalize_step(body), do: :unicode.characters_to_nfkc_binary(body)
 
   # per-escape fallback: a surrogate/high escape must not abort the whole
@@ -2811,8 +2811,8 @@ defmodule AshHooks.Delivery do
   defp status_string(status) when is_integer(status), do: Integer.to_string(status)
   defp status_string(_nil_or_other), do: "0"
 
-  # Bounded downcases header names; other adapters may not — retry_after's
-  # dual-keyfind precedent
+  # Bounded downcases header names; other adapters may not (retry_after's
+  # dual-keyfind precedent)
   defp content_type(headers) when is_list(headers) do
     case List.keyfind(headers, "content-type", 0) || List.keyfind(headers, "Content-Type", 0) do
       {_name, value} when is_binary(value) ->
@@ -2849,7 +2849,7 @@ defmodule AshHooks.Delivery do
       String.starts_with?(type, "application/")
   end
 
-  # Classify without contents (the dispatcher's rule — an arbitrary
+  # Classify without contents (the dispatcher's rule: an arbitrary
   # consumer adapter/resolver term can carry secret or body material):
   # atoms are our own vocabulary; binaries pass only in the fixed error
   # grammar; everything else collapses to "unclassified". This is BOTH

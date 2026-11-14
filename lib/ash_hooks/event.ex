@@ -121,7 +121,7 @@ defmodule AshHooks.Event do
 
   # Byte bounds, not String.length (graphemes): the injected event_uuid /
   # event_type attributes carry max_length: 255, which under Ash 3.33's
-  # :codepoints mode counts codepoints — a grapheme-counted check here
+  # :codepoints mode counts codepoints; a grapheme-counted check here
   # passed values the ledger then rejected (every endpoint's :dispatch
   # create failing on an event the library itself validated). Bytes bound
   # codepoints and graphemes alike, in either counting mode.

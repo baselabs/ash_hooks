@@ -19,7 +19,7 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
     end
   end
 
-  # Declaring filter_attributes injects the event_filters column — an
+  # Declaring filter_attributes injects the event_filters column; an
   # EXISTING schema is never silently widened; the consumer migrates the
   # column when adopting attribute filters.
   defp add_filter_attribute(dsl_state) do

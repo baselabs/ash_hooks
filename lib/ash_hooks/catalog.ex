@@ -105,7 +105,7 @@ defmodule AshHooks.Catalog do
   end
 
   # a variant builder that fails, returns junk, or crashes fails that
-  # endpoint closed — never the whole fanout, never a row with wrong bytes
+  # endpoint closed, never the whole fanout, never a row with wrong bytes
   defp apply_variant({module, function}, event)
        when is_atom(module) and is_atom(function) do
     case apply(module, function, [event]) do

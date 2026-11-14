@@ -139,7 +139,7 @@ defmodule AshHooks.Dispatcher do
     end
   end
 
-  # The event log: exactly one row per dispatched event, best-effort — a
+  # The event log: exactly one row per dispatched event, best-effort; a
   # failed log write never stops the fanout (the delivery ledger remains
   # the delivery contract); it surfaces as telemetry instead.
   defp record_dispatched_event(entity, event, tenant) do
@@ -177,7 +177,7 @@ defmodule AshHooks.Dispatcher do
   # The declaration resolves configuration (resource modules, signing-mode
   # default); the event's type routes subscriptions. Letting the two
   # diverge routes one declaration's resources at another type's
-  # subscribers — fail closed on the mismatch.
+  # subscribers; fail closed on the mismatch.
   defp check_type_alignment(name, %Event{type: type}) do
     if type == Atom.to_string(name) do
       :ok
@@ -219,7 +219,7 @@ defmodule AshHooks.Dispatcher do
     reason -> result(endpoint, subscription, :endpoint_error, error_string(reason))
   catch
     # An enqueue seam or storage op that EXITS (a GenServer.call timeout in
-    # a queue client) or throws escapes `rescue` — catch it here or the
+    # a queue client) or throws escapes `rescue`; catch it here or the
     # whole fanout dies with later endpoints unprocessed.
     kind, reason -> result(endpoint, subscription, :endpoint_error, error_string({kind, reason}))
   end
@@ -292,7 +292,7 @@ defmodule AshHooks.Dispatcher do
 
   # The repair CAS: WHERE-gated on :enqueue_failed, so of N concurrent
   # re-dispatchers exactly one wins the :pending flip (bulk_update's
-  # matched-records count is the win signal — the stale loser re-reads and
+  # matched-records count is the win signal; the stale loser re-reads and
   # sees the row someone else already claimed).
   defp claim_for_enqueue_result(deliv_mod, row, tenant) do
     with_transient_retry(fn ->
@@ -317,14 +317,14 @@ defmodule AshHooks.Dispatcher do
           event_type: event.type,
           endpoint_id: PrimaryKey.scalar!(endpoint),
           subscription_id: PrimaryKey.scalar!(subscription),
-          # the EFFECTIVE mode is frozen onto the row at creation — the
+          # the EFFECTIVE mode is frozen onto the row at creation; the
           # delivery runtime signs from the row, never re-derives it
           signing_mode: subscription.signing_mode || entity.signing_mode || :standard,
           dispatch_source: binding.source,
           dispatch_route: binding.route
         }
         # the exact-bytes column's name is consumer-configurable (H1);
-        # the bytes are the endpoint's OWN — its pinned variant when it
+        # the bytes are the endpoint's OWN: its pinned variant when it
         # pinned a declared payload version
         |> Map.put(AshHooks.Info.payload_attribute(deliv_mod), payload)
 
@@ -424,7 +424,7 @@ defmodule AshHooks.Dispatcher do
 
   defp enqueue_result(nil, _row, _event), do: :deferred
 
-  # An enqueue seam that RAISES is an enqueue failure like any other —
+  # An enqueue seam that RAISES is an enqueue failure like any other,
   # caught HERE (not by dispatch_one's rescue) so it records
   # :enqueue_failed on the row instead of surfacing :endpoint_error.
   defp enqueue_result(enqueuer, row, event) when is_function(enqueuer, 2) do
@@ -450,14 +450,14 @@ defmodule AshHooks.Dispatcher do
     :throw, value -> {:error, {:throw, value}}
   end
 
-  # Gated on :pending — the state an enqueue attempt owns: a late failure
+  # Gated on :pending (the state an enqueue attempt owns): a late failure
   # can never overwrite a row a successful enqueue (or the send runtime)
   # already moved on.
   defp mark_enqueue_failed(deliv_mod, row, reason, tenant) do
     result =
       with_transient_retry(fn ->
         # the reason arrives ALREADY classified (enqueue_result applied
-        # error_string) — re-classifying would mangle the prefixed forms
+        # error_string); re-classifying would mangle the prefixed forms
         deliv_mod
         |> Ash.Query.do_filter(PrimaryKey.filter(row))
         |> Ash.Query.filter(status == :pending)
@@ -498,7 +498,7 @@ defmodule AshHooks.Dispatcher do
   # ────────────────────────── match + validate ──────────────────────────
 
   # The pre-flight needs the endpoint module too (the tenancy contract
-  # spans every touched resource), so resolution moved out of the match —
+  # spans every touched resource), so resolution moved out of the match;
   # an undeclared endpoint_resource is a global failure before data access.
   defp resolve_endpoint_resource(subs_mod) do
     case Extension.get_opt(subs_mod, [:subscription], :endpoint_resource, nil) do
@@ -555,7 +555,7 @@ defmodule AshHooks.Dispatcher do
   # Endpoint resolution distinguishes three outcomes per subscription
   # : an ENABLED endpoint matches; a gone or disabled
   # one is SKIPPED by design (no row, no entry); a READ ERROR after the
-  # transient retry is surfaced as a per-endpoint :endpoint_error result —
+  # transient retry is surfaced as a per-endpoint :endpoint_error result,
   # never silently conflated with gone, or a transient blip would drop the
   # event with nothing recorded and nothing re-drivable.
   defp resolve_endpoints(subscriptions, endpoint_mod, tenant) do
@@ -574,21 +574,21 @@ defmodule AshHooks.Dispatcher do
 
   # A cross-tenant endpoint_id resolves NotFound under the dispatch's
   # tenant (the tenant filter rides the get) and classifies as the SAME
-  # misconfiguration skip a gone endpoint gets — tenant-enforced, no new
+  # misconfiguration skip a gone endpoint gets: tenant-enforced, no new
   # outcome shape.
   defp resolve_endpoint(subscription, endpoint_mod, tenant) do
     case with_transient_retry(fn ->
            Ash.get(endpoint_mod, subscription.endpoint_id, authorize?: false, tenant: tenant)
          end) do
       # the ONE enabled-check (H4): the injected status attribute or the
-      # consumer-mapped switch — exactly one attribute decides
+      # consumer-mapped switch; exactly one attribute decides
       {:ok, endpoint} ->
         if AshHooks.Endpoint.enabled?(endpoint), do: {:match, endpoint}, else: :skip
 
       {:error, %Ash.Error.Invalid{errors: reasons} = error} ->
         if Enum.all?(reasons, &is_struct(&1, Ash.Error.Query.NotFound)) do
           # a GONE endpoint row is a configuration state, not a failure:
-          # skip by design (no row, no entry) — same as disabled
+          # skip by design (no row, no entry), same as disabled
           :skip
         else
           {:error, error}
@@ -639,7 +639,7 @@ defmodule AshHooks.Dispatcher do
 
   # 5 minutes: far beyond any enqueue window, so a live enqueue cannot be
   # raced by a reconciler with the default cutoff (the ordering caveat the
-  # tenancy design documents — a cutoff overlapping enqueue latency would
+  # tenancy design documents: a cutoff overlapping enqueue latency would
   # claim rows whose enqueue is merely slow; the CAS discipline itself is
   # the residual protection there).
   @reconcile_default_cutoff_seconds 300
@@ -804,7 +804,7 @@ defmodule AshHooks.Dispatcher do
     case result do
       :ok ->
         # A successful release PRESERVES the row's failure diagnostic by replaying
-        # its current value — re-admission is a transport event, not a delivery
+        # its current value; re-admission is a transport event, not a delivery
         # outcome; only the {:error, _} branch (a fresh enqueue failure) writes a
         # new story. (The sirtify-routed last_error-wipe finding.)
         release_reconcile_claim(deliv_mod, claimed, claimed.last_error, :reconciled, nil, tenant)
@@ -823,7 +823,7 @@ defmodule AshHooks.Dispatcher do
 
   defp release_reconcile_claim(deliv_mod, claimed, error, status, reason, tenant) do
     # The park decision is the explicit enqueue outcome (:reconciled admitted
-    # durably) — never the error string, which on success carries the
+    # durably), never the error string, which on success carries the
     # PRESERVED diagnostic.
     enqueue_succeeded? = match?(:reconciled, status)
 
@@ -923,7 +923,7 @@ defmodule AshHooks.Dispatcher do
     # A SUCCESSFUL enqueue parks the lease for one horizon: the row stays
     # unclaimable while CONCURRENT sweeps from the same recovery window are
     # still in flight, so admission is exactly-once per recovery window at the
-    # seam. The park decision is the explicit enqueue outcome — never the
+    # seam. The park decision is the explicit enqueue outcome, never the
     # error string, which on success carries the PRESERVED diagnostic. A
     # failed enqueue releases fully (the next sweep must re-claim it).
     parked =
@@ -958,7 +958,7 @@ defmodule AshHooks.Dispatcher do
       {:error, :stale_enqueue_claim} ->
         # A terminal/retryable outcome between claim and release CLEARS the
         # enqueue claim in the same statement, so the release matching zero
-        # rows here means the worker already finished the row — benign
+        # rows here means the worker already finished the row: benign
         # completion, never a release failure. Only a row that is STILL
         # live-claimed is a genuine stale claim.
         classify_stale_claim(deliv_mod, row, tenant)
@@ -971,7 +971,7 @@ defmodule AshHooks.Dispatcher do
   defp classify_stale_claim(deliv_mod, row, tenant) do
     case reload(deliv_mod, row, tenant) do
       # The claim was released by an outcome (terminal, retryable, or the stored
-      # 410 obligation) — benign completion. A live token is genuine contention;
+      # 410 obligation): benign completion. A live token is genuine contention;
       # a row that vanished or could not be reloaded is its own (distinguishable)
       # failure, never silently one of the other two.
       %{enqueue_token: nil} -> :ok
@@ -986,10 +986,10 @@ defmodule AshHooks.Dispatcher do
   defp bulk_one(%Ash.BulkResult{} = result, _empty),
     do: {:error, List.first(result.errors || []) || result}
 
-  # the enqueue seam takes (delivery, event) — reconstruction from the
+  # the enqueue seam takes (delivery, event): reconstruction from the
   # row instead of a nil, so a seam matching %Event{} or reading event
   # fields works during reconciliation. The ledger row persists id, type, and
-  # payload ONLY: the reconstructed event carries an empty metadata map —
+  # payload ONLY: the reconstructed event carries an empty metadata map;
   # a seam that needs the ORIGINAL dispatch-time metadata must tolerate
   # that (the row never stored it).
   defp row_event(row) do
@@ -1026,7 +1026,7 @@ defmodule AshHooks.Dispatcher do
   end
 
   # A struct is not proof of validation: callers can construct
-  # %AshHooks.Event{} directly, bypassing Event.new/1's contract checks —
+  # %AshHooks.Event{} directly, bypassing Event.new/1's contract checks;
   # re-validate the fields (a dot-bearing id would otherwise persist and
   # break the signing delimiter invariant downstream).
   defp cast_event(%Event{} = event) do
@@ -1059,7 +1059,7 @@ defmodule AshHooks.Dispatcher do
 
   # Byte bounds, not String.length (graphemes): the injected event_uuid /
   # event_type attributes carry max_length: 255, which under Ash 3.33's
-  # :codepoints mode counts codepoints — a grapheme-counted guard passed
+  # :codepoints mode counts codepoints; a grapheme-counted guard passed
   # 255 combining-grapheme values the ledger then rejected, failing every
   # endpoint's :dispatch create. Bytes bound codepoints and graphemes
   # alike; the inbound side already bounds bytes (ingress external ids).
@@ -1083,7 +1083,7 @@ defmodule AshHooks.Dispatcher do
 
   defp error_string({:raised, reason}), do: error_string(reason)
 
-  # exit/throw reasons classify without their contents — a thrown term can
+  # exit/throw reasons classify without their contents; a thrown term can
   # carry payload or secret material (the bounded-classification rule).
   # Byte cap so the 255 constraint holds in any counting mode.
   defp error_string({:exit, reason}) when is_atom(reason),
@@ -1115,7 +1115,7 @@ defmodule AshHooks.Dispatcher do
   # sqlite leg contend for the single write lock, and the dispatcher's ops
   # are idempotent or CAS-gated, so a bounded wall-clock retry converts
   # transient contention into convergence instead of an :endpoint_error.
-  # Classified NARROWLY by exqlite's error text — other data layers see
+  # Classified NARROWLY by exqlite's error text; other data layers see
   # zero behavior change.
   @transient_retry_deadline_ms 2_000
   @transient_retry_spacing_ms 100

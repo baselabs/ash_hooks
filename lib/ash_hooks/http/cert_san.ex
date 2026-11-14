@@ -12,8 +12,8 @@ defmodule AshHooks.Http.CertSan do
   catch
     # Fail closed on EVERY non-local class: malformed DER RAISES on
     # OTP 27/28, while asn1's der_decode EXITS on invalid tags on OTP 29
-    # ({:error, {:asn1, ...}} — probed; a rescue alone cannot catch an
-    # exit). The bare catch covers error, exit, and throw alike — a
+    # ({:error, {:asn1, ...}}, probed; a rescue alone cannot catch an
+    # exit). The bare catch covers error, exit, and throw alike; a
     # garbage-SAN certificate never crashes the caller
     _kind, _reason -> false
   end
@@ -21,7 +21,7 @@ defmodule AshHooks.Http.CertSan do
   # public_key :plain record shapes (verified against a fixture,
   # 2026-08-22): 'Certificate'{tbsCertificate :: 'TBSCertificate'{...}},
   # with the extensions list at TBSCertificate index 10 (8/9 are the
-  # :asn1_NOVALUE uniqueIDs — the pre-extraction code indexed 9 and was
+  # :asn1_NOVALUE uniqueIDs; the pre-extraction code indexed 9 and was
   # dead-on-arrival). The SAN extnID is 2.5.29.17; its extnValue is raw
   # DER re-decoded with the SubjectAltName template, whose general-names
   # carry iPAddress tuples.
@@ -43,12 +43,12 @@ defmodule AshHooks.Http.CertSan do
 
   defp record_field(record, index), do: elem(record, index)
 
-  # extnValue arrives as raw DER — re-decode with the SAN template. Malformed
+  # extnValue arrives as raw DER; re-decode with the SAN template. Malformed
   # SAN bytes EXIT (asn1 invalid-tag) and are caught at ip_san_match?'s
-  # catch — failing closed, never crashing the caller.
+  # catch, failing closed, never crashing the caller.
   defp decode_san(san_der), do: {:ok, :public_key.der_decode(:SubjectAltName, san_der)}
 
-  # der_decode(:SubjectAltName) yields iPAddress as RAW BYTES — a 4-byte
+  # der_decode(:SubjectAltName) yields iPAddress as RAW BYTES: a 4-byte
   # binary (IPv4) or 16-byte binary (IPv6). Normalized to the inet tuple
   # forms ({a,b,c,d} / an 8-tuple of 16-bit words) for the match.
   defp san_ips(names) when is_list(names) do

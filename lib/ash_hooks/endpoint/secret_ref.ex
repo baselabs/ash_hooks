@@ -23,7 +23,7 @@ defmodule AshHooks.Endpoint.SecretRef do
 
   def cast_input(value, _constraints) when is_binary(value) do
     cond do
-      # allow_nil? blocks only nil — the empty string must be refused by the
+      # allow_nil? blocks only nil; the empty string must be refused by the
       # type itself or a required endpoint persists an unusable reference.
       value == "" ->
         {:error,

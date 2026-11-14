@@ -1,7 +1,7 @@
 defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
   @moduledoc false
   # Injects the delivery machine's write primitives. Conditional gates do
-  # NOT live here — the dispatcher builds WHERE-gated bulk updates (the
+  # NOT live here; the dispatcher builds WHERE-gated bulk updates (the
   # portable-fence pattern the inbound machine established: action-level
   # `change filter` is silently dropped on the atomic path).
   use Spark.Dsl.Transformer
@@ -16,7 +16,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
   def before?(Ash.Resource.Transformers.RequireUniqueActionNames), do: true
   def before?(_), do: false
 
-  # the :dispatch accept list keys off the resource's PK shape (H2) — the
+  # the :dispatch accept list keys off the resource's PK shape (H2); the
   # fields transformer must have injected (or the consumer declared) it
   # first; Spark's topological order does NOT follow the extension's
   # list order
@@ -73,9 +73,9 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
     {:ok, Transformer.add_entity(dsl_state, [:actions], entity)}
   end
 
-  # No-touch upsert: on conflict nothing is updated — the surviving row is
+  # No-touch upsert: on conflict nothing is updated; the surviving row is
   # returned, so created/duplicate classification compares ids (when the
-  # PK is writable; otherwise the Dispatcher pre-reads the identity — H2).
+  # PK is writable; otherwise the Dispatcher pre-reads the identity, H2).
   # Retrying deliveries mutate rows only through the runtime's gated
   # updates.
   defp build_dispatch(dsl_state, payload_attribute, id_accepted) do
@@ -107,7 +107,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
   end
 
   # H2: `:id` rides the accept list exactly when the resource HAS a
-  # writable `:id` attribute — the shapes that always worked (the
+  # writable `:id` attribute: the shapes that always worked (the
   # package-injected PK; a consumer's writable `:id` beside a differently
   # named PK) keep it, and only the shapes Ash's ValidateAccept rejects
   # (uuid_v7_primary_key & other non-writable ids) drop it.

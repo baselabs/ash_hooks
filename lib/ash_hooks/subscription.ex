@@ -106,7 +106,7 @@ defmodule AshHooks.Subscription do
   defp normalize_type(entry) when is_binary(entry), do: entry
   defp normalize_type(entry) when is_atom(entry), do: Atom.to_string(entry)
   # anything else (a map/tuple-typed register entry) is unmatchable, not
-  # a raise — the pre-normalization behavior for those rows
+  # a raise, preserving the pre-normalization behavior for those rows
   defp normalize_type(_entry), do: :unmatchable_type
 
   @section %Spark.Dsl.Section{

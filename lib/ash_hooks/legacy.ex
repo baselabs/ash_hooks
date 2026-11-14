@@ -19,7 +19,7 @@ defmodule AshHooks.Legacy do
   @signature_prefix "v1"
   @previous_signature_prefix "v1prev"
 
-  # —— Signing ———————————————————————————————————————————————————————
+  # -- Signing -------------------------------------------------------
 
   @doc "HMAC-SHA256 over `<unix_ts>.<body>`, lowercase hex, `v1=`-prefixed."
   @spec sign(binary(), binary(), integer()) :: String.t()
@@ -59,7 +59,7 @@ defmodule AshHooks.Legacy do
     %{"x-webhook-signature" => header_value(signature, unix_ts)}
   end
 
-  # —— Verification (the oracle) ————————————————————————————————————
+  # -- Verification (the oracle) -------------------------------------
 
   @doc """
   Verifies a legacy header value: parses `t=`/`v1=`, checks the replay
@@ -82,7 +82,7 @@ defmodule AshHooks.Legacy do
     end
   end
 
-  # —— Internals ————————————————————————————————————————————————————
+  # -- Internals -----------------------------------------------------
 
   defp legacy_mac_hex(secret, body, unix_ts) do
     :crypto.mac(:hmac, :sha256, secret, [Integer.to_string(unix_ts), ?., body])

@@ -333,18 +333,18 @@ defmodule AshHooks do
   end
 
   # The sweep runs SEQUENTIALLY (D6: pool starvation favors sequential
-  # per-tenant sweeps) and never stops on a tenant's error — an {:error, _}
+  # per-tenant sweeps) and never stops on a tenant's error: an {:error, _}
   # tuple OR a crash in one tenant's sweep is carried as that tenant's
   # result (the poison-row precedent: one bad tenant must never starve the
   # rows behind it). The swept calls are the package's own reap/prune;
   # their CONSUMER callbacks (a provider's handle_event) are contained
   # inside Ingress's own safe_redrive rescue+catch, and every remaining
   # crash mode surfaces as a raise in Elixir-land (incl. DBConnection's
-  # checkout/ownership errors) — so the sweep-level containment is a
+  # checkout/ownership errors), so the sweep-level containment is a
   # rescue.
   defp sweep(tenants, call) do
     # a repeated tenant would overwrite its own earlier result while
-    # still counting into the total — deduplicated
+    # still counting into the total; deduplicate it
     {results, total} =
       Enum.reduce(Enum.uniq(tenants), {%{}, 0}, fn tenant, {results, total} ->
         case safe_call(call, tenant) do

@@ -114,7 +114,7 @@ defmodule AshHooks.Http.Bounded do
         # A send failure needs no arm of its own: the Erlang inet/ssl
         # drivers QUEUE sends and surface peer-death errors on the NEXT
         # socket operation (probed on macOS AND Linux, TCP and TLS, at
-        # 512MB against a receive window capped to 1KB — send returns :ok
+        # 512MB against a receive window capped to 1KB; send returns :ok
         # and the error arrives at the read). A socket that errors a send
         # errors the read faster, and the read's existing error arms carry
         # the same retry/terminal classification the caller needs.
@@ -127,12 +127,12 @@ defmodule AshHooks.Http.Bounded do
     end
   end
 
-  # For literal-IP https destinations TLS has no NAME to check — require
+  # For literal-IP https destinations TLS has no NAME to check; require
   # the peer cert to carry the IP in its iPAddress SAN (chain validation
   # alone lets ANY publicly-trusted cert authenticate the peer;
   # hardening). No-op for named hosts (the RFC 6125 hostname
   # check covers those). SAN matching lives in `AshHooks.Http.CertSan`
-  # (fixture-tested): found broken by dialyzer 2026-08-22 —
+  # (fixture-tested): found broken by dialyzer 2026-08-22;
   # `pkix_decode_cert/2` returns the cert record directly, so the old
   # `{:ok, cert} <-` chain never reached the matcher and EVERY literal-IP
   # https endpoint was rejected fail-closed.
@@ -165,7 +165,7 @@ defmodule AshHooks.Http.Bounded do
              mode: :binary,
              active: false,
              packet: :raw,
-             # ONE passive recv must not pull a hostile body whole — this caps
+             # ONE passive recv must not pull a hostile body whole; this caps
              # the pull; the read loops stop at their bounds
              buffer: @recv_slice,
              send_timeout: remaining_timeout(deadline),
@@ -174,7 +174,7 @@ defmodule AshHooks.Http.Bounded do
            timeout
          ) do
       {:ok, socket} ->
-        # IP-SAN verification runs HERE — the ssl socket must reach
+        # IP-SAN verification runs HERE; the ssl socket must reach
         # :ssl.peercert/1 as a direct opaque binding (see verify_ip_san)
         case verify_peer(socket, target, opts[:certificate_pin]) do
           :ok ->
@@ -201,7 +201,7 @@ defmodule AshHooks.Http.Bounded do
              mode: :binary,
              active: false,
              packet: :raw,
-             # ONE passive recv must not pull a hostile body whole — this caps
+             # ONE passive recv must not pull a hostile body whole; this caps
              # the pull; the read loops stop at their bounds
              buffer: @recv_slice,
              send_timeout: remaining_timeout(deadline),
@@ -363,7 +363,7 @@ defmodule AshHooks.Http.Bounded do
         case Integer.parse(length_binary) do
           {length, ""} when length >= 0 ->
             # the body bytes that arrived WITH the header block count
-            # against the declared length — otherwise termination waits
+            # against the declared length; otherwise termination waits
             # for a close the server may never send (a robustness probe)
             read_sized(
               socket,
@@ -393,7 +393,7 @@ defmodule AshHooks.Http.Bounded do
 
   defp read_sized(_socket, status, headers, acc, remaining, max, _timeout)
        when byte_size(acc) >= max or remaining <= 0 do
-    # bounded: never read past the cap — the rest of the body is simply
+    # bounded: never read past the cap; the rest of the body is simply
     # not fetched (Connection: close disposes of it)
     {:ok,
      %{status: status, headers: headers, body: binary_part(acc, 0, min(byte_size(acc), max))}}
@@ -407,7 +407,7 @@ defmodule AshHooks.Http.Bounded do
 
       {:error, :closed} ->
         # a Content-Length-framed body that ends early is a truncated
-        # response — the driver must retry, never mark 2xx succeeded on
+        # response; the driver must retry, never mark 2xx succeeded on
         # partial bytes
         {:error, :truncated_body}
 
@@ -450,7 +450,7 @@ defmodule AshHooks.Http.Bounded do
         chunked_loop(socket, buffer <> chunk, acc, max, timeout)
 
       # a close before the terminal 0-chunk is the chunked twin of a
-      # short Content-Length body — truncated, never a partial ok
+      # short Content-Length body: truncated, never a partial ok
       {:error, :closed} ->
         {:error, :truncated_body}
 
@@ -459,7 +459,7 @@ defmodule AshHooks.Http.Bounded do
     end
   end
 
-  # a size line is a hex length — a handful of characters (the absurd
+  # a size line is a hex length, a handful of characters (the absurd
   # bound admits any legal encoding). A buffer past it with no terminator
   # is a hostile run-on: malformed, never buffered
   @max_size_line 64
@@ -474,7 +474,7 @@ defmodule AshHooks.Http.Bounded do
 
       {index, _} ->
         case buffer |> binary_part(0, index) |> Integer.parse(16) do
-          # a chunk-size line is a hex length — negative parses are
+          # a chunk-size line is a hex length; negative parses are
           # hostile (Integer.parse accepts "-1"); they must classify as
           # malformed, never reach binary_part and raise
           {size, _rest} when size >= 0 ->
@@ -489,7 +489,7 @@ defmodule AshHooks.Http.Bounded do
     end
   end
 
-  # The declared chunk size is ATTACKER-CONTROLLED — NEVER buffer toward
+  # The declared chunk size is ATTACKER-CONTROLLED; NEVER buffer toward
   # it. Keep only the remaining allowance. Once that reaches the body cap,
   # return immediately; do not drain attacker-controlled excess bytes or
   # wait for their terminator.
@@ -515,7 +515,7 @@ defmodule AshHooks.Http.Bounded do
   defp validate_chunk_terminator("\r\n"), do: :ok
   defp validate_chunk_terminator(_other), do: {:error, :malformed_chunked}
 
-  # takes exactly n bytes out of (buffer ++ socket) — bounded by n plus
+  # takes exactly n bytes out of (buffer ++ socket), bounded by n plus
   # one recv slice; used only where n is attacker-INdependent (the
   # allowance, the 2-byte terminator) or already bounded by it
   defp take_bytes(_socket, buffer, n, _timeout) when byte_size(buffer) >= n,
@@ -524,7 +524,7 @@ defmodule AshHooks.Http.Bounded do
   defp take_bytes(socket, buffer, n, timeout) do
     case recv(socket, timeout) do
       {:ok, chunk} -> take_bytes(socket, buffer <> chunk, n, timeout)
-      # a close mid-chunk is truncation — never a partial ok
+      # a close mid-chunk is truncation, never a partial ok
       {:error, :closed} -> {:error, :truncated_body}
       {:error, reason} -> {:error, reason}
     end

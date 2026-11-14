@@ -5,7 +5,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
   # pattern: the dispatcher identifies rows by the same key shape).
   #
   # `status_attribute` maps the durable enable/disable onto the consumer's
-  # OWN attribute (H4): the injected `status` is then NOT injected — one
+  # OWN attribute (H4): the injected `status` is then NOT injected; one
   # switch, so the consumer's off switch and the package's can never
   # silently disagree. The mapping fails closed at compile: the attribute
   # must exist and must not collide with another injected field.
@@ -43,9 +43,9 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
     end
   end
 
-  # The signing-key lifecycle opt-in (default :on? no — :off): declaring
+  # The signing-key lifecycle opt-in (default :off): declaring
   # `key_lifecycle :on` injects the created/first-used/retired timestamps
-  # behind roll_secret/expire — an EXISTING schema is never silently
+  # behind roll_secret/expire; an EXISTING schema is never silently
   # widened; the consumer migrates the six columns when adopting.
   defp add_lifecycle_attributes(dsl_state) do
     case Extension.get_opt(dsl_state, [:endpoint], :key_lifecycle, :off) do
@@ -61,7 +61,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
   end
 
   # The auto-disable policy's warned marker: `disable_warned_at` carries
-  # the standing "a warning sweep has fired" fact between sweeps — a
+  # the standing "a warning sweep has fired" fact between sweeps; a
   # disable lands only after it (the warning-first contract). Injected
   # WITH the policy declaration itself; the migration rides the same one.
   defp add_warning_attributes(dsl_state) do
@@ -95,7 +95,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
   end
 
   # The per-endpoint response-capture opt-in (default :off): declaring
-  # `response_capture_attributes :on` injects the capture columns — an
+  # `response_capture_attributes :on` injects the capture columns; an
   # EXISTING schema is never silently widened; the consumer migrates the
   # four columns when they adopt the seam.
   defp add_capture_attributes(dsl_state) do
@@ -169,7 +169,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
           Transformer.fetch_option(dsl_state, [:endpoint], :disabled_value) == :error ->
         # both ends of the mapping must be spelled out: a defaulted
         # `[:enabled]`/`:disabled` against a boolean or custom-enum switch
-        # matches NOTHING — zero deliveries, no error (the H8 failure
+        # matches NOTHING: zero deliveries, no error (the H8 failure
         # class, fail-closed at compile instead)
         {:error,
          DslError.exception(
@@ -264,7 +264,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
   defp add_attributes(dsl_state, nil),
     do: inject(dsl_state, attributes_spec())
 
-  # a mapped switch means the injected :status attribute STAYS OUT — the
+  # a mapped switch means the injected :status attribute STAYS OUT; the
   # consumer's own attribute (any type: boolean, enum, ...) governs
   # delivery, exactly one switch (H4)
   defp add_attributes(dsl_state, _mapped),

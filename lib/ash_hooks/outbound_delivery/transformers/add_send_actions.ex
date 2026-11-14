@@ -1,7 +1,7 @@
 defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
   @moduledoc false
   # Injects the send machine's write primitives (the delivery runtime's
-  # half of the ledger). Conditional gates do NOT live here — the runtime
+  # half of the ledger). Conditional gates do NOT live here; the runtime
   # builds WHERE-gated bulk updates (the portable-fence pattern; the
   # inbound machine's precedent).
   use Spark.Dsl.Transformer
@@ -180,7 +180,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
     )
   end
 
-  # dead_letter? folds the terminal transition into the same gated write —
+  # dead_letter? folds the terminal transition into the same gated write;
   # the runtime decides it (ceiling / 4xx / 410 / SSRF / redirect), the
   # fence stays one statement.
   defp build_mark_send_failed do

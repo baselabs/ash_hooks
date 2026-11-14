@@ -1,6 +1,6 @@
 defmodule AshHooks.OutboundEvent.Transformers.AddEventIdentity do
   @moduledoc false
-  # Exactly one row per event id — the "record each dispatched event
+  # Exactly one row per event id: the "record each dispatched event
   # once" identity. The consumer's migration carries the unique index.
   use Spark.Dsl.Transformer
 

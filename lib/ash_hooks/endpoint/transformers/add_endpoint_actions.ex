@@ -1,7 +1,7 @@
 defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
   @moduledoc false
   # Injects the durable circuit-breaker transition: `:disable` is the
-  # 410 rule's durable endpoint state (ADR-0005 — an in-process fuse
+  # 410 rule's durable endpoint state (ADR-0005: an in-process fuse
   # forgets; this does not). Consumers flip it through their own surfaces
   # too; the delivery runtime drives it on 410. With `status_attribute`
   # mapped (H4) the same transition writes the CONSUMER's switch.
@@ -20,7 +20,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
   def before?(_), do: false
 
   # the disable change targets either the injected :status or the
-  # consumer-mapped switch — the fields transformer's checks must have
+  # consumer-mapped switch; the fields transformer's checks must have
   # run first; Spark's topological order does NOT follow the extension's
   # list order
   def after?(AshHooks.Endpoint.Transformers.AddEndpointFields), do: true
@@ -41,7 +41,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
       end
 
     # the warned-marker write ships WITH the auto_disable policy that
-    # reads it — declaring the policy is declaring the column + action
+    # reads it; declaring the policy is declaring the column + action
     warning =
       if Extension.get_opt(dsl_state, [:endpoint, :auto_disable], :failure_share, :__missing__) !=
            :__missing__ do
@@ -78,7 +78,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
   defp add(dsl_state, entity), do: {:ok, Transformer.add_entity(dsl_state, [:actions], entity)}
 
   # The roll: the incumbent reference MOVES to previous_secret_ref (the
-  # multi-signature seam — both keys sign until the overlap ends), the new
+  # multi-signature seam; both keys sign until the overlap ends), the new
   # reference takes its place, and the old key's lifecycle timeline rides
   # across. The runtime's WHERE gate (same incumbent) fences concurrent
   # rolls; the moving values arrive as ARGUMENTS read off the row (the
@@ -128,7 +128,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
   end
 
   # The retirement: the old key's reference leaves the row; its timeline
-  # (created, retired — first-used if it ever signed) stays as the record
+  # (created, retired, first-used if it ever signed) stays as the record
   defp build_retire_previous_secret do
     {:ok, prev_ref} =
       Builder.build_action_change(Builtins.set_attribute(:previous_secret_ref, nil))
@@ -166,7 +166,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
   # stamp still being nil (and, for the previous slot, the reference still
   # being the one that signed), so steady-state sends stop writing.
   # The warned-marker machine write: the sweep stamps `disable_warned_at`
-  # on its first warning (gated WHERE still nil — concurrent sweeps
+  # on its first warning (gated WHERE still nil; concurrent sweeps
   # single-winner) and clears it on disable or recovery (gated on the
   # value the sweep read). The runtime's WHERE gates are the fence, the
   # same portable pattern as every other machine write.

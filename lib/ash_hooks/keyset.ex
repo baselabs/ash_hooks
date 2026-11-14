@@ -61,7 +61,7 @@ defmodule AshHooks.Keyset do
     time = Ash.Expr.ref(time_field)
 
     # sort is (time DESC, id DESC): older rows are strictly smaller in the
-    # tuple order — a lexicographic less-than on (time, id)
+    # tuple order: a lexicographic less-than on (time, id)
     Ash.Expr.expr(
       ^time < ^cursor.time or (^time == ^cursor.time and ^Ash.Expr.ref(:id) < ^cursor.id)
     )
