@@ -22,4 +22,9 @@ defmodule AshHooks.KeyRegistryPostgresTest do
       ExUnit.CaptureLog.capture_log(fn -> apply(Cases, unquote(name), [context]) end)
     end
   end
+
+  @tag registry_case: :attach_timeout_barrier
+  test "registry attach_timeout_barrier", context do
+    ExUnit.CaptureLog.capture_log(fn -> Cases.attach_timeout_barrier(context) end)
+  end
 end
