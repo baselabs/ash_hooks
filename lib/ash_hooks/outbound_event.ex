@@ -156,24 +156,28 @@ defmodule AshHooks.OutboundEvent do
   @doc """
   Replays selected logged events to one endpoint, preserving event IDs.
 
-  Options: required `:deliveries`, `:endpoints`, and `:requested_by`; optional
-  `:enqueue`, `:tenant`, `:event_uuid`, `:event_type`, `:from`, `:to`,
-  `:dry_run`, `:limit`, and `:per_second`.
+  Options: required `:deliveries`, `:endpoints`, `:requested_by`, and
+  `declaration: {Emitter, :event_name}` identifying the outbound declaration.
+  The declaration must use the supplied event log, deliveries, and endpoints.
+  Optional: `:enqueue`, `:enqueue_key`, `:tenant`, `:event_uuid`, `:event_type`,
+  `:from`, `:to`, `:dry_run`, `:limit` (default 100, maximum 1,000), and
+  `:per_second` (positive integer, default 50).
 
-  A new-row replay creates an unbound delivery and calls enqueue with
-  `(logged_event, nil)`. This does not satisfy the generated worker's normal
-  dispatch contract or declaration-based recovery contract. Use a callback
-  that handles those arguments and drives the stored row explicitly.
+  New deliveries store the declaration and enqueue route, and enqueue receives
+  `(delivery, event)`, matching the generated worker and recovery contracts.
+  Enable `resend_tracking :on` to persist `last_resend_by` and `last_resend_at`.
+  Existing terminal rows use `AshHooks.Delivery.resend/2` with the same tenant
+  and requester. Nonterminal existing rows are skipped.
 
-  Existing terminal rows use `AshHooks.Delivery.resend/2`. That nested call
-  does not forward `:tenant`, so multitenant terminal rows are skipped.
-  Existing terminal rows record the requester through resend; for new rows,
-  the requester is emitted only in telemetry, not stored on the delivery.
-  Nonterminal existing rows are skipped. Dry run returns the selected count.
+  Dry run returns `{:ok, %{count: n}}` for the selected batch and writes nothing.
+  Normal replay returns created, re-sent, and skipped counts. Batches are spaced
+  one second apart according to `:per_second`. Repeated calls can select skipped
+  rows again; this API returns no pagination cursor.
   """
   @spec replay(module(), struct(), keyword()) ::
           {:ok,
            %{created: non_neg_integer(), re_sent: non_neg_integer(), skipped: non_neg_integer()}}
+          | {:ok, %{count: non_neg_integer()}}
           | {:error, term()}
   def replay(resource, endpoint, opts) do
     with {:ok, requested_by} <- validate_requested_by(opts[:requested_by]),

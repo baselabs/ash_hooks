@@ -47,21 +47,28 @@ change; see [UPGRADING.md](UPGRADING.md).
   and the scanner must read every `:hex` and `:git` entry Mix counts
   (`scripts/check-advisories.sh`, with a fixture lock holding both kinds). `mix hex.audit` fails on a retired package.
 
+### Fixed
+
+- Event-log terminal replay forwards its tenant to resend.
+- Missing-row event-log replay binds the declaration and enqueue route, stores the requester, and enqueues the created delivery and event.
+- Health sweeps count and emit disable telemetry only for successful writes.
+- Endpoint health returns `{:error, :from_required}` for `:to` without `:from`.
+- Health sweeps enforce the full warning interval from the stored warning time, including early and overlapping sweeps.
+- Delivery pruning checks history deletion and rolls back the batch on failure, keeping history with its delivery.
+- HTTP 410 history retains the request's actual duration and signing-key reference through disable recovery.
+- Synchronous ingestion contains handler exceptions, exits, and throws and records retryable failures.
+- Entry points validate tenancy across every resource they read or write, including optional history and event logs.
+- Worker compilation requires a positive integer `delivery_max_attempts`.
+- Previous-key retirement records the actual retirement time, including early removal.
+- Health sweeps count and emit warning telemetry only for committed warning markers.
+- Test sends validate optional history tenancy before creating a delivery.
+- Worker compilation rejects fractional job timeout and maximum-backoff budgets.
+- Event-log replay dry runs count the selected batch without creating deliveries.
+- Event-log replay enforces its configured batch rate.
+
 ### Documentation
 
-- Event-log replay creates unbound deliveries and calls enqueue with `(logged_event, nil)`.
-- Event-log replay skips multitenant terminal rows because its resend call omits the tenant.
-- New event-log replay deliveries emit the requester in telemetry without storing it.
-- Sustained-failure health sweeps count disable attempts without checking the write result.
-- Explicit endpoint-health time bounds require `:from`; `:to` alone can raise.
-- Applications schedule the health warning interval and prevent overlapping sweeps.
-- Delivery pruning ignores failures when deleting attempt history after delivery rows.
-- HTTP 410 attempt-history rows omit request duration and signing-key reference.
-- Synchronous ingestion can raise, exit, or throw when an application handler does.
-- Tenancy validation checks only the resources supplied by each caller; some omit optional resources.
 - Previous signing keys remain active until their stored references are removed.
-- Previous-key retirement timestamps retain the scheduled time after reference removal.
-- Worker compilation does not check `delivery_max_attempts` for positivity.
 - Inbound pruning excludes tracked `:failed_verification` rows.
 - Replay dry runs count a limited batch; skipped rows can appear in repeated calls.
 - Test sends use `:signing_mode`, defaulting to `:standard`, without reading subscriptions.

@@ -167,10 +167,10 @@ defmodule AshHooks.Endpoint do
 
   @doc """
   Retires one endpoint's previous signing key at once: the old reference
-  leaves the row and its retirement time stands as the record. A row with
-  no previous key is returned unchanged.
+  leaves the row and `previous_secret_retired_at` records the actual retirement
+  time, including early removal. A row with no previous key is returned unchanged.
 
-  `:tenant` applies to the gated write (required on multitenant
+  `:now` supplies the application clock (default UTC now). `:tenant` applies to the gated write (required on multitenant
   resources; the tenancy pre-flight runs before it).
   """
   @spec expire_previous_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
@@ -293,9 +293,9 @@ defmodule AshHooks.Endpoint do
     The sustained-failure auto-disable policy, beside the 410 rule: the
     health sweep (`AshHooks.EndpointHealth.sweep/3`) disables an endpoint
     whose trailing failure window meets the configured failure share with
-    at least `min_attempts` of evidence; only on the sweep AFTER one
-    that warned (the declaration injects the `disable_warned_at` marker
-    column the warning sweep stamps; migrate it with the declaration).
+    at least `min_attempts` of evidence, after one full `warning_interval_seconds`
+    (default 60) from the stored warning time. The declaration injects the
+    `disable_warned_at` marker column; migrate it with the declaration.
     Recovery below the warning band clears the marker. Re-enabling is an
     explicit application action.
     """,
@@ -382,9 +382,8 @@ defmodule AshHooks.Endpoint do
         extension injects `secret_created_at`, `secret_first_used_at`,
         `secret_retired_at`, `previous_secret_created_at`,
         `previous_secret_first_used_at`, and `previous_secret_retired_at`
-        (the scheduled retirement time of the previous key). Removing the
-        previous reference does not update that timestamp to the actual removal
-        time. `roll_secret/2`, `expire_previous_secret/2` (one endpoint), and
+        (the scheduled deadline while the previous reference remains, then the
+        actual retirement time when the reference is removed). `roll_secret/2`, `expire_previous_secret/2` (one endpoint), and
         `expire_previous_secrets/2` (a resource) accept optional arguments.
         Declaring `:on`
         requires a migration for the six columns. Timestamps only; never
@@ -441,7 +440,8 @@ defmodule AshHooks.Endpoint do
   The resolved auto-disable policy for an endpoint resource, or nil when
   the resource declares no `auto_disable` section: a map with
   `:failure_window_seconds`, `:failure_share`, `:min_attempts`,
-  `:warning_share`, and `:warning_min_attempts` (defaults applied).
+  `:warning_share`, `:warning_min_attempts`, and `:warning_interval_seconds`
+  (defaults applied).
   """
   @spec auto_disable_policy(module()) :: map() | nil
   def auto_disable_policy(resource) do

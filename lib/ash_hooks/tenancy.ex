@@ -9,11 +9,10 @@ defmodule AshHooks.Tenancy do
   * Mixed declarations, different tenant attributes, context multitenancy,
     or `global?: true` return `{:error, :tenancy_mismatch}`.
 
-  Callers do not all include optional event-log and attempt-history resources.
-  Configure consistent tenancy on every enabled resource yourself. Dispatch
-  omits the event log; delivery execution and pruning omit attempt history;
-  event-log replay omits its configured delivery and endpoint resources.
-  See `AshHooks.OutboundEvent.replay/3` for its tenant-forwarding limitation.
+  Entry points supply every resource they read or write, including optional
+  event-log and attempt-history resources. They reject missing or mismatched
+  tenancy before data access. Event-log replay forwards its tenant to resend
+  when rearming an existing terminal delivery.
   """
 
   alias Ash.Resource.Info

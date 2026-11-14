@@ -53,8 +53,8 @@ defmodule AshHooks.Telemetry do
       endpoint failing at the warning thresholds; notify before the
       breaker opens
     * `[:ash_hooks, :endpoint, :disable]`; `%{endpoint_id, reason}`:
-      sustained-failure disable attempts (`:sustained_failure`), without
-      confirmation that the write succeeded. HTTP 410 disablement uses
+      confirmed sustained-failure disables (`:sustained_failure`), emitted only
+      after the write succeeds. HTTP 410 disablement uses
       `[:ash_hooks, :delivery, :disable]`
 
   `:telemetry.execute/3` matches exact event names, so consume the

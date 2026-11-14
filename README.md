@@ -135,7 +135,8 @@ Configured providers return a `:webhook` event. Override `parse_event_type/1`
 and `handle_event/2` to run application actions. Use a fixed event-name table;
 never turn request data into new atoms. Return `{:ok, result}`,
 `{:error, :retry, reason}`, or `{:error, :permanent, reason}`. Exceptions, exits,
-and throws can escape synchronous ingestion; an expired claim can later recover.
+and throws are contained and recorded as retryable failures with error class
+`"handler_crashed"`.
 
 Handlers run at least once. A crash after a business effect and before recording
 success can repeat the handler. Make the business effect idempotent, keyed on the
@@ -172,10 +173,9 @@ operators can act. A hostname that stops resolving retries as `nxdomain` or
 `resolve_timeout`; a validated private or loopback address fails permanently.
 
 The delivery row controls retry counts and timing. Oban provides a durable trigger.
-Set all budgets to positive integers. Compilation checks positive attempt,
-finalization, base-backoff, and Retry-After budgets, backoff ordering, timeout
-relationships, and the Oban attempt ceiling. It does not check
-`delivery_max_attempts` for positivity. Runtime settings are validated before
+Set all budgets to positive integers. Compilation checks positive integer attempt,
+finalization, delivery-attempt, backoff, and Retry-After budgets, backoff ordering,
+timeout relationships, and the Oban attempt ceiling. Runtime settings are validated before
 delivery; invalid settings fail the job without changing the row.
 
 Schedule `AshHooks.reconcile_pending/3` per declaration and tenant with the same
@@ -193,8 +193,8 @@ once; receivers deduplicate using the stable `webhook-id`.
 - `certificate_pin` adds a certificate or public-key digest check to HTTPS using
   the bounded adapter. `AshHooks.DestinationPolicy` can allow or deny destinations.
   `AshHooks.Transport` supplies another transport with the same signing and retries.
-- `AshHooks.OutboundAttempt` records attempt history. HTTP 410 history omits request
-  duration and signing-key reference. History-write failures emit telemetry without
+- `AshHooks.OutboundAttempt` records attempt history, including the real request
+  duration and signing-key reference for HTTP 410 responses. History-write failures emit telemetry without
   undoing the delivery's completed result transition.
 - Response snippets contain status and content-type summaries by default. Endpoint
   opt-in captures bounded, redacted history bodies. A direct diagnostic run with
@@ -207,17 +207,19 @@ once; receivers deduplicate using the stable `webhook-id`.
   `legacy_secret_ref`. References resolve through your secret store.
 - Key rolling keeps both keys signing until `previous_secret_ref` is cleared.
   Schedule `AshHooks.Endpoint.expire_previous_secrets/2`. The retirement timestamp
-  remains the scheduled deadline after removal.
+  records the actual removal time, including early retirement.
 - Endpoint health uses recorded durations, including failed attempts. Eventual
   successes include first-attempt successes. Explicit time bounds need `:from`.
-  Health sweeps require an application-controlled warning interval and no overlap;
-  disable counts and telemetry report attempts without checking persistence.
+  Supplying `:to` without `:from` returns `{:error, :from_required}`. Health sweeps
+  enforce `warning_interval_seconds` (default 60) from the stored warning time,
+  including overlapping sweeps. Counts and telemetry confirm successful writes.
 - Catalog metadata and payload versions describe events. Subscription attribute
   filters match event metadata. An event log preserves events even with no enabled
-  endpoints. Its replay creates unbound deliveries and calls enqueue with
-  `(logged_event, nil)`, outside the generated worker and declaration-recovery
-  contracts. New rows emit the requester only in telemetry. Terminal-row replay
-  skips multitenant rows because its nested resend omits the tenant.
+  endpoints. Replay takes `declaration: {Emitter, :event_name}` and binds each new
+  delivery to that declaration and enqueue callback. Enable `resend_tracking :on`
+  to store the requester and request time. Enqueue receives `(delivery, event)`,
+  matching the generated worker and recovery contracts. Terminal replay forwards
+  the tenant to resend.
 
 ## Fitting the extensions to your domain
 
@@ -237,8 +239,8 @@ A full last page still carries a cursor; a shorter page carries nil.
 Declare consistent attribute multitenancy on every enabled resource, including
 attempt history and the event log. Pass the tenant to every entry point and include
 the tenant in unique indexes. `AshHooks.Tenancy.resolve/2` validates only the modules
-supplied by each caller; some callers omit optional resources. Review its documented
-caller limitations and the event-log replay limitation before using those features.
+supplied by each caller. Entry points include every resource they touch, including
+optional history and event logs, and reject mismatches before data access.
 
 The generated worker carries the tenant in job args. String tenants are supported;
 custom parsing must have a matching `tenant_from_attribute` inverse. Tenant-aware
@@ -252,8 +254,10 @@ the ordered transition for every tenant.
 Your application schedules retention and controls read access. Inbound pruning
 deletes `:processed`, `:failed_permanent`, and `:superseded` rows; it excludes tracked
 `:failed_verification` rows, which need a separate policy. Delivery pruning deletes
-terminal deliveries then attempts history deletion; history-deletion failures are
-ignored. Add `inserted_at` and a matching migration. Deletion reopens deduplication
+terminal deliveries and their history in one transaction when `attempts:` is
+provided. History-deletion errors roll back the batch and are returned. Both
+resources must support transactions; for SQLite, enable `write_transactions?/0`
+on the repo. Add `inserted_at` and a matching migration. Deletion reopens deduplication
 identities, so retain rows beyond the sender's replay period.
 
 HMAC comparisons use constant time after a length check; public-key verification

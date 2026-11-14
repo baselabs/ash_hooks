@@ -20,7 +20,7 @@ defmodule AshHooks.Provider.Scheme do
   `{:structured_header, name, signature_key: key}`, or `:jws_body`. A header prefix
   matches ASCII case-insensitively. Structured headers support `pair_separator:`
   (default `","`) and `key_value_separator:` (default `"="`), consider at most 16
-  matching signatures, and accept any matching candidate.
+  matching signatures, and accept any matching signature.
 
   Other options:
 

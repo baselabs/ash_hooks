@@ -366,8 +366,9 @@ ctx = %{headers: [{"x-orders-signature", signature}], scope: %{account_id: "acco
 
 The ledger runs handlers at least once. A crash between the business effect and
 recording success can repeat the handler. This handler's update is idempotent.
-Returned retry and permanent failures are recorded; a handler exception, exit,
-or throw can escape synchronous ingestion. An expired claim can later recover.
+Returned retry and permanent failures are recorded. A handler exception, exit,
+or throw is contained and recorded as `:failed_retryable` with error class
+`"handler_crashed"`. The handler can be retried through the stored ledger.
 
 For HTTP receipt, configure `AshHooks.BodyReader` before parsers consume the bytes,
 then mount `AshHooks.Plug`. The [README](../../README.md#receive-with-ashhooksplug)
@@ -455,7 +456,7 @@ make failures and endpoint disablement visible to operators.
 
 - Attempt history uses the resource and migration above. Pass `attempts:` to the
   worker or direct runner. History-write failure emits telemetry without undoing
-  the completed result transition. HTTP 410 history omits duration and key reference.
+  the completed result transition. HTTP 410 history includes the real duration and signing-key reference.
 - Query deliveries and attempts with keyset pagination. Pass each query's own
   `next_cursor` back as `after:`; do not share cursors between different queries.
   A full last page still has a cursor, and a shorter page has nil.
@@ -470,12 +471,13 @@ make failures and endpoint disablement visible to operators.
 - Test sends, resend, bulk replay, key rolling, catalog metadata, payload versions,
   subscription filters, an event log, custom transports, inbound queries, pausing,
   secret rotation, and a destination policy callback are documented at their modules.
-  Read the replay, health, tenancy, and retention limitations in the README before
-  enabling those features.
+  The README explains their configuration and storage requirements.
 
 Applications own policies, queue and retention schedules, and secret storage.
 Inbound pruning excludes tracked rejected-verification rows. Delivery pruning
-ignores history-deletion errors. Optional resources need the same tenant contract
+with `attempts:` deletes history in the same transaction and returns deletion errors.
+Both resources must support transactions; for SQLite, enable `write_transactions?/0`
+on the repo. Optional resources need the same tenant contract
 and matching indexes as the core resources.
 
 ## Observing: telemetry

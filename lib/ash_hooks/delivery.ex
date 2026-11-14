@@ -241,9 +241,12 @@ defmodule AshHooks.Delivery do
   `:batch_size` defaults to 500 and accepts integers from 1 through 5,000;
   invalid values return `{:error, :invalid_batch_size}`.
 
-  `:attempts` (an `AshHooks.OutboundAttempt` resource) prunes the
-  pruned rows' attempt history after each delivery batch is deleted. These
-  deletions are not one transaction, and history-deletion failures are ignored.
+  With `:attempts` (an `AshHooks.OutboundAttempt` resource), each batch deletes
+  deliveries and their history in one transaction. A history-deletion error is
+  returned and rolls back the batch, retaining both the delivery and its history.
+  Both resources must support transactions; otherwise this returns
+  `{:error, :transactions_not_supported}` before deleting anything. For SQLite,
+  enable `write_transactions?/0` on the repo.
   """
   @spec prune(module(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def prune(deliv_mod, opts) do

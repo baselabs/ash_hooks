@@ -9,7 +9,8 @@ defmodule AshHooks.EndpointHealth do
   attempt 1.
 
   Schedule `stats/2` per endpoint and `sweep/3` per endpoint resource. The
-  application owns the sweep schedule and prevents overlapping sweeps.
+  application owns the sweep schedule. The persisted warning time prevents
+  early or overlapping sweeps from shortening the warning interval.
   The package does not re-enable disabled endpoints.
   """
 
@@ -39,7 +40,7 @@ defmodule AshHooks.EndpointHealth do
   Options: `:endpoint_id` (required), `:window_seconds` (default 86,400),
   `:now` (the application clock), `:from`/`:to` (explicit DateTime bounds),
   and `:tenant`. When supplying explicit bounds, provide `:from`; `:to`
-  is optional. Supplying `:to` alone can raise during comparison.
+  is optional. Supplying `:to` alone returns `{:error, :from_required}`.
 
       {:ok, %{attempts: 40, success_rate: 0.925, latency_p50_ms: 120, ...}} =
         AshHooks.EndpointHealth.stats(MyApp.Attempt, endpoint_id: endpoint.id)
@@ -58,14 +59,14 @@ defmodule AshHooks.EndpointHealth do
   Applies the endpoint resource's `auto_disable` policy to enabled endpoints.
 
   A qualifying endpoint without `disable_warned_at` gets a warning marker and
-  `[:ash_hooks, :endpoint, :disable_warning]` telemetry. A later sweep can
-  attempt disablement once that marker exists. No minimum warning interval is
-  enforced; prevent overlapping sweeps and schedule the desired interval.
-  Endpoints below the failure thresholds have their warning marker cleared.
+  `[:ash_hooks, :endpoint, :disable_warning]` telemetry after the marker is
+  stored. A qualifying failure can disable only after `warning_interval_seconds`
+  (default 60) has elapsed since that marker, including overlapping sweeps.
+  Endpoints below the warning thresholds have their warning marker cleared.
 
-  Disable attempts emit `[:ash_hooks, :endpoint, :disable]` with reason
-  `:sustained_failure`. The write result is not checked. The `disabled` count
-  reports attempts, not confirmed writes. Read the endpoint to confirm its state.
+  Successful disables emit `[:ash_hooks, :endpoint, :disable]` with reason
+  `:sustained_failure`. Counts and telemetry reflect successful writes. A failed
+  disable leaves its warning marker available for a later sweep to retry.
 
   Options: `:now` and `:tenant`. Returns `{:ok, %{disabled: n, warned: n}}`.
   """
@@ -92,12 +93,8 @@ defmodule AshHooks.EndpointHealth do
     end)
   end
 
-  # The warning-first contract: a disable lands only on a sweep AFTER one
-  # that warned. The warned state is DURABLE (`disable_warned_at`, stamped
-  # by the warning sweep): the first sweep that sees a qualifying failure
-  # warns and stamps — the breaker opens on the next sweep that still
-  # sees it. Recovery below the warning band clears the stamp, so a later
-  # degradation gets a fresh warning cycle.
+  # The stored warning time starts the minimum interval. Recovery below
+  # the warning band clears it so later failures start a new warning cycle.
   defp sweep_one(endpoint, attempts_mod, policy, now, tenant, {disabled, warned}) do
     from = DateTime.add(now, -policy.failure_window_seconds, :second)
 
@@ -129,9 +126,7 @@ defmodule AshHooks.EndpointHealth do
     end
   end
 
-  # The disable arm: ONLY a previously-warned endpoint opens the breaker
-  # — a first qualifying observation warns and stamps; the next sweep
-  # that still qualifies disables and clears
+  # Only a warned endpoint can disable, once the full interval has elapsed.
   defp sustain_failure(endpoint, share, total, now, policy, tenant, {disabled, warned}) do
     if warned_previously?(endpoint) do
       if DateTime.diff(now, endpoint.disable_warned_at, :microsecond) >=

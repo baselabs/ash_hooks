@@ -107,8 +107,9 @@ defmodule AshHooks.Worker do
       integer and `:max_backoff_seconds` at least `:base_backoff_seconds`.
       For direct `AshHooks.Delivery.run/2` calls,
       `:delivery_max_attempts` becomes `:max_attempts`; the other retry option
-      names and defaults are unchanged. Omitted or `nil` retry options use
-      these defaults. The `Retry-After` cap is
+      names and defaults are unchanged. Omitted worker options use these defaults;
+      explicit `nil` budgets are rejected. Direct runner retry options use the
+      defaults when omitted or `nil`. The `Retry-After` cap is
       the maximum delay a receiver can request on each attempt. A large
       `Retry-After` can keep a delivery and its job pending for up to the cap
       on each attempt. The default permits 24 hours per attempt.

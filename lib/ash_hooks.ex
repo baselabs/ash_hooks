@@ -25,7 +25,7 @@ defmodule AshHooks do
   Configure consistent attribute multitenancy on every resource you enable,
   including attempt history and the event log. Pass `:tenant` or `ctx[:tenant]`
   to every entry point. `AshHooks.Tenancy.resolve/2` validates the resource
-  modules supplied by each caller; some callers omit optional resources.
+  modules touched by each operation, including optional history and event logs.
   The
   [adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
   explains the transition.

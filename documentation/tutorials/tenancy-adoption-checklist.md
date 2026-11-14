@@ -2,7 +2,7 @@
 
 ash_hooks supports Ash attribute multitenancy: pass an explicit tenant to dispatch, ingest,
 delivery runs, sweeps, and reconciliation. Tenant validation checks the resource
-set supplied by the caller, with the limitations listed below. This checklist walks one app; two tenants or two
+set touched by each operation, including optional history and event logs. This checklist walks one app; two tenants or two
 thousand; through the same steps. The reasoning behind the floor is
 `AshHooks.Tenancy`.
 
@@ -11,9 +11,9 @@ thousand; through the same steps. The reasoning behind the floor is
 Declare the SAME attribute strategy on the resources a given operation
 touches: Subscription, Endpoint, and OutboundDelivery for outbound, plus
 OutboundAttempt and OutboundEvent when those features are enabled; the
-inbound ledger for inbound receipt. `resolve/2` checks only modules supplied
-by its caller. Some callers omit optional resources; see `AshHooks.Tenancy`
-and the tenant-forwarding limitation in `AshHooks.OutboundEvent.replay/3`.
+inbound ledger for inbound receipt. Entry points supply every resource they
+read or write to `AshHooks.Tenancy.resolve/2`. Event-log replay also forwards
+the tenant when it rearms an existing terminal delivery.
 
 Add a non-nullable tenant attribute (for example `:org_id`) and declare
 `multitenancy` with `strategy :attribute` and `attribute :org_id` on each resource.

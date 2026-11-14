@@ -46,8 +46,9 @@ defmodule AshHooks.Ingress do
   provider payloads and signed-body digests. See the README's retention and security section.
   The returned row can remain `:received` or `:claimed` when this call did not
   obtain ownership. Inspect its status before choosing an HTTP acknowledgment.
-  A handler exception, exit, or throw can escape synchronous ingestion; the
-  expired claim can later be recovered.
+  Handler exceptions, exits, and throws are contained and recorded as
+  `:failed_retryable` with error class `"handler_crashed"`, using the current
+  claim's fencing token. Both synchronous ingestion and reaping use this path.
   """
 
   require Ash.Query
@@ -768,8 +769,9 @@ defmodule AshHooks.Ingress do
   bang read); per-tenant sweeps compose with `AshHooks.reap_all/2`.
 
   Rows that cannot be re-driven (inbound declaration removed, provider
-  unresolved, a raising handler) are skipped without stopping the sweep ;
-  a poison row must never starve the rows behind it.
+  unresolved) are skipped without stopping the sweep. Handler exceptions, exits,
+  and throws are recorded as retryable failures and count as re-driven when that
+  write succeeds. One failing row never stops the remaining rows.
   """
   @spec reap(module(), keyword()) ::
           {:ok, non_neg_integer()} | {:error, :tenant_required | :tenancy_mismatch}

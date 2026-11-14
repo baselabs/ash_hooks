@@ -133,6 +133,14 @@ when implemented; an invalid provider identity fails ingestion.
   anonymous callback cannot be reconstructed and is reported as `:unresolved_route`.
 - Custom enqueue callbacks must be idempotent. The enqueue effect may succeed before a
   claimant crashes and releases its lease.
+- Event-log replay takes `declaration: {Emitter, :event_name}` and the same tenant
+  as dispatch. Enable `resend_tracking :on` to store the requester and request time.
+  Enqueue receives the created delivery and its event. Dry runs write nothing.
+- Health sweeps wait `warning_interval_seconds` (default 60) from the stored warning
+  time before disabling. Counts and telemetry reflect successful writes.
+- When pruning with `attempts:`, both resources must support transactions. A history
+  deletion error rolls back the batch and is returned; for SQLite, enable
+  `write_transactions?/0` on the repo.
 - A 410 response first records `:disable_pending` with an endpoint snapshot. Recovery may
   complete that disable only if the endpoint still matches the snapshot; an old response
   cannot disable replacement configuration.
@@ -161,7 +169,7 @@ when implemented; an invalid provider identity fails ingestion.
 - In a multitenant application, use the same attribute-tenancy contract on every resource
   touched by an operation, including optional history and event-log resources, and
   pass the tenant to every entry point. `AshHooks.Tenancy.resolve/2` checks only
-  its supplied modules; some callers omit optional resources. Global tenancy is
+  its supplied modules; entry points include every resource they read or write. Global tenancy is
   rejected. Missing or mismatched tenancy fails before data access.
 - Queue arguments serialize the row tenant and full delivery key so a restart can recover
   the same scope. Do not replace them with ambient process context.

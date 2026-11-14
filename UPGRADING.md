@@ -21,6 +21,18 @@ provider, set the plug's `signature_header:` to the header it read. Code that
 read `conn.private[:ash_hooks_raw_body]` should call
 `AshHooks.BodyReader.raw_body/1` instead; the key is internal.
 
+Event-log replay takes `declaration: {Emitter, :event_name}` to bind new deliveries
+to the same declaration and queue contract as dispatch. Enable `resend_tracking :on`
+to persist the requester and request time. The enqueue callback receives the created
+delivery and its event; terminal replays carry the tenant through resend.
+
+Health sweeps enforce `warning_interval_seconds` (default 60) from the stored
+warning time. Counts and telemetry reflect committed marker and disable writes.
+Delivery pruning with `attempts:` requires transaction-capable resources and rolls
+back a batch if history deletion fails. For SQLite, enable `write_transactions?/0`
+on the repo. Early key retirement records its actual time; a previous key continues
+to sign until its stored reference is removed.
+
 ## Versions >= 2.0.1 and < 3.0.0 → 3.0.0
 
 3.0.0 makes inbound verification generic. It removes the vendor-specific
@@ -258,7 +270,7 @@ No schema or DSL changes. Two observable deltas:
 - **`use AshHooks.Worker` refuses misfit budgets at compile time.** Oban's
   `:max_attempts` must exceed `:delivery_max_attempts`; a literal
   `:http_opts` `timeout:` must stay below `:attempt_timeout`. The macro checks positive
-  attempt, finalization, base-backoff, and Retry-After budgets; all configured
+  attempt, finalization, delivery-attempt, backoff, and Retry-After budgets; all configured
   budgets must be positive; `:max_backoff_seconds` must be at
   least `:base_backoff_seconds`. A literal `:http_opts`
   `validate_destination: false` refuses to compile outside `:test` (it is
