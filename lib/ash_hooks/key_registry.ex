@@ -35,7 +35,7 @@ defmodule AshHooks.KeyRegistry do
   """
 
   alias AshHooks.KeyRegistry.{Storage, Transitions}
-  alias AshHooks.{PrimaryKey, Tenancy}
+  alias AshHooks.{Phase, PrimaryKey, Tenancy}
   alias Spark.Dsl.Extension
   require Ash.Query
   import Bitwise, only: [<<<: 2]
@@ -63,7 +63,7 @@ defmodule AshHooks.KeyRegistry do
   current number of `:destroy_failed` rows.
   """
   def sweep(registry, opts \\ []) do
-    with :ok <- Transitions.outside_transaction(registry),
+    with :ok <- Phase.outside_transaction(registry),
          {:ok, tenant} <- Tenancy.resolve([registry], opts[:tenant]) do
       now = Transitions.now(opts)
       timeout = Extension.get_opt(registry, [:key_registry], :issue_timeout, 900)

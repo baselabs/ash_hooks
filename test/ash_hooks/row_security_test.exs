@@ -65,6 +65,23 @@ defmodule AshHooks.RowSecurityTest do
              end)
   end
 
+  test "the registry refuses a native transaction with Ash write transactions disabled",
+       context do
+    Application.put_env(:ash_hooks, :row_security_transactions, false)
+    on_exit(fn -> Application.delete_env(:ash_hooks, :row_security_transactions) end)
+    refute Ash.DataLayer.can?(:transact, context.registry)
+
+    assert {:ok, :ok} =
+             context.repo.transaction(fn ->
+               refute Ash.DataLayer.in_transaction?(context.registry)
+
+               assert {:error, :inside_transaction} =
+                        AshHooks.KeyRegistry.sweep(context.registry, tenant: "tenant_a")
+
+               :ok
+             end)
+  end
+
   for configuration <- [:primary, :split] do
     for failure <- [:refusal, :read_error] do
       @tag configuration: configuration

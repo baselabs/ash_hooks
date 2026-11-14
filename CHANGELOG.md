@@ -75,6 +75,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `previous_secret`. A consumer importing `:ash_hooks` in `import_deps` no
   longer has `mix format` add parentheses to the documented DSL. The list is
   generated from the DSL and checked for drift.
+- Key registry refusals before any write leave an enclosing host transaction
+  usable. Sweeps refuse a native SQLite transaction even when Ash write
+  transactions are disabled.
 - `AshHooks.Delivery.run/2` and `test_send/2` refuse an enclosing transaction
   with `{:error, :inside_transaction}` before starting work. Previously their
   monitored child could block or miss uncommitted rows. Inline driver enqueue

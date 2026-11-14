@@ -1,7 +1,7 @@
 defmodule AshHooks.KeyRegistry.Transitions do
   @moduledoc false
   alias Ash.Resource.Info
-  alias AshHooks.{Custody, PrimaryKey, Tenancy}
+  alias AshHooks.{Custody, Phase, PrimaryKey, Tenancy}
   alias AshHooks.KeyRegistry.Storage
   require Ash.Query
   require Ash.Expr
@@ -10,7 +10,7 @@ defmodule AshHooks.KeyRegistry.Transitions do
     registry = Storage.registry(owner)
 
     with :ok <- Storage.check(registry, owner),
-         :ok <- outside_transaction(owner),
+         :ok <- Phase.outside_transaction(owner),
          {:ok, tenant} <- Tenancy.resolve([registry], opts[:tenant]),
          {:ok, custody_tenant} <- Custody.canonical_tenant(tenant, owner, opts) do
       now = now(opts)
@@ -90,7 +90,7 @@ defmodule AshHooks.KeyRegistry.Transitions do
     registry = Storage.registry(owner)
 
     with :ok <- Storage.check(registry, owner),
-         :ok <- outside_transaction(owner),
+         :ok <- Phase.outside_transaction(owner),
          {:ok, _} <-
            Storage.phase(registry, owner, opts[:tenant], fn ->
              retire_issued(registry, ref, opts)
@@ -118,9 +118,6 @@ defmodule AshHooks.KeyRegistry.Transitions do
       %Ash.BulkResult{errors: [error | _]} -> {:error, error}
     end
   end
-
-  def outside_transaction(resource),
-    do: if(Ash.DataLayer.in_transaction?(resource), do: {:error, :inside_transaction}, else: :ok)
 
   def now(opts), do: DateTime.truncate(Keyword.get(opts, :now, DateTime.utc_now()), :microsecond)
 
