@@ -1237,5 +1237,26 @@ if Code.ensure_loaded?(Oban) do
       :code.purge(RuntimeWorker)
       :code.delete(RuntimeWorker)
     end
+
+    for key <- [:timeout, :max_backoff_seconds] do
+      @tag release_fix: 12
+      test "release worker rejects a noninteger #{key} budget at compilation" do
+        key = unquote(key)
+
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}, #{key}: 100_000.5"
+          )
+
+        assert_raise ArgumentError, ~r/#{key} must be a positive integer/, fn ->
+          Code.compile_string(source)
+        end
+      after
+        :code.purge(RuntimeWorker)
+        :code.delete(RuntimeWorker)
+      end
+    end
   end
 end

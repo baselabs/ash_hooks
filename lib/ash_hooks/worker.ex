@@ -490,11 +490,6 @@ defmodule AshHooks.Worker do
     max_backoff = Keyword.get(opts, :max_backoff_seconds, 3600)
     retry_after_cap = Keyword.get(opts, :retry_after_cap_seconds, 86_400)
 
-    if job_timeout <= attempt_timeout + finalization_allowance do
-      raise ArgumentError,
-            "AshHooks.Worker :timeout must exceed :attempt_timeout plus :finalization_allowance"
-    end
-
     # compiled budget tripwires: these are related budgets, and a silent
     # misfit either stalls rows or walls off every slow send — refuse at
     # compile time, where every value but an MFA-resolved http_opts is
@@ -503,9 +498,16 @@ defmodule AshHooks.Worker do
       attempt_timeout: attempt_timeout,
       finalization_allowance: finalization_allowance,
       delivery_max_attempts: delivery_max_attempts,
+      timeout: job_timeout,
+      max_backoff_seconds: max_backoff,
       base_backoff_seconds: base_backoff,
       retry_after_cap_seconds: retry_after_cap
     )
+
+    if job_timeout <= attempt_timeout + finalization_allowance do
+      raise ArgumentError,
+            "AshHooks.Worker :timeout must exceed :attempt_timeout plus :finalization_allowance"
+    end
 
     if max_backoff < base_backoff do
       raise ArgumentError,
