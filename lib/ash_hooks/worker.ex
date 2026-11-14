@@ -502,6 +502,7 @@ defmodule AshHooks.Worker do
     validate_positive_budgets!(
       attempt_timeout: attempt_timeout,
       finalization_allowance: finalization_allowance,
+      delivery_max_attempts: delivery_max_attempts,
       base_backoff_seconds: base_backoff,
       retry_after_cap_seconds: retry_after_cap
     )

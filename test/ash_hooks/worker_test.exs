@@ -1218,5 +1218,24 @@ if Code.ensure_loaded?(Oban) do
         _ = :code.delete(RuntimeWorker)
       end
     end
+
+    @tag release_fix: 10
+    test "release worker rejects nonpositive delivery attempt budgets at compilation" do
+      for value <- [0, -1, 1.5, nil] do
+        source =
+          String.replace(
+            @worker_base,
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}",
+            "secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret}, delivery_max_attempts: #{inspect(value)}"
+          )
+
+        assert_raise ArgumentError, ~r/delivery_max_attempts must be a positive integer/, fn ->
+          Code.compile_string(source)
+        end
+      end
+    after
+      :code.purge(RuntimeWorker)
+      :code.delete(RuntimeWorker)
+    end
   end
 end
