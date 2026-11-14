@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Refuse a ledger declaration whose source resource belongs to another ledger.
+
 - Preserve classified provider errors during key overlaps, including timestamp
   and payload failures from either authenticating key.
 

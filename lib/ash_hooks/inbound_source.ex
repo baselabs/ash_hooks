@@ -5,7 +5,8 @@ defmodule AshHooks.InboundSource do
   Sources use opaque keys through `AshHooks.Custody`. The host owns the data
   layer, policies and migrations. Source and ledger resources must have the
   same tenancy and non-nullable scope attributes. Provider aliases select
-  modules from a compile-time allowlist.
+  modules from a compile-time allowlist. Each ledger declaration's `source_record`
+  must name a source whose `ledger` is that declaring resource.
 
   The extension injects the following attributes for host migrations:
 

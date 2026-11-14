@@ -246,6 +246,7 @@ defmodule AshHooks do
     sections: [@webhooks],
     verifiers: [
       AshHooks.Verifiers.ProviderRequired,
+      AshHooks.Verifiers.SourceLedger,
       AshHooks.Verifiers.ReplayWindowRequiresTimestamp,
       AshHooks.Verifiers.OutboundReferences
     ]

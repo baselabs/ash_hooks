@@ -193,11 +193,27 @@ defmodule AshHooks.InboundSourceExtensionTest do
         quote do
           record_provider_alias(:on)
           json_decoder({Jason, :decode, []})
-        end
+        end,
+        Spark.Dsl.Extension.get_opt(source, [:inbound_source], :ledger)
       )
 
     assert Info.attribute(ledger, :provider_alias).allow_nil?
     assert Info.action(ledger, :claim).accept == []
+  end
+
+  test "a ledger refuses a source belonging to another ledger" do
+    source = compile_source()
+
+    errors =
+      Spark.Test.dsl_errors do
+        compile_inbound(
+          quote(do: inbound(:checked, source_record: unquote(source))),
+          quote(do: record_provider_alias(:on))
+        )
+      end
+
+    assert [{_, errors}] = errors
+    assert Enum.any?(errors, &(Exception.message(&1) =~ "source_record ledger"))
   end
 
   test "declarations without a source resource still require a secret" do
@@ -211,8 +227,9 @@ defmodule AshHooks.InboundSourceExtensionTest do
 
   def canonical_decimal(value), do: Decimal.to_string(Decimal.normalize(value))
 
-  defp compile_inbound(declaration, options \\ nil) do
-    module = Module.concat(__MODULE__, "Declaration#{System.unique_integer([:positive])}")
+  defp compile_inbound(declaration, options \\ nil, module \\ nil) do
+    module =
+      module || Module.concat(__MODULE__, "Declaration#{System.unique_integer([:positive])}")
 
     on_exit(fn ->
       :code.purge(module)

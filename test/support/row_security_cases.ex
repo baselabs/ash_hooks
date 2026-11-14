@@ -299,34 +299,45 @@ defmodule AshHooks.Test.RowSecurityCases do
       end
     )
 
-    compile_resource(
-      ctx,
-      ctx.source_inbound,
-      [AshHooks, AshHooks.InboundDelivery],
-      quote do
-        inbound_delivery do
-          record_provider_alias(:on)
-        end
-
-        webhooks do
-          inbound :event do
-            source_record unquote(ctx.source)
+    source_ledger =
+      compile_resource(
+        ctx,
+        ctx.source_inbound,
+        [AshHooks, AshHooks.InboundDelivery],
+        quote do
+          inbound_delivery do
+            record_provider_alias(:on)
           end
-        end
-      end
-    )
 
-    compile_resource(
-      ctx,
-      ctx.source,
-      [AshHooks.InboundSource],
+          webhooks do
+            inbound :event do
+              source_record unquote(ctx.source)
+            end
+          end
+        end,
+        false
+      )
+
+    source =
+      compile_resource(
+        ctx,
+        ctx.source,
+        [AshHooks.InboundSource],
+        quote do
+          inbound_source do
+            ledger unquote(ctx.source_inbound)
+            providers checked: AshHooks.Test.RowSecurityProvider
+            custodian unquote(ctx.custodian)
+            key_registry unquote(ctx.registry)
+          end
+        end,
+        false
+      )
+
+    Code.compile_quoted(
       quote do
-        inbound_source do
-          ledger unquote(ctx.source_inbound)
-          providers checked: AshHooks.Test.RowSecurityProvider
-          custodian unquote(ctx.custodian)
-          key_registry unquote(ctx.registry)
-        end
+        unquote(source_ledger)
+        unquote(source)
       end
     )
 
@@ -407,7 +418,7 @@ defmodule AshHooks.Test.RowSecurityCases do
     end
   end
 
-  defp compile_resource(ctx, module, extensions, body) do
+  defp compile_resource(ctx, module, extensions, body, compile? \\ true) do
     storage = if ctx.layer == AshPostgres.DataLayer, do: :postgres, else: :sqlite
     name = "row_security_" <> Macro.underscore(List.last(Module.split(module)))
     repo = ctx.repo
@@ -454,7 +465,7 @@ defmodule AshHooks.Test.RowSecurityCases do
 
     Application.put_env(:ash_hooks, module, {repo, read_repo})
 
-    Code.compile_quoted(
+    definition =
       quote do
         defmodule unquote(module) do
           use Ash.Resource,
@@ -482,9 +493,9 @@ defmodule AshHooks.Test.RowSecurityCases do
           unquote(body)
         end
       end
-    )
 
     on_exit(fn -> Application.delete_env(:ash_hooks, module) end)
+    if compile?, do: Code.compile_quoted(definition), else: definition
   end
 
   def repo(resource, operation) do

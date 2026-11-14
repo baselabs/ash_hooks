@@ -144,8 +144,7 @@ defmodule AshHooks.Test.InboundSourceCases do
         source_ledger_table: prefix <> "_receipts"
       })
 
-    compile_ledger(ctx)
-    compile_source(ctx, source)
+    compile_source_graph(ctx)
     id = if ctx.storage == :postgres, do: "UUID", else: "TEXT"
     time = if ctx.storage == :postgres, do: "TIMESTAMP(6)", else: "TEXT"
     term = if ctx.storage == :postgres, do: "BYTEA", else: "BLOB"
@@ -956,8 +955,7 @@ defmodule AshHooks.Test.InboundSourceCases do
         source_ledger: Module.concat(ctx.source_ledger, CompositeLedger)
     }
 
-    compile_ledger(ctx, true)
-    compile_source(ctx, ctx.source)
+    compile_source_graph(ctx, true)
     on_exit(fn -> purge_modules([ctx.source, ctx.source_ledger]) end)
 
     {:ok, _, disclosure} = create(ctx)
@@ -1262,6 +1260,17 @@ defmodule AshHooks.Test.InboundSourceCases do
     do: {:ok, %{source: :checked, tenant: 17, scope: %{account_id: "account"}}}
 
   def compile_source(ctx, module, opts \\ []) do
+    definitions = Code.compile_quoted(source_definition(ctx, module, opts))
+
+    if module != ctx.source do
+      modules = Enum.map(definitions, &elem(&1, 0))
+      on_exit(fn -> purge_modules(modules) end)
+    end
+
+    module
+  end
+
+  defp source_definition(ctx, module, opts) do
     storage = storage(ctx, ctx.source_table)
 
     tenant_attribute =
@@ -1272,55 +1281,45 @@ defmodule AshHooks.Test.InboundSourceCases do
       for {option, value} <- Keyword.take(opts, [:max_overlap_seconds, :default_overlap_seconds]),
           do: {option, [], [value]}
 
-    definitions =
-      Code.compile_quoted(
-        quote do
-          defmodule unquote(module) do
-            use Ash.Resource,
-              domain: unquote(ctx.domain),
-              data_layer: unquote(ctx.layer),
-              extensions: [AshHooks.InboundSource]
+    quote do
+      defmodule unquote(module) do
+        use Ash.Resource,
+          domain: unquote(ctx.domain),
+          data_layer: unquote(ctx.layer),
+          extensions: [AshHooks.InboundSource]
 
-            unquote(storage)
+        unquote(storage)
 
-            attributes do
-              unquote(tenant_attribute)
+        attributes do
+          unquote(tenant_attribute)
 
-              attribute(:url, AshHooks.Endpoint.Url, public?: true)
-              unquote(ctx[:endpoint_attributes])
-            end
-
-            multitenancy do
-              strategy(:attribute)
-              attribute(:tenant_id)
-            end
-
-            inbound_source do
-              ledger(unquote(ctx.source_ledger))
-              scope([{:account_id, :string, [max_length: 64]}])
-              providers(first: SourceProvider, second: OtherSourceProvider)
-              custodian(unquote(Keyword.get(opts, :custodian, AshHooks.Test.IssuingCustodian)))
-              key_registry(unquote(ctx.registry))
-
-              unquote_splicing(overlap_options)
-            end
-
-            actions do
-              defaults([:read, :destroy, create: :*, update: :*])
-            end
-
-            unquote(ctx[:endpoint_changes])
-            unquote(ctx[:endpoint_identities])
-          end
+          attribute(:url, AshHooks.Endpoint.Url, public?: true)
+          unquote(ctx[:endpoint_attributes])
         end
-      )
 
-    if module != ctx.source do
-      modules = Enum.map(definitions, &elem(&1, 0))
-      on_exit(fn -> purge_modules(modules) end)
+        multitenancy do
+          strategy(:attribute)
+          attribute(:tenant_id)
+        end
+
+        inbound_source do
+          ledger(unquote(ctx.source_ledger))
+          scope([{:account_id, :string, [max_length: 64]}])
+          providers(first: SourceProvider, second: OtherSourceProvider)
+          custodian(unquote(Keyword.get(opts, :custodian, AshHooks.Test.IssuingCustodian)))
+          key_registry(unquote(ctx.registry))
+
+          unquote_splicing(overlap_options)
+        end
+
+        actions do
+          defaults([:read, :destroy, create: :*, update: :*])
+        end
+
+        unquote(ctx[:endpoint_changes])
+        unquote(ctx[:endpoint_identities])
+      end
     end
-
-    module
   end
 
   defp purge_modules(modules) do
@@ -1330,7 +1329,16 @@ defmodule AshHooks.Test.InboundSourceCases do
     end
   end
 
-  defp compile_ledger(ctx, composite? \\ false) do
+  defp compile_source_graph(ctx, composite? \\ false) do
+    Code.compile_quoted(
+      quote do
+        unquote(ledger_definition(ctx, composite?))
+        unquote(source_definition(ctx, ctx.source, []))
+      end
+    )
+  end
+
+  defp ledger_definition(ctx, composite?) do
     storage = storage(ctx, ctx.source_ledger_table)
 
     attributes =
@@ -1350,53 +1358,51 @@ defmodule AshHooks.Test.InboundSourceCases do
         end
       end
 
-    Code.compile_quoted(
-      quote do
-        defmodule unquote(ctx.source_ledger) do
-          use Ash.Resource,
-            domain: unquote(ctx.domain),
-            data_layer: unquote(ctx.layer),
-            extensions: [AshHooks, AshHooks.InboundDelivery]
+    quote do
+      defmodule unquote(ctx.source_ledger) do
+        use Ash.Resource,
+          domain: unquote(ctx.domain),
+          data_layer: unquote(ctx.layer),
+          extensions: [AshHooks, AshHooks.InboundDelivery]
 
-          unquote(storage)
+        unquote(storage)
 
-          attributes do
-            attribute(:tenant_id, :integer, allow_nil?: false)
-            unquote(attributes)
+        attributes do
+          attribute(:tenant_id, :integer, allow_nil?: false)
+          unquote(attributes)
+        end
+
+        multitenancy do
+          strategy(:attribute)
+          attribute(:tenant_id)
+        end
+
+        inbound_delivery do
+          scope_identity([:account_id])
+          record_provider_alias(:on)
+        end
+
+        webhooks do
+          inbound :checked do
+            source_record(unquote(ctx.source))
           end
 
-          multitenancy do
-            strategy(:attribute)
-            attribute(:tenant_id)
+          inbound :configured do
+            provider(AshHooks.Test.DeclarationContextProvider)
+            secret({unquote(__MODULE__), :declaration_secret, []})
           end
 
-          inbound_delivery do
-            scope_identity([:account_id])
-            record_provider_alias(:on)
-          end
-
-          webhooks do
-            inbound :checked do
-              source_record(unquote(ctx.source))
-            end
-
-            inbound :configured do
-              provider(AshHooks.Test.DeclarationContextProvider)
-              secret({unquote(__MODULE__), :declaration_secret, []})
-            end
-
-            inbound :legacy do
-              provider(AshHooks.Test.OtherSourceProvider)
-              secret({unquote(__MODULE__), :declaration_secret, []})
-            end
-          end
-
-          actions do
-            defaults([:read, update: :*])
+          inbound :legacy do
+            provider(AshHooks.Test.OtherSourceProvider)
+            secret({unquote(__MODULE__), :declaration_secret, []})
           end
         end
+
+        actions do
+          defaults([:read, update: :*])
+        end
       end
-    )
+    end
   end
 
   defp storage(ctx, table),
