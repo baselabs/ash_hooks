@@ -321,12 +321,12 @@ defmodule AshHooks.Delivery do
           tenant: tenant
         )
 
-      case result do
-        %Ash.BulkResult{status: :success, records: rows} ->
-          with :ok <- prune_attempt_history(attempts_mod, rows, tenant), do: {:ok, rows}
-
-        %Ash.BulkResult{} = failure ->
-          bulk_failure(failure)
+      with %Ash.BulkResult{status: :success, records: rows} <- result,
+           :ok <- prune_attempt_history(attempts_mod, rows, tenant) do
+        {:ok, rows}
+      else
+        %Ash.BulkResult{} = failure -> bulk_failure(failure)
+        {:error, _} = error -> error
       end
     end
 
