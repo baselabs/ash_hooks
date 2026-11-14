@@ -111,7 +111,7 @@ defmodule AshHooks.Ingress do
 
   @doc """
   Lists inbound deliveries by filter with keyset pagination (newest
-  first); the inbound delivery log.
+  first), providing the inbound delivery log.
 
   Options: `:source` (the inbound declaration's name, e.g. `:orders`),
   `:status` (a list of `AshHooks.InboundDelivery.statuses/0`),
@@ -208,8 +208,8 @@ defmodule AshHooks.Ingress do
               failed_verification: 2, handler_failures: 3}} =
         AshHooks.Ingress.counts(MyApp.Ledger, from: an_hour_ago)
 
-  `received` counts the window's accepted rows (rejection rows excluded ;
-  a refused request was never received); `processed` and
+  `received` counts the window's accepted rows (rejection rows are excluded
+  because a refused request was never received); `processed` and
   `handler_failures` (`:failed_retryable` + `:failed_permanent`) come off
   the statuses. `duplicates` and `failed_verification` require
   `ingress_tracking :on` on the ledger (the `duplicates` counter column
@@ -496,7 +496,7 @@ defmodule AshHooks.Ingress do
 
   @doc """
   Claims a delivery: WHERE-gated on `status == :received`, a re-driveable
-  failure, or an EXPIRED lease; bumps the fencing token atomically and
+  failure, or an EXPIRED lease. Bumps the fencing token atomically and
   takes a fresh lease. A live foreign lease (or a terminal row) returns
   `{:error, :lease_held}`. `:tenant` scopes the claim (required on
   multitenant ledgers).
@@ -562,8 +562,8 @@ defmodule AshHooks.Ingress do
   lease-held deliveries keep their dedup identity and re-drive path.
 
   Deleting a terminal row re-opens its dedup identity: a replayed
-  delivery of the same webhook processes again (inbound), and; on the
-  outbound side; a re-emission of the same event re-dispatches and
+  delivery of the same webhook processes again (inbound), and on the
+  outbound side, a re-emission of the same event re-dispatches and
   double-sends. Set the TTL beyond any replay/re-emission horizon.
   `:batch_size` defaults to 100 and is capped at 1,000. Only primary-key
   columns are selected before deletion. Returns `{:ok, deleted_count}` for
@@ -609,17 +609,17 @@ defmodule AshHooks.Ingress do
 
   @doc """
   Retention field-redaction hook: replaces the stored payload of a
-  CLAIMED delivery with `redactor.(payload)`; under the caller's token
+  CLAIMED delivery with `redactor.(payload)` under the caller's token
   and an unexpired lease (the `mark_processed/3` fence). The row keeps
   its dedup identity; only the payload changes. `payload_digest` is
-  deliberately NOT updated (it binds the ORIGINAL signed bytes; the
+  deliberately NOT updated (it binds the ORIGINAL signed bytes for the
   audit trail).
 
   The redactor (`{m, f}` | 1-arity fun) receives the stored payload
   (map or list, including event batches) and returns the
   replacement (same type) or nil to leave it unchanged. A crashing or
   invalid redactor returns an error and leaves the payload UNCHANGED
-  (fail-safe for the audit record; the caller may retry). Redact,
+  (preserving the audit record so the caller may retry). Redact,
   then mark promptly: a lease expiry between redact and mark re-drives
   the row with the redacted payload.
   """
@@ -707,7 +707,7 @@ defmodule AshHooks.Ingress do
   end
 
   @doc """
-  Marks a claimed delivery processed; gated on the caller's token under an
+  Marks a claimed delivery processed, gated on the caller's token under an
   unexpired lease. `:tenant` scopes the mark (required on multitenant
   ledgers).
   """
@@ -720,7 +720,7 @@ defmodule AshHooks.Ingress do
   end
 
   @doc """
-  Marks a claimed delivery failed; same token/lease gate as
+  Marks a claimed delivery failed, using the same token/lease gate as
   `mark_processed/4`. `permanent?` selects `:failed_permanent` over
   `:failed_retryable`.
   """
@@ -740,7 +740,7 @@ defmodule AshHooks.Ingress do
   end
 
   @doc """
-  Extends the caller's lease; gated on the caller's token under an
+  Extends the caller's lease, gated on the caller's token under an
   unexpired lease.
   """
   @spec renew(module(), term(), non_neg_integer(), keyword()) ::

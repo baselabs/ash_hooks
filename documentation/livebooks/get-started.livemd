@@ -344,7 +344,7 @@ defmodule Tour.Attempt do
   # The attempt history: one durable row per delivery attempt (time,
   # outcome, classified reason, HTTP status, latency, the signing key
   # REFERENCE). Written by the delivery runtime when the worker config
-  # carries `attempts:`; the audit trail behind delivery logs and health.
+  # carries `attempts:`, providing the audit trail behind delivery logs and health.
   use Ash.Resource,
     domain: Tour.Domain,
     data_layer: AshSqlite.DataLayer,
@@ -492,7 +492,7 @@ Tour.Repo.query!("CREATE TABLE IF NOT EXISTS tour_orders (id TEXT PRIMARY KEY)")
 ## Observe everything: telemetry
 
 ```elixir
-# exact event names; :telemetry.execute/3 matches exact names only
+# exact event names: :telemetry.execute/3 matches exact names only
 :telemetry.attach_many(
   "tour",
   [
@@ -816,7 +816,7 @@ Ash.create!(Tour.Subscription, %{endpoint_id: endpoint.id, event_types: ["order_
 {:ok, event} = AshHooks.Event.new(type: :order_paid, payload: Jason.encode!(%{"order" => 1}))
 
 # No enqueue configured: dispatch persists the durable rows only
-# (the deferred pattern; an Oban-backed app wires enqueue: here)
+# (the deferred pattern, where an Oban-backed app wires enqueue: here)
 {:ok, results} = AshHooks.dispatch(Tour.Order, :order_paid, event)
 IO.inspect(Enum.map(results, & &1.status), label: "dispatch results")
 ```
@@ -878,7 +878,7 @@ IO.puts("receiver retained exact bytes and a valid signature")
 IO.puts("terminal redrive retained exactly one receiver request")
 
 # One attempt row was recorded beside the delivery: outcome, HTTP status,
-# latency, the signing key REFERENCE; and, because this endpoint opted in
+# latency, the signing key REFERENCE, and, because this endpoint opted in
 # per row, the redacted body and only allowlisted response headers.
 [attempt] = Ash.read!(Tour.Attempt, authorize?: false)
 :succeeded = attempt.outcome
@@ -1140,7 +1140,7 @@ IO.inspect({a_row.org_id, a_row.status}, label: "org_a's row")
 IO.puts("org_b's partition: empty; the event never existed for org_b")
 
 # A tenant-less call against a multitenant set fails closed before any
-# data access; the named error, not a crash:
+# data access, returning the named error, not a crash:
 {:error, :tenant_required} = AshHooks.dispatch(Tour.TenantOrder, :order_paid, event)
 IO.puts("tenant-less dispatch: {:error, :tenant_required}")
 ```
@@ -1191,7 +1191,7 @@ defmodule Tour.FitEndpoint do
 
   attributes do
     uuid_v7_primary_key(:id)
-    # the consumer's own switch; the package injects no `status`
+    # the consumer's own switch: the package injects no `status`
     attribute(:active, :boolean, allow_nil?: false, default: true, public?: true)
   end
 

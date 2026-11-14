@@ -20,14 +20,14 @@ defmodule AshHooks.DestinationPolicy do
   or a direct `AshHooks.Delivery.run/2` config (`destination_policy: {m, f}`
   or a 2-arity fn). The callback returns one of three decisions:
 
-    * `:allow`; the send proceeds; the driver's packaged SSRF gate is
+    * `:allow`: the send proceeds; the driver's packaged SSRF gate is
       skipped for this URL. The HTTP adapter's own resolve-and-pin remains
       the transport's boundary: an allow for a destination that adapter
       check would refuse (a loopback forwarder, a private network) needs
       the adapter's explicit validation override for that delivery too.
-    * `:deny`; terminal: the row dead-letters under `destination_denied`
+    * `:deny`: terminal: the row dead-letters under `destination_denied`
       without a send.
-    * `:default`; the packaged check runs unchanged
+    * `:default`: the packaged check runs unchanged
       (`AshHooks.Ssrf.resolve_public/1`: validated-unsafe dead-letters,
       unresolvable retries under its honest label).
 
@@ -35,8 +35,8 @@ defmodule AshHooks.DestinationPolicy do
   `:endpoint_id` and `:tenant` (nil when the run carries none). A callback
   that raises, exits, throws, or returns a term outside the decision
   vocabulary is CONTAINED as a retryable failure
-  (`destination_policy_failed`; the row climbs the backoff ladder while
-  you fix the policy; a policy defect must not dead-letter deliveries).
+  (`destination_policy_failed`). The row climbs the backoff ladder while
+  you fix the policy; a policy defect must not dead-letter deliveries.
 
   When no policy is configured, the packaged check runs exactly as before
   (the boolean `:ssrf_check` config keeps its behavior; a configured

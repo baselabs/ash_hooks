@@ -23,7 +23,7 @@ change; see [UPGRADING.md](UPGRADING.md).
   single value becomes `ctx.signature` for a provider on the default `:header`
   signature source; a missing or repeated header is refused as unsigned.
 - Optional `c:AshHooks.Provider.handshake/1` and `c:AshHooks.Provider.response/1`
-  callbacks for sender challenges and acknowledgment protocols; the plug also
+  callbacks for sender challenges and acknowledgment protocols. The plug also
   accepts a host response policy.
 - `AshHooks.BodyReader.put_raw_body/2` and `raw_body/1` provide a public exact-byte
   contract for host endpoint readers and lower-level ingress callers, without a
@@ -87,7 +87,7 @@ change; see [UPGRADING.md](UPGRADING.md).
 
 Inbound verification becomes generic: describe any sender's signature scheme in
 configuration, or write one callback with public primitives. The package no
-longer ships vendor-specific verifiers. Two breaking changes, listed below with
+longer ships vendor-specific verifiers. Two breaking changes are listed below with
 their replacements; [UPGRADING.md](UPGRADING.md) gives the configuration for
 each removed module. No schema or dependency changes.
 
@@ -230,11 +230,11 @@ need; each block names its DSL declaration and migration. Read
 - **Attempt history.** The new `AshHooks.OutboundAttempt` extension turns a
   consumer resource into the per-attempt audit ledger: one durable row per
   delivery attempt (time, outcome, classified reason, HTTP status, latency
-  in milliseconds, and the signing key REFERENCE; never secret material),
+  in milliseconds, and the signing key REFERENCE, never secret material),
   written by the runtime beside its fenced result transitions and idempotent
   per `(delivery, attempt)`. Latency is the REQUEST's duration, recorded
-  whenever a request was attempted; including one that failed at
-  transport, at destination pinning, or in a crashing adapter; and `nil`
+  whenever a request was attempted (including one that failed at
+  transport, at destination pinning, or in a crashing adapter) and `nil`
   only when no request was ever made (destination-policy refusal, DNS
   failure at the send gate, secret resolution), where the signing key is
   `nil` too. Wire it with `attempts:` on the worker macro or
@@ -264,8 +264,8 @@ need; each block names its DSL declaration and migration. Read
 - **The finishing details.** Test sends are now FLAGGED end to end:
   `test_tracking :on` on the delivery ledger injects the `test` column,
   `AshHooks.Delivery.test_send/2` rows carry `test: true`, attempt
-  history rows flag themselves, and both list queries filter on `test:`
- ; test sends appear in the delivery log, clearly marked. The
+  history rows flag themselves, and both list queries filter on `test:`;
+  test sends appear in the delivery log, clearly marked. The
   per-delivery diagnostic capture (`snippet_capture: true`) rides every
   driver call including test sends, beside the per-endpoint setting.
   Catalog entries carry an `example` payload. Health stats report
@@ -276,8 +276,8 @@ need; each block names its DSL declaration and migration. Read
   test-marked payload on the developer's forwarder.
 - **Inbound parity.** `AshHooks.Ingress.list/2` queries inbound
   deliveries by source, status, event type, and time range with keyset
-  pagination; `counts/2` answers the window's story; received,
-  duplicates ignored, failed verifications, handler failures; with
+  pagination; `counts/2` answers the window's story (received,
+  duplicates ignored, failed verifications, handler failures) with
   `ingress_tracking :on` on the ledger (the `duplicates` counter column
   and payload-less `:failed_verification` rejection rows, digest
   identity). The inbound DSL's `previous_secret` source rotates a source
@@ -285,30 +285,30 @@ need; each block names its DSL declaration and migration. Read
   and `paused` (any secret-source shape resolving a boolean) refuses
   every request with `{:error, :source_paused}`; answer 5xx so the
   provider retries; nothing is lost while paused.
-- **Tenancy across the new surface.** Every new entry point; attempt
+- **Tenancy across the new surface.** Every new entry point (attempt
   history reads and writes, delivery-log queries, resend and replay, test
   sends, health stats and the disable sweep, key rolling and expiry, the
-  event log's list/prune/replay; takes `:tenant`, resolves the tenancy
+  event log's list/prune/replay) takes `:tenant`, resolves the tenancy
   pre-flight first, and fails closed with `{:error, :tenant_required}` on
   multitenant resources without one. Multitenant attempt tables carry the
   tenant-partitioned `unique_attempt` index (the delivery ledger's
   pattern); `AshHooks.Endpoint.expire_previous_secret/2` gained its
   `:tenant` option.
 - **The event log.** The new `AshHooks.OutboundEvent` extension records
-  each dispatched event ONCE; id, type, declared payload version, time,
-  exact payload bytes; whether or not any endpoint was enabled (wire it
-  with `events:` on the outbound declaration). Idempotent on the event
+  each dispatched event ONCE (id, type, declared payload version, time,
+  and exact payload bytes), whether or not any endpoint was enabled (wire it
+  with `events:` on the outbound declaration). The log is idempotent on the event
   id; a failed log write never stops the fanout
   (`[:ash_hooks, :event, :record_failed]`). Its own retention
   (`AshHooks.OutboundEvent.prune/2`), keyset queries by type and time
   range (`list/2`), and replay: `AshHooks.OutboundEvent.replay/3` sends
-  one event or a filtered set to a CHOSEN endpoint; including one that
-  was off at the time or added later; keeping the event id (receivers
+  one event or a filtered set to a CHOSEN endpoint (including one that
+  was off at the time or added later), keeping the event id (receivers
   dedup), re-arming terminal rows through resend, and recording who
   asked everywhere.
 - **The delivery transport behavior.** `AshHooks.Transport` is the
-  behavior for routing ONE endpoint's deliveries to your own transport ;
-  a developer's local forwarder behind a CLI "listen" command; instead of
+  behavior for routing ONE endpoint's deliveries to your own transport
+  (a developer's local forwarder behind a CLI "listen" command, for example) instead of
   HTTP: an adapter-shaped `request/5` receiving the SAME signed request
   the wire would, with the runtime's attempts, attempt history,
   classification, backoff, and telemetry applying unchanged. Route per
@@ -323,14 +323,14 @@ need; each block names its DSL declaration and migration. Read
   injects the `event_filters` column (`:map`): a subscription whose
   filters all equal the dispatching event's metadata values receives the
   delivery; multiple filters AND together, a list value matches any-of.
-  Evaluated in the dispatcher BEFORE any delivery row is created; a
+  Filters are evaluated in the dispatcher BEFORE any delivery row is created; a
   filter key outside the declared set (or a malformed filter value) never
   matches, fail closed. Attribute values ride the event's `metadata`.
 - **The event catalog and payload-version pinning.** The `outbound` DSL
-  declares each event type's metadata; `description`, `payload_schema`
+  declares each event type's metadata: `description`, `payload_schema`
   (any term your docs renderer understands), `version` (default 1), and
   optional `payload_versions` (a map of `version => {module, function}`
-  variant builders); read back through `AshHooks.Catalog.entries/1` and
+  variant builders). Read it back through `AshHooks.Catalog.entries/1` and
   `entry/2` for event pickers and doc generation. Declaring
   `version_pinning :on` on the endpoint resource injects
   `pinned_payload_version`: an endpoint pinning a DECLARED version
@@ -340,7 +340,7 @@ need; each block names its DSL declaration and migration. Read
   closed before any row is written; the fanout continues.
 - **Endpoint health and sustained-failure auto-disable.**
   `AshHooks.EndpointHealth.stats/2` computes one endpoint's trailing-window
-  health from its attempt history; success rate and nearest-rank latency
+  health from its attempt history: success rate and nearest-rank latency
   percentiles (p50/p90/p99 ms). The new `auto_disable` section on the
   endpoint resource declares the policy beside the existing 410 rule
   (`failure_window_seconds`, `failure_share`, `min_attempts`, and warning
@@ -352,12 +352,12 @@ need; each block names its DSL declaration and migration. Read
   Re-enabling stays an explicit application action.
 - **Secret rolling with an overlap window.** `key_lifecycle :on` on the
   endpoint resource injects the six signing-key lifecycle columns
-  (created / first-used / retired for the current key and its predecessor
- ; timestamps only, never secret material) and unlocks
+  (created / first-used / retired for the current key and its predecessor,
+  all timestamps and never secret material) and unlocks
   `AshHooks.Endpoint.roll_secret/2`: the incumbent reference moves to
-  `previous_secret_ref`; the Standard Webhooks zero-downtime seam, both
-  keys sign every delivery until the window ends (multi-signature on the
-  wire); the new reference takes its place, and the old key's retirement
+  `previous_secret_ref` (the Standard Webhooks zero-downtime seam, where both
+  keys sign every delivery until the window ends with multiple signatures on the
+  wire), the new reference takes its place, and the old key's retirement
   is scheduled (`:overlap_seconds`, default 24h).
   `expire_previous_secrets/2` is the scheduled sweep;
   `expire_previous_secret/1` retires at once on request. The delivery
@@ -365,7 +365,7 @@ need; each block names its DSL declaration and migration. Read
   lifecycle resources).
 - **Resend and bulk replay.** `AshHooks.Delivery.resend/2` re-arms one
   terminal delivery row (`:succeeded`/`:dead_letter`) with the SAME event
-  id; a Standard Webhooks receiver deduplicates the repeat POST; while
+  id (a Standard Webhooks receiver deduplicates the repeat POST), while
   the lifetime attempt counter keeps climbing (attempt-history rows stay
   unique) and a fresh retry ladder starts at `resend_baseline`.
   `AshHooks.Delivery.replay/2` re-arms a filtered set (endpoint, event
@@ -373,8 +373,8 @@ need; each block names its DSL declaration and migration. Read
   and `:per_second`/`:limit` bounding the rate. Both record who asked
   (`last_resend_by`/`last_resend_at`, `resend_count`), refuse anything
   but live endpoints (`{:error, :endpoint_not_live}` / counted skips),
-  and require the new `resend_tracking :on` DSL (four migrated columns)
- ; existing schemas are untouched. Every re-arm emits
+  and require the new `resend_tracking :on` DSL (four migrated columns);
+  existing schemas are untouched. Every re-arm emits
   `[:ash_hooks, :delivery, :resend]`.
 
 - **A public send-time destination policy seam.** `AshHooks.DestinationPolicy`
@@ -400,7 +400,7 @@ need; each block names its DSL declaration and migration. Read
   compiled-budget misfit check re-runs at runtime against the resolved
   set (positive integers, backoff ordering, the baked Oban job-timeout
   envelope including a literal `http_opts` `timeout:` collision, and the
-  Oban-ceiling relation; only the row ceiling may decide dead-letter): a
+  Oban-ceiling relation, since only the row ceiling may decide dead-letter): a
   violation fails the job with `{:error, {:invalid_runtime_config, reason}}`
   before any delivery work, leaves the row untouched, and emits
   `[:ash_hooks, :worker, :invalid_runtime_config]` (the reason vocabulary is
@@ -421,19 +421,19 @@ compile time. No schema, DSL, or success-path change; read
 - **Unresolvable DNS is transport, not a verdict on the destination.** The
   default send-time destination check now runs the tri-state
   `AshHooks.Ssrf.resolve_public/1` instead of the boolean `safe_url?/1`,
-  which folded *unresolvable* into *unsafe*: a resolver outage; or mere
-  congestion past the two-second resolution ceiling; permanently
+  which folded *unresolvable* into *unsafe*: a resolver outage (or mere
+  congestion past the two-second resolution ceiling) permanently
   dead-lettered healthy endpoints at `attempts == 1` under the
   `unsafe_destination` label, while the same condition surfacing one layer
   later (inside the HTTP adapter) retried as transport. Now a validated-unsafe
   answer still dead-letters immediately as `unsafe_destination`; an
-  unresolvable host retries under its honest label; `nxdomain` when every
+  unresolvable host retries under its honest label: `nxdomain` when every
   queried address family answered authoritatively negative, `resolve_timeout`
   for an outage, congestion, or mixed evidence (both in the telemetry reason
-  vocabulary; `nxdomain` had sat unused there); and a permanently dead
+  vocabulary; `nxdomain` had sat unused there), and a permanently dead
   domain dead-letters at the row ceiling carrying that label. The HTTP
   adapter's umbrella atom for the same failures is `unresolved_host` (also
-  newly in the vocabulary; it previously collapsed to `unclassified`).
+  newly in the vocabulary, as it previously collapsed to `unclassified`).
   Consumer-observable: rows that would have been terminal at attempts == 1
   now climb the backoff ladder; consumers branching on an immediate
   `unsafe_destination` for DNS-dark endpoints see
@@ -443,8 +443,8 @@ compile time. No schema, DSL, or success-path change; read
 - **Compiled worker-budget tripwires.** `use AshHooks.Worker` now refuses,
   at compile time, related budgets whose silent misfit stalls rows or walls
   off every slow send: Oban's `:max_attempts` must exceed
-  `:delivery_max_attempts` (error-class results; attempt timeout, driver
-  crash, endpoint read errors; consume Oban executions in step with row
+  `:delivery_max_attempts` (error-class results, such as attempt timeout, driver
+  crash, and endpoint read errors, consume Oban executions in step with row
   attempts while snooze-class results consume none, so only the row ceiling
   may decide dead-letter; a larger row ceiling against the default Oban
   ceiling truncated the retry ladder mid-flight and stalled rows until a
@@ -453,7 +453,7 @@ compile time. No schema, DSL, or success-path change; read
   before the driver's own deadline), the macro validates positive attempt, finalization, base-backoff,
   and Retry-After budgets, and `:max_backoff_seconds` must be at least
   `:base_backoff_seconds`. A literal `:http_opts`
-  `validate_destination: false`; the test seam for loopback listeners ;
+  `validate_destination: false` (the test seam for loopback listeners)
   now refuses to compile outside `:test` (with it baked in, the driver's
   send-time check would be the only remaining SSRF layer; an `{m, f, a}`
   bundle resolves per-perform and cannot be compile-checked).
@@ -467,10 +467,10 @@ compile time. No schema, DSL, or success-path change; read
   outside `:test`, and must never ship to production. The
   `AshHooks.Delivery` classification table gains the unresolvable-DNS row.
 - The send-time SSRF classification is now pinned end-to-end with real DNS
-  through the package's own driver; a registration-clean hostname whose
+  through the package's own driver: a registration-clean hostname whose
   send-time answer is private is refused by `AshHooks.Http.Bounded`'s
   resolve-and-pin and dead-letters through the runtime (no injected
-  refusal, no `validate_destination` bypass); alongside the driver-side
+  refusal, no `validate_destination` bypass). Checks also cover the driver-side
   unresolvable arm and the default-check arms for both classes.
 
 ### Dependencies
@@ -508,11 +508,11 @@ compile time. No schema, DSL, or success-path change; read
 
 - Delivery diagnostics survive recovery races, end to end. Re-admission no longer
   wipes `last_error`: a successful release after a durable enqueue replays the row's
-  admission-time diagnostic (the story of the failure that scheduled the retry ;
+  admission-time diagnostic (the story of the failure that scheduled the retry:
   `http_503` stays visible through the retry; only a fresh enqueue failure writes a
-  new error). Every outcome that resolves the row's immediate fate; `mark_succeeded`,
+  new error). Every outcome that resolves the row's immediate fate (`mark_succeeded`,
   `mark_send_failed` (both the terminal and the retryable form), `finalize_disable`,
-  and the stored 410 obligation itself (`mark_disable_pending`); now RELEASES the
+  and the stored 410 obligation itself (`mark_disable_pending`)) now RELEASES the
   enqueue claim in the same statement, so a reconciler whose enqueue raced the
   outcome finds the token gone. A release that then matches zero rows on a
   cleared claim classifies as BENIGN COMPLETION (`:reconciled`, never
@@ -524,7 +524,7 @@ compile time. No schema, DSL, or success-path change; read
   contract the suite pins, previously upheld only by SQLite's statement
   serialization; the final coverage gate caught the true-concurrency gap). The
   `:release_enqueue` machine primitive gains an optional `enqueue_lease_expires_at`
-  argument (default nil; direct callers see no change). Consumer-observable
+  argument (default nil, with no change for direct callers). Consumer-observable
   consequence: a recovery sweep that runs inside a freshly admitted row's
   30-second parked-lease horizon now reports that row as a contended
   `:duplicate` where 2.0.2 re-admitted it; sub-30s recovery cadences and
@@ -636,13 +636,13 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
 - **`prune_action :none` on the `outbound_delivery` section.** Opt out
   of the retention `destroy :prune` action's injection for append-only
   audit ledgers (no destroy action exists on the resource at all);
-  `AshHooks.Delivery.prune/2` then fails loud with a named error ;
+  `AshHooks.Delivery.prune/2` then fails loud with a named error;
   deletion is the consumer's own surface. Default `:destroy` is
   unchanged.
 - **`status_attribute` / `enabled_values` / `disabled_value` on the new
   `endpoint` section.** Map the durable enable/disable onto the
   consumer's OWN switch (e.g. an `active` boolean): `status` is then
-  not injected; one switch, so the consumer's off switch and the
+  not injected. There is one switch, so the consumer's off switch and the
   package's can never silently disagree. The dispatcher's skip and the
   send path's dead-letter both route through `AshHooks.Endpoint.enabled?/1`;
   the 410 auto-disable flips the mapped attribute. The mapped attribute
@@ -651,7 +651,7 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   against an AshPostgres, uuid_v7-keyed, sole-store-payload consumer
   shape (`postgres` job; the suite is env-gated by `ASH_HOOKS_POSTGRES=1`
   and excluded from ordinary dev runs). `ash_postgres` is a dev/test-only
-  dependency; never ships, never constrains consumers.
+  dependency; it never ships or constrains consumers.
 
 ### Fixed
 
@@ -660,7 +660,7 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   Ash's `ValidateAccept` raised at compile on exactly that consumer
   shape, making the extensions unadoptable without replacing the PK.
   The accept lists carry `:id` only when the PK is a writable `:id`
-  (the package-injected default; byte-identical classification); the
+  (the package-injected default, with byte-identical classification); the
   transformer's decision is persisted and the runtimes read it back, so
   the compiled action and the classification path can never disagree
   (composite and non-`:id` primary keys included). For the non-writable
@@ -675,9 +675,9 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   Version 2.0 adds attempt tokens, leases, and separate enqueue claims;
   network sends remain at-least-once and require receiver deduplication.
   In 1.3 the enqueue seam was the configured
-  enqueuer's own fence; the default Oban enqueuer's
+  enqueuer's own fence: the default Oban enqueuer's
   endpoint_id+event_uuid job uniqueness, or the consumer's own dedup
-  for a custom `enqueue:`. the public support policy note: the injected action accept
+  for a custom `enqueue:`. Public support policy note: the injected action accept
   lists are covered surface; this is a behavior correction (the
   previous accept list required a writable PK that consumers with
   generated PKs cannot provide), not a removal; no working consumer can
@@ -687,9 +687,9 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   `:enabled`** (previously only an exact `:disabled` dead-lettered, so a
   consumer-redeclared `status` with extra values delivered). The
   dispatcher's skip and the send path now route through the ONE
-  `AshHooks.Endpoint.enabled?/1` check; fail-closed by design.
+  `AshHooks.Endpoint.enabled?/1` check, which fails closed by design.
 - **`AshHooks.Subscription.matches?/2` normalizes `event_types` entries
-  with `to_string/1`.** An atom-typed register (`{:array, :atom}`; a
+  with `to_string/1`.** An atom-typed register (`{:array, :atom}`, a
   closed enum) previously matched NOTHING: zero deliveries, no error.
   Atom and string entries (and the `"*"`/`:"*"` wildcard in either
   representation) now match identically. Consumers redeclaring
@@ -719,8 +719,8 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
 
 - **Policy obligation at the extension site** (`OutboundDelivery`,
   `Endpoint` moduledocs): the injected write actions are named and the
-  consumer-owned policy obligation is stated loudly; the inbound half's
-  "you write your own" posture, mirrored outbound. The seven delivery
+  consumer-owned policy obligation is stated loudly, mirroring the inbound half's
+  "you write your own" posture outbound. The seven delivery
   actions plus the endpoint's `:disable`.
 - **Deterministic `Event.id` guidance** (`Event`, `Dispatcher`
   moduledocs): derive the id from the artifact's stable id; a generated
@@ -735,7 +735,7 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   24 hours. Lower the cap if your application requires a shorter retry period.
 - **The 410 auto-disable posture** (`Delivery` moduledoc): an
   unattributed system bulk write by design (no actor in a versioned
-  register), no built-in tenant-facing signal; a receiver that answers
+  register), with no built-in tenant-facing signal. A receiver that answers
   410 once goes dark silently unless the app wires the
   `[:ash_hooks, :delivery, :disable]` telemetry event or accepts the
   posture in writing.
@@ -746,7 +746,7 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
 
 - **The documentation tree now ships in the hex tarball.** 1.2.0's package
   carried only the top-level docs (README, CHANGELOG, UPGRADING, usage-rules),
-  so `documentation/`; including the multi-tenant adoption checklist; was
+  so `documentation/` (including the multi-tenant adoption checklist) was
   reachable only on GitHub/hexdocs while UPGRADING.md and the CHANGELOG
   referenced it by repo-relative path. Installed-package readers now get the
   tutorials (get-started, tenancy-adoption-checklist), the DSL reference, and
@@ -755,8 +755,8 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
 
 ## 1.2.0 (September 24, 2026)
 
-Tenancy release : ash_hooks aligns with
-Ash attribute multitenancy; an explicit tenant threads every data call,
+Tenancy release: ash_hooks aligns with
+Ash attribute multitenancy. An explicit tenant threads every data call,
 and the package fails closed with named errors before any data access
 when a multitenant resource is touched without one. Single-tenant
 adopters change nothing: the entire pre-1.2 suite passes unchanged over
@@ -766,7 +766,7 @@ mechanically inert.
 
 ### Added
 
-- **Tenant threading on every path**; `AshHooks.dispatch/4` (`:tenant`
+- **Tenant threading on every path**: `AshHooks.dispatch/4` (`:tenant`
   opt), `AshHooks.Ingress.ingest/4` (`ctx[:tenant]`), the claim/mark/
   renew/redact/prune/reap heads (`:tenant` opt, new optional arity),
   `AshHooks.Delivery.run/2` (tenant recovered from job args), and both
@@ -779,27 +779,26 @@ mechanically inert.
   silently disables fail-closed reads). A compile-time verifier
   additionally rejects `multitenancy :bypass`, `:bypass_all`, and
   `:allow_global` actions on multitenant package resources.
-- **Per-tenant operations**; `AshHooks.reap_all/2` and
+- **Per-tenant operations**: `AshHooks.reap_all/2` and
   `AshHooks.prune_all/2` sweep a tenant enumerable sequentially with
   per-tenant error isolation and totals
   (`{:ok, %{results: %{tenant => {:ok, n} | {:error, reason}}, total: n}}`).
-- **`AshHooks.reconcile_pending/3`**; the supported reconciliation for
+- **`AshHooks.reconcile_pending/3`**: the supported reconciliation for
   delivery rows stranded at `:pending` by a crash between row write and
-  enqueue: a WHERE-gated CAS flip to `:enqueue_failed` (real state
-  change; matched-records is the win signal; exactly one winner per
-  row among concurrent reconcilers, proven under a custom non-Oban
-  seam), then enqueue through the same seam dispatch takes. Exactly-once
+  enqueue: a WHERE-gated CAS flip to `:enqueue_failed` (a real state
+  change, where matched-records is the win signal and exactly one reconciler wins per
+  row, proven under a custom non-Oban seam), then enqueue through the same seam dispatch takes. Exactly-once
   ACROSS claim mechanisms (reconciliation vs re-dispatch repair) is the
-  enqueue seam's contract; the canonical Oban seam's job uniqueness
+  enqueue seam's contract: the canonical Oban seam's job uniqueness
   provides it; a custom seam must be idempotent itself.
-- **Tenant-aware secret resolution (all optional)**; the worker macro's
+- **Tenant-aware secret resolution (all optional)**: the worker macro's
   `:tenant_aware_secrets` (2-arity `f(ref, tenant)` resolver contract);
   the inbound `secret fn tenant -> ... end` source; the provider
   behavior's optional `webhook_signing_secret/2`
   (Organization × connection custody; `use AshHooks.Provider` ships an
   overridable default delegating to `/1`); and `:tenant` in the
   `verify_signature/3` context map.
-- **Oban args carry the tenant**; the generated `enqueue/2` serializes
+- **Oban args carry the tenant**: the generated `enqueue/2` serializes
   the row's tenant (string tenants are the supported shape; non-string
   tenants must round-trip `parse_attribute` over JSON); uniqueness keys
   stay `[:endpoint_id, :event_uuid]`, and a pre-tenancy tenant-less job
@@ -815,15 +814,15 @@ mechanically inert.
 
 Two adopter classes see action; single-tenant staying single-tenant
 sees none. See UPGRADING.md and the adoption checklist: (1) cutover
-with in-flight Oban jobs created before 1.2.0; drain before serving multitenant
+with in-flight Oban jobs created before 1.2.0: drain before serving multitenant
 dispatch (pre-tenancy args fail closed, correct but noisy); (2)
-single→multi on populated tables; backfill the tenant attribute first
+single→multi on populated tables: backfill the tenant attribute first
 (NULL-tenant rows form a shadow partition that strands effect-once),
 then regenerate identity indexes, then enable.
 
 ## 1.1.1 (September 16, 2026)
 
-Tri-OS proof release. No covered-surface change : the
+Tri-OS proof release. No covered-surface change: the
 package now carries mechanical proof of macOS, Linux, and Windows
 support; a dedicated CI leg per OS runs the full 555-test suite on
 the dev-default toolchain, all nine legs green, and the README claims
@@ -856,25 +855,25 @@ exactly the OSes the legs prove.
 ## 1.1.0 (September 16, 2026)
 
 Support-window release: the Elixir floor rises to 1.20 (a minor, not a
-major, by the public support policy; the first exercise of that rule), the
+major, by the public support policy, in the first exercise of that rule), the
 repo's own toolchain becomes self-enforcing and lockstep-pinned, and
 locked Oban is updated to 2.24.1, Dialyxir to 1.4.8, and ExDoc to 0.40.4,
 with `mix hex.audit` running in CI.
 
 ### Changed
 
-- The supported Elixir window is now `~> 1.20` (was `~> 1.17`) ;
+- The supported Elixir window is now `~> 1.20` (was `~> 1.17`);
   nothing below Elixir 1.20 is supported; the OTP
   floor is 28 (CI tests 28 and 29). Consumers on 1.17–1.19 get a
   resolver-level refusal instead of a compile. The public support policy makes a
   supported-floor bump a MINOR release, so a `~> 1.0` pin resolves
-  1.1.0 and then fails resolution on old Elixirs; pin
+  1.1.0 and then fails resolution on old Elixirs. Pin
   `{:ash_hooks, "~> 1.0.4"}` until you can move (see UPGRADING.md). CI
   tests the window on Erlang/OTP 28 (the dev default, pinned in
   `.tool-versions` and mirrored by a dedicated leg) and 29; the floor
   leg drops the lock and resolves at the floor to keep the requirement
   honest.
-- Repo-local toolchain enforcement; consumers are unaffected: `config/`
+- Repo-local toolchain enforcement. Consumers are unaffected: `config/`
   is excluded from the hex tarball. Development runs on one pinned
   toolchain (`.tool-versions`: Elixir 1.20.4 / Erlang/OTP 28) mirrored
   by a dedicated CI leg; `config/config.exs` refuses any OTP release CI
@@ -939,7 +938,7 @@ correction family that requirement exposed is fixed.
 - Captured snippets and error summaries are now capped in BYTES instead of
   grapheme-sliced. Under Ash 3.33's `:codepoints` counting the injected
   `max_length` constraints count codepoints, and a grapheme-sliced
-  2048-character snippet of combining characters spans 4000+ codepoints ;
+  2048-character snippet of combining characters spans 4000+ codepoints;
   the post-send ledger write then violated its own constraint and crashed
   (`mark_succeeded` failed on a hostile response body), the same re-send
   poison class the control-byte strip closes. The byte cap (on a codepoint
@@ -964,8 +963,8 @@ correction family that requirement exposed is fixed.
 ### Changed
 
 - `mix.lock`: ash 3.33.4, and the dev/test substrate cleared of its
-  published advisories (ash_sqlite 0.2.19 / ash_sql 0.7.5; test-only,
-  never shipped in the package; `mix hex.audit` now clean).
+  published advisories (ash_sqlite 0.2.19 / ash_sql 0.7.5, both test-only and
+  never shipped in the package; `mix hex.audit` is now clean).
 
 ## 1.0.3 (August 23, 2026)
 
@@ -975,7 +974,7 @@ unchanged):
 ### Changed
 
 - The send-failure contract tests dropped their 512MB bodies for 16MB
-  with the peer's receive window pinned to 1KB; the same in-flight
+  with the peer's receive window pinned to 1KB, preserving the same in-flight
   send-failure check with lower memory use. CI uploads the cover HTML when
   the coverage gate reds (triage data, not guesswork).
 
@@ -993,8 +992,8 @@ CI now requires 100% line coverage in the coverage surface declared in `mix.exs`
 ### Added
 
 - `Target.ssl_options/2` and both HTTP adapters accept an injectable
-  `:cacerts` trust bundle (`[cacerts: der_list]` in the adapter opts ;
-  on the Oban path, `use AshHooks.Worker, http_opts: ...`): pin a
+  `:cacerts` trust bundle (`[cacerts: der_list]` in the adapter opts,
+  or `use AshHooks.Worker, http_opts: ...` on the Oban path): pin a
   private CA for private-CA endpoints. Default UNCHANGED (the OTP CA
   store). The worker's `http_opts` takes compile-time literals, or an
   `{m, f, a}` resolved per-perform for computed bundles.
@@ -1036,7 +1035,7 @@ concurrent-ingest and HTTP-buffering regression tests:
 
 - The fenced ledger's exactly-once claim is now pinned by a TRUE
   concurrent race test (8 simultaneous same-key ingests on a
-  3-connection sqlite pool: exactly one `:created`, one row); and the
+  3-connection sqlite pool: exactly one `:created`, one row), and the
   same race without the storage unique index proves the failure mode:
   sqlite fails CLOSED with a loud storage error, zero rows. The
   `InboundDelivery` moduledoc cites both.
@@ -1055,9 +1054,9 @@ concurrent-ingest and HTTP-buffering regression tests:
 
 ## 1.0.0 (August 22, 2026)
 
-1.0.0 is the semantic-versioning baseline : no public API
-removals or renames from 0.2.0 through 0.2.2. Three behavior corrections below;
-migration notes in [UPGRADING.md](UPGRADING.md).
+1.0.0 is the semantic-versioning baseline: no public API
+removals or renames from 0.2.0 through 0.2.2. Three behavior corrections follow;
+see migration notes in [UPGRADING.md](UPGRADING.md).
 
 ### Fixed
 
@@ -1084,13 +1083,13 @@ migration notes in [UPGRADING.md](UPGRADING.md).
   chunk-size lines without a terminator are refused past a sane bound
   instead of being buffered.
 - `AshHooks.Delivery.prune/2` returns `{:error, error}` when the
-  resource lacks `inserted_at`; the same contract as
+  resource lacks `inserted_at`, following the same contract as
   `AshHooks.Ingress.prune/2` its `@spec` always promised (previously
   raised `ArgumentError`).
 
 ### Added
 
-- **Semver and support policy** : the covered public surface
+- **Semver and support policy**: the covered public surface
   is named, deprecations run two minors, and the minimum supported
   versions are CI-tested (Elixir ~> 1.17 / Erlang/OTP 27 / Ash ~> 3.0 /
   Oban ~> 2.20 optional). The previously claimed Elixir 1.15 floor was
@@ -1098,9 +1097,9 @@ migration notes in [UPGRADING.md](UPGRADING.md).
   the first release whose floor is actually tested.
 - **SECURITY.md** with a private disclosure channel (GitHub private
   vulnerability reporting, enabled), scope, and known posture notes;
-  **CONTRIBUTING.md** and **UPGRADING.md**; all three ship in the
+  **CONTRIBUTING.md** and **UPGRADING.md**. All three ship in the
   tarball and render on hexdocs.
-- **Dialyzer gate** on the public API (local + CI); first run caught
+- **Dialyzer gate** on the public API (local + CI): the first run caught
   the dead IP-SAN matcher above.
 - **CI**: a floor leg resolving dependencies at the declared minimums
   (it disproved the old 1.15 claim on its first run), a package leg checking the hex tarball ships
@@ -1116,7 +1115,7 @@ migration notes in [UPGRADING.md](UPGRADING.md).
 
 ### Changed
 
-- **Read posture documented honestly** : read
+- **Read posture documented honestly**: read
   access to the ledger/delivery resources is consumer-governed; the
   package injects no read policies. README → Security carries the
   deny-by-default policy recipe; the resource moduledocs now carry
@@ -1140,19 +1139,19 @@ migration notes in [UPGRADING.md](UPGRADING.md).
 ### Added
 
 - A runnable get-started Livebook (guided tour: inbound verify/dedup,
-  a live local delivery, telemetry, retention); CI-verified headless
+  a live local delivery, telemetry, retention), verified headless in CI
   on every push. No functional changes.
 
 ## 0.2.0 (August 22, 2026)
 
 ### Added
 
-- Retention hooks : `AshHooks.Ingress.prune/2`
+- Retention hooks: `AshHooks.Ingress.prune/2`
   and `AshHooks.Delivery.prune/2` (terminal rows older than a cutoff,
   keyed on the resource's `timestamps()`; non-terminal rows never
   deleted), and `AshHooks.Ingress.redact_payload/4` (payload
   field-redaction under the claim fence; the original-bytes digest is
-  preserved). Deleting a terminal row re-opens its dedup identity ;
+  preserved). Deleting a terminal row re-opens its dedup identity;
   set TTLs beyond replay/re-emission horizons.
 
 ## 0.1.1 (August 22, 2026)
@@ -1179,9 +1178,9 @@ migration notes in [UPGRADING.md](UPGRADING.md).
   dead-letter ceiling), 410 durable disable, redirect refusal, send-time
   SSRF re-check.
 - `AshHooks.Http` adapter behavior with a memory-bounded native
-  HTTP/1.1 default (`AshHooks.Http.Bounded`; every read capped under
+  HTTP/1.1 default (`AshHooks.Http.Bounded`, with every read capped under
   all framings) and an OTP `:httpc` alternative.
-- Response-snippet redaction floor : no body bytes
+- Response-snippet redaction floor: no body bytes
   by default (fixed-grammar status + allowlisted content-type summary);
   per-call `snippet_capture` opt-in under the in-package redaction
   floor (NFKC homoglyph folding, bounded-fixpoint decode chain,
@@ -1189,7 +1188,7 @@ migration notes in [UPGRADING.md](UPGRADING.md).
   fail-closed consumer `snippet_redactor` callback; `[captured]`
   marking.
 - Telemetry (the public support policy floor: ids/integers/fixed atoms/classified
-  reasons only; never secrets or bodies): ingress verify/dedup/claim,
+  reasons only, never secrets or bodies): ingress verify/dedup/claim,
   dispatch enqueue_failed, delivery attempt/result/backoff/dead_letter/
   disable; `AshHooks.Telemetry.fingerprint/1`.
 - Igniter installer, DSL cheat sheets, get-started tutorial,
@@ -1197,7 +1196,7 @@ migration notes in [UPGRADING.md](UPGRADING.md).
 
 ### Security
 
-- Package floors shipped in-code : secrets as sources only
+- Package floors shipped in-code: secrets as sources only
   (literals rejected at parse), default-deny machine-written ledger
   fields, SSRF guard at registration and send, NO headers stored on
   either ledger at all, no response-body persistence by default,

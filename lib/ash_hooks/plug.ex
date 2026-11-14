@@ -25,29 +25,29 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     Options (validated by `init/1` without resource introspection):
 
-      * `:resource`; required ledger module carrying `AshHooks.InboundDelivery`.
+      * `:resource`: required ledger module carrying `AshHooks.InboundDelivery`.
       * Exactly one of `:source` (inbound name atom for a fixed single-tenant
         route) or `:resolve` (`{module, function, args}`).
-      * `:request_uri`; `nil` (default, no URI in ctx), a public base URL
+      * `:request_uri`: `nil` (default, no URI in ctx), a public base URL
         string, or an MFA called with the conn to return the full public URI.
         A base has trailing slashes trimmed and the original request path and
         query appended. The conn's host, scheme and port are never used.
-      * `:methods`; uppercase HTTP method strings, default `["POST"]`.
+      * `:methods`: uppercase HTTP method strings, default `["POST"]`.
         A provider handshake is consulted before a 405 refusal with `allow`.
-      * `:length`; positive total body limit, default 8,000,000 bytes;
-        `:read_length`; positive socket read size, default 1,000,000 bytes;
-        `:read_timeout`; socket read timeout, default 15,000 milliseconds.
+      * `:length`: positive total body limit, default 8,000,000 bytes;
+        `:read_length`: positive socket read size, default 1,000,000 bytes;
+        `:read_timeout`: socket read timeout, default 15,000 milliseconds.
         These apply only to reads made by this plug. Configure preceding
         parsers' limits separately.
-      * `:respond`; optional MFA called with the exact ingest outcome,
+      * `:respond`: optional MFA called with the exact ingest outcome,
         returning `{status, headers, body}` or `:default`.
-      * `:refuse`; optional MFA called with `:not_found`, `:unavailable`,
+      * `:refuse`: optional MFA called with `:not_found`, `:unavailable`,
         `:method_not_allowed`, `:too_large`, or `:body_consumed`, returning
         `{headers, body}` or `:default`. Status stays fixed. Required `allow`
         and `retry-after` headers win over conflicting host headers.
-      * `:retry_after`; positive seconds, default 60, for `retry-after` on
+      * `:retry_after`: positive seconds, default 60, for `retry-after` on
         resolver unavailability and every 503 from `default_response/2`.
-      * `:signature_header`; lowercase request header name, default `nil`.
+      * `:signature_header`: lowercase request header name, default `nil`.
         Its value becomes `ctx.signature` for providers whose
         `signature_source/0` is `:header`, the default for a provider written
         directly against `AshHooks.Provider`. A request with no such header,

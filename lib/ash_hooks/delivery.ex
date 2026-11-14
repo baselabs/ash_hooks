@@ -25,21 +25,21 @@ defmodule AshHooks.Delivery do
 
   Response classification:
 
-    * 2xx → `:succeeded` (status + allowlisted content-type summary; no
+    * 2xx → `:succeeded` (status + allowlisted content-type summary, with no
       body bytes by default; a per-call `snippet_capture: true` config
       persists a bounded, redacted body marked `[captured]`)
     * 408/429/5xx → retryable, `Retry-After` when present (integer seconds or
       HTTP-date; clamped `[1, retry_after_cap_seconds]`), else backoff
     * 410 → `:disable_pending`, then conditional endpoint disable and `:dead_letter`
     * other 4xx → `:dead_letter` (client errors do not self-heal)
-    * 3xx → `:dead_letter` (`redirect_refused`; never followed)
+    * 3xx → `:dead_letter` (`redirect_refused`; redirects are never followed)
     * transport error / secret-resolution failure → retryable
       backoff
     * unresolvable DNS at the send-time destination check → retryable
       backoff under `nxdomain` (every family answered authoritatively
       negative) or `resolve_timeout` (resolver outage, congestion, mixed
-      evidence; transport, not a verdict on the destination); a
-      permanently dead domain dead-letters at the row ceiling carrying
+      evidence). These failures are transport errors, not a verdict on the
+      destination; a permanently dead domain dead-letters at the row ceiling carrying
       its label. The HTTP adapter's umbrella for the same failures is
       `unresolved_host`
     * send-time SSRF refusal / disabled-or-gone endpoint → `:dead_letter`
@@ -121,22 +121,22 @@ defmodule AshHooks.Delivery do
                           ])
 
   @doc """
-  Lists delivery rows by filter with keyset pagination (newest first) ;
-  the delivery-log view behind endpoint pages and resend UIs.
+  Lists delivery rows by filter with keyset pagination (newest first),
+  providing the delivery-log view behind endpoint pages and resend UIs.
 
   Options:
 
-    * `:endpoint_id`; one endpoint's deliveries.
-    * `:status`; a list of statuses (e.g. `[:failed_retryable, :dead_letter]`).
-    * `:event_type`; one event type's deliveries.
-    * `:test`; `true`/`false` on `test_tracking :on` resources: filter
+    * `:endpoint_id`: one endpoint's deliveries.
+    * `:status`: a list of statuses (e.g. `[:failed_retryable, :dead_letter]`).
+    * `:event_type`: one event type's deliveries.
+    * `:test`: `true`/`false` on `test_tracking :on` resources: filter
       the delivery log to (or exclude) test sends.
-    * `:from` / `:to`; `DateTime` bounds on `inserted_at` (inclusive).
-    * `:limit`; page size (default 50, max 500; anything else is
+    * `:from` / `:to`: `DateTime` bounds on `inserted_at` (inclusive).
+    * `:limit`: page size (default 50, max 500; anything else is
       `{:error, :invalid_limit}`).
-    * `:after`; the cursor from a previous page's `:next_cursor` (a
+    * `:after`: the cursor from a previous page's `:next_cursor` (a
       malformed cursor is `{:error, :invalid_cursor}`).
-    * `:tenant`; required on multitenant resources (the named
+    * `:tenant`: required on multitenant resources (the named
       `{:error, :tenant_required}` pre-flight otherwise).
 
   The resource needs `inserted_at` (add `timestamps()`) and an `:id`
@@ -233,7 +233,7 @@ defmodule AshHooks.Delivery do
   `inserted_at` (add Ash `timestamps()` to the resource and its
   migration). Non-terminal rows are never deleted. Returns
   `{:ok, deleted_count}`, or `{:error, error}` when the resource lacks
-  `inserted_at`; the same error contract as `AshHooks.Ingress.prune/2`.
+  `inserted_at`, following the same error contract as `AshHooks.Ingress.prune/2`.
 
   `:tenant` scopes the sweep (required on multitenant resources; a
   tenant-less global sweep over them is the named
@@ -393,7 +393,7 @@ defmodule AshHooks.Delivery do
   `Retry-After` cap. Omitted or `nil` retry options use these defaults.
   `:http`, `:http_opts`, `:tenant_aware_secrets`,
   `:snippet_capture`, `:snippet_redactor`, `:destination_policy`
-  (`{module, function}` or a 2-arity fn; `AshHooks.DestinationPolicy`), and
+  (`{module, function}` or a 2-arity fn, as described in `AshHooks.DestinationPolicy`), and
   `:now` customize the documented seams.
 
   Optional `:retryable_statuses` replaces the retry set with a list of HTTP
@@ -885,7 +885,7 @@ defmodule AshHooks.Delivery do
   the delivery lands in your ledger like any other (the delivery log is
   the record).
 
-  The event gets a fresh `msg_` id (every test send is a new event; no
+  The event gets a fresh `msg_` id (every test send is a new event, with no
   dedup suppression), the chosen type verbatim, and the `:signing_mode`
   option, defaulting to `:standard`. The default payload marks itself:
 
@@ -898,7 +898,7 @@ defmodule AshHooks.Delivery do
 
   Options: `:type` (required, atom or nonempty binary), `:payload`, `:signing_mode`,
   `:deliveries` (the delivery resource, required), `:secret_resolver`
-  (required, the driver contract), `:max_attempts` (default 1; a test
+  (required, the driver contract), `:max_attempts` (default 1, so a test
   send reports one attempt's outcome; raise it for a retried test),
   plus the driver passthroughs (`:http`, `:http_opts`,
   `:destination_policy`, `:ssrf_check`, `:tenant_aware_secrets`,
@@ -1063,14 +1063,14 @@ defmodule AshHooks.Delivery do
 
   Options:
 
-    * `:endpoints` (required); the endpoint resource, for the live check.
-    * `:requested_by` (required, nonempty binary ≤ 255); recorded on the
+    * `:endpoints` (required): the endpoint resource, for the live check.
+    * `:requested_by` (required, nonempty binary ≤ 255): recorded on the
       row (`last_resend_by`/`last_resend_at`, `resend_count` bumps).
-    * `:enqueue`; the same enqueue seam dispatch uses (`{module, function}`
+    * `:enqueue`: the same enqueue seam dispatch uses (`{module, function}`
       or a 2-arity fn); `nil` re-arms the row and leaves driving to your
       worker/recovery.
-    * `:tenant`; the tenancy pre-flight applies.
-    * `:now`; the application clock for `last_resend_at`.
+    * `:tenant`: the tenancy pre-flight applies.
+    * `:now`: the application clock for `last_resend_at`.
 
   Only live endpoints resend: gone or disabled endpoints return
   `{:error, :endpoint_not_live}` before any write; a non-terminal row is
@@ -2654,8 +2654,8 @@ defmodule AshHooks.Delivery do
 
   @doc """
   The default response summary:
-  a fixed grammar over the status and one ALLOWLISTED content-type token ;
-  never body bytes, never a body-derived digest (a hash is correlation
+  a fixed grammar over the status and one ALLOWLISTED content-type token,
+  never body bytes or a body-derived digest (a hash is correlation
   material that explains nothing).
 
       "200 json token=application/json"   # the type was allowlisted

@@ -1,6 +1,6 @@
 defmodule AshHooks.InboundDelivery do
   @moduledoc """
-  Turns the consumer's resource into the inbound webhook ledger; the
+  Turns the consumer's resource into the inbound webhook ledger, the
   durable deduplication record used by `AshHooks.Ingress`.
 
   Attach next to the consumer's own data layer:

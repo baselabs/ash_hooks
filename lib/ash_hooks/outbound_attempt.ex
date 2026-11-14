@@ -8,7 +8,7 @@ defmodule AshHooks.OutboundAttempt do
         data_layer: AshPostgres.DataLayer,
         extensions: [AshHooks.OutboundAttempt]
 
-  The extension injects the attempt fields; the complete encoded delivery
+  The extension injects the attempt fields: the complete encoded delivery
   key (`delivery_pk`), `endpoint_id`, `event_uuid`, `event_type`, the
   attempt number (`attempt`), the outcome (`:succeeded | :failed_retryable |
   :dead_letter`), the classified `reason`, `response_status`,
@@ -16,8 +16,8 @@ defmodule AshHooks.OutboundAttempt do
   `latency_ms`, `signing_key_ref` (a store reference, never secret material),
   `test`, and `attempted_at`. Normal request attempts record duration and the
   signing-key reference. The HTTP 410 finalization path leaves duration and
-  signing-key reference nil despite receiving a response. The extension injects
-  plus the `unique_attempt` identity on `[:delivery_pk, :attempt]`, which
+  signing-key reference nil despite receiving a response. The extension also injects
+  the `unique_attempt` identity on `[:delivery_pk, :attempt]`, which
   makes the runtime's history writes idempotent per attempt. Your
   migration carries the matching unique index.
 
@@ -30,7 +30,7 @@ defmodule AshHooks.OutboundAttempt do
   the fixed no-body summary grammar and `response_headers` is nil.
 
   The runtime writes through the injected `:record` machine action
-  (`authorize?: false`); a history write failure never fails the send ;
+  (`authorize?: false`); a history write failure never fails the send;
   it surfaces as `[:ash_hooks, :attempt, :record_failed]` telemetry. The
   delivery row remains the delivery contract; this ledger is the audit
   trail behind the delivery log, health computation, and resend views.
@@ -61,17 +61,17 @@ defmodule AshHooks.OutboundAttempt do
 
   Options:
 
-    * `:endpoint_id`; one endpoint's attempts.
-    * `:outcome`; a list of outcomes (e.g. `[:failed_retryable, :dead_letter]`).
-    * `:event_type` / `:event_uuid`; the event's type or exact identity.
-    * `:test`; `true`/`false`: filter attempts to (or exclude) test sends.
-    * `:delivery_pk`; attempts of one delivery (the row's encoded key map).
-    * `:from` / `:to`; `DateTime` bounds on `attempted_at` (inclusive).
-    * `:limit`; page size (default 50, max 500; anything else is
+    * `:endpoint_id`: one endpoint's attempts.
+    * `:outcome`: a list of outcomes (e.g. `[:failed_retryable, :dead_letter]`).
+    * `:event_type` / `:event_uuid`: the event's type or exact identity.
+    * `:test`: `true`/`false`: filter attempts to (or exclude) test sends.
+    * `:delivery_pk`: attempts of one delivery (the row's encoded key map).
+    * `:from` / `:to`: `DateTime` bounds on `attempted_at` (inclusive).
+    * `:limit`: page size (default 50, max 500; anything else is
       `{:error, :invalid_limit}`).
-    * `:after`; the cursor from a previous page's `:next_cursor` (a
+    * `:after`: the cursor from a previous page's `:next_cursor` (a
       malformed cursor is `{:error, :invalid_cursor}`, never a raise).
-    * `:tenant`; required on multitenant resources (the named
+    * `:tenant`: required on multitenant resources (the named
       `{:error, :tenant_required}` pre-flight otherwise).
 
   Returns `{:ok, %{records: [row], next_cursor: binary | nil}}`.

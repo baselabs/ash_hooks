@@ -3,8 +3,8 @@ defmodule AshHooks.Keyset do
   Shared keyset pagination over a stable `(time, id)` ordering: newest
   first, opaque cursors, and `{:ok, %{records:, next_cursor:}}` pages.
 
-  The cursor is the last row's `{time, id}` pair, base64url-encoded JSON ;
-  stable across engines because the page query filters by tuple order
+  The cursor is the last row's `{time, id}` pair as base64url-encoded JSON.
+  It is stable across engines because the page query filters by tuple order
   (`time < cursor.time OR (time == cursor.time AND id < cursor.id)` under
   the matching `DESC, DESC` sort), never by offset. `id` is the tiebreak
   for rows sharing one timestamp.

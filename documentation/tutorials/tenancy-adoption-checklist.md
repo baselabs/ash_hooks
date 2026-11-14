@@ -2,8 +2,8 @@
 
 ash_hooks supports Ash attribute multitenancy: pass an explicit tenant to dispatch, ingest,
 delivery runs, sweeps, and reconciliation. Tenant validation checks the resource
-set touched by each operation, including optional history and event logs. This checklist walks one app; two tenants or two
-thousand; through the same steps. The reasoning behind the floor is
+set touched by each operation, including optional history and event logs. This checklist walks one app (two tenants or two
+thousand) through the same steps. The reasoning behind the floor is
 `AshHooks.Tenancy`.
 
 ## The contract
@@ -22,9 +22,9 @@ resource declarations and calls.
 
 Two declarations are rejected outright with `{:error, :tenancy_mismatch}`:
 
-- `global?: true`; it looks consistent while silently allowing
+- `global?: true`: it looks consistent while silently allowing
   tenant-less reads, which would disable every guarantee below.
-- non-`:attribute` strategies; attribute is the only strategy that
+- non-`:attribute` strategies: attribute is the only strategy that
   works across every data layer the package supports.
 
 ## The ordered steps
@@ -34,7 +34,7 @@ backfill in [UPGRADING](../../UPGRADING.md) before enabling the new runtime.
 
 **0. Drain Oban jobs created before 1.2.0** (skip if you have
 no queued deliveries). The moment your resources declare multitenancy,
-jobs enqueued by the old version; whose args carry no tenant; start
+jobs enqueued by the old version, whose args carry no tenant, start
 failing closed with `{:error, :tenant_required}` when they run. That is
 the correct, safe behavior, but it is noisy: drain or complete the old
 queue BEFORE deploying the version whose resources declare tenancy.
@@ -48,7 +48,7 @@ ALTER TABLE webhook_endpoints ADD COLUMN org_id TEXT;
 --    outbound_deliveries
 ```
 
-Then backfill; every legacy row must get its tenant value:
+Then backfill: every legacy row must get its tenant value:
 
 ```sql
 -- your mapping from existing rows to their owning tenant
@@ -66,7 +66,7 @@ SELECT COUNT(*) FROM outbound_deliveries WHERE org_id IS NULL;
 ```
 
 A NULL-tenant row is a quiet trap: the unique identities become
-tenant-scoped in step 2, and NULL never equals a tenant value; so a new
+tenant-scoped in step 2, and NULL never equals a tenant value, so a new
 delivery creates a separate row instead of matching the old one and may repeat
 its network effect. NULL-tenant rows are also invisible to every
 tenant-scoped sweep. Backfill before proceeding; the count above is the
@@ -89,7 +89,7 @@ serializes the tenant from the row into job args and restores it on execution.
 
 - Sweeps are per-tenant: `reap/2` and both `prune/2`s take `:tenant`;
   `AshHooks.reap_all/2` and `AshHooks.prune_all/2` sweep a list of
-  tenants sequentially; one tenant's failure never stops the others ;
+  tenants sequentially (one tenant's failure never stops the others)
   and return each tenant's result plus a total:
   `{:ok, %{results: %{"org_a" => {:ok, 3}, ...}, total: 3}}`.
 - Reconciliation of stale pending rows, enqueue failures, due retries, expired
@@ -99,8 +99,8 @@ serializes the tenant from the row into job args and restores it on execution.
   `timestamps()` (`inserted_at` drives the staleness cutoff; the
   default is five minutes). Use the same declaration and durable queue route.
   Concurrent reconcilers use separate expiring enqueue claims; the enqueue callback
-  receives the event reconstructed from the row (id, type, payload ;
-  its metadata map is empty), so write custom callbacks accordingly.
+  receives the event reconstructed from the row (id, type, and payload)
+  with an empty metadata map, so write custom callbacks accordingly.
 - Tenant-aware secrets (all optional): the worker macro's
   `tenant_aware_secrets: true` (resolver becomes `f(ref, tenant)`), the
   inbound `secret fn tenant -> {:ok, secret} end`, and the provider

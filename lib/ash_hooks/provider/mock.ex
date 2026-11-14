@@ -4,8 +4,8 @@ defmodule AshHooks.Provider.Mock do
   the default implementation, event type from `payload["type"]`, and an
   echoing typed event.
 
-  `parse_event_type/1` resolves the type string with `String.to_existing_atom/1`
-  ; fail-closed: a type that was not already an atom is reported as an unknown
+  `parse_event_type/1` resolves the type string with `String.to_existing_atom/1`.
+  It fails closed: a type that was not already an atom is reported as an unknown
   event, never converted into a newly created one (no atom-table growth from
   webhook input). The Mock imposes NO taxonomy beyond that: any pre-existing
   atom is accepted as a type (it is a general test double; real providers

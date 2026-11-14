@@ -7,10 +7,10 @@ defmodule AshHooks.Legacy do
 
   Envelope:
 
-    * MAC; HMAC-SHA256 over `"<unix_ts>.<body>"`, lowercase hex.
+    * MAC: HMAC-SHA256 over `"<unix_ts>.<body>"`, lowercase hex.
     * `sign/3` → `"v1=<hex>"`; rotation appends `",v1prev=<hex>"` under the
       separately imported previous secret.
-    * header; `x-webhook-signature: t=<unix_ts>,<signature>`.
+    * header: `x-webhook-signature: t=<unix_ts>,<signature>`.
 
   Use `:dual` to send this envelope alongside Standard Webhooks while receivers
   migrate. New integrations should use `:standard`.

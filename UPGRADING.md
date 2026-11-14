@@ -188,7 +188,7 @@ See [README.md](README.md) for examples.
 
 ## 2.1.0 → 2.2.0
 
-New OPTIONAL surface; nothing changes for an install that adopts none of
+New OPTIONAL surface: nothing changes for an install that adopts none of
 it: no existing column, action, event, or default behavior moves.
 
 - **Attempt history (opt-in).** To record every delivery attempt (time,
@@ -203,7 +203,7 @@ it: no existing column, action, event, or default behavior moves.
 - **Per-endpoint response capture (opt-in).** Declaring
   `response_capture_attributes :on` on the endpoint resource injects four
   columns (`response_capture`, `response_capture_max_bytes`,
-  `response_capture_retention_seconds`, `response_header_allowlist`) ;
+  `response_capture_retention_seconds`, `response_header_allowlist`);
   migrate them when you declare it. Capture remains per-row opt-in
   (`response_capture: true`); captured bytes are bounded, redacted, and
   header capture is allowlist-only.
@@ -229,7 +229,7 @@ it: no existing column, action, event, or default behavior moves.
   `filter_attributes` list on the subscription resource injects the
   `event_filters` column; migrate it when you declare it.
 - **Payload-version pinning (opt-in).** Declaring `version_pinning :on`
-  on the endpoint resource injects the `pinned_payload_version` column ;
+  on the endpoint resource injects the `pinned_payload_version` column;
   migrate it when you declare it. Dispatch then resolves each endpoint's
   payload through the declaration's `payload_versions` variant builders.
 - **Secret rolling (opt-in).** Declaring `key_lifecycle :on` on the
@@ -243,8 +243,8 @@ it: no existing column, action, event, or default behavior moves.
 - **Resend and bulk replay (opt-in).** Declaring `resend_tracking :on`
   under `outbound_delivery` injects four machine columns
   (`resend_baseline`, `resend_count`, `last_resend_by`, `last_resend_at`)
- ; migrate them when you declare it; and unlocks
-  `AshHooks.Delivery.resend/2` / `replay/2`. Attempt ceilings are now
+  and unlocks `AshHooks.Delivery.resend/2` / `replay/2`. Migrate the columns
+  when you declare it. Attempt ceilings are now
   series ceilings: a resent row's ladder restarts at its baseline while
   the lifetime `attempts` counter never resets (attempt-history identity
   stays sound). Resources without the columns keep the exact pre-2.2
@@ -439,7 +439,7 @@ knowing even if you change nothing:
 2. **The send path dead-letters an endpoint whose status is anything
    other than `:enabled`** (previously only an exact `:disabled`
    dead-lettered). Only affects consumers who redeclared `status` with
-   extra values; the fail-closed direction.
+   extra values, enforcing the fail-closed direction.
 
 New options, all opt-in: rename the exact-bytes column
 (`payload_attribute`), omit the retention destroy action
@@ -454,7 +454,7 @@ to your domain" section shows each.
 
 Declare the same attribute multitenancy contract on every resource used by an
 operation, including optional attempt-history and event-log resources. If you do, read the adoption
-checklist (`documentation/tutorials/tenancy-adoption-checklist.md`) ;
+checklist (`documentation/tutorials/tenancy-adoption-checklist.md`);
 the ordered transition for populated tables is **backfill the tenant
 attribute → regenerate identity indexes → enable multitenant
 dispatch**. A NULL-tenant legacy row forms a shadow partition: new
@@ -465,8 +465,8 @@ Two obligations for multi-tenant adopters:
 
 1. **Drain Oban jobs created before 1.2.0 before serving multitenant
    dispatch.** Pre-tenancy job args carry no tenant and fail closed
-   (`{:error, :tenant_required}`) against multitenant resources ;
-   correct, but noisy. Drain first.
+   (`{:error, :tenant_required}`) against multitenant resources.
+   This is correct, but noisy. Drain first.
 2. **String tenants are the supported job-args shape.** The worker
    serializes the row's tenant into Oban args (JSON), inverting the
    attribute value through the resource's `tenant_from_attribute`. A
@@ -486,7 +486,7 @@ container is now a typespec'd public contract with one NEW status:
 
 The supported Elixir window is now `~> 1.20`. Applications resolving
 ash_hooks on Elixir 1.17–1.19 get a hard resolver error at deps
-loadpaths instead of a compile. An increase in the minimum supported version ships as a minor release; so a `~> 1.0` pin will happily resolve
+loadpaths instead of a compile. An increase in the minimum supported version ships as a minor release, so a `~> 1.0` pin will happily resolve
 1.1.0 and then fail resolution on old Elixirs. If you cannot move to
 Elixir 1.20 yet, pin the floor release instead:
 
@@ -507,8 +507,8 @@ and then fail the delivery write; under Ash 3.33's `:codepoints` counting,
 every endpoint's dispatch errored on an event the library had validated.
 Ids and types are now rejected above 255 **bytes** at `Event.new/1`, with a
 clear error. If you build event types from multi-byte text, values between
-255 characters and 255 bytes now fail fast at construction; which, under
-`:codepoints`, previously failed (less clearly) at dispatch.
+255 characters and 255 bytes now fail fast at construction; under
+`:codepoints`, they previously failed (less clearly) at dispatch.
 
 ### 2. Captured snippets and error fields are byte-capped
 
@@ -549,7 +549,7 @@ ash_hooks injects onto ledger and delivery resources carry `max_length`
 constraints (event ids and error summaries at 255, response snippets at
 2048). Under `:codepoints` those bounds limit codepoints; under
 `:mixed`, Elixir-side validation of the same constraints counts
-graphemes; the exact tradeoff Ash documents for your own attributes.
+graphemes, the exact tradeoff Ash documents for your own attributes.
 The diagnostic response-snippet capture is capped in bytes (on a
 codepoint boundary), so a captured snippet always satisfies its
 constraint under either mode. Your application owns the choice. See
@@ -564,7 +564,7 @@ Two behavior corrections to know about (both security-posture fixes; no API chan
 ### 1. The alternate `:httpc` adapter refuses literal-IP HTTPS
 
 `AshHooks.Http.Httpc` (NOT the default) now returns `{:error, :ip_literal_https_needs_bounded}`
-for `https://<ip-literal>` destinations. It previously validated only the chain; which let
+for `https://<ip-literal>` destinations. It previously validated only the chain, which let
 any chain-valid certificate authenticate the endpoint IP. The default adapter
 (`AshHooks.Http.Bounded`) enforces the iPAddress-SAN floor and keeps working; if you swapped
 to `:httpc` AND deliver to literal-IP HTTPS endpoints, switch those deliveries back (or drop
@@ -585,7 +585,7 @@ from 0.2.0 through 0.2.2; upgrading is a version bump plus three behavior correc
 ### 1. Truncated chunked bodies now retry (they previously "succeeded")
 
 `AshHooks.Http.Bounded` (the default adapter) returns `{:error, :truncated_body}` when a
-chunked response ends early; exactly as it already did for Content-Length responses. In
+chunked response ends early, exactly as it already did for Content-Length responses. In
 0.2.0 through 0.2.2 the chunked path returned a partial body as success, which could mark a delivery
 `:succeeded` on partial bytes. If a receiver of yours streams chunked responses and
 closes mid-body, deliveries now retry instead of silently truncating.

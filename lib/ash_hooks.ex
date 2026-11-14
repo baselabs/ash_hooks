@@ -69,9 +69,9 @@ defmodule AshHooks do
         doc: """
         The signing-secret source: an `{M, f, a}` callback, `{:app_env, path}`,
         a 0-arity function (app-global), or a 1-arity function
-        (`tenant -> {:ok, secret} | {:error, :no_webhook_secret}`; resolves
-        the TENANT's secret on multitenant ledgers; arity dispatch on literal
-        fns is unambiguous). A literal binary is rejected at parse time.
+        (`tenant -> {:ok, secret} | {:error, :no_webhook_secret}`) that resolves
+        the TENANT's secret on multitenant ledgers. Arity dispatch on literal
+        fns is unambiguous. A literal binary is rejected at parse time.
         This check catches the secret passed as the option
         value; arguments of an MFA source are the consumer's own code.
         """
@@ -130,8 +130,8 @@ defmodule AshHooks do
     target: AshHooks.Outbound,
     describe: """
     Declares an outbound webhook event this resource emits to subscribed
-    endpoints; signed (Standard Webhooks canon by default) and delivered with
-    retry/backoff/dead-letter semantics.
+    endpoints. The event is signed (Standard Webhooks canon by default) and
+    delivered with retry/backoff/dead-letter semantics.
     """,
     schema: [
       name: [
@@ -151,7 +151,7 @@ defmodule AshHooks do
         type: :atom,
         doc: """
         The consumer's Subscription resource module (carrying
-        `AshHooks.Subscription`) this event fans out through; the
+        `AshHooks.Subscription`) this event fans out through. The
         dispatcher matches its rows against the event type.
         """
       ],
@@ -166,7 +166,7 @@ defmodule AshHooks do
       description: [
         type: :string,
         doc: """
-        The catalog description of this event type; what it means, when
+        The catalog description of this event type: what it means and when
         it fires. Read back through `AshHooks.Catalog` for event pickers
         and generated docs.
         """
@@ -174,7 +174,7 @@ defmodule AshHooks do
       example: [
         type: :string,
         doc: """
-        A catalog example payload for this event type; the exact bytes
+        A catalog example payload for this event type: the exact bytes
         (or a representative JSON document) shown in event pickers and
         generated docs, and sent by nothing (test sends synthesize their
         own payloads; wire your own sample through `test_send`'s
@@ -184,7 +184,7 @@ defmodule AshHooks do
       payload_schema: [
         type: :any,
         doc: """
-        The catalog's payload contract for this event type; a JSON-Schema
+        The catalog's payload contract for this event type: a JSON-Schema
         map, a types module, or any term your docs renderer understands.
         Data for tooling only; the dispatcher never validates against it.
         """
@@ -202,8 +202,8 @@ defmodule AshHooks do
         doc: """
         The consumer's OutboundEvent resource module (carrying
         `AshHooks.OutboundEvent`): when set, every dispatch records the
-        event ONCE; id, type, declared version, time, exact payload
-        bytes; whether or not any endpoint was enabled. The log has its
+        event ONCE (id, type, declared version, time, and exact payload
+        bytes), whether or not any endpoint was enabled. The log has its
         own retention (`AshHooks.OutboundEvent.prune/2`) and answers
         replays (`AshHooks.OutboundEvent.replay/3`).
         """
@@ -226,7 +226,7 @@ defmodule AshHooks do
   @webhooks %Spark.Dsl.Section{
     name: :webhooks,
     describe: """
-    Webhook declarations; inbound sources and outbound events for this
+    Webhook declarations: inbound sources and outbound events for this
     resource.
     """,
     entities: [@inbound, @outbound]
@@ -245,7 +245,7 @@ defmodule AshHooks do
   alias AshHooks.Errors.Unknown.UnknownError
 
   @doc """
-  Fans an outbound event out to its subscribed endpoints; the outbound
+  Fans an outbound event out to its subscribed endpoints. This is the outbound
   entry point, delegating to `AshHooks.Dispatcher.dispatch/4` (the
   `AshHooks.Ingress.ingest/4` twin).
   """
@@ -264,7 +264,7 @@ defmodule AshHooks do
   defdelegate reconcile_pending(resource, name, opts \\ []), to: AshHooks.Dispatcher
 
   @typedoc """
-  The per-tenant sweep totals: one result per tenant (error-isolated; one
+  The per-tenant sweep totals: one result per tenant (error-isolated: one
   tenant's failure never stops the others) plus the sum of the successful
   counts.
   """
@@ -274,7 +274,7 @@ defmodule AshHooks do
         }
 
   @doc """
-  Maps `AshHooks.Ingress.reap/2` over `tenants:` SEQUENTIALLY, per-tenant
+  Maps `AshHooks.Ingress.reap/2` over `tenants:` SEQUENTIALLY, with per-tenant
   error isolation; a tenant-less global reap over a multitenant ledger is
   impossible by construction (each tenant's call carries its own
   pre-flight). Sequential by design: the shared repo pool is the one
@@ -293,7 +293,7 @@ defmodule AshHooks do
   @doc """
   Maps the retention prune over `tenants:` sequentially (routing by the
   resource's extension: inbound ledgers through `AshHooks.Ingress.prune/2`,
-  outbound deliveries through `AshHooks.Delivery.prune/2`); the same
+  outbound deliveries through `AshHooks.Delivery.prune/2`), with the same
   per-tenant isolation and sequencing as `reap_all/2`.
 
       {:ok, %{results: %{"org_a" => {:ok, 2}}, total: 2}} =
@@ -363,14 +363,14 @@ defmodule AshHooks do
   end
 
   @doc """
-  Schema validator for the `paused` option; the same source shapes as
+  Schema validator for the `paused` option: the same source shapes as
   `secret`, resolving to a boolean at ingest time.
   """
   @spec validate_pause_source(term()) :: {:ok, term()} | {:error, String.t()}
   def validate_pause_source(source), do: validate_secret_source(source)
 
   @doc """
-  Schema validator for the `secret` option; accepts only secret SOURCES,
+  Schema validator for the `secret` option: accepts only secret SOURCES,
   rejecting a literal binary at DSL parse time.
   """
   @spec validate_secret_source(term()) :: {:ok, term()} | {:error, String.t()}

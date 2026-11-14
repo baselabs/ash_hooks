@@ -35,7 +35,7 @@ explains the transition.
 
 
 ## webhooks
-Webhook declarations; inbound sources and outbound events for this
+Webhook declarations: inbound sources and outbound events for this
 resource.
 
 
@@ -70,7 +70,7 @@ resource receives, verifies, deduplicates, and handles.
 
 | Name | Type | Default | Docs |
 |------|------|---------|------|
-| [`secret`](#webhooks-inbound-secret){: #webhooks-inbound-secret .spark-required} | `any` |  | The signing-secret source: an `{M, f, a}` callback, `{:app_env, path}`, a 0-arity function (app-global), or a 1-arity function (`tenant -> {:ok, secret} \| {:error, :no_webhook_secret}`; resolves the TENANT's secret on multitenant ledgers; arity dispatch on literal fns is unambiguous). A literal binary is rejected at parse time. This check catches the secret passed as the option value; arguments of an MFA source are the consumer's own code. |
+| [`secret`](#webhooks-inbound-secret){: #webhooks-inbound-secret .spark-required} | `any` |  | The signing-secret source: an `{M, f, a}` callback, `{:app_env, path}`, a 0-arity function (app-global), or a 1-arity function (`tenant -> {:ok, secret} \| {:error, :no_webhook_secret}`) that resolves the TENANT's secret on multitenant ledgers. Arity dispatch on literal fns is unambiguous. A literal binary is rejected at parse time. This check catches the secret passed as the option value; arguments of an MFA source are the consumer's own code. |
 | [`provider`](#webhooks-inbound-provider){: #webhooks-inbound-provider } | `atom` |  | The required module implementing `AshHooks.Provider`, for example one defined with `use AshHooks.Provider, verify: [...]`. The source name does not select a module. |
 | [`body_format`](#webhooks-inbound-body_format){: #webhooks-inbound-body_format } | `:json \| :form` |  | Opt-in payload decoding for this route. `:form` decodes application/x-www-form-urlencoded names and values without interpreting bracket notation. Verification still receives the exact raw bytes. When unset, use the provider's `decode_payload/1` callback or JSON. The request Content-Type never enables a decoder implicitly. |
 | [`event_id`](#webhooks-inbound-event_id){: #webhooks-inbound-event_id } | `any` |  | Extractor for the sender's event id from the decoded payload (`payload -> {:ok, id} \| :error`). This explicit extractor takes precedence over the provider's optional `event_identity/1`. Any result other than `{:ok, id}` with a binary `id` uses the raw request-body digest, and an id longer than 255 bytes is stored as its SHA-256. Without an extractor or a provider callback, the raw request-body digest supplies the identity. A provider callback error fails closed rather than falling back to the digest. |
@@ -93,8 +93,8 @@ outbound name
 
 
 Declares an outbound webhook event this resource emits to subscribed
-endpoints; signed (Standard Webhooks canon by default) and delivered with
-retry/backoff/dead-letter semantics.
+endpoints. The event is signed (Standard Webhooks canon by default) and
+delivered with retry/backoff/dead-letter semantics.
 
 
 
@@ -111,13 +111,13 @@ retry/backoff/dead-letter semantics.
 | Name | Type | Default | Docs |
 |------|------|---------|------|
 | [`signing_mode`](#webhooks-outbound-signing_mode){: #webhooks-outbound-signing_mode } | `:legacy \| :dual \| :standard` | `:standard` | Signature envelope: `:standard` (SW canon), `:dual` (SW canon + legacy envelope for migrating receivers), or `:legacy` (legacy signature only). |
-| [`subscriptions`](#webhooks-outbound-subscriptions){: #webhooks-outbound-subscriptions } | `atom` |  | The consumer's Subscription resource module (carrying `AshHooks.Subscription`) this event fans out through; the dispatcher matches its rows against the event type. |
+| [`subscriptions`](#webhooks-outbound-subscriptions){: #webhooks-outbound-subscriptions } | `atom` |  | The consumer's Subscription resource module (carrying `AshHooks.Subscription`) this event fans out through. The dispatcher matches its rows against the event type. |
 | [`deliveries`](#webhooks-outbound-deliveries){: #webhooks-outbound-deliveries } | `atom` |  | The consumer's OutboundDelivery resource module (carrying `AshHooks.OutboundDelivery`) the dispatcher writes the durable per-endpoint rows into. |
-| [`description`](#webhooks-outbound-description){: #webhooks-outbound-description } | `String.t` |  | The catalog description of this event type; what it means, when it fires. Read back through `AshHooks.Catalog` for event pickers and generated docs. |
-| [`example`](#webhooks-outbound-example){: #webhooks-outbound-example } | `String.t` |  | A catalog example payload for this event type; the exact bytes (or a representative JSON document) shown in event pickers and generated docs, and sent by nothing (test sends synthesize their own payloads; wire your own sample through `test_send`'s `:payload` when you want this one on the wire). |
-| [`payload_schema`](#webhooks-outbound-payload_schema){: #webhooks-outbound-payload_schema } | `any` |  | The catalog's payload contract for this event type; a JSON-Schema map, a types module, or any term your docs renderer understands. Data for tooling only; the dispatcher never validates against it. |
+| [`description`](#webhooks-outbound-description){: #webhooks-outbound-description } | `String.t` |  | The catalog description of this event type: what it means and when it fires. Read back through `AshHooks.Catalog` for event pickers and generated docs. |
+| [`example`](#webhooks-outbound-example){: #webhooks-outbound-example } | `String.t` |  | A catalog example payload for this event type: the exact bytes (or a representative JSON document) shown in event pickers and generated docs, and sent by nothing (test sends synthesize their own payloads; wire your own sample through `test_send`'s `:payload` when you want this one on the wire). |
+| [`payload_schema`](#webhooks-outbound-payload_schema){: #webhooks-outbound-payload_schema } | `any` |  | The catalog's payload contract for this event type: a JSON-Schema map, a types module, or any term your docs renderer understands. Data for tooling only; the dispatcher never validates against it. |
 | [`version`](#webhooks-outbound-version){: #webhooks-outbound-version } | `pos_integer` | `1` | The CURRENT payload version of this event type (default 1). Endpoints without a pin receive this version's bytes. |
-| [`events`](#webhooks-outbound-events){: #webhooks-outbound-events } | `atom` |  | The consumer's OutboundEvent resource module (carrying `AshHooks.OutboundEvent`): when set, every dispatch records the event ONCE; id, type, declared version, time, exact payload bytes; whether or not any endpoint was enabled. The log has its own retention (`AshHooks.OutboundEvent.prune/2`) and answers replays (`AshHooks.OutboundEvent.replay/3`). |
+| [`events`](#webhooks-outbound-events){: #webhooks-outbound-events } | `atom` |  | The consumer's OutboundEvent resource module (carrying `AshHooks.OutboundEvent`): when set, every dispatch records the event ONCE (id, type, declared version, time, and exact payload bytes), whether or not any endpoint was enabled. The log has its own retention (`AshHooks.OutboundEvent.prune/2`) and answers replays (`AshHooks.OutboundEvent.replay/3`). |
 | [`payload_versions`](#webhooks-outbound-payload_versions){: #webhooks-outbound-payload_versions } | `any` |  | The declared variant builders older pins resolve to: a map of `version => {module, function}` where `f(event) :: {:ok, payload_bytes} \| {:error, reason}`. An endpoint pinning a version in this map receives that builder's bytes instead of the dispatch payload; a pin on an undeclared version fails that endpoint closed (`:unknown_pinned_version`) before any row is written. |
 
 

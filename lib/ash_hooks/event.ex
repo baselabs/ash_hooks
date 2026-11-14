@@ -41,7 +41,7 @@ defmodule AshHooks.Event do
 
   @doc """
   Builds a validated event. Returns `{:ok, %AshHooks.Event{}}` or
-  `{:error, reason}`; never raises on caller input.
+  `{:error, reason}`. Never raises on caller input.
   """
   @spec new(keyword() | map()) :: {:ok, t()} | {:error, String.t()}
   def new(attrs) when is_map(attrs), do: build(Map.to_list(attrs))

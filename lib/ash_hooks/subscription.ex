@@ -1,6 +1,6 @@
 defmodule AshHooks.Subscription do
   @moduledoc """
-  Turns the consumer's resource into the outbound Subscription; which
+  Turns the consumer's resource into the outbound Subscription, specifying which
   events go to which endpoint, and with which signature envelope.
 
       use Ash.Resource,
@@ -12,10 +12,10 @@ defmodule AshHooks.Subscription do
       end
 
   The extension injects: `event_types` (`{:array, :string}`, default
-  `[\"*\"]`), `endpoint_id` (uuid; the sole UUID-storage-compatible primary
+  `[\"*\"]`), `endpoint_id` (uuid, the sole UUID-storage-compatible primary
   key of the `endpoint_resource`, under any attribute name), and `signing_mode`
-  (`:legacy | :dual | :standard`, NULLABLE; the outbound declaration's mode
-  applies when unset). A subscription's own
+  (`:legacy | :dual | :standard`, NULLABLE, with the outbound declaration's mode
+  applying when unset). A subscription's own
   primary key follows the same single UUID-storage-compatible contract because
   outbound delivery rows store it in `subscription_id`. UUIDv7 keys satisfy
   this contract. Composite and non-UUID keys fail at DSL compilation with the
@@ -31,7 +31,7 @@ defmodule AshHooks.Subscription do
 
   Matching is exact strings plus the bare wildcard entry, evaluated IN
   MEMORY by the dispatcher after reading through the consumer's primary
-  read action; no array-containment SQL, so the semantics are identical
+  read action. There is no array-containment SQL, so the semantics are identical
   on every data layer.
 
   The package injects NO read action and NO read policies: read surfaces
@@ -52,8 +52,8 @@ defmodule AshHooks.Subscription do
 
   @doc """
   Whether a subscription row matches an event `type` (a canonical string):
-  the bare `"*"` entry matches everything; any other entry matches exactly
-  ; no glob interpretation. Works on any resource row carrying the
+  the bare `"*"` entry matches everything; any other entry matches exactly,
+  with no glob interpretation. Works on any resource row carrying the
   injected `event_types` attribute. The attribute-filter leg is separate:
   `matches_filters?/2`.
 
@@ -120,7 +120,7 @@ defmodule AshHooks.Subscription do
         required: true,
         doc: """
         The resource module carrying `AshHooks.Endpoint` that
-        `endpoint_id` references; the dispatcher loads endpoints through
+        `endpoint_id` references. The dispatcher loads endpoints through
         it to check `status` and reachability.
         """
       ],
@@ -132,7 +132,7 @@ defmodule AshHooks.Subscription do
         on (e.g. `[:order_id, :region]`). Declaring a nonempty list
         injects the `event_filters` column (`:map`, nullable): a
         subscription whose filters all match the dispatching event's
-        metadata receives the delivery; evaluated BEFORE any delivery row
+        metadata receives the delivery. Filters are evaluated BEFORE any delivery row
         is created. A filter key outside this set never matches (fail
         closed); a list value matches any-of. Requires a migration for the
         column.

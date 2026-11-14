@@ -1,8 +1,8 @@
 defmodule AshHooks.OutboundEvent do
   @moduledoc """
   Turns the consumer's resource into the outbound EVENT log: exactly one
-  row per dispatched event; its id, type, declared payload version, time,
-  and exact payload bytes; recorded whether or not any endpoint was
+  row per dispatched event (its id, type, declared payload version, time,
+  and exact payload bytes), recorded whether or not any endpoint was
   enabled (or existed), with its own retention.
 
       use Ash.Resource,
@@ -18,7 +18,7 @@ defmodule AshHooks.OutboundEvent do
   idempotent no-touch upsert on the event id); a log write failure never
   stops the fanout; it surfaces as `[:ash_hooks, :event, :record_failed]`
   telemetry. The delivery ledger remains the delivery contract; this log
-  is the source of record for what was EMITTED; the answer behind "what
+  is the source of record for what was EMITTED, the answer behind "what
   did we send, ever, that endpoint X never received?".
 
   Rows carry the exact payload bytes you dispatched; govern read access

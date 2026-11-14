@@ -1,7 +1,7 @@
 defmodule AshHooks.Catalog do
   @moduledoc """
-  The event catalog read surface: the `outbound` DSL's declared metadata ;
-  each event type's description, payload schema, and version; read back
+  The event catalog read surface: the `outbound` DSL's declared metadata
+  (each event type's description, payload schema, and version), read back
   for event pickers, doc generation, and payload-version negotiation.
 
       webhooks do
@@ -15,7 +15,7 @@ defmodule AshHooks.Catalog do
       end
 
   `entries/1` lists a resource's declared catalog; `entry/2` reads one.
-  `payload/3` resolves the bytes a dispatch sends to one endpoint; its
+  `payload/3` resolves the bytes a dispatch sends to one endpoint: its
   pinned variant when it pinned a declared version, the dispatch payload
   otherwise.
 
@@ -38,7 +38,7 @@ defmodule AshHooks.Catalog do
         }
 
   @doc """
-  The resource's declared outbound catalog, in declaration order; the
+  The resource's declared outbound catalog, in declaration order: the
   event picker's source. Compose across your emitting resources yourself;
   each entry carries everything a doc generator needs.
   """
