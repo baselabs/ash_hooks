@@ -93,7 +93,7 @@ end
 
 defmodule AshHooks.Test.CustodyRotationProvider do
   @moduledoc false
-  use AshHooks.Provider
+  @behaviour AshHooks.Provider
   alias AshHooks.Provider.Signature
 
   # the declaration's current and previous secrets name the keys this
