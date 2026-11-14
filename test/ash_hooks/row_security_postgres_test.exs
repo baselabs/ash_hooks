@@ -11,8 +11,11 @@ defmodule AshHooks.RowSecurityPostgresTest.Repo do
     if not is_nil(tenant) do
       value =
         case reason do
-          %{metadata: %{resource: resource}} -> to_string(Ash.ToTenant.to_tenant(tenant, resource))
-          _transact -> to_string(tenant)
+          %{metadata: %{resource: resource}} ->
+            to_string(Ash.ToTenant.to_tenant(tenant, resource))
+
+          _transact ->
+            to_string(tenant)
         end
 
       %{rows: [[setting]]} =
