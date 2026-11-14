@@ -84,6 +84,24 @@ defmodule AshHooks.Endpoint do
   with legacy lifecycle also migrate `legacy_secret_kind` and
   `legacy_previous_secret_kind`. Each kind marks only its adjacent reference
   as custody-owned. A null kind leaves the slot under its host byte resolver.
+  Signing reads the custodian from this resource and derives its canonical
+  tenant inside the phase reading the owner. Current and previous kinds may
+  differ. Declare `secret_resolver {module, function}` for unmarked byte slots;
+  delivery and worker resolvers are also supported. Without a resolver, an
+  occupied unmarked slot fails permanently as `key_kind_mismatch`.
+  Sender HMAC kinds are refused as `kind_not_allowed` before custody is called.
+
+  An unsupported tenant attribute type requires `custody_tenant_key {m, f, a}`.
+  The MFA receives the cast tenant value followed by its arguments and must
+  return equal UTF-8 binaries for tenants the database treats as equal. This
+  equality contract belongs to the host. Compilation refuses an unsupported
+  type without the option.
+
+  With `config :ash_hooks, key_material: :custody_only`, endpoint and worker
+  `secret_resolver`, inbound `secret` and `previous_secret` sources, and provider
+  `webhook_signing_secret/1` and `/2` implementations are refused at compile time.
+  The setting is off by default; direct byte signing APIs remain supported.
+
   Rolling moves kinds with their references. Expiration and ended-window
   displacement retire custody references in the owner's transaction; the
   separately scheduled registry sweep destroys them after commit. See
@@ -316,6 +334,16 @@ defmodule AshHooks.Endpoint do
         type: :module,
         doc:
           "Opaque-key custodian implementing AshHooks.Custody. Requires key_lifecycle :on and key_registry. Injects a kind marker beside each enabled signing slot's reference; migrate these columns before enabling."
+      ],
+      custody_tenant_key: [
+        type: :mfa,
+        doc:
+          "Canonical custody tenant for an otherwise unsupported tenant type: {module, function, args}, called with the cast tenant value followed by args. Must return equal UTF-8 binaries for tenants the database treats as equal. This equality contract belongs to the host."
+      ],
+      secret_resolver: [
+        type: {:tuple, [:module, :atom]},
+        doc:
+          "Byte-reference resolver {module, function}. Slots without a kind marker use this resolver; custody slots use the custodian. A delivery or worker resolver remains supported for byte endpoints and migration. Refused with key_material: :custody_only."
       ],
       key_registry: [
         type: :module,

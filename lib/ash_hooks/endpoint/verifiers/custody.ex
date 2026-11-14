@@ -7,8 +7,19 @@ defmodule AshHooks.Endpoint.Verifiers.Custody do
   alias Spark.Error.DslError
 
   def verify(state) do
-    if Extension.get_opt(state, [:endpoint], :custodian) do
-      verify_custody(state, Storage.registry(state))
+    with :ok <- verify_key_material(state) do
+      if Extension.get_opt(state, [:endpoint], :custodian) do
+        verify_custody(state, Storage.registry(state))
+      else
+        :ok
+      end
+    end
+  end
+
+  defp verify_key_material(state) do
+    if Application.get_env(:ash_hooks, :key_material) == :custody_only and
+         Extension.get_opt(state, [:endpoint], :secret_resolver) do
+      error(state, "key_material: :custody_only refuses secret_resolver")
     else
       :ok
     end
@@ -16,6 +27,9 @@ defmodule AshHooks.Endpoint.Verifiers.Custody do
 
   defp verify_custody(state, registry) do
     cond do
+      not AshHooks.Custody.tenant_type_supported?(state, AshHooks.Custody.tenant_options(state)) ->
+        error(state, "custodian requires custody_tenant_key for this tenant attribute type")
+
       Extension.get_opt(state, [:endpoint], :key_lifecycle, :off) != :on ->
         error(state, "custodian requires key_lifecycle :on")
 

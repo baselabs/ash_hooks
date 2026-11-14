@@ -36,13 +36,17 @@ defmodule AshHooks.Worker do
       response capture) beside the delivery row. A history write failure
       never fails the send; it surfaces as
       `[:ash_hooks, :attempt, :record_failed]` telemetry.
-    * `:secret_resolver` (required, `{m, f}`): resolves an endpoint's
+    * `:secret_resolver` (optional, `{m, f}`): resolves an endpoint's
       secret reference: `f(ref) :: {:ok, secret_binary} | {:error, term}`.
       The returned value signs the Standard Webhooks envelope
       (its `whsk_`/`whsec_` prefix only selects the key slot for
       rotation); legacy envelopes, when the signing mode uses them, are
       signed from the endpoint's `legacy_secret_ref` /
       `legacy_previous_secret_ref` references through this same resolver.
+      Custody slots use the endpoint resource's custodian and kind markers;
+      no worker custodian option is needed. Omit this resolver when every slot
+      uses custody or the endpoint declares its own byte resolver.
+      `key_material: :custody_only` refuses this option at compile time.
     * `:tenant_aware_secrets` (optional, default `false`): switches the
       resolver contract to 2-arity: `f(ref, tenant)`. The tenant is the
       run's args-threaded tenant (the delivery row's tenant, serialized at
@@ -560,7 +564,17 @@ defmodule AshHooks.Worker do
               ":delivery_max_attempts (the row-owned retry ceiling)"
     end
 
-    {resolver_m, resolver_f} = Keyword.fetch!(opts, :secret_resolver)
+    resolver = Keyword.get(opts, :secret_resolver)
+
+    if Application.get_env(:ash_hooks, :key_material) == :custody_only and resolver do
+      raise ArgumentError, "key_material: :custody_only refuses worker secret_resolver"
+    end
+
+    resolver =
+      case resolver do
+        nil -> nil
+        {module, function} -> {expand.(module), function}
+      end
 
     destination_policy =
       case Keyword.get(opts, :destination_policy) do
@@ -663,7 +677,7 @@ defmodule AshHooks.Worker do
             other ->
               raise ArgumentError, transport_error(other)
           end,
-        secret_resolver: {expand.(resolver_m), resolver_f},
+        secret_resolver: resolver,
         retryable_statuses: retryable_statuses!(Keyword.get(opts, :retryable_statuses)),
         delivery_headers:
           case Keyword.get(opts, :delivery_headers) do

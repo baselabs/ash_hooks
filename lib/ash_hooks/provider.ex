@@ -24,6 +24,17 @@ defmodule AshHooks.Provider do
   signature shapes. A scheme that configuration cannot express implements
   `verify_signature/3` with the primitives in `AshHooks.Provider.Signature`.
 
+  HMAC verification accepts byte secrets, `AshHooks.Custody.Key` values, and
+  rotation lists mixing both. Custody errors remain classified through ingress.
+  Public verification keys remain outside custody.
+
+  `config :ash_hooks, key_material: :custody_only` refuses inbound `secret` and
+  `previous_secret` sources (MFA, application environment, zero-argument or
+  tenant-aware functions) and host `webhook_signing_secret/1` or `/2` callbacks
+  at compile time. Endpoint and worker `secret_resolver` options are also refused.
+  The generated absent-secret default is not a byte source. The setting is off
+  by default; byte APIs remain supported.
+
   Configured providers return generic typed events (`AshHooks.Provider.Event`).
   Override `parse_event_type/1` and `handle_event/2` when ingress must classify
   events and execute application actions. Make those actions idempotent:
@@ -37,8 +48,14 @@ defmodule AshHooks.Provider do
   @type signature_header_value :: binary()
   @type webhook_secret :: binary()
   @type signature_algorithm :: :hmac_sha256 | :hmac_sha512
+  @type verification_key :: webhook_secret() | AshHooks.Custody.Key.t()
+  @type verification_keys :: verification_key() | [verification_key()]
   @type signature_error ::
-          :invalid_signature | :no_webhook_secret | :stale_timestamp | :malformed_payload
+          :invalid_signature
+          | :no_webhook_secret
+          | :stale_timestamp
+          | :malformed_payload
+          | struct()
   @type parse_error :: :unknown_event_type | :malformed_payload
   @type json_decoder :: (binary() -> {:ok, map() | list()} | {:error, term()})
   @type http_response :: {pos_integer(), [{String.t(), String.t()}], iodata()}
@@ -126,7 +143,7 @@ defmodule AshHooks.Provider do
   """
   @type webhook_secret_scope :: :app_level | :per_connection
 
-  @callback verify_signature(raw_body(), verify_context(), webhook_secret()) ::
+  @callback verify_signature(raw_body(), verify_context(), verification_keys()) ::
               :ok | {:error, signature_error()}
 
   @doc """
@@ -207,6 +224,8 @@ defmodule AshHooks.Provider do
       )
 
       @on_definition {AshHooks.Provider, :__on_definition__}
+      @after_compile AshHooks.Provider
+      @ash_hooks_provider_generated true
 
       # dispatched dynamically: Elixir resolves same-name local calls at
       # COMPILE time, so a plain `webhook_signing_secret(connection)` here
@@ -234,7 +253,12 @@ defmodule AshHooks.Provider do
   def __on_definition__(env, _kind, name, args, _guards, _body) do
     callback = {name, length(args)}
 
-    if callback in [verify_signature: 3, decode_payload: 1] do
+    if callback in [
+         verify_signature: 3,
+         decode_payload: 1,
+         webhook_signing_secret: 1,
+         webhook_signing_secret: 2
+       ] do
       origin =
         if Module.get_attribute(env.module, :ash_hooks_provider_generated),
           do: :generated,
@@ -255,6 +279,16 @@ defmodule AshHooks.Provider do
     origins != [] and Enum.all?(origins, &(&1 == :generated))
   end
 
+  @doc false
+  def byte_secret_callback?(provider) do
+    Code.ensure_compiled!(provider)
+
+    Enum.any?([1, 2], fn arity ->
+      function_exported?(provider, :webhook_signing_secret, arity) and
+        not generated_callback?(provider, {:webhook_signing_secret, arity})
+    end)
+  end
+
   # Options are rebuilt inside the module on each call, so they may use
   # anonymous functions that call the module's own private helpers and read
   # its attributes. They are validated once the module has compiled
@@ -266,8 +300,6 @@ defmodule AshHooks.Provider do
     source = if jws?, do: :body, else: :request
 
     quote do
-      @after_compile AshHooks.Provider
-
       @doc false
       def __ash_hooks_scheme__, do: Scheme.new!(unquote(options))
 
@@ -325,7 +357,14 @@ defmodule AshHooks.Provider do
 
   @doc false
   def __after_compile__(env, _bytecode) do
-    _ = env.module.__ash_hooks_scheme__()
+    if function_exported?(env.module, :__ash_hooks_scheme__, 0),
+      do: env.module.__ash_hooks_scheme__()
+
+    if Application.get_env(:ash_hooks, :key_material) == :custody_only and
+         byte_secret_callback?(env.module) do
+      raise ArgumentError, "key_material: :custody_only refuses provider signing-secret callbacks"
+    end
+
     :ok
   end
 

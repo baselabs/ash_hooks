@@ -17,8 +17,25 @@ defmodule AshHooks.Verifiers.ProviderRequired do
           message:
             "inbound #{inspect(inbound.name)} has no provider. ash_hooks ships no built-in verifiers since 3.0.0: set `provider` to a module that implements AshHooks.Provider, for example one defined with `use AshHooks.Provider, verify: [...]`."
       end
+
+      verify_key_material(inbound, resource)
     end)
 
     :ok
+  end
+
+  defp verify_key_material(inbound, resource) do
+    if Application.get_env(:ash_hooks, :key_material) == :custody_only and
+         Enum.any?([
+           inbound.secret,
+           inbound.previous_secret,
+           AshHooks.Provider.byte_secret_callback?(inbound.provider)
+         ]) do
+      raise Spark.Error.DslError,
+        module: resource,
+        path: [:webhooks, :inbound, inbound.name],
+        message:
+          "key_material: :custody_only refuses inbound secret, previous_secret and provider signing-secret callbacks"
+    end
   end
 end

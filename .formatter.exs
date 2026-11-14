@@ -5,6 +5,7 @@
 spark_locals_without_parens = [
   body_format: 1,
   custodian: 1,
+  custody_tenant_key: 1,
   default_overlap_seconds: 1,
   deliveries: 1,
   description: 1,
@@ -43,6 +44,7 @@ spark_locals_without_parens = [
   response_capture_attributes: 1,
   scope_identity: 1,
   secret: 1,
+  secret_resolver: 1,
   signing_mode: 1,
   status_attribute: 1,
   subscriptions: 1,

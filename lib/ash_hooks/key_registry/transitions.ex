@@ -12,7 +12,8 @@ defmodule AshHooks.KeyRegistry.Transitions do
     with :ok <- Storage.check(registry, owner),
          :ok <- Phase.outside_transaction(owner),
          {:ok, tenant} <- Tenancy.resolve([registry], opts[:tenant]),
-         {:ok, custody_tenant} <- Custody.canonical_tenant(tenant, owner, opts) do
+         {:ok, custody_tenant} <-
+           Custody.canonical_tenant(tenant, owner, Custody.tenant_options(owner)) do
       now = now(opts)
 
       Storage.phase(registry, owner, tenant, fn ->
@@ -47,11 +48,12 @@ defmodule AshHooks.KeyRegistry.Transitions do
     end
   end
 
-  defp attach_in_phase(registry, owner, ref, tenant, opts) do
+  defp attach_in_phase(registry, owner, ref, tenant, _opts) do
     query = registry |> Storage.query() |> Ash.Query.filter(ref == ^ref)
 
     with {:ok, row} <- owner_by_ref(owner, ref, tenant),
-         {:ok, canonical} <- Custody.canonical_tenant(owner_tenant(row), owner, opts),
+         {:ok, canonical} <-
+           Custody.canonical_tenant(owner_tenant(row), owner, Custody.tenant_options(owner)),
          {:ok, issued} <- Ash.read_one(query, authorize?: false, tenant: tenant),
          :ok <- matching_tenant(issued, canonical),
          {:ok, rows} <-
