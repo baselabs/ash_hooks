@@ -20,8 +20,8 @@ defmodule AshHooks.Transport do
   record and tenant, returning the transport module (or `nil` to keep the
   HTTP adapter). A transport module must export `request/5`. A resolver
   that raises, throws, exits, or returns an invalid value refuses the
-  attempt as a retryable `transport_resolution` failure. It does not
-  fall back to HTTP. No exception contents or returned terms are stored
+  attempt as a retryable `transport_resolution` failure, and so does a
+  `transport` setting that is neither shape. It does not fall back to HTTP. No exception contents or returned terms are stored
   or emitted; only the fixed classification is retained.
 
   The callback contract is `AshHooks.Http`'s adapter contract verbatim:

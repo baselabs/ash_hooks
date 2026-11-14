@@ -1603,8 +1603,8 @@ defmodule AshHooks.Delivery do
       resolver when is_function(resolver, 2) ->
         contained_transport(fn -> resolver.(endpoint, tenant) end)
 
-      _invalid ->
-        {:ok, nil}
+      _malformed ->
+        {:error, :transport_resolution}
     end
   end
 

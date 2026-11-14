@@ -413,6 +413,20 @@ defmodule AshHooks.TransportTest do
         assert_resolution_refused(endpoint, failing_resolver(@failure))
       end
     end
+
+    # A direct run's config is not validated by the worker, so a malformed
+    # resolver value must refuse too, never fall back to HTTP.
+    for {name, malformed} <- [
+          bare_atom: quote(do: :not_a_resolver),
+          one_element_tuple: quote(do: {__MODULE__}),
+          wrong_arity_fn: quote(do: fn _endpoint -> nil end)
+        ] do
+      @malformed malformed
+      test "a malformed #{name} resolver refuses egress and records only transport_resolution",
+           %{endpoint: endpoint} do
+        assert_resolution_refused(endpoint, unquote(@malformed))
+      end
+    end
   end
 
   defp loopback_config(resolver) do
