@@ -36,7 +36,8 @@ defmodule AshHooks.InboundSource do
   `:expire_previous_secret`, `:register_public_key`, `:pause`, `:unpause`,
   `:mark_current_secret_used`, `:mark_previous_secret_used`, `:set_custody_keys`
   and `:read_custody_owner`. Secret-bearing arguments are sensitive. Direct
-  reference input on create is refused; use `create_source/3` to issue and attach
+  kind input is refused on host create and update actions. Direct reference
+  input without a byte resolver is refused; use `create_source/3` to issue and attach
   references through the key registry.
   """
 

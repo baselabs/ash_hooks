@@ -148,7 +148,8 @@ defmodule AshHooks.Keys do
         tenant: tenant,
         strategy: [:atomic],
         return_records?: true,
-        return_errors?: true
+        return_errors?: true,
+        context: %{ash_hooks_issued_attributes: values}
       )
 
     case result do

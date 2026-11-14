@@ -119,7 +119,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
       Builder.add_change(
         state,
         {AshHooks.Endpoint.Changes.RequireIssuedKeys, byte_resolver?: resolver?},
-        on: [:create]
+        on: [:create, :update]
       )
     else
       {:ok, state}

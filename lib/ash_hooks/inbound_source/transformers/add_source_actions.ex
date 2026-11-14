@@ -53,7 +53,7 @@ defmodule AshHooks.InboundSource.Transformers.AddSourceActions do
     state = Enum.reduce(actions, state, &Transformer.add_entity(&2, [:actions], &1))
 
     Builder.add_change(state, {AshHooks.Endpoint.Changes.RequireIssuedKeys, source?: true},
-      on: [:create]
+      on: [:create, :update]
     )
   end
 

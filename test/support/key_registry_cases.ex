@@ -1556,9 +1556,10 @@ defmodule AshHooks.Test.KeyRegistryCases do
           quote(do: resource(do: base_filter(expr(unquote(Macro.var(:status, nil)) == :enabled))))
 
     defaults =
-      if primary_filter?,
-        do: [:destroy, create: :*, update: :*],
-        else: [:read, :destroy, create: :*, update: :*]
+      Map.get(ctx, :endpoint_defaults) ||
+        if primary_filter?,
+          do: [:destroy, create: :*, update: :*],
+          else: [:read, :destroy, create: :*, update: :*]
 
     attributes =
       Map.get(ctx, :endpoint_attributes) ||

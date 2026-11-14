@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Refuse direct custody-kind input on host actions while preserving byte-only
+  reference writes through a configured resolver.
+
 - Refuse retirement of an unattached custody reference and roll back the owner
   write; byte slots remain outside the registry during partial adoption.
 

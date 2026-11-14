@@ -45,6 +45,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
       :owner_mismatch,
       :identity_conflict,
       :direct_reference_guard,
+      :direct_kind_guard,
       :input_validation,
       :unscoped_creation,
       :roll_allowed_kinds,
@@ -311,6 +312,49 @@ defmodule AshHooks.Test.KeyIssuingCases do
 
     assert {:error, :custody_required} =
              Endpoint.create_with_key(byte, %{url: url()}, tenant: 17, generate: @kind)
+  end
+
+  def direct_kind_guard(ctx) do
+    fields = [
+      :secret_kind,
+      :previous_secret_kind,
+      :legacy_secret_kind,
+      :legacy_previous_secret_kind
+    ]
+
+    owner = Module.concat(ctx.endpoint, HostKindInputs)
+    accepted = [:url, :tenant_id, :secret_ref | fields]
+
+    compile_owner(
+      Map.put(ctx, :endpoint_defaults, [:read, :destroy, create: accepted, update: accepted]),
+      owner, custodian: AshHooks.Test.IssuingCustodian, secret_resolver: {__MODULE__, :resolve})
+
+    for field <- fields, string_keys? <- [false, true] do
+      attrs = Map.put(%{url: url(), tenant_id: 17, secret_ref: "host-byte"}, field, @kind)
+
+      attrs =
+        if string_keys?, do: Map.new(attrs, fn {k, v} -> {Atom.to_string(k), v} end), else: attrs
+
+      assert {:error, _} = Ash.create(owner, attrs, tenant: 17, authorize?: false)
+      assert {:error, _} = Endpoint.create_with_key(owner, attrs, tenant: 17, generate: @kind)
+    end
+
+    assert {:ok, row} =
+             Ash.create(
+               owner,
+               %{url: url(), tenant_id: 17, secret_ref: "host-byte"},
+               tenant: 17,
+               authorize?: false
+             )
+
+    assert row.secret_ref == "host-byte"
+    assert row.secret_kind == nil
+    for field <- fields do
+      assert {:error, _} = Ash.update(row, %{field => @kind}, tenant: 17, authorize?: false)
+    end
+    assert {:ok, row} = Ash.update(row, %{secret_ref: "next-byte"}, tenant: 17, authorize?: false)
+    assert row.secret_ref == "next-byte"
+    assert row.secret_kind == nil
   end
 
   def input_validation(ctx) do
