@@ -59,7 +59,8 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   # named PK) keep it, and only the shapes Ash's ValidateAccept rejects
   # (uuid_v7_primary_key & other non-writable ids) drop it. For those the
   # runtime classifies created/duplicate by an identity pre-read instead.
-  defp writable_id_pk?(dsl_state) do
+  @doc false
+  def writable_id_pk?(dsl_state) do
     case dsl_state |> Transformer.get_entities([:attributes]) |> Enum.find(&(&1.name == :id)) do
       %{writable?: true} -> true
       _ -> false

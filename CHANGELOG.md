@@ -49,6 +49,7 @@ change; see [UPGRADING.md](UPGRADING.md).
 
 ### Fixed
 
+- With `ingress_tracking :on`, a ledger whose `:id` is generated (for example `uuid_v7_primary_key`) put `:id` on the generated `:record_rejection` accept list, which Ash refuses as not writable. The action now accepts `:id` only when `:ingest` does.
 - A verified body that did not decode to a map or list could be rebuilt from its empty placeholder, handled, and marked processed. It is now recorded permanently malformed when written and never handled. Duplicate deliveries still drive the surviving row's stored payload.
 - Event-log terminal replay forwards its tenant to resend.
 - Missing-row event-log replay binds the declaration and enqueue route, stores the requester, and enqueues the created delivery and event.
