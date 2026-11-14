@@ -84,6 +84,7 @@ defmodule AshHooks.MalformedIngressTest do
 
     inbound_delivery do
       scope_identity([:account_id])
+      ingress_tracking(:on)
     end
 
     attributes do
@@ -170,6 +171,7 @@ defmodule AshHooks.MalformedIngressTest do
 
     inbound_delivery do
       scope_identity([:account_id])
+      ingress_tracking(:on)
     end
 
     attributes do
@@ -325,6 +327,23 @@ defmodule AshHooks.MalformedIngressTest do
       assert_received {:ingress, @claim, %{outcome: :claimed}}
       assert [stored] = Ash.read!(ledger, authorize?: false, tenant: @tenant)
       if Info.action(ledger, :count_duplicate), do: assert(stored.duplicates == 1)
+    end
+
+    if substrate in [:postgres, :postgres_generated], do: @tag(:postgres)
+
+    test "#{substrate}: a failed verification is recorded on the ledger's own key shape" do
+      ledger = unquote(ledger)
+      accepts_id? = :id in Info.action(ledger, :record_rejection).accept
+      assert accepts_id? == Info.attribute(ledger, :id).writable?
+
+      body = ~s({"id":"forged"})
+      forged = %{ctx(body) | headers: %{"x-signature" => String.duplicate("0", 64)}}
+      assert {:error, _} = Ingress.ingest(ledger, :headers, body, forged)
+
+      assert [stored] = Ash.read!(ledger, authorize?: false, tenant: @tenant)
+      assert stored.status == :failed_verification
+      assert stored.external_event_id == "verify:" <> digest(body)
+      refute_received {:handled, _, _}
     end
 
     if substrate in [:postgres, :postgres_generated], do: @tag(:postgres)

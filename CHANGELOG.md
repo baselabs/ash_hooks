@@ -48,6 +48,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- With `ingress_tracking :on`, a ledger whose `:id` is generated (for example
+  `uuid_v7_primary_key`) put `:id` on the generated `:record_rejection` accept
+  list, which Ash refuses as not writable. The action now accepts `:id` only
+  when `:ingest` does.
 - A verified body that did not decode to a map or list could be rebuilt from
   its empty placeholder, handled, and marked processed. It is now recorded
   permanently malformed when written and never handled. Duplicate deliveries

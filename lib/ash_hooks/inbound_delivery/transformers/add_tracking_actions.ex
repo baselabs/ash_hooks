@@ -9,6 +9,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddTrackingActions do
 
   alias Ash.Resource.Builder
   alias Ash.Resource.Change.Builtins
+  alias AshHooks.InboundDelivery.Transformers.AddFencedActions
   alias Spark.Dsl.{Extension, Transformer}
 
   def before?(Ash.Resource.Transformers.DefaultAccept), do: true
@@ -16,6 +17,11 @@ defmodule AshHooks.InboundDelivery.Transformers.AddTrackingActions do
   def before?(Ash.Resource.Transformers.SetPrimaryActions), do: true
   def before?(Ash.Resource.Transformers.RequireUniqueActionNames), do: true
   def before?(_), do: false
+
+  # the :record_rejection accept list follows :ingest's id rule, which reads
+  # the injected (or declared) `:id` attribute
+  def after?(AshHooks.InboundDelivery.Transformers.AddLedgerFields), do: true
+  def after?(_), do: false
 
   def transform(dsl_state) do
     if Extension.get_opt(dsl_state, [:inbound_delivery], :ingress_tracking, :off) == :on do
@@ -47,12 +53,17 @@ defmodule AshHooks.InboundDelivery.Transformers.AddTrackingActions do
     # the scope slots ride the accept list (the dedup identity is scoped)
     scope = Extension.get_opt(dsl_state, [:inbound_delivery], :scope_identity, [])
 
+    # `:id` rides the accept list exactly when `:ingest`'s does (a writable
+    # `:id`); a generated key such as uuid_v7_primary_key cannot accept it
+    id = if AddFencedActions.writable_id_pk?(dsl_state), do: [:id], else: []
+
     Builder.build_action(:create, :record_rejection,
       upsert?: true,
       upsert_identity: :unique_ingest,
       upsert_fields: [],
       accept:
-        [:id, :provider, :external_event_id, :external_event_type, :payload, :payload_digest] ++
+        id ++
+          [:provider, :external_event_id, :external_event_type, :payload, :payload_digest] ++
           scope,
       changes: [status]
     )
