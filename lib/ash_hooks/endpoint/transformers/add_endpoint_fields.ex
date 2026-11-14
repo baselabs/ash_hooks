@@ -25,9 +25,27 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
          {:ok, dsl_state} <- add_primary_key(dsl_state),
          {:ok, dsl_state} <- add_capture_attributes(dsl_state),
          {:ok, dsl_state} <- add_lifecycle_attributes(dsl_state),
+         {:ok, dsl_state} <- add_custody_attributes(dsl_state),
          {:ok, dsl_state} <- add_pinning_attributes(dsl_state),
          {:ok, dsl_state} <- add_warning_attributes(dsl_state) do
       add_attributes(dsl_state, status_attribute)
+    end
+  end
+
+  defp add_custody_attributes(state) do
+    if Extension.get_opt(state, [:endpoint], :custodian) do
+      names = [:secret_kind, :previous_secret_kind]
+
+      names =
+        if Extension.get_opt(state, [:endpoint], :legacy_key_lifecycle, :off) == :on,
+          do: names ++ [:legacy_secret_kind, :legacy_previous_secret_kind],
+          else: names
+
+      specs = Enum.map(names, &{&1, :term, []})
+
+      inject(state, specs)
+    else
+      {:ok, state}
     end
   end
 

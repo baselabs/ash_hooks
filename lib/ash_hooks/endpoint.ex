@@ -74,6 +74,18 @@ defmodule AshHooks.Endpoint do
   The lifecycle helpers perform system writes (`authorize?: false`) after
   checking tenancy. Authorize application callers before exposing rolling,
   retirement scheduling, or immediate retirement to them.
+
+  With `custodian Module`, declare `key_registry Resource` and
+  `key_lifecycle :on`. The registry uses `AshHooks.KeyRegistry`, the same
+  transactional AshPostgres or AshSqlite data layer, mutate repo and tenancy.
+  Migrate nullable `:term` columns `secret_kind` and `previous_secret_kind`;
+  with legacy lifecycle also migrate `legacy_secret_kind` and
+  `legacy_previous_secret_kind`. Each kind marks only its adjacent reference
+  as custody-owned. A null kind leaves the slot under its host byte resolver.
+  Rolling moves kinds with their references. Expiration and ended-window
+  displacement retire custody references in the owner's transaction; the
+  separately scheduled registry sweep destroys them after commit. See
+  `AshHooks.KeyRegistry` and the migration instructions in UPGRADING.md.
   """
 
   @statuses [:enabled, :disabled]
@@ -289,6 +301,16 @@ defmodule AshHooks.Endpoint do
     Configuration of this resource as the outbound webhook endpoint.
     """,
     schema: [
+      custodian: [
+        type: :module,
+        doc:
+          "Opaque-key custodian implementing AshHooks.Custody. Requires key_lifecycle :on and key_registry. Injects a kind marker beside each enabled signing slot's reference; migrate these columns before enabling."
+      ],
+      key_registry: [
+        type: :module,
+        doc:
+          "Host resource using AshHooks.KeyRegistry, on the same transactional AshPostgres or AshSqlite data layer, mutate repo and tenancy as this endpoint."
+      ],
       status_attribute: [
         type: :atom,
         doc: """
@@ -461,6 +483,7 @@ defmodule AshHooks.Endpoint do
       AshHooks.Endpoint.Transformers.AddEndpointActions
     ],
     verifiers: [
+      AshHooks.Endpoint.Verifiers.Custody,
       AshHooks.Endpoint.Verifiers.Overlap,
       AshHooks.Endpoint.Verifiers.LegacyLifecycle,
       AshHooks.Verifiers.MultitenancyNoBypass
