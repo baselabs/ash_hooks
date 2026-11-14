@@ -81,12 +81,13 @@ defmodule AshHooks.TenancyTest do
     end
 
     actions do
-      defaults([:read, :create])
+      defaults([:read, :create, :update])
       default_accept(:*)
     end
 
     subscription do
       endpoint_resource(AshHooks.TenancyTest.Endpoint)
+      pausable(:on)
     end
   end
 
@@ -735,6 +736,7 @@ defmodule AshHooks.TenancyTest do
       event_types TEXT NOT NULL,
       endpoint_id TEXT NOT NULL,
       signing_mode TEXT,
+      paused BOOLEAN NOT NULL DEFAULT FALSE,
       org_id TEXT NOT NULL
     )
     """)
@@ -981,6 +983,78 @@ defmodule AshHooks.TenancyTest do
     )
 
     id
+  end
+
+  test "pausing one tenant's subscription leaves another tenant's subscription active" do
+    {_other_endpoint, other_subscription, endpoint, subscription} = two_tenant_fixture!()
+
+    other_subscription =
+      Ash.update!(other_subscription, %{paused: true}, tenant: "org_b", authorize?: false)
+
+    event = event!("msg_pause_tenants")
+
+    assert {:error, :tenant_required} = Dispatcher.dispatch(Emitter, :order_paid, event)
+    assert {:ok, []} = Dispatcher.dispatch(Emitter, :order_paid, event, tenant: "org_b")
+    assert rows("org_b") == []
+
+    assert {:ok, [%{endpoint_id: id}]} =
+             Dispatcher.dispatch(Emitter, :order_paid, event, tenant: "org_a")
+
+    assert id == endpoint.id
+    assert [%{subscription_id: id}] = rows("org_a")
+    assert id == subscription.id
+
+    assert Ash.get!(Subscription, other_subscription.id, tenant: "org_b", authorize?: false).paused
+
+    Ash.update!(other_subscription, %{paused: false}, tenant: "org_b", authorize?: false)
+
+    assert {:ok, [%{status: :deferred}]} =
+             Dispatcher.dispatch(Emitter, :order_paid, event, tenant: "org_b")
+
+    assert length(rows("org_b")) == 1
+    assert length(rows("org_a")) == 1
+  end
+
+  test "pausable subscriptions reject tenant-bypassing update actions" do
+    errors =
+      Spark.Test.dsl_errors do
+        defmodule Elixir.AshHooks.TenancyTest.PauseBypassProbe do
+          @moduledoc false
+          use Ash.Resource,
+            data_layer: Ash.DataLayer.Simple,
+            extensions: [AshHooks.Subscription]
+
+          attributes do
+            attribute(:org_id, :string, allow_nil?: false)
+          end
+
+          multitenancy do
+            strategy(:attribute)
+            attribute(:org_id)
+          end
+
+          subscription do
+            endpoint_resource(AshHooks.TenancyTest.Endpoint)
+            pausable(:on)
+          end
+
+          actions do
+            defaults([:read])
+
+            update :pause_all do
+              multitenancy(:bypass)
+              accept([:paused])
+            end
+          end
+        end
+      end
+
+    assert [{AshHooks.TenancyTest.PauseBypassProbe, [%Spark.Error.DslError{} = error]}] = errors
+    assert Exception.message(error) =~ "multitenancy :bypass"
+    assert Exception.message(error) =~ "pause_all"
+  after
+    :code.purge(AshHooks.TenancyTest.PauseBypassProbe)
+    :code.delete(AshHooks.TenancyTest.PauseBypassProbe)
   end
 
   # ────────────────────────── proof 1: fanout isolation ──────────────────────────

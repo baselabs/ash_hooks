@@ -24,6 +24,13 @@ outbound delivery rows store it in `subscription_id`. UUIDv7 keys satisfy
 this contract. Composite and non-UUID keys fail at DSL compilation with the
 reference column named in the error.
 
+With `pausable :on`, the extension also injects `paused` (boolean,
+nonnullable, default `false`). The dispatcher skips paused subscriptions
+before creating delivery rows. Existing delivery rows continue to deliver:
+pausing is not cancellation. Applications pause and resume through their own
+ordinary update actions and policies. Opting in requires a migration for
+the `paused` column; the default `:off` adds no attribute or schema requirement.
+
 ## Typing contract
 
 Events carry string types. You can declare `event_types` yourself,
@@ -56,6 +63,7 @@ Configuration of this resource as the outbound subscription.
 | Name | Type | Default | Docs |
 |------|------|---------|------|
 | [`endpoint_resource`](#subscription-endpoint_resource){: #subscription-endpoint_resource .spark-required} | `atom` |  | The resource module carrying `AshHooks.Endpoint` that `endpoint_id` references. The dispatcher loads endpoints through it to check `status` and reachability. |
+| [`pausable`](#subscription-pausable){: #subscription-pausable } | `:off \| :on` | `:off` | Whether the subscription pause column is injected (default `:off`, leaving existing schemas untouched). With `:on`, the extension injects `paused` (boolean, nonnullable, default `false`). The dispatcher skips paused subscriptions before creating delivery rows; existing delivery rows are unaffected. Applications pause and resume through ordinary updates of `paused` under their own actions and policies. Declaring `:on` requires a migration for the column. |
 | [`filter_attributes`](#subscription-filter_attributes){: #subscription-filter_attributes } | `list(atom)` | `[]` | The closed set of EVENT ATTRIBUTE names subscriptions may filter on (e.g. `[:order_id, :region]`). Declaring a nonempty list injects the `event_filters` column (`:map`, nullable): a subscription whose filters all match the dispatching event's metadata receives the delivery. Filters are evaluated BEFORE any delivery row is created. A filter key outside this set never matches (fail closed); a list value matches any-of. Requires a migration for the column. |
 
 

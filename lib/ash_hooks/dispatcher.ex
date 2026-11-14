@@ -53,6 +53,10 @@ defmodule AshHooks.Dispatcher do
   consumer's primary read action and endpoints through their resource's
   `get`. Internal dispatcher reads bypass authorization. Application policies
   govern exposed reads; only trusted application code should call dispatch.
+
+  With `subscription.pausable :on`, paused subscriptions are skipped before
+  endpoint resolution or delivery creation. Existing delivery rows continue
+  through delivery and recovery; pausing does not cancel them.
   """
 
   require Ash.Expr
@@ -523,10 +527,14 @@ defmodule AshHooks.Dispatcher do
     end
   end
 
-  # the full match: the type leg, then the attribute-filter leg, BEFORE
+  # the full match: the pause, type, and attribute-filter legs, BEFORE
   # any delivery row exists
   defp matched?(subscription, event) do
-    Subscription.matches?(subscription, event.type) and
+    pausable? =
+      Extension.get_opt(subscription.__struct__, [:subscription], :pausable, :off) == :on
+
+    (not pausable? or not subscription.paused) and
+      Subscription.matches?(subscription, event.type) and
       Subscription.matches_filters?(subscription, event.metadata)
   end
 

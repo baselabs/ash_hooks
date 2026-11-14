@@ -80,6 +80,41 @@ defmodule AshHooks.PostgresConsumerTest do
     end
   end
 
+  defmodule PausableSubscription do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.PostgresConsumerTest.Domain,
+      data_layer: AshPostgres.DataLayer,
+      extensions: [AshHooks.Subscription]
+
+    postgres do
+      table("pg_consumer_subscriptions")
+      repo(AshHooks.TestPostgres.Repo)
+    end
+
+    attributes do
+      uuid_v7_primary_key(:id)
+
+      # the consumer's closed atom register (H8) — replaces the injected
+      # {:array, :string} default ["*"]
+      attribute(:event_types, {:array, :atom},
+        allow_nil?: false,
+        public?: true,
+        constraints: [min_length: 1, items: [one_of: [:order_paid, :order_shipped]]]
+      )
+    end
+
+    actions do
+      defaults([:read, :create, :update])
+      default_accept(:*)
+    end
+
+    subscription do
+      endpoint_resource(AshHooks.PostgresConsumerTest.Endpoint)
+      pausable(:on)
+    end
+  end
+
   defmodule Delivery do
     @moduledoc false
     use Ash.Resource,
@@ -137,6 +172,35 @@ defmodule AshHooks.PostgresConsumerTest do
     end
   end
 
+  defmodule PausableEmitter do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.PostgresConsumerTest.Domain,
+      data_layer: AshPostgres.DataLayer,
+      extensions: [AshHooks]
+
+    postgres do
+      table("pg_consumer_emitters")
+      repo(AshHooks.TestPostgres.Repo)
+    end
+
+    attributes do
+      uuid_v7_primary_key(:id)
+    end
+
+    actions do
+      defaults([:read, :create])
+      default_accept(:*)
+    end
+
+    webhooks do
+      outbound :order_paid do
+        subscriptions(AshHooks.PostgresConsumerTest.PausableSubscription)
+        deliveries(AshHooks.PostgresConsumerTest.Delivery)
+      end
+    end
+  end
+
   defmodule Domain do
     @moduledoc false
     use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
@@ -144,6 +208,8 @@ defmodule AshHooks.PostgresConsumerTest do
     resources do
       resource(AshHooks.PostgresConsumerTest.Endpoint)
       resource(AshHooks.PostgresConsumerTest.Subscription)
+      resource(AshHooks.PostgresConsumerTest.PausableSubscription)
+      resource(AshHooks.PostgresConsumerTest.PausableEmitter)
       resource(AshHooks.PostgresConsumerTest.Delivery)
       resource(AshHooks.PostgresConsumerTest.Emitter)
     end
@@ -185,6 +251,7 @@ defmodule AshHooks.PostgresConsumerTest do
   alias Ash.Resource.Info, as: ResourceInfo
   alias AshHooks.Delivery, as: DeliveryRuntime
   alias AshHooks.{Dispatcher, Event}
+  alias AshHooks.Test.SubscriptionPauseReceiver
   alias AshHooks.TestPostgres.Repo
 
   @endpoints "pg_consumer_endpoints"
@@ -214,7 +281,8 @@ defmodule AshHooks.PostgresConsumerTest do
       id UUID PRIMARY KEY,
       event_types TEXT[] NOT NULL,
       endpoint_id UUID NOT NULL,
-      signing_mode TEXT
+      signing_mode TEXT,
+      paused BOOLEAN NOT NULL DEFAULT FALSE
     )
     """)
 
@@ -257,12 +325,17 @@ defmodule AshHooks.PostgresConsumerTest do
     :ok
   end
 
-  setup do
+  setup context do
     Repo.query!("DELETE FROM #{@deliveries}")
     Repo.query!("DELETE FROM #{@subscriptions}")
     Repo.query!("DELETE FROM #{@endpoints}")
     Repo.query!("DELETE FROM #{@emitters}")
-    {:ok, _} = HttpDouble.start_link([{:ok, %{status: 200, headers: [], body: ~s({"ok": true})}}])
+
+    unless context[:subscription_pause] do
+      {:ok, _} =
+        HttpDouble.start_link([{:ok, %{status: 200, headers: [], body: ~s({"ok": true})}}])
+    end
+
     :ok
   end
 
@@ -296,6 +369,121 @@ defmodule AshHooks.PostgresConsumerTest do
   end
 
   @moduletag :postgres
+
+  describe "subscription pause" do
+    @describetag :subscription_pause
+
+    test "pausable injects a nonnullable boolean defaulting to false" do
+      attribute = ResourceInfo.attribute(PausableSubscription, :paused)
+      assert attribute.type == Ash.Type.Boolean
+      assert attribute.allow_nil? == false
+      assert attribute.default == false
+      assert attribute.public?
+      assert attribute.writable?
+
+      subscription =
+        Ash.create!(
+          PausableSubscription,
+          %{endpoint_id: endpoint!().id, event_types: [:order_paid]},
+          authorize?: false
+        )
+
+      assert subscription.paused == false
+      assert {:error, _} = Ash.update(subscription, %{paused: nil}, authorize?: false)
+
+      assert MapSet.new(ResourceInfo.actions(PausableSubscription), & &1.name) ==
+               MapSet.put(MapSet.new(ResourceInfo.actions(Subscription), & &1.name), :update)
+    end
+
+    test "a paused subscription creates no delivery and the same event delivers after resuming" do
+      subscription =
+        Ash.create!(
+          PausableSubscription,
+          %{endpoint_id: endpoint!().id, event_types: [:order_paid], paused: true},
+          authorize?: false
+        )
+
+      event = event!()
+      assert {:ok, []} = Dispatcher.dispatch(PausableEmitter, :order_paid, event)
+      assert Ash.read!(Delivery, authorize?: false) == []
+
+      Ash.update!(subscription, %{paused: false}, authorize?: false)
+
+      assert {:ok, [%{status: :deferred}]} =
+               Dispatcher.dispatch(PausableEmitter, :order_paid, event)
+
+      assert [%{event_uuid: id, subscription_id: subscription_id}] =
+               Ash.read!(Delivery, authorize?: false)
+
+      assert id == event.id
+      assert subscription_id == subscription.id
+    end
+
+    test "default-off subscriptions have no paused attribute and dispatch normally" do
+      refute ResourceInfo.attribute(Subscription, :paused)
+      endpoint = endpoint!()
+
+      subscription =
+        Ash.create!(
+          Subscription,
+          %{endpoint_id: endpoint.id, event_types: [:order_paid]},
+          authorize?: false
+        )
+
+      assert {:ok, [%{status: :deferred}]} = Dispatcher.dispatch(Emitter, :order_paid, event!())
+      assert [%{subscription_id: id}] = Ash.read!(Delivery, authorize?: false)
+      assert id == subscription.id
+    end
+
+    @tag :real_receiver
+    test "a delivery created before pausing still reaches the real receiver" do
+      session = SubscriptionPauseReceiver.open!()
+      on_exit(fn -> SubscriptionPauseReceiver.close!(session) end)
+
+      endpoint =
+        Ash.create!(Endpoint, %{url: session.url, secret_ref: "pause-test-key"},
+          authorize?: false
+        )
+
+      subscription =
+        Ash.create!(
+          PausableSubscription,
+          %{endpoint_id: endpoint.id, event_types: ["order_paid"]},
+          authorize?: false
+        )
+
+      event = event!()
+
+      assert {:ok, [%{status: :deferred}]} =
+               Dispatcher.dispatch(PausableEmitter, :order_paid, event)
+
+      [row] = Ash.read!(Delivery, authorize?: false)
+
+      Ash.update!(subscription, %{paused: true}, authorize?: false)
+      assert {:ok, []} = Dispatcher.dispatch(PausableEmitter, :order_paid, event)
+      assert [%{id: id, status: :pending, attempts: 0}] = Ash.read!(Delivery, authorize?: false)
+      assert id == row.id
+
+      secret = "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))
+
+      assert :ok =
+               AshHooks.Delivery.run(
+                 %{"endpoint_id" => row.endpoint_id, "event_uuid" => row.event_uuid},
+                 deliveries: Delivery,
+                 endpoints: Endpoint,
+                 secret_resolver: fn "pause-test-key" -> {:ok, secret} end,
+                 destination_policy: fn _url, _context -> :allow end,
+                 http_opts: [validate_destination: false]
+               )
+
+      assert %{status: :succeeded, attempts: 1} = Ash.get!(Delivery, row.id, authorize?: false)
+      assert Ash.get!(PausableSubscription, subscription.id, authorize?: false).paused
+      [request] = SubscriptionPauseReceiver.requests!(session)
+      headers = Map.new(request["headers"], &{String.downcase(&1["name"]), &1["value"]})
+      assert headers["webhook-id"] == event.id
+      assert {:ok, _} = AshHooks.Signing.verify(event.payload, headers, secret)
+    end
+  end
 
   describe "the consumer shape compiles and holds its arch pins (H1/H2/H6)" do
     test "no injected :payload column, no destroy action, no accepted PK" do

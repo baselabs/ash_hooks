@@ -59,6 +59,7 @@ defmodule AshHooks.SubscriptionTest do
 
   use ExUnit.Case, async: false
 
+  alias Ash.Resource.Info, as: ResourceInfo
   alias AshHooks.Test.Repo
 
   @endpoints "subscription_test_endpoints"
@@ -105,6 +106,14 @@ defmodule AshHooks.SubscriptionTest do
   end
 
   describe "injected fields" do
+    test "the default does not inject paused or require its database column" do
+      refute ResourceInfo.attribute(Subscription, :paused)
+      columns = Repo.query!("PRAGMA table_info(#{@subscriptions})").rows
+      refute Enum.any?(columns, fn [_index, name | _rest] -> name == "paused" end)
+      sub = Ash.create!(Subscription, %{endpoint_id: endpoint!().id}, authorize?: false)
+      refute Map.has_key?(sub, :paused)
+    end
+
     test "event_types defaults to [\"*\"]" do
       sub =
         Ash.create!(Subscription, %{endpoint_id: endpoint!().id}, authorize?: false)

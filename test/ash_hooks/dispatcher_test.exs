@@ -50,6 +50,29 @@ defmodule AshHooks.DispatcherTest do
     end
   end
 
+  defmodule PausableSubscription do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.DispatcherTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.Subscription]
+
+    sqlite do
+      table("dispatcher_test_subscriptions")
+      repo(AshHooks.Test.Repo)
+    end
+
+    actions do
+      defaults([:read, :create, :update])
+      default_accept(:*)
+    end
+
+    subscription do
+      endpoint_resource(AshHooks.DispatcherTest.Endpoint)
+      pausable(:on)
+    end
+  end
+
   defmodule Delivery do
     @moduledoc false
     use Ash.Resource,
@@ -137,6 +160,10 @@ defmodule AshHooks.DispatcherTest do
       repo(AshHooks.Test.Repo)
     end
 
+    attributes do
+      attribute(:paused, :boolean, public?: true, allow_nil?: false, default: true)
+    end
+
     actions do
       defaults([:create])
       default_accept(:*)
@@ -154,6 +181,7 @@ defmodule AshHooks.DispatcherTest do
 
     subscription do
       endpoint_resource(AshHooks.DispatcherTest.Endpoint)
+      pausable(:off)
     end
   end
 
@@ -186,6 +214,35 @@ defmodule AshHooks.DispatcherTest do
     end
   end
 
+  defmodule PausableEmitter do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.DispatcherTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks]
+
+    sqlite do
+      table("dispatcher_test_emitters")
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+    end
+
+    actions do
+      defaults([:read, :create])
+      default_accept(:*)
+    end
+
+    webhooks do
+      outbound :order_paid do
+        subscriptions(AshHooks.DispatcherTest.PausableSubscription)
+        deliveries(AshHooks.DispatcherTest.Delivery)
+      end
+    end
+  end
+
   defmodule Domain do
     @moduledoc false
     use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
@@ -193,6 +250,8 @@ defmodule AshHooks.DispatcherTest do
     resources do
       resource(AshHooks.DispatcherTest.Endpoint)
       resource(AshHooks.DispatcherTest.Subscription)
+      resource(AshHooks.DispatcherTest.PausableSubscription)
+      resource(AshHooks.DispatcherTest.PausableEmitter)
       resource(AshHooks.DispatcherTest.Delivery)
       resource(AshHooks.DispatcherTest.Emitter)
       resource(AshHooks.DispatcherTest.SharedLedgerEmitter)
@@ -207,9 +266,11 @@ defmodule AshHooks.DispatcherTest do
 
   use ExUnit.Case, async: false
 
+  alias Ash.Resource.Info, as: ResourceInfo
   alias AshHooks.Dispatcher
   alias AshHooks.Event
   alias AshHooks.Test.Repo
+  alias AshHooks.Test.SubscriptionPauseReceiver
 
   @endpoints "dispatcher_test_endpoints"
   @subscriptions "dispatcher_test_subscriptions"
@@ -247,7 +308,8 @@ defmodule AshHooks.DispatcherTest do
       id TEXT PRIMARY KEY,
       event_types TEXT NOT NULL,
       endpoint_id TEXT NOT NULL,
-      signing_mode TEXT
+      signing_mode TEXT,
+      paused BOOLEAN NOT NULL DEFAULT FALSE
     )
     """)
 
@@ -309,6 +371,132 @@ defmodule AshHooks.DispatcherTest do
   defp enqueue_error(_delivery, _event), do: {:error, :queue_down}
 
   defp enqueue_raises(_delivery, _event), do: raise("boom")
+
+  describe "subscription pause" do
+    test "pausable injects a nonnullable boolean defaulting to false" do
+      attribute = ResourceInfo.attribute(PausableSubscription, :paused)
+      assert attribute.type == Ash.Type.Boolean
+      assert attribute.allow_nil? == false
+      assert attribute.default == false
+      assert attribute.public?
+      assert attribute.writable?
+
+      subscription =
+        Ash.create!(
+          PausableSubscription,
+          %{endpoint_id: endpoint!().id, event_types: ["order_paid"]},
+          authorize?: false
+        )
+
+      assert subscription.paused == false
+      assert {:error, _} = Ash.update(subscription, %{paused: nil}, authorize?: false)
+
+      assert MapSet.new(ResourceInfo.actions(PausableSubscription), & &1.name) ==
+               MapSet.put(MapSet.new(ResourceInfo.actions(Subscription), & &1.name), :update)
+    end
+
+    test "a paused subscription creates no delivery and the same event delivers after resuming" do
+      subscription =
+        Ash.create!(
+          PausableSubscription,
+          %{endpoint_id: endpoint!().id, event_types: ["order_paid"], paused: true},
+          authorize?: false
+        )
+
+      event = event!()
+      assert {:ok, []} = Dispatcher.dispatch(PausableEmitter, :order_paid, event)
+      assert Ash.read!(Delivery, authorize?: false) == []
+
+      Ash.update!(subscription, %{paused: false}, authorize?: false)
+
+      assert {:ok, [%{status: :deferred}]} =
+               Dispatcher.dispatch(PausableEmitter, :order_paid, event)
+
+      assert [%{event_uuid: id, subscription_id: subscription_id}] =
+               Ash.read!(Delivery, authorize?: false)
+
+      assert id == event.id
+      assert subscription_id == subscription.id
+    end
+
+    test "default-off subscriptions have no paused attribute and dispatch normally" do
+      refute ResourceInfo.attribute(Subscription, :paused)
+      endpoint = endpoint!()
+
+      subscription =
+        Ash.create!(
+          Subscription,
+          %{endpoint_id: endpoint.id, event_types: ["order_paid"]},
+          authorize?: false
+        )
+
+      assert {:ok, [%{status: :deferred}]} = Dispatcher.dispatch(Emitter, :order_paid, event!())
+      assert [%{subscription_id: id}] = Ash.read!(Delivery, authorize?: false)
+      assert id == subscription.id
+    end
+
+    test "an explicit off leaves a host-owned paused field inert" do
+      subscription =
+        Ash.create!(PagedSubscription, %{endpoint_id: endpoint!().id}, authorize?: false)
+
+      assert subscription.paused
+
+      assert {:ok, [%{status: :deferred}]} =
+               Dispatcher.dispatch(PagedEmitter, :order_paid, event!())
+
+      assert [%{subscription_id: id}] = delivery_rows()
+      assert id == subscription.id
+    end
+
+    @tag :real_receiver
+    test "a delivery created before pausing still reaches the real receiver" do
+      session = SubscriptionPauseReceiver.open!()
+      on_exit(fn -> SubscriptionPauseReceiver.close!(session) end)
+
+      endpoint =
+        Ash.create!(Endpoint, %{url: session.url, secret_ref: "pause-test-key"},
+          authorize?: false
+        )
+
+      subscription =
+        Ash.create!(
+          PausableSubscription,
+          %{endpoint_id: endpoint.id, event_types: ["order_paid"]},
+          authorize?: false
+        )
+
+      event = event!()
+
+      assert {:ok, [%{status: :deferred}]} =
+               Dispatcher.dispatch(PausableEmitter, :order_paid, event)
+
+      [row] = Ash.read!(Delivery, authorize?: false)
+
+      Ash.update!(subscription, %{paused: true}, authorize?: false)
+      assert {:ok, []} = Dispatcher.dispatch(PausableEmitter, :order_paid, event)
+      assert [%{id: id, status: :pending, attempts: 0}] = Ash.read!(Delivery, authorize?: false)
+      assert id == row.id
+
+      secret = "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))
+
+      assert :ok =
+               AshHooks.Delivery.run(
+                 %{"endpoint_id" => row.endpoint_id, "event_uuid" => row.event_uuid},
+                 deliveries: Delivery,
+                 endpoints: Endpoint,
+                 secret_resolver: fn "pause-test-key" -> {:ok, secret} end,
+                 destination_policy: fn _url, _context -> :allow end,
+                 http_opts: [validate_destination: false]
+               )
+
+      assert %{status: :succeeded, attempts: 1} = Ash.get!(Delivery, row.id, authorize?: false)
+      assert Ash.get!(PausableSubscription, subscription.id, authorize?: false).paused
+      [request] = SubscriptionPauseReceiver.requests!(session)
+      headers = Map.new(request["headers"], &{String.downcase(&1["name"]), &1["value"]})
+      assert headers["webhook-id"] == event.id
+      assert {:ok, _} = AshHooks.Signing.verify(event.payload, headers, secret)
+    end
+  end
 
   describe "fanout (the ACCEPT): per-endpoint enqueue isolation" do
     test "one endpoint's enqueue FAILURE does not stop the others" do

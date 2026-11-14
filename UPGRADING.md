@@ -2,6 +2,14 @@
 
 ## 3.1.0 → 3.2.0
 
+Subscriptions can opt in to `pausable :on` in their `subscription` section.
+Before enabling it, migrate the subscription table to add `paused`, a boolean
+column with `NOT NULL` and default `false`, including existing rows. Applications
+pause and resume through their own update actions accepting `paused`, with their
+own authorization policies and tenant scope. Pausing prevents new delivery rows;
+it does not cancel existing deliveries. The default `pausable :off` adds no
+attribute and requires no migration.
+
 IPv6 destinations in reserved or unallocated address space are now refused,
 including unallocated gaps inside `2000::/3`. Registration and send-time checks
 use the IANA allocation table retrieved November 13, 2026. New IANA allocations

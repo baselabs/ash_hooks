@@ -21,6 +21,13 @@ defmodule AshHooks.Subscription do
   this contract. Composite and non-UUID keys fail at DSL compilation with the
   reference column named in the error.
 
+  With `pausable :on`, the extension also injects `paused` (boolean,
+  nonnullable, default `false`). The dispatcher skips paused subscriptions
+  before creating delivery rows. Existing delivery rows continue to deliver:
+  pausing is not cancellation. Applications pause and resume through their own
+  ordinary update actions and policies. Opting in requires a migration for
+  the `paused` column; the default `:off` adds no attribute or schema requirement.
+
   ## Typing contract
 
   Events carry string types. You can declare `event_types` yourself,
@@ -122,6 +129,19 @@ defmodule AshHooks.Subscription do
         The resource module carrying `AshHooks.Endpoint` that
         `endpoint_id` references. The dispatcher loads endpoints through
         it to check `status` and reachability.
+        """
+      ],
+      pausable: [
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc: """
+        Whether the subscription pause column is injected (default `:off`,
+        leaving existing schemas untouched). With `:on`, the extension
+        injects `paused` (boolean, nonnullable, default `false`). The
+        dispatcher skips paused subscriptions before creating delivery rows;
+        existing delivery rows are unaffected. Applications pause and resume
+        through ordinary updates of `paused` under their own actions and
+        policies. Declaring `:on` requires a migration for the column.
         """
       ],
       filter_attributes: [

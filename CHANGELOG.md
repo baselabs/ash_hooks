@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Subscription option `pausable :on` injects a nonnullable boolean `paused`
+  column, defaulting to `false`. Paused subscriptions create no new delivery
+  rows; existing deliveries continue. The default `:off` keeps existing schemas
+  unchanged. Applications pause and resume through ordinary updates.
 - `AshHooks.Ssrf.resolve_host_public/2` validates DNS names and IP literals,
   resolves both address families under a bounded deadline, and returns only
   public addresses for connection pinning.

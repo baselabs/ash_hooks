@@ -14,8 +14,23 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
 
   def transform(dsl_state) do
     with {:ok, dsl_state} <- add_primary_key(dsl_state),
-         {:ok, dsl_state} <- add_filter_attribute(dsl_state) do
+         {:ok, dsl_state} <- add_filter_attribute(dsl_state),
+         {:ok, dsl_state} <- add_pause_attribute(dsl_state) do
       add_attributes(dsl_state)
+    end
+  end
+
+  defp add_pause_attribute(dsl_state) do
+    case Extension.get_opt(dsl_state, [:subscription], :pausable, :off) do
+      :off ->
+        {:ok, dsl_state}
+
+      :on ->
+        Builder.add_new_attribute(dsl_state, :paused, :boolean,
+          allow_nil?: false,
+          default: false,
+          public?: true
+        )
     end
   end
 
