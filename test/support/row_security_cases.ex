@@ -1581,6 +1581,76 @@ defmodule AshHooks.Test.RowSecurityCases do
     end
   end
 
+  def joined_prune_failure(ctx) do
+    for {tenant, endpoint} <- seed(ctx) do
+      row = host_delivery(ctx, endpoint, tenant)
+
+      assert :ok =
+               Delivery.run(%{"delivery_pk" => PrimaryKey.encode(row), "tenant" => tenant},
+                 deliveries: ctx.delivery,
+                 endpoints: ctx.endpoint,
+                 attempts: ctx.attempt,
+                 destination_policy: fn _, _ -> :deny end
+               )
+    end
+
+    attempts = table(ctx.attempt)
+    deliveries = table(ctx.delivery)
+
+    if ctx.layer == AshPostgres.DataLayer do
+      ctx.owner.query!(
+        "CREATE FUNCTION row_security_history_abort() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NOT EXISTS (SELECT 1 FROM #{deliveries} WHERE tenant_id = OLD.tenant_id) THEN RAISE EXCEPTION 'history retained after delivery deletion'; END IF; RETURN OLD; END $$",
+        [],
+        log: false
+      )
+
+      ctx.owner.query!(
+        "CREATE TRIGGER row_security_history_abort BEFORE DELETE ON #{attempts} FOR EACH ROW EXECUTE FUNCTION row_security_history_abort()",
+        [],
+        log: false
+      )
+
+      on_exit(fn ->
+        ctx.owner.query!("DROP TRIGGER IF EXISTS row_security_history_abort ON #{attempts}", [],
+          log: false
+        )
+
+        ctx.owner.query!("DROP FUNCTION IF EXISTS row_security_history_abort()", [], log: false)
+      end)
+    else
+      ctx.owner.query!(
+        "CREATE TRIGGER row_security_history_abort BEFORE DELETE ON #{attempts} WHEN NOT EXISTS (SELECT 1 FROM #{deliveries} WHERE tenant_id = OLD.tenant_id) BEGIN SELECT RAISE(ABORT, 'history retained after delivery deletion'); END",
+        [],
+        log: false
+      )
+
+      on_exit(fn ->
+        ctx.owner.query!("DROP TRIGGER IF EXISTS row_security_history_abort", [], log: false)
+      end)
+    end
+
+    for tenant <- ["tenant_a", "tenant_b"] do
+      assert {:error, _} =
+               Ash.DataLayer.transaction(
+                 ctx.delivery,
+                 fn ->
+                   Delivery.prune(ctx.delivery,
+                     attempts: ctx.attempt,
+                     tenant: tenant,
+                     older_than: DateTime.add(DateTime.utc_now(), 60)
+                   )
+
+                   :host_continued
+                 end,
+                 nil,
+                 %{type: :custom, tenant: tenant, metadata: %{}}
+               )
+
+      assert {:ok, %{records: [_]}} = Delivery.list(ctx.delivery, tenant: tenant)
+      assert {:ok, %{records: [_]}} = OutboundAttempt.list(ctx.attempt, tenant: tenant)
+    end
+  end
+
   defp failing_package_write(ctx, endpoint, tenant, event_uuid) do
     AshHooks.Phase.run(ctx.delivery, tenant, fn ->
       ctx.delivery
@@ -1798,7 +1868,9 @@ defmodule AshHooks.Test.RowSecurityCases do
 
     assert pending.tenant_id == tenant
     assert pending.endpoint_id == endpoint.id
+
     assert pending.status == :pending
+
     assert pending.attempts == 0
     assert pending.enqueue_token == nil
     assert pending.enqueue_lease_expires_at == nil

@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Verify that a history-deletion failure rolls back joined delivery pruning
+  on both supported databases.
+
 - Handle an enqueue refused inside a host transaction like that path's other
   enqueue failures, with dispatch marking joining the host transaction.
 

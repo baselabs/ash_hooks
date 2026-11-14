@@ -109,6 +109,12 @@ defmodule AshHooks.RowSecurityTest do
       Cases.joined_enqueue_rollback(context)
     end
 
+    @tag configuration: configuration
+    test "joined pruning rolls back when history deletion fails with #{configuration} reads",
+         context do
+      Cases.joined_prune_failure(context)
+    end
+
     for failure <- [:refusal, :read_error] do
       @tag configuration: configuration
       test "joined #{failure} preserves host writes with #{configuration} reads", context do
