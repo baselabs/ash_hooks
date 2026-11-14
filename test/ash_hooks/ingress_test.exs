@@ -788,6 +788,18 @@ defmodule AshHooks.IngressTest do
       assert delivery.status == :failed_permanent
       assert delivery.error_class == "malformed_payload"
     end
+
+    test "a decoded payload the provider refuses is stored, claimed, and dead-lettered as malformed" do
+      raw = Jason.encode!(%{"id" => "evt_untyped"})
+
+      assert {:ok, :created, delivery} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+
+      assert delivery.status == :failed_permanent
+      assert delivery.error_class == "malformed_payload"
+      assert delivery.payload == %{"id" => "evt_untyped"}
+      assert delivery.attempts == 1
+      refute_received {:handled, _, _}
+    end
   end
 
   describe "claim + mark fault arms" do
