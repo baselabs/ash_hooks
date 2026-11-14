@@ -29,7 +29,9 @@ defmodule AshHooks.Custody do
 
   `:unavailable` means custody could not answer and is retryable. Every other
   error is final for that attempt. ash_hooks classifies backend errors without
-  exposing their terms.
+  exposing their terms. A callback that raises, exits or throws becomes a
+  contents-free `AshHooks.Errors.Unknown.UnknownError`, an outage rather than
+  a signature verdict.
 
   ## References, tenant binding, and destruction
 
@@ -175,7 +177,7 @@ defmodule AshHooks.Custody do
 
   def sign(%Key{custodian: custodian, ref: ref, tenant: tenant, kind: kind}, input) do
     result =
-      case custodian.sign(ref, tenant, kind, input) do
+      case call(custodian, :sign, [ref, tenant, kind, input]) do
         {:ok, bytes} when is_binary(bytes) -> {:ok, bytes}
         {:error, _} = error -> error
         _ -> :invalid_sign_result
@@ -187,7 +189,7 @@ defmodule AshHooks.Custody do
   @doc false
   def verify(%Key{custodian: custodian, ref: ref, tenant: tenant, kind: kind}, input, mac) do
     result =
-      case custodian.verify(ref, tenant, kind, input, mac) do
+      case call(custodian, :verify, [ref, tenant, kind, input, mac]) do
         :ok -> :ok
         {:error, _} = error -> error
         _ -> :invalid_verify_result
@@ -212,11 +214,18 @@ defmodule AshHooks.Custody do
     do: {:error, :no_fingerprint}
 
   def display_fingerprint(%Key{custodian: custodian, ref: ref, tenant: tenant, kind: kind}) do
-    case custodian.fingerprint(ref, tenant, kind) do
+    case call(custodian, :fingerprint, [ref, tenant, kind]) do
       {:ok, <<_::128>> = digest} -> {:ok, Fingerprint.display(digest)}
       {:error, _} = error -> Errors.from_custody_result(error)
       _ -> Errors.from_custody_result(:invalid_fingerprint_result)
     end
+  end
+
+  @doc false
+  def call(custodian, callback, arguments) do
+    apply(custodian, callback, arguments)
+  catch
+    _, _ -> :unrecognized_custody_failure
   end
 
   defp canonical_attribute_tenant(tenant, resource, opts) do

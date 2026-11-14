@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Contain custodian callback faults as classified outages, retry outbound
+  attempts, and avoid recording outages as failed-verification rejections.
+
 - Refuse a ledger declaration whose source resource belongs to another ledger.
 
 - Preserve classified provider errors during key overlaps, including timestamp

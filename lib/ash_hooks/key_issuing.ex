@@ -42,7 +42,12 @@ defmodule AshHooks.KeyIssuing do
   end
 
   defp store(custodian, row, material) do
-    case custodian.store(row.ref, material, row.custody_tenant, row.kind) do
+    case AshHooks.Custody.call(custodian, :store, [
+           row.ref,
+           material,
+           row.custody_tenant,
+           row.kind
+         ]) do
       :ok ->
         :ok
 

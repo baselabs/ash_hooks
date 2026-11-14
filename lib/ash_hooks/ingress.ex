@@ -348,6 +348,9 @@ defmodule AshHooks.Ingress do
   # behind counts/2. Failures here never change the refusal outcome.
   defp record_rejection(_resource, _name, _raw_body, _ctx, :source_paused), do: :ok
 
+  defp record_rejection(_resource, _name, _raw_body, _ctx, %module{})
+       when module in [AshHooks.Errors.Unknown.KeyUnavailable, UnknownError], do: :ok
+
   defp record_rejection(resource, name, raw_body, ctx, _reason) do
     if Ash.Resource.Info.action(resource, :record_rejection) do
       input =

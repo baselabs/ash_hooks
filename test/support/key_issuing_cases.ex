@@ -702,6 +702,9 @@ defmodule AshHooks.Test.KeyIssuingCases do
           {{:error, :ref_destroyed}, :key_issue_expired},
           {{:error, :ref_exists}, AshHooks.Errors.Unknown.UnknownError},
           {{:error, :unavailable}, AshHooks.Errors.Unknown.KeyUnavailable},
+          {{:raise, "private_backend"}, AshHooks.Errors.Unknown.UnknownError},
+          {{:exit, "private_backend"}, AshHooks.Errors.Unknown.UnknownError},
+          {{:throw, "private_backend"}, AshHooks.Errors.Unknown.UnknownError},
           {{:error, {:private_backend, "private_backend"}}, AshHooks.Errors.Unknown.UnknownError}
         ] do
       Process.put(:issuing_store_answer, answer)
@@ -744,7 +747,8 @@ defmodule AshHooks.Test.KeyIssuingCases do
           create(%{ctx | endpoint: resource})
         end)
 
-      assert_receive {:DOWN, ^monitor, :process, ^pid, :issuing_crash}, 15_000
+      expected = if point == :after_owner_write, do: :issuing_crash, else: :killed
+      assert_receive {:DOWN, ^monitor, :process, ^pid, ^expected}, 15_000
       assert Enum.any?(rows(ctx), &(&1.state == :issued))
       assert Ash.read!(resource, tenant: 17, authorize?: false) == []
       sweep!(ctx)
@@ -1091,7 +1095,7 @@ defmodule AshHooks.Test.IssuingCustodian do
     false = repo.in_transaction?()
     send(sink, {:store, ref, tenant, kind})
     answer = Process.delete(:issuing_store_answer)
-    if answer == {:crash, :before_store}, do: exit(:issuing_crash)
+    if answer == {:crash, :before_store}, do: Process.exit(self(), :kill)
     result = custodian.store(ref, material, tenant, kind)
 
     case answer do
@@ -1099,7 +1103,16 @@ defmodule AshHooks.Test.IssuingCustodian do
         result
 
       {:crash, :after_store} ->
-        exit(:issuing_crash)
+        Process.exit(self(), :kill)
+
+      {:raise, message} ->
+        raise(message)
+
+      {:exit, reason} ->
+        exit(reason)
+
+      {:throw, reason} ->
+        throw(reason)
 
       {:sweep, ctx} ->
         {:ok, _} =

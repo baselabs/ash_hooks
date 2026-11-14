@@ -413,7 +413,7 @@ defmodule AshHooks.Provider.Scheme do
   end
 
   defp match_key(key, :hmac, _) when is_binary(key) and key != "", do: {:ok, key}
-  defp match_key(%CustodyKey{} = key, :hmac, _), do: {:ok, key}
+  defp match_key(%CustodyKey{} = key, _, _), do: {:ok, key}
   defp match_key(_, :hmac, _), do: invalid()
   defp match_key(key, :ecdsa, algorithm), do: Key.decode(key, {:ecdsa, curve(algorithm)})
   defp match_key(key, type, _), do: Key.decode(key, type)

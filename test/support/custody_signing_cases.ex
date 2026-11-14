@@ -17,7 +17,7 @@ defmodule AshHooks.Test.AnswerCustodian do
     {custodian, answer, sink} = config()
     send(sink, {:custody_sign, ref, tenant, kind})
     result = custodian.sign(ref, tenant, kind, input)
-    if answer == :real, do: result, else: answer
+    if answer == :real, do: result, else: answer(answer)
   end
 
   def verify(ref, tenant, kind, input, signature) do
@@ -29,9 +29,14 @@ defmodule AshHooks.Test.AnswerCustodian do
       :real -> result
       {:for_ref, ^ref, refusal} -> refusal
       {:for_ref, _, _} -> result
-      other -> other
+      other -> answer(other)
     end
   end
+
+  defp answer({:raise, message}), do: raise(message)
+  defp answer({:exit, reason}), do: exit(reason)
+  defp answer({:throw, reason}), do: throw(reason)
+  defp answer(answer), do: answer
 
   def public_key(ref, tenant, kind) do
     {custodian, _, _} = config()
@@ -39,8 +44,13 @@ defmodule AshHooks.Test.AnswerCustodian do
   end
 
   def fingerprint(ref, tenant, kind) do
-    {custodian, _, _} = config()
-    custodian.fingerprint(ref, tenant, kind)
+    {custodian, configured, _} = config()
+    result = custodian.fingerprint(ref, tenant, kind)
+
+    case configured do
+      {fault, _} when fault in [:raise, :exit, :throw] -> answer(configured)
+      _ -> result
+    end
   end
 
   def destroy(ref, tenant) do
@@ -178,6 +188,7 @@ defmodule AshHooks.Test.CustodySigningCases do
       :missing_marker,
       :delivery_errors,
       :inbound_errors,
+      :outage_rejections,
       :inbound_success,
       :inbound_previous_key,
       :unknown_source,
@@ -462,6 +473,31 @@ defmodule AshHooks.Test.CustodySigningCases do
                })
 
       assert row.status == :processed
+    end
+  end
+
+  def outage_rejections(ctx) do
+    module = Module.concat(ctx.ledger, Tracking)
+
+    compile_outbound_resource(
+      Map.put(ctx, :ingress_tracking, true),
+      module,
+      AshHooks.InboundDelivery,
+      ctx.ledger_table,
+      true
+    )
+
+    on_exit(fn -> purge([module]) end)
+    ctx = %{ctx | ledger: module}
+    key = key!(ctx, @kind, :crypto.strong_rand_bytes(32))
+    Application.put_env(:ash_hooks, :verification_keys, key)
+    telemetry(self(), [[:ash_hooks, :ingress, :verify]])
+
+    for source <- [:hmac, :scheme], fault <- [:raise, :exit, :throw] do
+      AnswerCustodian.configure(ctx.custodian, {fault, "private_backend"}, self())
+      assert_inbound_error(ctx, source, UnknownError, "unknown_error")
+      assert Ash.read!(module, authorize?: false) == []
+      assert {:error, %UnknownError{}} = Custody.display_fingerprint(key)
     end
   end
 
@@ -777,6 +813,11 @@ defmodule AshHooks.Test.CustodySigningCases do
   defp errors do
     [
       {{:error, :unavailable}, KeyUnavailable, "key_unavailable", :failed_retryable},
+      {{:raise, "private_backend"}, UnknownError, "unknown_error", :failed_retryable},
+      {{:exit, {:private_backend, "private_backend"}}, UnknownError, "unknown_error",
+       :failed_retryable},
+      {{:throw, {:private_backend, "private_backend"}}, UnknownError, "unknown_error",
+       :failed_retryable},
       {{:error, :unknown_ref}, UnknownKey, "unknown_key", :dead_letter},
       {{:error, :kind_mismatch}, KeyKindMismatch, "key_kind_mismatch", :dead_letter},
       {{:error, :not_signable}, KeyKindMismatch, "key_kind_mismatch", :dead_letter},
@@ -947,7 +988,7 @@ defmodule AshHooks.Test.CustodySigningCases do
     )
 
     ctx.repo.query!(
-      "CREATE TABLE #{lt} (id #{id} PRIMARY KEY, provider TEXT NOT NULL, external_event_id TEXT NOT NULL, external_event_type TEXT, payload #{json} NOT NULL, payload_digest TEXT NOT NULL, status TEXT NOT NULL, fencing_token INTEGER NOT NULL DEFAULT 0, lease_expires_at #{time}, error_class TEXT, attempts INTEGER NOT NULL DEFAULT 0)",
+      "CREATE TABLE #{lt} (id #{id} PRIMARY KEY, provider TEXT NOT NULL, external_event_id TEXT NOT NULL, external_event_type TEXT, payload #{json} NOT NULL, payload_digest TEXT NOT NULL, status TEXT NOT NULL, fencing_token INTEGER NOT NULL DEFAULT 0, lease_expires_at #{time}, error_class TEXT, attempts INTEGER NOT NULL DEFAULT 0, duplicates INTEGER NOT NULL DEFAULT 0)",
       [],
       log: false
     )
@@ -1041,6 +1082,11 @@ defmodule AshHooks.Test.CustodySigningCases do
           unquote(storage)
           unquote(tenant)
           unquote(inbound)
+
+          unquote(
+            if inbound? and ctx[:ingress_tracking],
+              do: quote(do: inbound_delivery(do: ingress_tracking(:on)))
+          )
 
           actions do
             defaults [:read]
