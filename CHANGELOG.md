@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Refuse retirement of an unattached custody reference and roll back the owner
+  write; byte slots remain outside the registry during partial adoption.
+
 - Keep an issuing failure's original classification when cleanup also fails.
 
 - Contain custodian callback faults as classified outages, retry outbound

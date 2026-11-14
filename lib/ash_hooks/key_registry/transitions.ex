@@ -83,8 +83,13 @@ defmodule AshHooks.KeyRegistry.Transitions do
     with :ok <- Storage.check(registry, owner) do
       query = registry |> Storage.query() |> Ash.Query.filter(ref == ^ref and state == :attached)
 
-      with {:ok, _} <- cas(query, %{state: :retired, destroy_after: destroy_after}, opts[:tenant]),
-           do: :ok
+      with {:ok, rows} <-
+             cas(query, %{state: :retired, destroy_after: destroy_after}, opts[:tenant]) do
+        case rows do
+          [_] -> :ok
+          [] -> {:error, :key_not_attached}
+        end
+      end
     end
   end
 
@@ -154,7 +159,10 @@ defmodule AshHooks.KeyRegistry.Transitions do
   def holds_ref?(nil, _ref), do: false
 
   def holds_ref?(owner, ref),
-    do: Enum.any?(slots(owner.__struct__), fn {field, _kind} -> Map.get(owner, field) == ref end)
+    do:
+      Enum.any?(slots(owner.__struct__), fn {field, kind} ->
+        Map.get(owner, field) == ref and not is_nil(Map.get(owner, kind))
+      end)
 
   def owner_tenant(%owner{} = row) do
     case Info.multitenancy_attribute(owner) do

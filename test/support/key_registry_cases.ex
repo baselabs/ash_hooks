@@ -7,6 +7,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
   alias AshHooks.KeyRegistry.{Storage, Transitions}
   alias AshHooks.Test.{AnswerCustodian, CustodySigningCases, RegistryCustodian, RegistryOtherRepo}
   alias Spark.Dsl.Extension
+  require Ash.Query
   require Spark.Test
 
   @clock ~U[2026-11-14 12:00:00.000000Z]
@@ -36,6 +37,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
       :dynamic_repo_instances,
       :custodian_delegation,
       :attachment_guards,
+      :unattached_retirement,
       :storage_configuration,
       :unscoped_disposal,
       :configured_issue_timeout,
@@ -1360,6 +1362,22 @@ defmodule AshHooks.Test.KeyRegistryCases do
     do: KeyRegistry.sweep(ctx.registry, Keyword.merge([tenant: 17, now: @clock], opts))
 
   defp stored(ctx, row), do: Ash.get!(ctx.registry, row.ref, authorize?: false, tenant: 17)
+
+  def unattached_retirement(ctx) do
+    for state <- [:issued, :retired, :destroyed] do
+      {key, owner} = attached!(ctx, :previous)
+      query = ctx.registry |> Storage.query() |> Ash.Query.filter(ref == ^key.ref)
+      assert {:ok, [_]} = Transitions.cas(query, %{state: state}, 17)
+
+      assert {:error, _} =
+               transaction(ctx, fn ->
+                 AshHooks.Endpoint.expire_previous_secret(owner, tenant: 17, now: @clock)
+               end)
+
+      assert Ash.get!(ctx.endpoint, owner.id, tenant: 17, authorize?: false).previous_secret_ref ==
+               key.ref
+    end
+  end
 
   defp transaction(ctx, fun),
     do:
