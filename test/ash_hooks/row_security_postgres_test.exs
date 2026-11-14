@@ -46,6 +46,18 @@ defmodule AshHooks.RowSecurityPostgresTest do
   end
 
   for configuration <- [:primary, :split] do
+    for failure <- [:refusal, :read_error] do
+      @tag configuration: configuration
+      test "joined #{failure} preserves host writes with #{configuration} reads", context do
+        Cases.joined_phase_error(context, unquote(failure))
+      end
+    end
+
+    @tag configuration: configuration
+    test "a failed package write rolls back the host with #{configuration} reads", context do
+      Cases.joined_write_failure(context)
+    end
+
     @tag configuration: configuration
     test "driver refusal inside a host transaction with #{configuration} reads", context do
       Cases.driver_refusal(context)

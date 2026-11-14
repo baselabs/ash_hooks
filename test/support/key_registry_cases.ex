@@ -236,11 +236,13 @@ defmodule AshHooks.Test.KeyRegistryCases do
     assert_receive {:ready, _}, 5_000
     send(attach.pid, :go)
     send(timeout.pid, :go)
-    result = Task.await(attach)
+    assert {:ok, result} = Task.await(attach)
     assert {:ok, _} = Task.await(timeout)
 
-    attached? = match?({:ok, {:ok, _}}, result)
+    attached? = match?({:ok, _}, result)
     assert attached? or result == {:error, :key_issue_expired}
+    assert [owner] = Ash.read!(ctx.endpoint, authorize?: false, tenant: 17)
+    assert owner.secret_ref == row.ref
     assert stored(ctx, row).state in [:attached, :destroyed]
     assert stored(ctx, row).state == :attached == attached?
   end
@@ -602,9 +604,12 @@ defmodule AshHooks.Test.KeyRegistryCases do
     endpoint!(ctx, secret_ref: row.ref, secret_kind: @kind)
     assert :ok = Transitions.cleanup(ctx.endpoint, row.ref, tenant: 17, now: @clock)
 
-    assert {:error, :key_issue_expired} =
+    assert {:ok, :ok} =
              transaction(ctx, fn ->
-               Transitions.attach(ctx.endpoint, row.ref, tenant: 17)
+               assert {:error, :key_issue_expired} =
+                        Transitions.attach(ctx.endpoint, row.ref, tenant: 17)
+
+               :ok
              end)
 
     assert :ok = Transitions.cleanup(ctx.endpoint, row.ref, tenant: 17, now: @clock)
@@ -618,9 +623,12 @@ defmodule AshHooks.Test.KeyRegistryCases do
                before: DateTime.add(DateTime.utc_now(), 60)
              )
 
-    assert {:error, :key_issue_expired} =
+    assert {:ok, :ok} =
              transaction(ctx, fn ->
-               Transitions.attach(ctx.endpoint, row.ref, tenant: 17)
+               assert {:error, :key_issue_expired} =
+                        Transitions.attach(ctx.endpoint, row.ref, tenant: 17)
+
+               :ok
              end)
   end
 
@@ -829,13 +837,19 @@ defmodule AshHooks.Test.KeyRegistryCases do
       )
       |> Ash.create!(authorize?: false)
 
-    assert {:error, :tenancy_mismatch} =
+    assert {:ok, owner} =
              transaction(ctx, fn ->
-               endpoint!(ctx, secret_ref: invalid.ref, secret_kind: @kind)
-               Transitions.attach(ctx.endpoint, invalid.ref, tenant: 17)
+               owner = endpoint!(ctx, secret_ref: invalid.ref, secret_kind: @kind)
+
+               assert {:error, :tenancy_mismatch} =
+                        Transitions.attach(ctx.endpoint, invalid.ref, tenant: 17)
+
+               owner
              end)
 
-    assert Ash.read!(ctx.endpoint, authorize?: false, tenant: 17) == []
+    assert [persisted] = Ash.read!(ctx.endpoint, authorize?: false, tenant: 17)
+    assert persisted.id == owner.id
+    assert stored(ctx, invalid).state == :issued
     assert :ok = Transitions.cleanup(ctx.endpoint, invalid.ref, tenant: 17, now: @clock)
     assert stored(ctx, invalid).state == :retired
   end
@@ -1302,9 +1316,10 @@ defmodule AshHooks.Test.KeyRegistryCases do
     assert {:ok, _} = sweep(ctx, now: DateTime.add(@clock, 901))
     assert stored(ctx, row).state == :destroyed
     send(worker, :continue_attach)
-    assert {:error, :key_issue_expired} = Task.await(attach)
-    refute_receive {:attach_result, _}
-    assert Ash.read!(ctx.endpoint, authorize?: false, tenant: 17) == []
+    assert {:ok, {:attach_result, {:error, :key_issue_expired}}} = Task.await(attach)
+    assert_receive {:attach_result, {:error, :key_issue_expired}}
+    assert [owner] = Ash.read!(ctx.endpoint, authorize?: false, tenant: 17)
+    assert owner.secret_ref == row.ref
     assert stored(ctx, row).state == :destroyed
   end
 

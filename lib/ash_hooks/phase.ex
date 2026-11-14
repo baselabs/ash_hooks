@@ -22,19 +22,24 @@ defmodule AshHooks.Phase do
     joined? = Enum.any?(resources, &Ash.DataLayer.in_transaction?/1)
 
     case Ash.transact(resources, fn -> result(operation.(), joined?) end, tenant: tenant) do
-      {:ok, result} -> result
+      {:ok, result} -> unwrap(result, joined?)
       {:error, error} -> {:error, original_error(error)}
     end
   end
 
-  # Ash normalizes rollback reasons to Ash errors. Preserve the package's
-  # existing result vocabulary while retaining Ash's rollback semantics.
-  defp result({:error, _} = error, true), do: error
+  # Joined reads and refusals must return errors without aborting the host.
+  # Write actions retain their own rollback_on_error? and rollback throws.
+  defp result(result, true), do: {:ok, result}
 
+  # Ash normalizes rollback reasons to Ash errors. Preserve the package's
+  # existing result vocabulary for phases that own their transaction.
   defp result({:error, error}, false),
     do: {:error, UnknownError.exception(field: __MODULE__, value: error)}
 
   defp result(result, _joined?), do: result
+
+  defp unwrap({:ok, result}, true), do: result
+  defp unwrap(result, false), do: result
 
   defp original_error(%UnknownError{field: __MODULE__, value: error}), do: error
   defp original_error(error), do: error

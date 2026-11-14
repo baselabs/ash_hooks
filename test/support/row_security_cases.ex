@@ -1329,6 +1329,101 @@ defmodule AshHooks.Test.RowSecurityCases do
     changed
   end
 
+  def joined_phase_error(ctx, failure) do
+    for {tenant, endpoint} <- seed(ctx) do
+      assert {:ok, [first, second]} =
+               Ash.DataLayer.transaction(
+                 ctx.delivery,
+                 fn ->
+                   first = host_delivery(ctx, endpoint, tenant)
+                   assert_pre_write_error(ctx, tenant, failure)
+                   second = host_delivery(ctx, endpoint, tenant)
+                   [first.id, second.id]
+                 end,
+                 nil,
+                 %{type: :custom, tenant: tenant, metadata: %{}}
+               )
+
+      assert {:ok, %{records: rows}} = Delivery.list(ctx.delivery, tenant: tenant)
+      assert Enum.sort(Enum.map(rows, & &1.id)) == Enum.sort([first, second])
+      assert Enum.all?(rows, &(&1.tenant_id == tenant))
+    end
+  end
+
+  defp assert_pre_write_error(ctx, tenant, :refusal) do
+    assert {:error, :not_destroy_failed} =
+             AshHooks.KeyRegistry.rearm(ctx.registry, "missing", tenant: tenant)
+  end
+
+  defp assert_pre_write_error(ctx, tenant, :read_error) do
+    assert {:error, _error} =
+             AshHooks.Phase.run(ctx.delivery, tenant, fn query ->
+               query
+               |> Ash.Query.add_error("read refused")
+               |> Ash.read(authorize?: false, tenant: tenant)
+             end)
+  end
+
+  def joined_write_failure(ctx) do
+    for {tenant, endpoint} <- seed(ctx) do
+      failed_event = Ash.UUID.generate()
+      host_event = Ash.UUID.generate()
+
+      assert {:error, _error} =
+               Ash.DataLayer.transaction(
+                 ctx.delivery,
+                 fn ->
+                   host_delivery(ctx, endpoint, tenant, host_event)
+
+                   failing_package_write(ctx, endpoint, tenant, failed_event)
+
+                   :host_continued
+                 end,
+                 nil,
+                 %{type: :custom, tenant: tenant, metadata: %{}}
+               )
+
+      assert_receive {:written_events, events}
+      assert Enum.sort(events) == Enum.sort([host_event, failed_event])
+      assert {:ok, %{records: []}} = Delivery.list(ctx.delivery, tenant: tenant)
+    end
+  end
+
+  defp failing_package_write(ctx, endpoint, tenant, event_uuid) do
+    AshHooks.Phase.run(ctx.delivery, tenant, fn ->
+      ctx.delivery
+      |> Ash.Changeset.for_create(:dispatch, delivery_input(endpoint, event_uuid),
+        authorize?: false,
+        tenant: tenant
+      )
+      |> Ash.Changeset.after_action(fn _changeset, _row -> fail_after_write(ctx, tenant) end)
+      |> Ash.create(authorize?: false, rollback_on_error?: true)
+    end)
+  end
+
+  defp fail_after_write(ctx, tenant) do
+    {:ok, %{records: rows}} = Delivery.list(ctx.delivery, tenant: tenant)
+    send(self(), {:written_events, Enum.map(rows, & &1.event_uuid)})
+    {:error, "failure after package write"}
+  end
+
+  defp host_delivery(ctx, endpoint, tenant, event_uuid \\ Ash.UUID.generate()) do
+    Ash.create!(ctx.delivery, delivery_input(endpoint, event_uuid),
+      action: :dispatch,
+      authorize?: false,
+      tenant: tenant
+    )
+  end
+
+  defp delivery_input(endpoint, event_uuid) do
+    %{
+      event_uuid: event_uuid,
+      event_type: "event",
+      payload: "{}",
+      endpoint_id: endpoint.id
+    }
+  end
+
   def transaction_lifetime(ctx) do
     seeded = seed(ctx)
     parent = self()
