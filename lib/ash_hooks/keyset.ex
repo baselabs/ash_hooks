@@ -97,13 +97,22 @@ defmodule AshHooks.Keyset do
   # tampered id would surface as a query error instead of the named one
   defp cast_cursor_id(_resource, nil), do: {:ok, nil}
 
-  defp cast_cursor_id(resource, %{id: id} = cursor) do
-    attribute = Info.attribute(resource, :id)
+  defp cast_cursor_id(_resource, %{id: nil}), do: {:error, :invalid_cursor}
 
-    case Ash.Type.cast_input(attribute.type, id, attribute.constraints) do
-      {:ok, cast} when not is_nil(cast) -> {:ok, %{cursor | id: cast}}
+  # the cast runs on attacker-shaped input, and some types' casts raise on
+  # values they cannot represent (a float id given an integer too large for
+  # a float), so the cast is contained
+  defp cast_cursor_id(resource, %{id: id} = cursor) do
+    with %{type: type, constraints: constraints} <- Info.attribute(resource, :id),
+         {:ok, cast} when not is_nil(cast) <- Ash.Type.cast_input(type, id, constraints) do
+      {:ok, %{cursor | id: cast}}
+    else
       _invalid -> {:error, :invalid_cursor}
     end
+  rescue
+    _raised -> {:error, :invalid_cursor}
+  catch
+    _kind, _reason -> {:error, :invalid_cursor}
   end
 
   defp apply_cursor(query, nil, _time_field), do: query

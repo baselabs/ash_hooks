@@ -901,8 +901,8 @@ defmodule AshHooks.Delivery do
   `:deliveries` (the delivery resource, required), `:secret_resolver`
   (required, the driver contract), `:max_attempts` (default 1, so a test
   send reports one attempt's outcome; a higher value permits later retries
-  through the delivery runner or recovery, while `test_send/2` itself
-  performs one attempt),
+  through an explicit `run/2` call, while `test_send/2` itself invokes the
+  runner once),
   plus the driver passthroughs (`:http`, `:http_opts`,
   `:destination_policy`, `:ssrf_check`, `:tenant_aware_secrets`,
   `:attempts`, `:tenant`, `:now`). The endpoint must be live

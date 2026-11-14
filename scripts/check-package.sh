@@ -69,13 +69,18 @@ with tarfile.open(fileobj=io.BytesIO(content), mode='r:gz') as inner:
     # A link into the repository names the release tag when its file ships in
     # this package, and never a moving branch, so the text a reader installed
     # matches the source it links to.
-    repository = re.compile(r'https://github\.com/baselabs/ash_hooks/(?:blob|tree)/([^/\s)]+)/([^\s)#]*)')
+    # The ref must be a release tag (vMAJOR.MINOR.PATCH); the path is compared
+    # after dropping any query or fragment and decoding it.
+    repository = re.compile(r'https://github\.com/baselabs/ash_hooks/(?:blob|tree)/([^\s)<>"]+)')
+    release_tag = re.compile(r'v\d+\.\d+\.\d+')
     for member in inner.getmembers():
         if member.isfile() and member.name.endswith(('.md', '.livemd', '.ex', '.exs')):
             document = inner.extractfile(member).read().decode()
-            for ref, path in repository.findall(document):
-                assert ref.startswith('v'), f'repository link on a branch: {member.name} -> {ref}/{path}'
-                shipped = path.rstrip('/') in names or any(n.startswith(path.rstrip('/') + '/') for n in names)
+            for link in repository.findall(document):
+                ref, _, path = unquote(urlsplit(link).path).partition('/')
+                path = posixpath.normpath(path) if path else ''
+                assert release_tag.fullmatch(ref), f'repository link names {ref}, not a release tag: {member.name} -> {link}'
+                shipped = bool(path) and (path in names or any(n.startswith(path + '/') for n in names))
                 assert not shipped or ref == 'v' + sys.argv[2], f'repository link to a shipped file names {ref}, not v{sys.argv[2]}: {member.name} -> {path}'
     for member in inner.getmembers():
         path = pathlib.PurePosixPath(member.name)
