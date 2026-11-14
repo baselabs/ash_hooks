@@ -2011,8 +2011,11 @@ defmodule AshHooks.Delivery do
     ArgumentError -> {:error, :signing_failed}
   end
 
-  defp resolve_slot(_endpoint, field, nil, _config, _tenant) when field != :secret_ref,
-    do: {:ok, nil}
+  # an empty optional slot signs nothing; an empty current slot reaches the
+  # resolver and fails as :no_secret, as before custody
+  defp resolve_slot(_endpoint, field, ref, _config, _tenant)
+       when field != :secret_ref and ref in [nil, ""],
+       do: {:ok, nil}
 
   defp resolve_slot(%resource{} = endpoint, field, ref, config, tenant) do
     custodian = Extension.get_opt(resource, [:endpoint], :custodian)
@@ -2040,15 +2043,9 @@ defmodule AshHooks.Delivery do
         {:error, KeyKindMismatch.exception([])}
 
       true ->
-        resolve_byte_slot(field, ref, resolver, tenant, config[:tenant_aware_secrets] == true)
+        resolve(ref, resolver, tenant, config[:tenant_aware_secrets] == true)
     end
   end
-
-  defp resolve_byte_slot(:secret_ref, ref, resolver, tenant, tenant_aware?),
-    do: resolve(ref, resolver, tenant, tenant_aware?)
-
-  defp resolve_byte_slot(_field, ref, resolver, tenant, tenant_aware?),
-    do: resolve_opt(ref, resolver, tenant, tenant_aware?)
 
   defp previous_signing_ref(endpoint, slot, config) do
     fields = AshHooks.KeyLifecycle.fields(slot)
@@ -2102,11 +2099,6 @@ defmodule AshHooks.Delivery do
     :exit, _ -> {:error, {:secret_resolution, :invalid_resolver}}
     :throw, _ -> {:error, {:secret_resolution, :invalid_resolver}}
   end
-
-  defp resolve_opt(ref, resolver, tenant, tenant_aware?) when is_binary(ref) and ref != "",
-    do: resolve(ref, resolver, tenant, tenant_aware?)
-
-  defp resolve_opt(_nil, _resolver, _tenant, _tenant_aware?), do: {:ok, nil}
 
   # the resolved binary's prefix selects the SW option slot; unprefixed
   # material signs symmetric (v1), per the references' Signing contract
