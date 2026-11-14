@@ -248,18 +248,6 @@ defmodule AshHooks.TestEventTest do
     end
   end
 
-  defp config(endpoint, overrides) do
-    Keyword.merge(
-      [
-        deliveries: Delivery,
-        secret_resolver: fn "te-main" -> {:ok, @secret} end,
-        destination_policy: fn _url, _ctx -> :allow end,
-        http_opts: [validate_destination: false]
-      ],
-      overrides
-    )
-  end
-
   test "a test send delivers a signed synthetic event outside subscriptions" do
     endpoint = receiver_endpoint!()
 
@@ -319,7 +307,7 @@ defmodule AshHooks.TestEventTest do
   test "each test send is a NEW event (fresh ids, no dedup suppression)" do
     endpoint = receiver_endpoint!(2)
 
-    for n <- 1..2 do
+    for _send <- 1..2 do
       assert {:ok, _} =
                AshHooks.Delivery.test_send(endpoint,
                  type: "repeat.me",

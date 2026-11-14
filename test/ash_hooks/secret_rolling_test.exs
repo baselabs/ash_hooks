@@ -92,7 +92,6 @@ defmodule AshHooks.SecretRollingTest do
   @payload Jason.encode!(%{"order" => 1})
   @current "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))
   @fresh "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))
-  @later "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))
 
   setup_all do
     Repo.query!("""
@@ -229,7 +228,6 @@ defmodule AshHooks.SecretRollingTest do
     {endpoint, ref} = receiver_endpoint!(self())
     current_ref = ref
 
-    secrets = %{current_ref => @current, "ref-rotated" => @fresh}
     old = %{current_ref => @current}
     both = Map.merge(old, %{"ref-rotated" => @fresh})
 

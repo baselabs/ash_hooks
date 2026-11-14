@@ -2,7 +2,10 @@ defmodule AshHooks.InboundLegacyAdoptionTest do
   defmodule Repo do
     use AshSqlite.Repo, otp_app: :ash_hooks
 
+    @impl true
     def write_transactions?, do: true
+    @impl true
+    def min_sqlite_version, do: %Version{major: 3, minor: 54, patch: 1}
   end
 
   defmodule Ledger do

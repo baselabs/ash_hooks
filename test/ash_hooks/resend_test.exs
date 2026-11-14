@@ -220,7 +220,7 @@ defmodule AshHooks.ResendTest do
     )
   end
 
-  defp run_row(row, overrides \\ []) do
+  defp run_row(row, overrides) do
     DeliveryRuntime.run(
       %{"endpoint_id" => row.endpoint_id, "event_uuid" => row.event_uuid},
       Keyword.put(config(overrides), :ssrf_check, fn _url -> true end)

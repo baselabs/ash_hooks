@@ -83,8 +83,6 @@ defmodule AshHooks.EndpointHealthTest do
 
   use ExUnit.Case, async: false
 
-  require Ash.Query
-
   alias AshHooks.Test.Repo
 
   @endpoints "health_endpoints"

@@ -583,7 +583,7 @@ defmodule AshHooks.ReconcileTest do
       [past, "rec-foreign-claim"]
     )
 
-    row = row_state!("rec-foreign-claim", "org_a")
+    row_state!("rec-foreign-claim", "org_a")
 
     # The enqueuer simulates a racing re-claimant: it stamps a FRESH foreign
     # claim on the row inside the callback, before our release fires.
