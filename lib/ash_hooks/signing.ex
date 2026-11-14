@@ -54,7 +54,7 @@ defmodule AshHooks.Signing do
              is_binary(payload) and is_binary(whsec) do
     if String.contains?(msg_id, ".") do
       raise ArgumentError,
-            "msg_id must not contain \".\" — it is the canonical-string delimiter"
+            "msg_id must not contain \".\", the canonical-string delimiter"
     end
 
     secret = decode_symmetric_secret!(whsec, 24..64)
@@ -72,7 +72,7 @@ defmodule AshHooks.Signing do
              is_binary(payload) and is_binary(whsk) do
     if String.contains?(msg_id, ".") do
       raise ArgumentError,
-            "msg_id must not contain \".\" — it is the canonical-string delimiter"
+            "msg_id must not contain \".\", the canonical-string delimiter"
     end
 
     seed = decode_asymmetric_secret!(whsk, @priv_prefix)
@@ -217,7 +217,7 @@ defmodule AshHooks.Signing do
 
   # —— Generation ———————————————————————————————————————————————————
 
-  @doc "A fresh `whsec_`-prefixed secret (24–64 decoded bytes, spec band)."
+  @doc "A fresh `whsec_`-prefixed secret (24 to 64 decoded bytes, spec band)."
   @spec generate_secret(pos_integer()) :: String.t()
   def generate_secret(bytes \\ 32) when bytes in 24..64 do
     @secret_prefix <> Base.encode64(:crypto.strong_rand_bytes(bytes))
@@ -331,7 +331,7 @@ defmodule AshHooks.Signing do
     unless byte_size(secret) in bytes_range do
       raise ArgumentError,
             "symmetric secret must decode to #{inspect(bytes_range)} bytes " <>
-              "(whsec_ base64) — got #{byte_size(secret)}"
+              "(whsec_ base64), got #{byte_size(secret)}"
     end
 
     secret

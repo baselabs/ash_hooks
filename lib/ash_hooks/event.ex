@@ -92,7 +92,7 @@ defmodule AshHooks.Event do
         "event id must not be empty"
 
       String.contains?(id, ".") ->
-        "event id must not contain a dot (\".\") — it is the canonical-string delimiter"
+        "event id must not contain a dot (\".\"), the canonical-string delimiter"
 
       byte_size(id) > 255 ->
         "event id must be at most 255 bytes (the ledger column bound)"
@@ -139,10 +139,10 @@ defmodule AshHooks.Event do
     do: {:ok, payload}
 
   defp cast_payload(%{payload: _other}),
-    do: {:error, "event payload must be a non-empty binary — the exact bytes to sign"}
+    do: {:error, "event payload must be a non-empty binary: the exact bytes to sign"}
 
   defp cast_payload(_attrs),
-    do: {:error, "event payload must be a non-empty binary — the exact bytes to sign"}
+    do: {:error, "event payload must be a non-empty binary: the exact bytes to sign"}
 
   defp cast_metadata(%{metadata: metadata}) when is_map(metadata), do: {:ok, metadata}
   defp cast_metadata(%{metadata: _other}), do: {:error, "event metadata must be a map"}

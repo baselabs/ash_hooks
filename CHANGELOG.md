@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+
+- Error messages, raised messages and module documentation no longer use em or
+  en dashes. Each sentence is rewritten in plain punctuation with its meaning
+  unchanged, and a test keeps every string in `lib` free of them.
+
 ## 3.1.0 (November 13, 2026)
 
 Inbound webhooks get an HTTP entry point: `AshHooks.Plug` takes a request from
@@ -902,7 +910,7 @@ with `mix hex.audit` running in CI.
   the compiled `re_pattern`, which is a reference on OTP 28; Elixir
   < 1.19 cannot escape references when injecting an attribute into a
   function body, so the package did not compile for consumers on
-  1.17–1.19 × OTP 28 (a combination the old window admitted). The
+  1.17 to 1.19 × OTP 28 (a combination the old window admitted). The
   patterns are now built by a `defp` (identical regexes, flags, and
   order); with the floor now at 1.20 that combination is out-of-window,
   and the `defp` keeps the escape class dead if the floor ever drops

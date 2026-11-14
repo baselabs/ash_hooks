@@ -204,25 +204,25 @@ defmodule AshHooks.Worker do
     if Mix.env() != :test and literal[:validate_destination] == false do
       raise ArgumentError,
             "AshHooks.Worker :http_opts validate_destination: false is the test seam for " <>
-              "loopback listeners — the driver's send-time check would be the only remaining " <>
+              "loopback listeners, which would leave the driver's send-time check as the only remaining " <>
               "layer. Refusing to compile it outside :test"
     end
   end
 
   defp redactor_error(m, f) do
     "AshHooks.Worker :snippet_redactor must be {module, function} " <>
-      "(a 1-arity fn is accepted in the delivery config) — got {#{inspect(m)}, #{inspect(f)}}"
+      "(a 1-arity fn is accepted in the delivery config); got {#{inspect(m)}, #{inspect(f)}}"
   end
 
   defp runtime_config_error(other) do
     "AshHooks.Worker :runtime_config must be {module, function} " <>
-      "(f receives the job args and returns a keyword of timing overrides) — " <>
+      "(f receives the job args and returns a keyword of timing overrides); " <>
       "got #{inspect(other)}"
   end
 
   defp destination_policy_error(other) do
     "AshHooks.Worker :destination_policy must be {module, function} " <>
-      "(f receives the URL and a context map; see AshHooks.DestinationPolicy) — " <>
+      "(f receives the URL and a context map; see AshHooks.DestinationPolicy); " <>
       "got #{inspect(other)}"
   end
 
@@ -618,7 +618,7 @@ defmodule AshHooks.Worker do
         other ->
           raise ArgumentError,
                 "AshHooks.Worker :snippet_redactor must be {module, function} " <>
-                  "(a 1-arity fn is accepted in the delivery config) — got #{inspect(other)}"
+                  "(a 1-arity fn is accepted in the delivery config); got #{inspect(other)}"
       end
 
     delivery_config =
@@ -689,7 +689,7 @@ defmodule AshHooks.Worker do
     quote do
       unless Code.ensure_loaded?(Oban) do
         raise ArgumentError,
-              "AshHooks.Worker requires Oban on the host — add {:oban, \"~> 2.20\"} " <>
+              "AshHooks.Worker requires Oban on the host; add {:oban, \"~> 2.20\"} " <>
                 "to the app's deps (ADR-0004: the package itself stays Oban-free; " <>
                 "this module compiles the Oban beam only where Oban exists)"
       end

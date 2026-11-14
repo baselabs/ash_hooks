@@ -185,7 +185,7 @@ defmodule AshHooks.Dispatcher do
       {:error,
        UnknownError.exception(
          error:
-           "event type #{inspect(type)} does not match the outbound #{inspect(name)} declaration — dispatch through the declaration named for the type"
+           "event type #{inspect(type)} does not match the outbound #{inspect(name)} declaration; dispatch through the declaration named for the type"
        )}
     end
   end
@@ -506,7 +506,7 @@ defmodule AshHooks.Dispatcher do
         {:error,
          UnknownError.exception(
            error:
-             "#{inspect(subs_mod)} declares no subscription.endpoint_resource — the dispatcher cannot resolve endpoints"
+             "#{inspect(subs_mod)} declares no subscription.endpoint_resource, so the dispatcher cannot resolve endpoints"
          )}
 
       module when is_atom(module) ->
@@ -716,7 +716,7 @@ defmodule AshHooks.Dispatcher do
        UnknownError.exception(
          error:
            inspect(deliv_mod) <>
-             " has no :inserted_at — add `timestamps()` to its attributes " <>
+             " has no :inserted_at; add `timestamps()` to its attributes " <>
              "(and the columns to its migration) to use the retention hooks"
        )}
     end
@@ -1017,7 +1017,7 @@ defmodule AshHooks.Dispatcher do
         {:error,
          UnknownError.exception(
            error:
-             "no outbound #{inspect(name)} declaration on #{inspect(resource)} — add one under `webhooks`"
+             "no outbound #{inspect(name)} declaration on #{inspect(resource)}; add one under `webhooks`"
          )}
 
       entity ->
@@ -1042,7 +1042,7 @@ defmodule AshHooks.Dispatcher do
     do:
       {:error,
        UnknownError.exception(
-         error: "event must be an %AshHooks.Event{} — build one with AshHooks.Event.new/1"
+         error: "event must be an %AshHooks.Event{}; build one with AshHooks.Event.new/1"
        )}
 
   defp check_event_field(value, name, predicate) do
@@ -1052,7 +1052,7 @@ defmodule AshHooks.Dispatcher do
       {:error,
        UnknownError.exception(
          error:
-           "event #{name} is invalid — build events through AshHooks.Event.new/1 (raw struct construction bypasses its validation)"
+           "event #{name} is invalid; build events through AshHooks.Event.new/1 (raw struct construction bypasses its validation)"
        )}
     end
   end
@@ -1073,7 +1073,7 @@ defmodule AshHooks.Dispatcher do
         {:error,
          UnknownError.exception(
            error:
-             "the outbound #{inspect(entity.name)} declaration is missing its #{inspect(key)} resource module — set `#{key}(Module)` under `outbound`"
+             "the outbound #{inspect(entity.name)} declaration is missing its #{inspect(key)} resource module; set `#{key}(Module)` under `outbound`"
          )}
 
       module when is_atom(module) ->

@@ -24,7 +24,7 @@ defmodule AshHooks.Endpoint.Url do
       {:ok, value}
     else
       {:error,
-       "must be an http(s) webhook URL whose literal host is not a private/loopback/link-local/metadata address — not a safe webhook destination (ADR-0005)"}
+       "is not a safe webhook destination: it must be an http(s) URL whose literal host is not a private, loopback, link-local or metadata address (ADR-0005)"}
     end
   end
 

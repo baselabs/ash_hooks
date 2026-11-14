@@ -68,7 +68,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
               module: resource,
               path: [:inbound_delivery, :scope_identity],
               message:
-                "scope_identity slot #{inspect(slot)} collides with an injected ledger field — scope slots extend the identity, they cannot replace it"
+                "scope_identity slot #{inspect(slot)} collides with an injected ledger field; scope slots extend the identity and cannot replace it"
             )}}
 
         is_nil(attribute) ->
@@ -78,7 +78,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
               module: resource,
               path: [:inbound_delivery, :scope_identity],
               message:
-                "scope_identity slot #{inspect(slot)} is not an attribute on this resource — declare it under `attributes` (it participates in the unique_ingest identity)"
+                "scope_identity slot #{inspect(slot)} is not an attribute on this resource; declare it under `attributes` (it participates in the unique_ingest identity)"
             )}}
 
         attribute.allow_nil? ->
@@ -88,7 +88,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
               module: resource,
               path: [:inbound_delivery, :scope_identity],
               message:
-                "scope_identity slot #{inspect(slot)} must be allow_nil?: false — a nullable slot makes nil scope values distinct on SQL unique indexes and silently breaks redelivery dedup"
+                "scope_identity slot #{inspect(slot)} must be allow_nil?: false; a nullable slot makes nil scope values distinct on SQL unique indexes and silently breaks redelivery dedup"
             )}}
 
         true ->
@@ -164,7 +164,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
            module: resource,
            path: [:inbound_delivery],
            message:
-             "primary key components #{inspect(names)} are unobtainable during ingest — " <>
+             "primary key components #{inspect(names)} are unobtainable during ingest; " <>
                "give each component a default/data-layer generator or declare it as a non-null scope_identity input"
          )}
     end

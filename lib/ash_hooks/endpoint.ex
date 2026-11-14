@@ -281,7 +281,7 @@ defmodule AshHooks.Endpoint do
     UnknownError.exception(
       error:
         inspect(resource) <>
-          " does not carry the key-lifecycle columns (key_lifecycle :off) — " <>
+          " does not carry the key-lifecycle columns (key_lifecycle :off); " <>
           "declare `key_lifecycle :on` under `endpoint` and migrate the six " <>
           "columns to roll signing secrets"
     )
@@ -435,7 +435,7 @@ defmodule AshHooks.Endpoint do
     do: {:ok, share}
 
   def validate_share(_invalid),
-    do: {:error, "must be a number in (0, 1] — a share of the window's attempts"}
+    do: {:error, "must be a number in (0, 1]: a share of the window's attempts"}
 
   @doc """
   The resolved auto-disable policy for an endpoint resource, or nil when

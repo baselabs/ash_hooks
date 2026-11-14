@@ -148,7 +148,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
            module: resource,
            path: [:endpoint, :status_attribute],
            message:
-             "status_attribute #{inspect(status_attribute)} collides with the primary key or an injected endpoint field — the switch cannot replace the pk, the url, or a secret ref"
+             "status_attribute #{inspect(status_attribute)} collides with the primary key or an injected endpoint field; the switch cannot replace the pk, the url, or a secret ref"
          )}
 
       not Map.has_key?(attributes, status_attribute) ->
@@ -162,7 +162,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
            module: resource,
            path: [:endpoint, :status_attribute],
            message:
-             "status_attribute #{inspect(status_attribute)} is not an attribute declared on this resource — declare it under your own `attributes` block (it is the durable enable/disable switch, H4)"
+             "status_attribute #{inspect(status_attribute)} is not an attribute declared on this resource; declare it under your own `attributes` block (it is the durable enable/disable switch, H4)"
          )}
 
       Transformer.fetch_option(dsl_state, [:endpoint], :enabled_values) == :error or
@@ -176,7 +176,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
            module: resource,
            path: [:endpoint],
            message:
-             "status_attribute #{inspect(status_attribute)} requires explicit enabled_values and disabled_value — a defaulted mapping silently matches no row value and delivers nothing"
+             "status_attribute #{inspect(status_attribute)} requires explicit enabled_values and disabled_value; a defaulted mapping silently matches no row value and delivers nothing"
          )}
 
       true ->

@@ -92,7 +92,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
          module: resource,
          path: [:outbound_delivery, :payload_attribute],
          message:
-           "payload_attribute #{inspect(payload_attribute)} collides with an injected ledger field — the exact-bytes column cannot replace an identity or machine field"
+           "payload_attribute #{inspect(payload_attribute)} collides with an injected ledger field; the exact-bytes column cannot replace an identity or machine field"
        )}
     else
       {:ok, payload_attribute}
@@ -166,7 +166,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
            module: resource,
            path: [:outbound_delivery],
            message:
-             "primary key components #{inspect(names)} are unobtainable during dispatch — " <>
+             "primary key components #{inspect(names)} are unobtainable during dispatch; " <>
                "give each component a default/data-layer generator or use a writable field supplied by the :dispatch action"
          )}
     end

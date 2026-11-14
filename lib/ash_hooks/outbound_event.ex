@@ -64,7 +64,7 @@ defmodule AshHooks.OutboundEvent do
        UnknownError.exception(
          error:
            inspect(resource) <>
-             " has no :inserted_at — add `timestamps()` to its attributes " <>
+             " has no :inserted_at; add `timestamps()` to its attributes " <>
              "(and the columns to its migration) to use the event log"
        )}
     end

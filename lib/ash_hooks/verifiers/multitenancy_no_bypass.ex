@@ -37,7 +37,7 @@ defmodule AshHooks.Verifiers.MultitenancyNoBypass do
             path: [:actions, hd(bypassed).name],
             message:
               "a multitenant resource must not mark actions " <>
-                "`multitenancy :bypass` or `:allow_global` — they read and write " <>
+                "`multitenancy :bypass` or `:allow_global`, which read and write " <>
                 "globally beside tenant-scoped ones (the tenancy contract, ADR-0011): " <>
                 inspect(Enum.map(bypassed, & &1.name))
       end
