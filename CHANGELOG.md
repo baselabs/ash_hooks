@@ -4,15 +4,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
-
-### Fixed
-
-- Error messages, raised messages and module documentation no longer use em or
-  en dashes. Each sentence is rewritten in plain punctuation with its meaning
-  unchanged, and a test keeps every string in `lib` free of them.
-
-## 3.1.0 (November 13, 2026)
+## 3.1.0 (November 14, 2026)
 
 Inbound webhooks get an HTTP entry point: `AshHooks.Plug` takes a request from
 the router to the ledger and answers it, with no controller code. The minimum
@@ -61,6 +53,7 @@ change; see [UPGRADING.md](UPGRADING.md).
 - A verified body that did not decode to a map or list could be rebuilt from its empty placeholder, handled, and marked processed. It is now recorded permanently malformed when written and never handled. Duplicate deliveries still drive the surviving row's stored payload.
 - `AshHooks.Delivery.list/2`, `AshHooks.OutboundAttempt.list/2`, `AshHooks.Ingress.list/2`, and `AshHooks.OutboundEvent.list/2` raised on a well-formed cursor whose time was not a string, and returned a query error for a cursor id the resource's id type cannot cast. Both now return `{:error, :invalid_cursor}`.
 - `use AshHooks.Worker` accepted a function literal for `:transport`, which reached the runtime as quoted syntax, so every endpoint silently kept the HTTP adapter. The worker now refuses at compile time any `:transport` other than `nil` or `{module, function}`, and a function literal for `:delivery_headers` or `:certificate_pin`. The direct delivery config still accepts functions.
+- Error messages, raised messages, module documentation and code comments no longer use em or en dashes. Each sentence is rewritten in plain punctuation with its meaning unchanged, and a test keeps every shipped document and Elixir source file free of them.
 - Event-log terminal replay forwards its tenant to resend.
 - Missing-row event-log replay binds the declaration and enqueue route, stores the requester, and enqueues the created delivery and event.
 - Health sweeps count and emit disable telemetry only for successful writes.
