@@ -26,6 +26,11 @@ defmodule AshHooks.Provider.Hmac do
       The third argument may also be a list of current/overlap keys. Empty
       keys never verify. Ingress's `previous_secret` source is another option.
 
+  Keys may also be `AshHooks.Custody.Key` values, alone or mixed with byte keys.
+  The result is `AshHooks.Provider.Signature.hmac/4`'s: a key that verifies
+  authenticates the request; otherwise a custody failure (an unavailable,
+  unknown or wrong-kind key) is returned ahead of a MAC mismatch.
+
   Comparisons are constant time behind an equal-length guard. The verifier
   keeps no state and never resolves network keys. Malformed inputs and callback
   failures return an error without exposing their contents.
@@ -49,8 +54,13 @@ defmodule AshHooks.Provider.Hmac do
   def verify_signature(body, ctx, secret), do: verify_signature(body, ctx, secret, [])
 
   @doc "Verifies using the host's explicit emitter contract and overlap keys."
-  @spec verify_signature(binary(), map(), binary() | [binary()], keyword()) ::
-          :ok | {:error, :invalid_signature | :no_webhook_secret | :stale_timestamp}
+  @spec verify_signature(
+          binary(),
+          map(),
+          binary() | AshHooks.Custody.Key.t() | [binary() | AshHooks.Custody.Key.t()],
+          keyword()
+        ) ::
+          :ok | {:error, :invalid_signature | :no_webhook_secret | :stale_timestamp | struct()}
   def verify_signature(body, ctx, secret, opts) do
     with true <- is_binary(body) and is_map(ctx) and Keyword.keyword?(opts),
          {:ok, digest} <- digest(Keyword.get(opts, :algorithm, :sha256)),
@@ -58,7 +68,7 @@ defmodule AshHooks.Provider.Hmac do
          {:ok, secrets} <- secrets(secret, Keyword.get(opts, :previous_secrets, [])),
          signature when is_binary(signature) <- signature(ctx, opts),
          {:ok, input} <- input(body, ctx, opts),
-         true <- matches?(input, signature, secrets, digest, encoding) do
+         :ok <- Signature.hmac(input, signature, secrets, digest: digest, encoding: encoding) do
       timestamp_check(ctx, opts)
     else
       {:error, _} = error -> error
@@ -77,11 +87,14 @@ defmodule AshHooks.Provider.Hmac do
   defp digest(_), do: {:error, :invalid_signature}
 
   defp secrets(current, previous) when is_list(previous) do
-    keys = Enum.filter(List.wrap(current) ++ previous, &(is_binary(&1) and &1 != ""))
+    keys = Enum.filter(List.wrap(current) ++ previous, &key?/1)
     if keys == [], do: {:error, :no_webhook_secret}, else: {:ok, Enum.uniq(keys)}
   end
 
   defp secrets(_, _), do: {:error, :invalid_signature}
+
+  defp key?(%AshHooks.Custody.Key{}), do: true
+  defp key?(key), do: is_binary(key) and key != ""
 
   defp signature(ctx, opts) do
     case Keyword.fetch(opts, :header) do
@@ -109,10 +122,6 @@ defmodule AshHooks.Provider.Hmac do
       timestamp when is_binary(timestamp) -> timestamp <> "." <> body
       _ -> nil
     end
-  end
-
-  defp matches?(input, signature, keys, digest, encoding) do
-    Signature.hmac(input, signature, keys, digest: digest, encoding: encoding) == :ok
   end
 
   defp timestamp_check(ctx, opts) do

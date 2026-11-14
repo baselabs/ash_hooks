@@ -124,7 +124,7 @@ defmodule AshHooks.Test.CustodySigningCases do
   alias AshHooks.Errors.Unknown.{KeyUnavailable, UnknownError}
   alias AshHooks.KeyRegistry.Transitions
   alias AshHooks.Legacy
-  alias AshHooks.Provider.{Scheme, Signature}
+  alias AshHooks.Provider.{Hmac, Scheme, Signature}
   alias AshHooks.Signing
   alias AshHooks.Test.{AnswerCustodian, CustodyHmacProvider, KeyRegistryCases, RealReceiver}
   @compile {:no_warn_undefined, [AshHooks.Plug, Plug.Conn, Plug.Test]}
@@ -200,6 +200,17 @@ defmodule AshHooks.Test.CustodySigningCases do
                )
     end
 
+    hex = Base.encode16(mac, case: :lower)
+
+    for keys <- [key, [other, key], ["wrong", key], [sender, "wrong"]] do
+      assert :ok = Hmac.verify_signature(@body, %{signature: hex}, keys)
+    end
+
+    assert :ok = Hmac.verify_signature(@body, %{signature: hex}, other, previous_secrets: [key])
+
+    assert {:error, %InvalidSignature{}} =
+             Hmac.verify_signature(@body, %{signature: hex}, [other, "wrong"])
+
     assert :ok =
              Scheme.verify(
                @body,
@@ -251,9 +262,21 @@ defmodule AshHooks.Test.CustodySigningCases do
     headers = Signing.headers(id, timestamp, @body, key)
     assert headers["webhook-signature"] == expected
 
+    flush_custody_verifies()
     seed = :crypto.strong_rand_bytes(32)
     ed = key!(ctx, {:standard_webhooks, :v1a}, seed)
     {public, _} = :crypto.generate_key(:eddsa, :ed25519, seed)
+    ed_signature = Base.encode64(:crypto.sign(:eddsa, :none, @body, [seed, :ed25519]))
+    assert :ok = Signature.ed25519(@body, ed_signature, [key, public])
+    {stranger, _} = :crypto.generate_key(:eddsa, :ed25519)
+
+    for keys <- [ed, [key, stranger], [stranger, key]] do
+      assert {:error, %KeyKindMismatch{}} = Signature.ed25519(@body, ed_signature, keys)
+    end
+
+    assert {:error, %KeyKindMismatch{}} = Signature.rsa(@body, ed_signature, key)
+    assert {:error, :invalid_signature} = Signature.ed25519(@body, ed_signature, stranger)
+    refute_received {:custody_verify, _, _, _}
     headers = Signing.headers(id, timestamp, @body, whsec: key, previous_whsk: ed)
     assert {:ok, _} = Signing.verify(@body, headers, "whpk_" <> Base.encode64(public))
     assert {:ok, _} = Signing.verify(@body, headers, "whsec_" <> Base.encode64(material))
@@ -303,6 +326,11 @@ defmodule AshHooks.Test.CustodySigningCases do
       assert error.__struct__ == error_module
       assert {:error, error} = Signature.hmac(@body, "00", key)
       assert error.__struct__ == error_module
+
+      for keys <- [key, [key, "byte"], ["byte", key]] do
+        assert {:error, error} = Hmac.verify_signature(@body, %{signature: "00"}, keys)
+        assert error.__struct__ == error_module
+      end
 
       assert {:error, error} =
                Scheme.verify(@body, %{headers: %{"x-signature" => "00"}}, key,
@@ -844,6 +872,14 @@ defmodule AshHooks.Test.CustodySigningCases do
 
   defp headers(request),
     do: Map.new(request["headers"], &{String.downcase(&1["name"]), &1["value"]})
+
+  defp flush_custody_verifies do
+    receive do
+      {:custody_verify, _, _, _} -> flush_custody_verifies()
+    after
+      0 -> :ok
+    end
+  end
 
   defp mutate_last(mac) do
     size = byte_size(mac) - 1

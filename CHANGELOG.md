@@ -88,6 +88,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   key or availability failure (500 or 503 from `AshHooks.Plug`), never as a
   forged request. Request failures such as a stale timestamp still report the
   current key's result.
+- Every verifier that tries several keys reports the same ranked result.
+  `AshHooks.Provider.Hmac.verify_signature/4` accepts custody keys, alone or
+  mixed with byte keys, and returns a custody failure ahead of a MAC mismatch
+  instead of reducing it to `:invalid_signature`. An `AshHooks.Custody.Key` in
+  an RSA, ECDSA or Ed25519 key list reports `KeyKindMismatch` unless another
+  key verifies, instead of `InvalidSignature`.
 - Run every shipped documentation code block or state why it cannot run in
   the documentation gate. Check consumer formatting for Elixir examples,
   including module documentation, DSL references, and Livebook cells.

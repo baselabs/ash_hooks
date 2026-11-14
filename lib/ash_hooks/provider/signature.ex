@@ -21,6 +21,10 @@ defmodule AshHooks.Provider.Signature do
   one PUBLIC KEY, RSA PUBLIC KEY, or CERTIFICATE. A certificate is only a public
   key container pinned by the host: chain, expiry, and revocation are not checked.
   Ed25519 also accepts a raw 32-byte public key. Key types must match the algorithm.
+  Asymmetric verification never goes through custody: an `AshHooks.Custody.Key`
+  in an RSA, ECDSA or Ed25519 key list returns
+  `AshHooks.Errors.Invalid.KeyKindMismatch` unless another key verifies, ranked
+  as HMAC ranks a rotation list.
   Keys are never fetched from request headers, tokens, or URLs.
   """
   alias AshHooks.Custody
@@ -239,13 +243,16 @@ defmodule AshHooks.Provider.Signature do
          true <- is_binary(input) and Keyword.keyword?(opts),
          {:ok, bytes} <- decode(signature, Keyword.get(opts, :encoding, :base64)) do
       keys
-      |> Enum.any?(&(asymmetric_match(&1, type, bytes, verifier) == :ok))
-      |> result()
+      |> Enum.map(&asymmetric_match(&1, type, bytes, verifier))
+      |> verification_result()
     else
       {:error, _} = error -> error
       _ -> invalid()
     end
   end
+
+  defp asymmetric_match(%CustodyKey{}, _type, _bytes, _verifier),
+    do: AshHooks.Errors.from_custody_result({:error, :kind_mismatch})
 
   defp asymmetric_match(key, type, bytes, verifier) do
     with {:ok, key} <- Key.decode(key, type), do: result(verifier.(bytes, key))
