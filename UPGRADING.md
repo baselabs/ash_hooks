@@ -276,6 +276,7 @@ The Ash floor rises from 3.34.3 to 3.37.2, because three published advisories
 affect Ash releases the old floor admitted (EEF-CVE-2026-101028, -114214 and
 -96581). If your lock holds Ash below 3.37.2, update Ash first:
 
+<!-- tested: upgrade-ash-dependency; not-run: Host application upgrade; changes the adopter's dependency lock and requires its project configuration. -->
 ```sh
 mix deps.update ash
 ```
@@ -682,10 +683,17 @@ plan every partition, and retain each audit before applying:
 <!-- tested: upgrade-adoption-in-application -->
 ```elixir
 opts = [tenant: tenant, scope: %{account_id: account_id}]
-{:ok, plan} = AshHooks.Ingress.plan_legacy_identity_adoption(MyApp.InboundLedger, :existing_source, opts)
+
+{:ok, plan} =
+  AshHooks.Ingress.plan_legacy_identity_adoption(MyApp.InboundLedger, :existing_source, opts)
+
 # Review plan.audit; resolve every item in plan.unresolved and plan.conflicts.
 {:ok, applied} =
-  AshHooks.Ingress.adopt_legacy_identity(MyApp.InboundLedger, :existing_source, Keyword.put(opts, :quiesced?, true))
+  AshHooks.Ingress.adopt_legacy_identity(
+    MyApp.InboundLedger,
+    :existing_source,
+    Keyword.put(opts, :quiesced?, true)
+  )
 ```
 
 Within a canonical group the representative is processed first, then recoverable,

@@ -48,7 +48,10 @@ defmodule AshHooks.MixProject do
       # on a fresh PLT, CI 2026-10-05).
       # Shared test cases run as ordinary functions so coverage sees their code.
       # Their assertions and cleanup callbacks require ExUnit in the test PLT.
-      dialyzer: [plt_add_apps: [:mix, :ash_sqlite, :ash_postgres, :ecto_sql, :ex_unit]],
+      # The documentation gate uses ExDoc's Markdown parser directly.
+      dialyzer: [
+        plt_add_apps: [:mix, :ash_sqlite, :ash_postgres, :ecto_sql, :ex_unit, :earmark_parser]
+      ],
       # Require 100% in Mix's declared coverage surface. ignore_modules
       # excludes entire modules, not individual lines: generated Spark
       # entities, named test fixtures, three Ash types, and the installer.
@@ -250,12 +253,12 @@ defmodule AshHooks.MixProject do
       # the DSL references in documentation/dsls.
       "spark.generate": [
         "spark.formatter --extensions #{@spark_extensions}",
-        "spark.cheat_sheets --extensions #{@spark_extensions}"
+        "run --no-start scripts/generate-dsl-docs.exs #{@spark_extensions}"
       ],
       # Fails when either generated file drifts from the DSL.
       "spark.check": [
         "spark.formatter --extensions #{@spark_extensions} --check",
-        "spark.cheat_sheets --extensions #{@spark_extensions} --check"
+        "run --no-start scripts/generate-dsl-docs.exs #{@spark_extensions} --check"
       ],
       # The landing loop (AGENTS.md, Build and test): every whole-tree gate,
       # no test suite and no Dialyzer.

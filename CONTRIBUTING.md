@@ -15,12 +15,14 @@ The commands below use its development configuration, tests, and release scripts
 Set Ash's required string-length counting mode before compiling host resources. The test
 application uses:
 
+<!-- tested: contributing-string-config -->
 ```elixir
 config :ash, default_string_length_count: :codepoints
 ```
 
 Install dependencies and run the fast suite:
 
+<!-- tested: contributing-setup; not-run: Maintainer checkout setup; installs dependencies and runs the full suite, which includes this gate. -->
 ```sh
 mix deps.get
 mix compile --warnings-as-errors
@@ -62,12 +64,14 @@ Run focused checks while developing. Before every push, run the whole-tree gates
 command: the format check, compilation with warnings as errors (test support included),
 Credo, the generated DSL documentation check, the documentation build, the Hex archive check, and the documentation's mounting examples:
 
+<!-- tested: contributing-precommit; not-run: Maintainer command; recursively invokes this documentation gate. -->
 ```sh
 mix precommit
 ```
 
 Before opening a pull request, run the repository gate:
 
+<!-- tested: contributing-release; not-run: Maintainer release qualification; invokes this gate and requires PostgreSQL, the real receiver, and package-service access. -->
 ```sh
 mix precommit
 mix hex.audit
@@ -91,6 +95,7 @@ exemption to hide reachable code; add a meaningful test or remove the unreachabl
 To qualify a persisted tenant worker on the exact Ash minimum, configure PostgreSQL
 as above and run:
 
+<!-- tested: contributing-ash-floor; not-run: Maintainer opt-in qualification; requires a configured PostgreSQL database and a public HTTPS receiver. -->
 ```sh
 ASH_HOOKS_POSTGRES=1 ASH_HOOKS_HTTPBUN=1 elixir scripts/check-ash-floor.exs
 ```
@@ -107,15 +112,24 @@ merge only when the aggregate `all-checks-pass` job succeeds.
 
 ## Code and documentation
 
-Every Elixir block in README, UPGRADING, usage rules, and the tutorials carries a
-`<!-- tested: name -->` marker on the line before its fence. Fragments say which
-complete application example contains them. `test/ash_hooks/documentation_examples_test.exs`
-reads the blocks unchanged, compiles modules and configuration in their application
-contexts, and executes their calls. Mounting fragments run in a real Phoenix
-endpoint against SQLite. The complete PostgreSQL tutorial runs with
-`ASH_HOOKS_POSTGRES=1` and the connection variables above. Missing, duplicate,
-or unexecuted markers fail the gate. Module documentation links to these tested
-mounting examples instead of repeating routing fragments.
+Every code block in the Hex package and HexDocs carries a hidden `tested`
+comment immediately before the fence or indented block. A run mark uses
+`<!-- tested: name -->`. A fragment uses
+`<!-- tested: name; not-run: Requires the host application's resource. -->`;
+the reason is mandatory. The same comments live inside module documentation
+and Spark descriptions so ExDoc renders no gate metadata.
+
+`test/ash_hooks/documentation_examples_test.exs` reads the blocks unchanged,
+compiles Elixir in its application context, runs SQL against SQLite and
+PostgreSQL, and runs safe shell commands. Maintainer commands that recurse
+into the gate or need host configuration state why they cannot run there.
+The Livebook runs headlessly against the built package and real receiver.
+Missing, duplicate, orphaned, and unexecuted marks fail, as do placeholders in
+runnable blocks. Every Elixir block, including fragments and Livebook cells,
+must match `Code.format_string!/2` with a line length of 98 and the formatter
+exports of ash_hooks and every documented dependency. `mix spark.generate`
+regenerates the formatter export and marked DSL references; `mix spark.check`
+refuses drift.
 
 - Public behavior includes the DSL, public functions, injected attributes and actions,
   telemetry payloads, error classes, and worker options. Update tests and user-facing docs

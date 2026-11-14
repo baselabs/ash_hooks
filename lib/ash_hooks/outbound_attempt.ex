@@ -4,6 +4,8 @@ defmodule AshHooks.OutboundAttempt do
   durable row per delivery attempt, written by the delivery runtime beside
   its fenced result transitions.
 
+  <!-- tested: module-ash-hooks-outbound-attempt-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
+
       use Ash.Resource,
         data_layer: AshPostgres.DataLayer,
         extensions: [AshHooks.OutboundAttempt]

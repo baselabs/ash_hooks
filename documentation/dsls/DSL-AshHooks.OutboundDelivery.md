@@ -8,6 +8,8 @@ deduplicated obligation recording that an event must be delivered to an
 endpoint (the outbound twin of `AshHooks.InboundDelivery`). Sends remain
 at-least-once, and receivers deduplicate retries by webhook id.
 
+<!-- tested: module-ash-hooks-outbound-delivery-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
+
     use Ash.Resource,
       data_layer: AshSqlite.DataLayer,
       extensions: [AshHooks.OutboundDelivery]

@@ -8,6 +8,8 @@ Sign, deliver, retry, and track outgoing webhooks.
 
 Attach to a resource:
 
+<!-- tested: module-ash-hooks-3; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
+
     use Ash.Resource,
       extensions: [AshHooks]
 
@@ -15,7 +17,8 @@ Attach to a resource:
       inbound :orders do
         provider MyApp.Webhooks.OrderProvider
         secret {:app_env, [:my_app, :webhook_secret]}
-        event_id &MyApp.Webhooks.OrderProvider.event_id/1  # optional: a stable event id from the decoded payload
+        # optional: a stable event id from the decoded payload
+        event_id &MyApp.Webhooks.OrderProvider.event_id/1
       end
 
       outbound :order_paid do
@@ -47,6 +50,7 @@ resource.
 
 
 ### webhooks.inbound
+<!-- tested: dsl-signature-webhooks-inbound; not-run: Spark argument signature; names describe DSL syntax and require a host resource. -->
 ```elixir
 inbound name
 ```
@@ -86,6 +90,7 @@ resource receives, verifies, deduplicates, and handles.
 Target: `AshHooks.Inbound`
 
 ### webhooks.outbound
+<!-- tested: dsl-signature-webhooks-outbound; not-run: Spark argument signature; names describe DSL syntax and require a host resource. -->
 ```elixir
 outbound name
 ```

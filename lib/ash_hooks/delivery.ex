@@ -912,7 +912,10 @@ defmodule AshHooks.Delivery do
   dedup suppression), the chosen type verbatim, and the `:signing_mode`
   option, defaulting to `:standard`. The default payload marks itself:
 
-      {"test": true, "type": "invoice.paid", "timestamp": "..."}
+  <!-- tested: module-ash-hooks-delivery-2; not-run: Illustrative wire payload shape; no request is sent by this JSON document. -->
+  ```json
+  {"test": true, "type": "invoice.paid", "timestamp": "2026-11-14T12:00:00Z"}
+  ```
 
   A caller-supplied `:payload` (exact bytes) is used VERBATIM; wrap your
   own test marker into it; the package never rewrites caller bytes.
@@ -2786,8 +2789,12 @@ defmodule AshHooks.Delivery do
   never body bytes or a body-derived digest (a hash is correlation
   material that explains nothing).
 
-      "200 json token=application/json"   # the type was allowlisted
-      "200 text token=other"              # anything else collapses to other
+  <!-- tested: module-ash-hooks-delivery-1; not-run: Illustrative response summary strings; these are output values, not a delivery operation. -->
+
+      # the type was allowlisted
+      "200 json token=application/json"
+      # anything else collapses to other
+      "200 text token=other"
 
   The status is an integer, the kind comes from a fixed vocabulary
   (`json | html | text | xml | binary | other`), and the token is either an

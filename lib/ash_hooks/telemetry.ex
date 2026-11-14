@@ -60,27 +60,35 @@ defmodule AshHooks.Telemetry do
   `:telemetry.execute/3` matches exact event names, so consume the
   whole surface with one `attach_many`:
 
-      :telemetry.attach_many("my-ash-hooks", [
-        [:ash_hooks, :ingress, :verify],
-        [:ash_hooks, :ingress, :dedup],
-        [:ash_hooks, :ingress, :claim],
-        [:ash_hooks, :dispatch, :enqueue_failed],
-        [:ash_hooks, :delivery, :attempt],
-        [:ash_hooks, :delivery, :result],
-        [:ash_hooks, :delivery, :backoff],
-        [:ash_hooks, :delivery, :dead_letter],
-        [:ash_hooks, :delivery, :disable],
-        [:ash_hooks, :worker, :invalid_runtime_config],
-        [:ash_hooks, :attempt, :record_failed],
-        [:ash_hooks, :delivery, :resend],
-        [:ash_hooks, :delivery, :test],
-        [:ash_hooks, :endpoint, :roll],
-        [:ash_hooks, :endpoint, :disable_warning],
-        [:ash_hooks, :endpoint, :disable],
-        [:ash_hooks, :event, :record_failed]
-      ], fn event, measurements, metadata, _ ->
-        # Forward these measurements and identifiers to your metrics system.
-      end, nil)
+  <!-- tested: module-ash-hooks-telemetry-1; not-run: Telemetry fragment; the callback body belongs to the host application's metrics system. -->
+
+      :telemetry.attach_many(
+        "my-ash-hooks",
+        [
+          [:ash_hooks, :ingress, :verify],
+          [:ash_hooks, :ingress, :dedup],
+          [:ash_hooks, :ingress, :claim],
+          [:ash_hooks, :dispatch, :enqueue_failed],
+          [:ash_hooks, :delivery, :attempt],
+          [:ash_hooks, :delivery, :result],
+          [:ash_hooks, :delivery, :backoff],
+          [:ash_hooks, :delivery, :dead_letter],
+          [:ash_hooks, :delivery, :disable],
+          [:ash_hooks, :worker, :invalid_runtime_config],
+          [:ash_hooks, :attempt, :record_failed],
+          [:ash_hooks, :delivery, :resend],
+          [:ash_hooks, :delivery, :test],
+          [:ash_hooks, :endpoint, :roll],
+          [:ash_hooks, :endpoint, :disable_warning],
+          [:ash_hooks, :endpoint, :disable],
+          [:ash_hooks, :event, :record_failed]
+        ],
+        fn event, measurements, metadata, _ ->
+          nil
+          # Forward these measurements and identifiers to your metrics system.
+        end,
+        nil
+      )
   """
 
   @doc """

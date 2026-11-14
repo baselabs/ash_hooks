@@ -8,6 +8,8 @@ durable deduplication record used by `AshHooks.Ingress`.
 
 Attach next to the consumer's own data layer:
 
+<!-- tested: module-ash-hooks-inbound-delivery-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
+
     use Ash.Resource,
       data_layer: AshSqlite.DataLayer,
       extensions: [AshHooks, AshHooks.InboundDelivery]

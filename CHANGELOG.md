@@ -70,6 +70,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Run every shipped documentation code block or state why it cannot run in
+  the documentation gate. Check consumer formatting for Elixir examples,
+  including module documentation, DSL references, and Livebook cells.
+- Replace the tenancy adoption backfill placeholders with executable SQL and
+  verify that every legacy row has a tenant on SQLite and PostgreSQL.
 - The formatter configuration exported to consumers lists every ash_hooks DSL
   option, including `provider`, `subscriptions`, `deliveries`, `paused` and
   `previous_secret`. A consumer importing `:ash_hooks` in `import_deps` no

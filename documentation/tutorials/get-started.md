@@ -357,10 +357,13 @@ raw_body = Jason.encode!(%{"type" => "order.paid", "id" => "event-1", "order_id"
 secret = Application.fetch_env!(:my_app, :orders_webhook_secret)
 signature = :crypto.mac(:hmac, :sha256, secret, raw_body) |> Base.encode16(case: :lower)
 ctx = %{headers: [{"x-orders-signature", signature}], scope: %{account_id: "account-1"}}
+
 {:ok, :created, %{status: :processed}} =
   AshHooks.Ingress.ingest(MyApp.WebhookLedger, :orders, raw_body, ctx)
+
 {:ok, :duplicate, %{status: :processed}} =
   AshHooks.Ingress.ingest(MyApp.WebhookLedger, :orders, raw_body, ctx)
+
 {:ok, %{paid: true}} = Ash.get(MyApp.Order, order.id, authorize?: false)
 ```
 
@@ -393,19 +396,37 @@ The notebook shows an explicit local destination policy for its existing receive
 
 <!-- tested: get-started-dispatch-in-application -->
 ```elixir
-{:ok, endpoint} = Ash.create(MyApp.WebhookEndpoint, %{
-  url: System.fetch_env!("PUBLIC_WEBHOOK_TEST_URL"), secret_ref: "outbound-main"
-}, authorize?: false)
-{:ok, _subscription} = Ash.create(MyApp.WebhookSubscription, %{
-  endpoint_id: endpoint.id, event_types: ["order_paid"]
-}, authorize?: false)
-{:ok, event} = AshHooks.Event.new(
-  type: :order_paid, payload: Jason.encode!(%{order_id: order.id}), id: "msg_order-" <> order.id
-)
+{:ok, endpoint} =
+  Ash.create(
+    MyApp.WebhookEndpoint,
+    %{
+      url: System.fetch_env!("PUBLIC_WEBHOOK_TEST_URL"),
+      secret_ref: "outbound-main"
+    },
+    authorize?: false
+  )
+
+{:ok, _subscription} =
+  Ash.create(
+    MyApp.WebhookSubscription,
+    %{
+      endpoint_id: endpoint.id,
+      event_types: ["order_paid"]
+    },
+    authorize?: false
+  )
+
+{:ok, event} =
+  AshHooks.Event.new(
+    type: :order_paid,
+    payload: Jason.encode!(%{order_id: order.id}),
+    id: "msg_order-" <> order.id
+  )
+
 {:ok, [%{status: :deferred}]} = AshHooks.dispatch(MyApp.Order, :order_paid, event)
-{:ok, %{records: [delivery]}} = AshHooks.Delivery.list(MyApp.OutboundDelivery,
-  endpoint_id: endpoint.id, status: [:pending]
-)
+
+{:ok, %{records: [delivery]}} =
+  AshHooks.Delivery.list(MyApp.OutboundDelivery, endpoint_id: endpoint.id, status: [:pending])
 ```
 
 For queued delivery, add an Oban migration, supervise an Oban instance with a
@@ -487,20 +508,25 @@ all optional-feature events. The fragment runs inside this application example.
 
 <!-- tested: get-started-telemetry-in-application -->
 ```elixir
-:telemetry.attach_many("my-ash-hooks", [
-  [:ash_hooks, :ingress, :verify],
-  [:ash_hooks, :ingress, :dedup],
-  [:ash_hooks, :ingress, :claim],
-  [:ash_hooks, :dispatch, :enqueue_failed],
-  [:ash_hooks, :delivery, :attempt],
-  [:ash_hooks, :delivery, :result],
-  [:ash_hooks, :delivery, :backoff],
-  [:ash_hooks, :delivery, :dead_letter],
-  [:ash_hooks, :delivery, :disable]
-], fn event, measurements, metadata, _config ->
-  require Logger
-  Logger.debug("#{inspect(event)} #{inspect(measurements)} #{inspect(metadata)}")
-end, nil)
+:telemetry.attach_many(
+  "my-ash-hooks",
+  [
+    [:ash_hooks, :ingress, :verify],
+    [:ash_hooks, :ingress, :dedup],
+    [:ash_hooks, :ingress, :claim],
+    [:ash_hooks, :dispatch, :enqueue_failed],
+    [:ash_hooks, :delivery, :attempt],
+    [:ash_hooks, :delivery, :result],
+    [:ash_hooks, :delivery, :backoff],
+    [:ash_hooks, :delivery, :dead_letter],
+    [:ash_hooks, :delivery, :disable]
+  ],
+  fn event, measurements, metadata, _config ->
+    require Logger
+    Logger.debug("#{inspect(event)} #{inspect(measurements)} #{inspect(metadata)}")
+  end,
+  nil
+)
 ```
 
 Forward measurements and identifiers to your metrics system. `attach_many` matches exact names; events omit bodies,

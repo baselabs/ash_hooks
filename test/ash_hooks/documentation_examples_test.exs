@@ -306,7 +306,7 @@ defmodule AshHooks.DocumentationContentTest do
 
   alias AshHooks.Test.Documentation, as: Docs
 
-  @providers ~w(readme-payments-provider upgrade-shop-provider verify-orders-provider
+  @providers ~w(module-provider-orders readme-payments-provider upgrade-shop-provider verify-orders-provider
     verify-shop-provider verify-prefixed-provider-in-application
     verify-encoded-key-provider-in-application verify-structured-provider-in-application
     verify-standard-provider-in-application verify-request-provider-in-application
@@ -317,8 +317,9 @@ defmodule AshHooks.DocumentationContentTest do
   @vendors ~r/comply[ _]?cube|hubspot|twilio|stripe|shopify|woocommerce|shippo|easypost|magento|adobe commerce|bigcommerce|ecwid|squarespace|\bwix\b|salesforce|prestashop|opencart|github|\bhttpbun\b/i
 
   @tag skip: not Code.ensure_loaded?(Phoenix.Endpoint)
-  test "every Elixir block has one marker and one executing test" do
-    files = Enum.map(Docs.guides(), &{&1, File.read!(&1)})
+  @tag :docgate
+  test "every shipped code block runs or has a reason not to run" do
+    files = Docs.documents()
     assert :ok = Docs.validate!(files, documented_examples())
   end
 
@@ -901,6 +902,7 @@ defmodule AshHooks.DocumentationContentTest do
     modules = [
       __MODULE__,
       AshHooks.DocumentationExamplesTest,
+      AshHooks.DocumentationGateTest,
       Docs.namespace("verify-provider-test-in-application")
     ]
 
@@ -983,6 +985,229 @@ defmodule AshHooks.DocumentationContentTest do
   defp restore_env(key, value), do: Application.put_env(:my_app, key, value)
   defp restore_system_env(key, nil), do: System.delete_env(key)
   defp restore_system_env(key, value), do: System.put_env(key, value)
+end
+
+defmodule AshHooks.DocumentationGateTest do
+  use ExUnit.Case, async: false
+
+  alias AshHooks.Test.Documentation, as: Docs
+
+  @moduletag :docgate
+  @moduletag skip: not Code.ensure_loaded?(Phoenix.Endpoint)
+
+  test "every shipped Elixir block is consumer-formatted, including Livebook and module docs" do
+    assert :ok = Docs.validate_format!(Docs.all_blocks())
+  end
+
+  test "runnable shipped blocks contain no placeholders" do
+    offenders =
+      Enum.flat_map(Docs.all_blocks(), fn block ->
+        if is_nil(block.reason) do
+          try do
+            Docs.validate_placeholders!(block)
+            []
+          rescue
+            error in RuntimeError -> [Exception.message(error)]
+          end
+        else
+          []
+        end
+      end)
+
+    assert offenders == [], Enum.join(offenders, "\n")
+  end
+
+  test "the gate sees all Markdown block kinds and requires reasons and execution" do
+    for {opening, closing} <- [{"```sql", "```"}, {"~~~sh", "~~~"}, {"```", "```"}] do
+      text = opening <> "\n:ok\n" <> closing
+      assert_raise RuntimeError, ~r/unmarked/, fn -> Docs.validate!([{"guide.md", text}], []) end
+      assert [_] = Docs.parse(text, "guide.md")
+    end
+
+    assert [%{language: "elixir", code: ":ok\n"}] = Docs.parse("    :ok\n", "module")
+    assert [%{language: "elixir"}] = Docs.parse("- A nested example:\n\n      :ok\n", "module")
+    assert [%{language: "sh"}] = Docs.parse("> ```sh\n> true\n> ```\n", "module")
+
+    unknown = "<!-- tested: example -->\n```python\nprint(1)\n```"
+
+    assert_raise RuntimeError, ~r/no runner for python/, fn ->
+      Docs.validate!([{"guide.md", unknown}], ["example"])
+    end
+
+    marked =
+      String.replace(
+        unknown,
+        "tested: example",
+        "tested: example; not-run: Requires a Python environment."
+      )
+
+    assert :ok = Docs.validate!([{"guide.md", marked}], [])
+
+    for text <- [
+          "<!-- tested: fragment; not-run: -->\n```elixir\n:ok\n```",
+          "<!-- tested: fragment; not-run:   -->\n```elixir\n:ok\n```"
+        ] do
+      assert_raise RuntimeError, ~r/needs a reason/, fn ->
+        Docs.validate!([{"guide.md", text}], [])
+      end
+    end
+
+    text =
+      "<!-- tested: fragment; not-run: Requires the host application's resource. -->\n\n    :ok\n"
+
+    assert :ok = Docs.validate!([{"guide.md", text}], [])
+
+    for code <- ["for x <- [1, 2], do: x >= 0", "value <> suffix", "value < 10 and value > 0"] do
+      assert :ok = Docs.validate_placeholders!(%{file: "guide.md", line: 1, code: code})
+    end
+
+    for placeholder <- ["<derived per row>", "...", "your_resource", "TODO"] do
+      text = "<!-- tested: example -->\n```sql\n#{placeholder}\n```"
+
+      assert_raise RuntimeError, ~r/placeholder/, fn ->
+        Docs.validate!([{"guide.md", text}], ["example"])
+      end
+    end
+  end
+
+  @tag documented_examples: ["module-destination-policy"]
+  test "the module destination-policy example compiles and evaluates its decisions" do
+    Docs.compile("module-destination-policy")
+
+    policy =
+      Module.concat([Docs.namespace("module-destination-policy"), MyApp.WebhookDestinations])
+
+    assert :allow = policy.check("https://partner.internal.example/hook", %{})
+    assert :default = policy.check("https://public.example/hook", %{})
+    assert :deny = policy.check("file:///etc/hosts", %{})
+  end
+
+  @tag documented_examples: ["contributing-string-config"]
+  test "the contributor configuration evaluates in a real configuration context" do
+    code = "import Config\n" <> Docs.block("contributing-string-config").code
+
+    assert [ash: [default_string_length_count: :codepoints]] =
+             Config.Reader.eval!("config.exs", code)
+  end
+
+  @tag :real_receiver
+  @tag timeout: 600_000
+  @tag documented_examples:
+         for(
+           block <- Docs.blocks("documentation/livebooks/get-started.livemd"),
+           block.language == "elixir" and is_nil(block.reason),
+           do: block.name
+         )
+  test "every Livebook cell runs headlessly against the candidate archive and real receiver" do
+    root = File.cwd!()
+    {output, status} = System.cmd("bash", ["scripts/check-package.sh"], stderr_to_stdout: true)
+    assert status == 0, output
+
+    archive = Path.join(root, "_build/release/ash_hooks-#{Mix.Project.config()[:version]}.tar")
+
+    {output, status} =
+      System.cmd(
+        "bash",
+        [
+          "scripts/run-livebook.sh",
+          "documentation/livebooks/get-started.livemd",
+          "--archive",
+          archive
+        ],
+        stderr_to_stdout: true,
+        env: [
+          {"LOCAL_WEBHOOK_TESTER_PORT", System.get_env("ASH_HOOKS_REAL_RECEIVER_PORT", "52871")}
+        ]
+      )
+
+    assert status == 0, output
+    assert output =~ "NOTEBOOK INSTALLED THE CANDIDATE"
+    assert output =~ "NOTEBOOK OK:"
+  end
+
+  test "formatting gate rejects the exact formatting mutations" do
+    for code <- ["map=%{a: 1}\n", "use Ash.Resource,extensions: [AshHooks]\n", ":ok \n"] do
+      block = %{file: "guide.md", line: 1, language: "elixir", code: code}
+      assert_raise RuntimeError, ~r/consumer-formatted/, fn -> Docs.validate_format!([block]) end
+    end
+
+    fragment = %{
+      file: "guide.md",
+      line: 1,
+      language: "elixir",
+      reason: "Requires a host application.",
+      code: "defmodule Missing do\n"
+    }
+
+    assert_raise RuntimeError, ~r/invalid Elixir block/, fn ->
+      Docs.validate_format!([fragment])
+    end
+  end
+
+  test "SQL splitting preserves quoted semicolons and discards comment-only tails" do
+    assert ["SELECT 'a;b'", " SELECT 'it''s;c'", " -- a; comment\nSELECT 2"] =
+             Docs.sql_statements(
+               "SELECT 'a;b'; SELECT 'it''s;c'; -- a; comment\nSELECT 2; -- tail"
+             )
+  end
+
+  test "shell blocks execute and command failures fail the gate" do
+    block = %{file: "guide.md", line: 1, language: "sh", code: "test -f mix.exs\n"}
+    assert :ok = Docs.run!(block, File.cwd!())
+
+    assert_raise RuntimeError, ~r/exited 1/, fn ->
+      Docs.run!(%{block | code: "exit 1\n"}, File.cwd!())
+    end
+  end
+
+  for {label, repo, tags} <- [
+        {"SQLite", AshHooks.Test.Repo, []},
+        {"PostgreSQL", AshHooks.TestPostgres.Repo, [postgres: true]}
+      ] do
+    @tag tags
+    @tag documented_examples: ~w(tenancy-add-columns tenancy-backfill tenancy-null-count)
+    test "the tenancy backfill runs unchanged and leaves zero NULL tenants on #{label}" do
+      repo = unquote(repo)
+      tables = ~w(webhook_endpoints webhook_subscriptions inbound_deliveries outbound_deliveries)
+
+      repo.transaction(fn ->
+        for table <- tables do
+          if table in ~w(webhook_subscriptions outbound_deliveries) do
+            repo.query!("CREATE TEMP TABLE #{table} (id TEXT PRIMARY KEY, endpoint_id TEXT)")
+            repo.query!("INSERT INTO #{table} VALUES ('row-a', 'row-a'), ('row-b', 'row-b')")
+          else
+            repo.query!("CREATE TEMP TABLE #{table} (id TEXT PRIMARY KEY, account_id TEXT)")
+
+            repo.query!(
+              "INSERT INTO #{table} VALUES ('row-a', 'account-a'), ('row-b', 'account-b')"
+            )
+          end
+        end
+
+        repo.query!(
+          "CREATE TEMP TABLE account_tenants (account_id TEXT PRIMARY KEY, org_id TEXT NOT NULL)"
+        )
+
+        repo.query!(
+          "INSERT INTO account_tenants VALUES ('account-a', 'org-a'), ('account-b', 'org-b')"
+        )
+
+        blocks = Docs.blocks("documentation/tutorials/tenancy-adoption-checklist.md")
+        for block <- blocks, do: Docs.run!(block, repo)
+        [result] = blocks |> List.last() |> Docs.run!(repo)
+
+        assert result.rows == [[0], [0], [0], [0]],
+               "the guide's NULL-count gate must return 0 for every table"
+
+        for table <- tables do
+          assert [["org-a"], ["org-b"]] ==
+                   repo.query!("SELECT org_id FROM #{table} ORDER BY id").rows
+        end
+
+        repo.rollback(:documentation_complete)
+      end)
+    end
+  end
 end
 
 if Code.ensure_loaded?(AshHooks.Provider) do

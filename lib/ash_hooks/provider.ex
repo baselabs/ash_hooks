@@ -12,6 +12,8 @@ defmodule AshHooks.Provider do
 
   Most providers describe the sender's scheme in configuration:
 
+  <!-- tested: module-provider-orders -->
+
       defmodule MyApp.Webhooks.Orders do
         use AshHooks.Provider,
           verify: [algorithm: :hmac_sha256, signature: {:header, "x-orders-signature"}]

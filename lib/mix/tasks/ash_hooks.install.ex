@@ -16,7 +16,10 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
 
     ## Usage
 
-        mix igniter.install ash_hooks
+    <!-- tested: module-mix-tasks-ash-hooks-install-1; not-run: Host application installer; modifies the host's formatter and Phoenix endpoint files. -->
+    ```sh
+    mix igniter.install ash_hooks
+    ```
     """
 
     use Igniter.Mix.Task

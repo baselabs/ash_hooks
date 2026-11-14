@@ -43,7 +43,9 @@ defmodule AshHooks.EndpointHealth do
   and `:tenant`. When supplying explicit bounds, provide `:from`; `:to`
   is optional. Supplying `:to` alone returns `{:error, :from_required}`.
 
-      {:ok, %{attempts: 40, success_rate: 0.925, latency_p50_ms: 120, ...}} =
+  <!-- tested: module-ash-hooks-endpoint-health-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
+
+      {:ok, %{attempts: 40, success_rate: 0.925, latency_p50_ms: 120}} =
         AshHooks.EndpointHealth.stats(MyApp.Attempt, endpoint_id: endpoint.id)
   """
   @spec stats(module(), keyword()) :: {:ok, stats()} | {:error, term()}

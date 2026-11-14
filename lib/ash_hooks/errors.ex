@@ -14,6 +14,21 @@ defmodule AshHooks.Errors do
     ],
     unknown_error: AshHooks.Errors.Unknown.UnknownError
 
+  @doc """
+  Returns the value from `{:ok, value}` or `:ok`. Raises a converted error for
+  `{:error, error}` or `:error`, and `ArgumentError` for other result shapes.
+
+  Accepts `:error_opts` for error conversion and `:unknown_error_opts` when
+  the result is `:error`. See `Splode` for the error-conversion contract.
+  """
+  def unwrap!(result, opts)
+
+  @doc """
+  Calls the function for each leaf error and returns a nested map grouped
+  by error path. See `Splode.traverse_errors/2` for the traversal contract.
+  """
+  def traverse_errors(error_or_errors, fun)
+
   alias AshHooks.Errors.Invalid.{
     InvalidSignature,
     KeyKindMismatch,

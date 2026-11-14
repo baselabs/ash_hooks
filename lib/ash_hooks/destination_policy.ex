@@ -4,6 +4,8 @@ defmodule AshHooks.DestinationPolicy do
   checks whether its network address is safe. SSRF means server-side request
   forgery: requests that trick a server into reaching unintended addresses.
 
+  <!-- tested: module-destination-policy -->
+
       defmodule MyApp.WebhookDestinations do
         @behaviour AshHooks.DestinationPolicy
 
@@ -12,7 +14,7 @@ defmodule AshHooks.DestinationPolicy do
 
         @impl true
         def check(url, _ctx) when url in @allow_exact, do: :allow
-        def check("https://" <> rest, _ctx), do: :default
+        def check("https://" <> _rest, _ctx), do: :default
         def check(_denied_scheme, _ctx), do: :deny
       end
 

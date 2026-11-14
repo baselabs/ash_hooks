@@ -1,47 +1,103 @@
 defmodule AshHooks.Test.Documentation do
   @moduledoc false
 
+  alias Ecto.Adapters.SQL
+
+  @formatter_deps ~w(ash spark ecto ecto_sql plug oban ash_postgres ash_sqlite)a
+  @marker ~r/^[ \t]*(?:> )*<!-- tested: ([a-z0-9-]+)(?:; not-run:([^\n]*))? -->[ \t]*$/m
+
   def guides do
-    ["README.md", "UPGRADING.md", "usage-rules.md"] ++
-      Path.wildcard("documentation/tutorials/*.md")
+    package = Mix.Project.config()[:package][:files]
+    extras = Mix.Project.config()[:docs][:extras]
+
+    (Enum.flat_map(package, &Path.wildcard/1) ++ extras)
+    |> Enum.flat_map(fn path ->
+      if File.dir?(path), do: Path.wildcard(Path.join(path, "**/*")), else: [path]
+    end)
+    |> Enum.filter(&(Path.extname(&1) in [".md", ".livemd"]))
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
-  def blocks(file) do
-    file |> File.read!() |> parse(file)
+  def documents do
+    Enum.map(guides(), &{&1, File.read!(&1)}) ++ module_documents()
   end
 
+  defp module_documents do
+    {:ok, modules} = :application.get_key(:ash_hooks, :modules)
+
+    for module <- modules,
+        source = to_string(module.module_info(:compile)[:source]),
+        [_, relative] <- [Regex.run(~r{(?:^|/)lib/(.+)$}, source)],
+        file = "lib/" <> relative,
+        File.regular?(file),
+        {:docs_v1, _, _, "text/markdown", moduledoc, _, docs} <- [Code.fetch_docs(module)],
+        {label, %{"en" => text}} <-
+          [
+            {"#{inspect(module)} @moduledoc", moduledoc}
+            | Enum.map(docs, &{inspect(elem(&1, 0)), elem(&1, 3)})
+          ],
+        do: {"#{file} (#{label})", text}
+  end
+
+  def blocks(file), do: file |> File.read!() |> parse(file)
+
+  # Use the same Markdown parser as ExDoc. This includes indented code,
+  # tilde fences, unlabeled fences, and code nested in lists or blockquotes.
   def parse(text, file) do
-    Regex.scan(~r/(?:<!-- tested: ([a-z0-9-]+) -->\n)?```elixir\n(.*?)```/s, text, return: :index)
-    |> Enum.map(fn [{offset, _length}, {marker, marker_length}, {code, code_length}] ->
+    {nodes, _context} =
+      EarmarkParser.Parser.parse_markdown(text, %EarmarkParser.Options{file: file})
+
+    lines = String.split(text, "\n")
+
+    code_nodes(nodes)
+    |> Enum.map(fn node ->
+      previous =
+        lines |> Enum.take(node.lnb - 1) |> Enum.reverse() |> Enum.find(&(String.trim(&1) != ""))
+
+      marker = Regex.run(@marker, previous || "")
+      {name, reason} = marker(marker)
+
       %{
         file: file,
-        line: text |> binary_part(0, offset) |> String.split("\n") |> length(),
-        name: if(marker_length > 0, do: binary_part(text, marker, marker_length)),
-        code: binary_part(text, code, code_length)
+        line: node.lnb,
+        name: name,
+        reason: reason,
+        language: if(node.language in [nil, ""], do: "elixir", else: node.language),
+        code: Enum.join(node.lines, "\n") <> "\n"
       }
     end)
   end
 
-  def all_blocks, do: Enum.flat_map(guides(), &blocks/1)
+  defp code_nodes(nodes) do
+    Enum.flat_map(nodes, fn
+      %EarmarkParser.Block.Code{} = code -> [code]
+      %{blocks: children} -> code_nodes(children)
+      _ -> []
+    end)
+  end
+
+  defp marker(nil), do: {nil, nil}
+  defp marker([_, name]), do: {name, nil}
+  defp marker([_, name, reason]), do: {name, String.trim(reason)}
+
+  def all_blocks, do: Enum.flat_map(documents(), fn {file, text} -> parse(text, file) end)
 
   def block(name) do
-    [block] = Enum.filter(all_blocks(), &(&1.name == name))
+    [block] = Enum.filter(all_blocks(), &(&1.name == name and is_nil(&1.reason)))
     block
   end
 
   def validate!(files, names) do
     blocks = Enum.flat_map(files, fn {file, text} -> parse(text, file) end)
-    marked = Enum.map(blocks, & &1.name)
+    Enum.each(blocks, &validate_block!/1)
 
-    for block <- blocks do
-      unless block.name, do: raise("#{block.file}:#{block.line}: unmarked Elixir block")
+    for {file, text} <- files, [_, name | _] <- Regex.scan(@marker, text) do
+      unless Enum.count(blocks, &(&1.file == file and &1.name == name)) == 1,
+        do: raise("#{file}: #{name} must mark exactly one code block")
     end
 
-    for {file, text} <- files,
-        [_, name] <- Regex.scan(~r/<!-- tested: ([a-z0-9-]+) -->/, text) do
-      unless Enum.count(marked, &(&1 == name)) == 1,
-        do: raise("#{file}: #{name} must mark exactly one Elixir block")
-    end
+    marked = for block <- blocks, is_nil(block.reason), do: block.name
 
     unless Enum.sort(marked) == Enum.sort(names),
       do:
@@ -51,6 +107,92 @@ defmodule AshHooks.Test.Documentation do
 
     :ok
   end
+
+  defp validate_block!(block) do
+    unless block.name, do: fail!(block, "unmarked #{block.language} block")
+    if block.reason == "", do: fail!(block, "not-run mark needs a reason")
+
+    if is_nil(block.reason) do
+      unless block.language in ["elixir", "sql", "sh"],
+        do: fail!(block, "no runner for #{block.language}; supply a not-run reason")
+
+      validate_placeholders!(block)
+    end
+  end
+
+  def validate_placeholders!(block) do
+    if Regex.match?(
+         ~r/<(?:[a-zA-Z_][a-zA-Z0-9_ .-]*|\.\.\.)>|\byour_[a-zA-Z0-9_]*|\bTODO\b|(?<!\.)\.\.\.(?!\.)/,
+         block.code
+       ),
+       do: fail!(block, "placeholder in a block that claims to run")
+
+    :ok
+  end
+
+  def formatter_options do
+    locals =
+      Enum.flat_map(@formatter_deps, fn dep ->
+        path = Path.join([Mix.Project.deps_paths()[dep], ".formatter.exs"])
+        {options, _} = Code.eval_file(path)
+        options[:export][:locals_without_parens] || []
+      end)
+
+    {own, _} = Code.eval_file(".formatter.exs")
+
+    [
+      line_length: 98,
+      locals_without_parens: Enum.uniq(locals ++ own[:export][:locals_without_parens])
+    ]
+  end
+
+  def validate_format!(blocks) do
+    options = formatter_options()
+
+    offenders =
+      blocks
+      |> Enum.filter(&(&1.language == "elixir"))
+      |> Enum.flat_map(fn block ->
+        try do
+          formatted = block.code |> Code.format_string!(options) |> IO.iodata_to_binary()
+
+          if formatted <> "\n" == block.code,
+            do: [],
+            else: ["#{block.file}:#{block.line}: Elixir block is not consumer-formatted"]
+        rescue
+          error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
+            ["#{block.file}:#{block.line}: invalid Elixir block: #{Exception.message(error)}"]
+        end
+      end)
+
+    unless offenders == [], do: raise(Enum.join(offenders, "\n"))
+    :ok
+  end
+
+  def run!(%{language: "sql"} = block, repo) do
+    # Each shipped statement is sent unchanged to the real adapter. Statements
+    # are separated only at semicolons, outside quoted strings and SQL comments.
+    block.code
+    |> sql_statements()
+    |> Enum.map(&SQL.query!(repo, &1, []))
+  end
+
+  def run!(%{language: "sh"} = block, directory) do
+    {output, status} =
+      System.cmd("sh", ["-eu", "-c", block.code], cd: directory, stderr_to_stdout: true)
+
+    unless status == 0, do: fail!(block, "shell command exited #{status}: #{output}")
+    :ok
+  end
+
+  def sql_statements(code) do
+    ~r/(?:'[^']*(?:''[^']*)*'|"[^"]*(?:""[^"]*)*"|--[^\n]*(?:\n|$)|[^;'"-]+|-(?!-))+/s
+    |> Regex.scan(code)
+    |> Enum.map(&hd/1)
+    |> Enum.reject(&(String.trim(Regex.replace(~r/--[^\n]*/, &1, "")) == ""))
+  end
+
+  defp fail!(block, message), do: raise("#{block.file}:#{block.line}: #{message}")
 
   def ast(name), do: name |> block() |> Map.fetch!(:code) |> Code.string_to_quoted!()
 

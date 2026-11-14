@@ -4,6 +4,8 @@ defmodule AshHooks.Worker do
   your application when Oban is installed. The package also compiles and works
   without Oban; use `AshHooks.Delivery.run/2` for direct delivery.
 
+  <!-- tested: module-ash-hooks-worker-1; not-run: Worker fragment; requires the host application's resources, secret store, repository, and Oban instance. -->
+
       defmodule MyApp.WebhookDeliveryWorker do
         use AshHooks.Worker,
           deliveries: MyApp.OutboundDelivery,

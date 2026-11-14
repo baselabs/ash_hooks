@@ -5,6 +5,8 @@ defmodule AshHooks.OutboundEvent do
   and exact payload bytes), recorded whether or not any endpoint was
   enabled (or existed), with its own retention.
 
+  <!-- tested: module-ash-hooks-outbound-event-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
+
       use Ash.Resource,
         data_layer: AshPostgres.DataLayer,
         extensions: [AshHooks.OutboundEvent]

@@ -42,26 +42,65 @@ queue BEFORE deploying the version whose resources declare tenancy.
 **1. Add the tenant columns, then backfill them.** First the columns
 (in the adopter's migration):
 
+<!-- tested: tenancy-add-columns -->
 ```sql
 ALTER TABLE webhook_endpoints ADD COLUMN org_id TEXT;
--- ...likewise for webhook_subscriptions, inbound_deliveries,
---    outbound_deliveries
+ALTER TABLE webhook_subscriptions ADD COLUMN org_id TEXT;
+ALTER TABLE inbound_deliveries ADD COLUMN org_id TEXT;
+ALTER TABLE outbound_deliveries ADD COLUMN org_id TEXT;
 ```
 
-Then backfill: every legacy row must get its tenant value:
+Then backfill: every legacy row must get its tenant value. This example assumes
+the application's authoritative `account_tenants(account_id, org_id)` mapping
+contains exactly one non-NULL tenant for every legacy account. Endpoints and
+inbound deliveries already carry `account_id`; subscriptions and outbound
+deliveries carry `endpoint_id`, referencing `webhook_endpoints.id`. Populate
+and validate that mapping from the application's ownership records first.
+Derive each child row's tenant from its endpoint, rather than independently
+assigning a tenant that could disagree with that endpoint:
 
+<!-- tested: tenancy-backfill -->
 ```sql
--- your mapping from existing rows to their owning tenant
-UPDATE webhook_endpoints SET org_id = <derived per row>;
-UPDATE webhook_subscriptions SET org_id = <derived per row>;
-UPDATE inbound_deliveries SET org_id = <derived per row>;
-UPDATE outbound_deliveries SET org_id = <derived per row>;
+UPDATE webhook_endpoints
+SET org_id = (
+  SELECT account_tenants.org_id
+  FROM account_tenants
+  WHERE account_tenants.account_id = webhook_endpoints.account_id
+);
+
+UPDATE inbound_deliveries
+SET org_id = (
+  SELECT account_tenants.org_id
+  FROM account_tenants
+  WHERE account_tenants.account_id = inbound_deliveries.account_id
+);
+
+UPDATE webhook_subscriptions
+SET org_id = (
+  SELECT webhook_endpoints.org_id
+  FROM webhook_endpoints
+  WHERE webhook_endpoints.id = webhook_subscriptions.endpoint_id
+);
+
+UPDATE outbound_deliveries
+SET org_id = (
+  SELECT webhook_endpoints.org_id
+  FROM webhook_endpoints
+  WHERE webhook_endpoints.id = outbound_deliveries.endpoint_id
+);
 ```
 
-Verify zero NULL tenants remain:
+Verify zero NULL tenants remain. All four result rows must be 0; a missing
+account mapping or endpoint reference leaves NULL and prevents proceeding:
 
+<!-- tested: tenancy-null-count -->
 ```sql
--- must return 0 for every table
+SELECT COUNT(*) FROM webhook_endpoints WHERE org_id IS NULL
+UNION ALL
+SELECT COUNT(*) FROM webhook_subscriptions WHERE org_id IS NULL
+UNION ALL
+SELECT COUNT(*) FROM inbound_deliveries WHERE org_id IS NULL
+UNION ALL
 SELECT COUNT(*) FROM outbound_deliveries WHERE org_id IS NULL;
 ```
 

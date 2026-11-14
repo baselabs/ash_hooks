@@ -330,8 +330,18 @@ defmodule MyApp.Webhooks.Crm do
   alias AshHooks.Provider.Signature
 
   @decoded %{
-    "%3A" => ":", "%2F" => "/", "%3F" => "?", "%40" => "@", "%21" => "!", "%24" => "$",
-    "%27" => "'", "%28" => "(", "%29" => ")", "%2A" => "*", "%2C" => ",", "%3B" => ";"
+    "%3A" => ":",
+    "%2F" => "/",
+    "%3F" => "?",
+    "%40" => "@",
+    "%21" => "!",
+    "%24" => "$",
+    "%27" => "'",
+    "%28" => "(",
+    "%29" => ")",
+    "%2A" => "*",
+    "%2C" => ",",
+    "%3B" => ";"
   }
 
   def signed_input(raw_body, ctx) do
@@ -532,7 +542,10 @@ defmodule MyApp.Webhooks.Parcels do
   def timestamp(_raw_body, ctx) do
     with value when is_binary(value) <- Signature.header(ctx, "x-timestamp"),
          [_, day, month, year, time, sign, hours, minutes] <-
-           Regex.run(~r/\A\w{3}, (\d{1,2}) (\w{3}) (\d{4}) (\d{2}:\d{2}:\d{2}) ([+-])(\d{2})(\d{2})\z/, value),
+           Regex.run(
+             ~r/\A\w{3}, (\d{1,2}) (\w{3}) (\d{4}) (\d{2}:\d{2}:\d{2}) ([+-])(\d{2})(\d{2})\z/,
+             value
+           ),
          month when is_integer(month) <- month_number(month),
          {:ok, date} <- Date.new(String.to_integer(year), month, String.to_integer(day)),
          {:ok, time} <- Time.from_iso8601(time),
@@ -656,8 +669,11 @@ defmodule MyApp.Webhooks.Orders do
   def parse_event_type(_payload), do: {:error, :malformed_payload}
 
   @impl true
-  def handle_event(:order_paid, payload), do: {:ok, %AshHooks.Provider.Event{type: :order_paid, payload: payload}}
-  def handle_event(:order_refunded, payload), do: {:ok, %AshHooks.Provider.Event{type: :order_refunded, payload: payload}}
+  def handle_event(:order_paid, payload),
+    do: {:ok, %AshHooks.Provider.Event{type: :order_paid, payload: payload}}
+
+  def handle_event(:order_refunded, payload),
+    do: {:ok, %AshHooks.Provider.Event{type: :order_refunded, payload: payload}}
 end
 ```
 

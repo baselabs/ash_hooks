@@ -4,6 +4,8 @@ defmodule AshHooks.Dispatcher do
   the configured queue callback. A failure for one endpoint does not stop
   the others.
 
+  <!-- tested: module-ash-hooks-dispatcher-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
+
       {:ok, event} =
         AshHooks.Event.new(
           type: :order_paid,

@@ -4,6 +4,8 @@ defmodule AshHooks.Transport do
   attempt history, and telemetry. A transport implements the same `request/5`
   contract as an HTTP adapter.
 
+  <!-- tested: module-ash-hooks-transport-1; not-run: Transport fragment; requires the application's CLI forwarding protocol and receiver. -->
+
       defmodule MyApp.CliForwarderTransport do
         @behaviour AshHooks.Transport
 

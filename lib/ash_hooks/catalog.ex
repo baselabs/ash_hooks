@@ -4,6 +4,8 @@ defmodule AshHooks.Catalog do
   (each event type's description, payload schema, and version), read back
   for event pickers, doc generation, and payload-version negotiation.
 
+  <!-- tested: module-ash-hooks-catalog-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
+
       webhooks do
         outbound :order_paid do
           description "An order reached the paid state."

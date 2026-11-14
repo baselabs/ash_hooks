@@ -213,8 +213,10 @@ defmodule AshHooks.Ingress do
   Counts the inbound story over a window (`:from` / `:to` on
   `inserted_at`, inclusive; `:source` optional; `:tenant` applies):
 
-      {:ok, %{received: 120, processed: 100, duplicates: 18,
-              failed_verification: 2, handler_failures: 3}} =
+  <!-- tested: module-ash-hooks-ingress-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
+
+      {:ok,
+       %{received: 120, processed: 100, duplicates: 18, failed_verification: 2, handler_failures: 3}} =
         AshHooks.Ingress.counts(MyApp.Ledger, from: an_hour_ago)
 
   `received` counts the window's accepted rows (rejection rows are excluded

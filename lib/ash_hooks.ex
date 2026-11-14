@@ -5,6 +5,8 @@ defmodule AshHooks do
 
   Attach to a resource:
 
+  <!-- tested: module-ash-hooks-3; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
+
       use Ash.Resource,
         extensions: [AshHooks]
 
@@ -12,7 +14,8 @@ defmodule AshHooks do
         inbound :orders do
           provider MyApp.Webhooks.OrderProvider
           secret {:app_env, [:my_app, :webhook_secret]}
-          event_id &MyApp.Webhooks.OrderProvider.event_id/1  # optional: a stable event id from the decoded payload
+          # optional: a stable event id from the decoded payload
+          event_id &MyApp.Webhooks.OrderProvider.event_id/1
         end
 
         outbound :order_paid do
@@ -283,6 +286,8 @@ defmodule AshHooks do
   pre-flight). Sequential by design: the shared repo pool is the one
   cross-tenant starvation surface, so per-tenant sweeps do not contend.
 
+  <!-- tested: module-ash-hooks-2; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
+
       {:ok, %{results: %{"org_a" => {:ok, 3}, "org_b" => {:ok, 0}}, total: 3}} =
         AshHooks.reap_all(Ledger, tenants: ["org_a", "org_b"])
   """
@@ -298,6 +303,8 @@ defmodule AshHooks do
   resource's extension: inbound ledgers through `AshHooks.Ingress.prune/2`,
   outbound deliveries through `AshHooks.Delivery.prune/2`), with the same
   per-tenant isolation and sequencing as `reap_all/2`.
+
+  <!-- tested: module-ash-hooks-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
 
       {:ok, %{results: %{"org_a" => {:ok, 2}}, total: 2}} =
         AshHooks.prune_all(Delivery, older_than: cutoff, tenants: ["org_a"])
