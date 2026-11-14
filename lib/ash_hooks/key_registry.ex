@@ -193,12 +193,20 @@ defmodule AshHooks.KeyRegistry do
   defp destroy_row(registry, row, tenant, now, counts) do
     with :ok <- Storage.check(registry, row.owner_resource) do
       if due?(row.destroy_after, now) and due?(row.next_attempt_at, now) do
-        result = Storage.custodian(row.owner_resource).destroy(row.ref, row.custody_tenant)
+        result = destroy(row)
         apply_destroy_result(registry, row, tenant, now, result, counts)
       else
         {:ok, counts}
       end
     end
+  end
+
+  defp destroy(row) do
+    Storage.custodian(row.owner_resource).destroy(row.ref, row.custody_tenant)
+  rescue
+    _ -> {:error, :unclassified}
+  catch
+    _, _ -> {:error, :unclassified}
   end
 
   defp needs_retirement?(%{state: :issued} = row, _tenant, now, timeout),
