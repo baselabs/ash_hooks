@@ -73,9 +73,9 @@ defmodule AshHooks.ConsumerFitDocsTest do
   end
 
   describe "M2: the Retry-After cap semantics" do
-    test "Worker states the receiver-held-state implication of the 86,400 default" do
+    test "Worker states how long Retry-After can hold a delivery pending" do
       doc = moduledoc(AshHooks.Worker)
-      assert doc =~ "receiver-held-state"
+      assert doc =~ "pending for up to the cap"
       assert doc =~ "24 hours"
     end
   end

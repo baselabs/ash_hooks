@@ -1,6 +1,6 @@
 defmodule AshHooks.Endpoint.SecretRef do
   @moduledoc """
-  A reference to a consumer-held secret — never the secret itself.
+  A reference to a consumer-held secret; never the secret itself.
 
   Input casting rejects empty references and values beginning with `whsec_`,
   `whsk_`, or `whpk_`, the Standard Webhooks key encodings. The same check

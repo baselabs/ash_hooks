@@ -1,6 +1,6 @@
 defmodule AshHooks.Subscription do
   @moduledoc """
-  Turns the consumer's resource into the outbound Subscription — which
+  Turns the consumer's resource into the outbound Subscription; which
   events go to which endpoint, and with which signature envelope.
 
       use Ash.Resource,
@@ -12,10 +12,10 @@ defmodule AshHooks.Subscription do
       end
 
   The extension injects: `event_types` (`{:array, :string}`, default
-  `[\"*\"]`), `endpoint_id` (uuid — the sole UUID-storage-compatible primary
+  `[\"*\"]`), `endpoint_id` (uuid; the sole UUID-storage-compatible primary
   key of the `endpoint_resource`, under any attribute name), and `signing_mode`
-  (`:legacy | :dual | :standard`, NULLABLE — the outbound declaration's mode
-  applies when unset: ADR-0002's per-subscription mode). A subscription's own
+  (`:legacy | :dual | :standard`, NULLABLE; the outbound declaration's mode
+  applies when unset). A subscription's own
   primary key follows the same single UUID-storage-compatible contract because
   outbound delivery rows store it in `subscription_id`. UUIDv7 keys satisfy
   this contract. Composite and non-UUID keys fail at DSL compilation with the
@@ -23,27 +23,20 @@ defmodule AshHooks.Subscription do
 
   ## Typing contract
 
-  Events carry canonical STRING types (`AshHooks.Event` canonicalizes at
-  construction). `event_types` rows match by exact string or the bare
-  wildcard — `\"*\"` / `:\"*\"` — with entries normalized via `to_string/1`,
-  so a consumer-typed register (`{:array, :atom}`, e.g. a closed
-  `one_of:` enum) matches identically to the injected string array: same
-  wildcard posture, same exact-match semantics, either representation.
-  A closed-enum register is declared by REDECLARING the attribute — your
-  own `attribute(:event_types, {:array, :atom}, constraints: [...])`
-  replaces the injection entirely (`add_new_attribute` stands down), so
-  your enum, your `min_length`, and your own default apply; the wildcard
-  default `[\"*\"]` is NOT forced on you.
+  Events carry string types. You can declare `event_types` yourself,
+  including as an array of constrained atoms. Your declaration replaces the
+  generated attribute, including its constraints and default. Atom and string
+  entries match the same event names. The bare `"*"` or `:"*"` entry matches
+  all event names.
 
   Matching is exact strings plus the bare wildcard entry, evaluated IN
   MEMORY by the dispatcher after reading through the consumer's primary
-  read action — no array-containment SQL, so the semantics are identical
+  read action; no array-containment SQL, so the semantics are identical
   on every data layer.
 
   The package injects NO read action and NO read policies: read surfaces
-  are the consumer's to open through their own domain policies — the
-  dispatcher's internal reads run unauthorized, the inbound reaper's
-  precedent (ADR-0005's consumer-governed posture).
+  are the consumer's to open through their own domain policies; internal
+  dispatcher reads bypass authorization; application policies govern exposed reads.
   """
 
   alias Spark.Dsl.Extension
@@ -60,16 +53,12 @@ defmodule AshHooks.Subscription do
   @doc """
   Whether a subscription row matches an event `type` (a canonical string):
   the bare `"*"` entry matches everything; any other entry matches exactly
-  — no glob interpretation. Works on any resource row carrying the
+  ; no glob interpretation. Works on any resource row carrying the
   injected `event_types` attribute. The attribute-filter leg is separate:
   `matches_filters?/2`.
 
-  Entries are normalized before comparing: atoms to strings (a
-  consumer-typed register — `{:array, :atom}`, a closed enum — H8), a
-  `"*"`/`:"*"` wildcard in either representation. Without the
-  normalization an atom-typed register matched NOTHING — zero deliveries,
-  no error. An entry that is neither binary nor atom simply does not
-  match (total: one exotic row can never abort the fanout).
+  Atom-valued event types are converted to strings before comparison.
+  Entries that are neither strings nor atoms do not match.
   """
   @spec matches?(map(), String.t()) :: boolean()
   def matches?(subscription, type) when is_binary(type) and is_map(subscription) do
@@ -131,7 +120,7 @@ defmodule AshHooks.Subscription do
         required: true,
         doc: """
         The resource module carrying `AshHooks.Endpoint` that
-        `endpoint_id` references — the dispatcher loads endpoints through
+        `endpoint_id` references; the dispatcher loads endpoints through
         it to check `status` and reachability.
         """
       ],
@@ -143,7 +132,7 @@ defmodule AshHooks.Subscription do
         on (e.g. `[:order_id, :region]`). Declaring a nonempty list
         injects the `event_filters` column (`:map`, nullable): a
         subscription whose filters all match the dispatching event's
-        metadata receives the delivery — evaluated BEFORE any delivery row
+        metadata receives the delivery; evaluated BEFORE any delivery row
         is created. A filter key outside this set never matches (fail
         closed); a list value matches any-of. Requires a migration for the
         column.

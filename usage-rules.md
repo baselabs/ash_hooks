@@ -1,7 +1,7 @@
 # AshHooks usage rules
 
 Guidance for maintainers and coding assistants working in applications that use
-AshHooks 3.1.
+AshHooks 3.1.0.
 
 ## Build events from exact bytes
 
@@ -87,18 +87,9 @@ AshHooks 3.1.
 - Include every sender scope needed for uniqueness in `scope_identity`, and create the
   generated unique index in the database. The ledger is the deduplication boundary; do
   not add a separate seen-events table.
-- Identity resolution is ordered: an explicit declaration `event_id` extractor, then the
-  provider's optional `event_identity/1` (a configured JWS-body provider generates one from
-  its verified payload), then the raw-body digest when the provider has no identity
-  callback. An implemented provider callback that rejects a malformed payload
-  fails the ingest; it does not fall back silently.
-- Keep an inbound name stable once it has recorded deliveries: it is part of every
-  deduplication identity.
-- JSON is the default. Opt into form decoding with `body_format :form`; a
-  configured JWS-body provider decodes its verified payload itself.
-- The low-level claim, renew, mark, and reap functions are for custom asynchronous
-  pipelines. Preserve their token and lease values exactly; a stale owner must never
-  write around a fence.
+- An explicit `event_id` extractor takes precedence. Invalid extractor results
+use the raw-body digest. Without an extractor, ingress uses `event_identity/1`
+when implemented; an invalid provider identity fails ingestion.
 
 ## Dispatch and drive outbound deliveries
 
@@ -168,7 +159,9 @@ AshHooks 3.1.
   the package's primary-key helpers and full key maps rather than assuming a field named
   `id`.
 - In a multitenant application, use the same attribute-tenancy contract on every resource
-  touched by an operation and pass the tenant to every entry point. Global tenancy is
+  touched by an operation, including optional history and event-log resources, and
+  pass the tenant to every entry point. `AshHooks.Tenancy.resolve/2` checks only
+  its supplied modules; some callers omit optional resources. Global tenancy is
   rejected. Missing or mismatched tenancy fails before data access.
 - Queue arguments serialize the row tenant and full delivery key so a restart can recover
   the same scope. Do not replace them with ambient process context.
@@ -185,7 +178,9 @@ AshHooks 3.1.
   for an explicit diagnostic run. A custom snippet redactor receives the raw captured
   bytes and must return a binary or `nil`; a crash or invalid return falls back to the
   package's sanitized summary.
-- Use `AshHooks.Ingress.prune/2` and `AshHooks.Delivery.prune/2` for bounded retention.
+- Use `AshHooks.Ingress.prune/2` and `AshHooks.Delivery.prune/2` to prune supported
+  terminal states. Apply a separate application retention policy to tracked
+  `:failed_verification` rows.
   Only terminal rows are deleted. Inbound `:superseded` rows are terminal and remain
   available for audit until the configured retention pass removes them.
 - The package injects no read policy. Define narrow consumer actions and Ash policies for
@@ -194,8 +189,8 @@ AshHooks 3.1.
 
 ## Common mistakes
 
-- Baking `validate_destination: false` or an `http_opts` `timeout:` above `:attempt_timeout`
-  into a worker module (the macro refuses both; the bypass is the `:test`-only loopback seam).
+- Baking `validate_destination: false` or an `http_opts` `timeout:` at or above `:attempt_timeout`
+  into a worker module (the macro refuses both; the bypass is the `:test`-only destination-validation bypass).
 - Decoding JSON before capturing the raw request body used by the provider signature.
 - Generating a new event ID each time the same source record is dispatched.
 - Calling `Delivery.run/2` without handling `{:snooze, seconds}`.

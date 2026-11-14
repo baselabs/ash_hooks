@@ -12,7 +12,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
     - patches the endpoint's `Plug.Parsers` with
       `body_reader: {AshHooks.BodyReader, :read_body, []}` so inbound
       verification sees the raw pre-parser bytes (a router plug cannot
-      capture them — see docs/adr).
+      capture them). Configure the endpoint body reader before parsers consume the request body.
 
     ## Usage
 

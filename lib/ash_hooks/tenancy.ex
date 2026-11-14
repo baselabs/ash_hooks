@@ -1,49 +1,31 @@
 defmodule AshHooks.Tenancy do
   @moduledoc """
-  The tenancy contract resolver: every public entry family resolves the
-  resources it touches BEFORE any data access.
+  Validates the resource modules supplied to `resolve/2` against a tenant.
 
-    * a **single-tenant set** (no resource declares multitenancy) passes
-      the tenant through unchanged — inert by construction: Ash applies a
-      tenant only when a strategy is declared (reads no-op without one,
-      and the data layer ignores tenants except under `:context`), so
-      threading `tenant:` unconditionally cannot change single-tenant
-      behavior;
-    * a **consistent attribute-multitenant set** — every touched resource
-      declares `multitenancy :attribute` over the SAME attribute with
-      `global?: false` — requires a tenant: none given is the package's
-      named `{:error, :tenant_required}` (Ash's own TenantRequired stays
-      the backstop on paths this pre-flight cannot see — the bang-path
-      heads this guard converts to tuples would otherwise crash);
-    * anything else is `{:error, :tenancy_mismatch}` before any data
-      access: some-but-not-all declared (an undeclared resource reads
-      globally next to tenant-scoped ones), differing attributes, a
-      non-`:attribute` strategy (not portable across the package's
-      supported data layers), or `global?: true` (which silently
-      disables Ash's fail-closed reads — it passes a same-attribute
-      consistency check while permitting tenant-less access).
+  * If none declares multitenancy, the tenant passes through unchanged.
+  * If all declare attribute multitenancy on the same attribute with
+    `global?: false`, a tenant is required. Missing tenants return
+    `{:error, :tenant_required}`.
+  * Mixed declarations, different tenant attributes, context multitenancy,
+    or `global?: true` return `{:error, :tenancy_mismatch}`.
 
-  The cross-tenant hazard the mismatch guard closes is concrete: an
-  inconsistent set reached through the delivery runtime would resolve an
-  endpoint GLOBALLY under a tenant-scoped row and deliver one tenant's
-  payload bytes to another tenant's URL.
-
-  Three `Ash.Resource.Info` introspections per resource per call,
-  deliberately uncached: a compile-time cache would race Spark's
-  cross-resource compilation.
+  Callers do not all include optional event-log and attempt-history resources.
+  Configure consistent tenancy on every enabled resource yourself. Dispatch
+  omits the event log; delivery execution and pruning omit attempt history;
+  event-log replay omits its configured delivery and endpoint resources.
+  See `AshHooks.OutboundEvent.replay/3` for its tenant-forwarding limitation.
   """
 
   alias Ash.Resource.Info
 
-  @typedoc "The named pre-flight errors, returned by every entry family before any data access."
+  @typedoc "Errors returned when the supplied resource set or tenant is invalid."
   @type error :: :tenant_required | :tenancy_mismatch
 
   @doc """
   Resolves the entry family's declaration set against the caller's tenant.
 
-  `modules` are the resources the entry family is about to touch (data
-  access through each follows immediately after); `tenant` is the
-  caller-supplied tenant, `nil` when none was given.
+  `modules` is the caller-supplied resource set. Only these modules are
+  checked. `tenant` is the caller-supplied tenant, or `nil` when absent.
   """
   @spec resolve([module()], term()) :: {:ok, term()} | {:error, error()}
   def resolve(modules, tenant) do

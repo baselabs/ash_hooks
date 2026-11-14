@@ -9,53 +9,53 @@ defmodule AshHooks.Telemetry do
 
   Attach handlers to consume these best-effort `:telemetry.execute/3` events:
 
-    * `[:ash_hooks, :ingress, :verify]` — `%{duration_ms}`; `%{source,
-      outcome: :ok | :invalid, reason: atom | nil}` (the five
-      `AshHooks.Errors.Invalid` classes, or nil for unknown-class
-      pre-verify failures)
-    * `[:ash_hooks, :ingress, :dedup]` — `%{source, outcome: :created |
+    * `[:ash_hooks, :ingress, :verify]`; `%{duration_ms}`; `%{source,
+      outcome: :ok | :invalid, reason: atom | nil}` (the underscored error-struct name, such as `:invalid_signature` or
+      `:unknown_error`; paused sources use `:source_paused`; success uses nil)
+    * `[:ash_hooks, :ingress, :dedup]`; `%{source, outcome: :created |
       :duplicate}`
-    * `[:ash_hooks, :ingress, :claim]` — `%{source, outcome: :claimed |
+    * `[:ash_hooks, :ingress, :claim]`; `%{source, outcome: :claimed |
       :lease_held}`
-    * `[:ash_hooks, :dispatch, :enqueue_failed]` — `%{endpoint_id,
+    * `[:ash_hooks, :dispatch, :enqueue_failed]`; `%{endpoint_id,
       event_uuid, reason}` (classified, contents-free)
-    * `[:ash_hooks, :delivery, :attempt]` — `%{endpoint_id, event_uuid,
+    * `[:ash_hooks, :delivery, :attempt]`; `%{endpoint_id, event_uuid,
       attempts}`
-    * `[:ash_hooks, :delivery, :result]` — `%{endpoint_id, event_uuid,
+    * `[:ash_hooks, :delivery, :result]`; `%{endpoint_id, event_uuid,
       status: :succeeded | :failed_retryable | :dead_letter,
       response_status: integer | nil, reason: binary | nil}`
-    * `[:ash_hooks, :delivery, :backoff]` — `%{endpoint_id, event_uuid,
+    * `[:ash_hooks, :delivery, :backoff]`; `%{endpoint_id, event_uuid,
       attempts, delay_seconds}`
-    * `[:ash_hooks, :delivery, :dead_letter]` — `%{endpoint_id,
+    * `[:ash_hooks, :delivery, :dead_letter]`; `%{endpoint_id,
       event_uuid, reason, response_status}`
-    * `[:ash_hooks, :delivery, :disable]` — `%{endpoint_id, reason:
+    * `[:ash_hooks, :delivery, :disable]`; `%{endpoint_id, reason:
       :gone_410}`
-    * `[:ash_hooks, :worker, :invalid_runtime_config]` — `%{reason:
+    * `[:ash_hooks, :worker, :invalid_runtime_config]`; `%{reason:
       binary}` (the fixed validation vocabulary: `callback_failed`,
       `unknown_key`, `not_positive_integer`, `backoff_inversion`,
       `envelope_exceeded`, `oban_ceiling_exceeded`); the job failed before
       any delivery work and the delivery row is untouched
-    * `[:ash_hooks, :attempt, :record_failed]` — `%{endpoint_id,
+    * `[:ash_hooks, :attempt, :record_failed]`; `%{endpoint_id,
       event_uuid, reason}` (classified): an attempt-history row could not
-      be written; the delivery result itself succeeded and remains the
-      contract
-    * `[:ash_hooks, :delivery, :resend]` — `%{endpoint_id, event_uuid,
-      requested_by}`: a terminal row was re-armed (resend or replay)
-    * `[:ash_hooks, :delivery, :test]` — `%{endpoint_id, type}`: a signed
+      be written; the delivery's result transition completed, but storing its
+      attempt-history row failed
+    * `[:ash_hooks, :delivery, :resend]`; `%{endpoint_id, event_uuid,
+      requested_by}`: a terminal delivery was re-armed, or event-log replay created its first delivery
+    * `[:ash_hooks, :delivery, :test]`; `%{endpoint_id, type}`: a signed
       synthetic test event is about to send (outside subscriptions; the
       payload marks itself when synthesized)
-    * `[:ash_hooks, :endpoint, :roll]` — `%{endpoint_id}`: an endpoint's
+    * `[:ash_hooks, :endpoint, :roll]`; `%{endpoint_id}`: an endpoint's
       signing secret reference was rolled (the overlap window began)
-    * `[:ash_hooks, :event, :record_failed]` — `%{event_uuid, reason}`
+    * `[:ash_hooks, :event, :record_failed]`; `%{event_uuid, reason}`
       (classified): the event log could not record a dispatched event;
       the fanout was unaffected
-    * `[:ash_hooks, :endpoint, :disable_warning]` — `%{endpoint_id,
+    * `[:ash_hooks, :endpoint, :disable_warning]`; `%{endpoint_id,
       failure_share, attempts}`: the sustained-failure policy sees an
-      endpoint failing at the warning thresholds — notify before the
+      endpoint failing at the warning thresholds; notify before the
       breaker opens
-    * `[:ash_hooks, :endpoint, :disable]` — `%{endpoint_id, reason}`:
-      `reason: :gone_410` (the 410 rule) or `:sustained_failure` (the
-      auto-disable policy); the endpoint was durably disabled
+    * `[:ash_hooks, :endpoint, :disable]`; `%{endpoint_id, reason}`:
+      sustained-failure disable attempts (`:sustained_failure`), without
+      confirmation that the write succeeded. HTTP 410 disablement uses
+      `[:ash_hooks, :delivery, :disable]`
 
   `:telemetry.execute/3` matches exact event names, so consume the
   whole surface with one `attach_many`:
@@ -96,10 +96,10 @@ defmodule AshHooks.Telemetry do
   end
 
   @doc """
-  The shared contents-free error classifier. Only the fixed internal
-  vocabulary and HTTP status classifications survive. Caller-selected
-  strings and atoms collapse to "unclassified", including strings that
-  happen to have the same spelling pattern as an internal token.
+  Classifies reasons using the recognized reason vocabulary and valid HTTP
+  status tokens. Recognized strings and atoms pass through regardless of origin.
+  Other values become `unclassified`. This function does not distinguish
+  package-generated tokens from caller-supplied values.
   """
   @spec classify_token(term()) :: binary()
   @reason_tokens ~w(adapter_crash closed connect_timeout deadline_exceeded

@@ -9,13 +9,13 @@ defmodule AshHooks.Signing do
 
   Secret formats:
 
-    * symmetric — `whsec_` + base64 of 24–64 random bytes (prefix optional,
+    * symmetric; `whsec_` + base64 of 24–64 random bytes (prefix optional,
       matching the references). `sign/4` enforces the 24–64 byte band (the
       emitter's length bound); verification accepts nonempty decoded symmetric
       secrets, including shorter keys, and rejects malformed base64.
-    * asymmetric — `whsk_` + base64 of the 32-byte ed25519 seed (signing),
+    * asymmetric; `whsk_` + base64 of the 32-byte ed25519 seed (signing),
       `whpk_` + base64 of the 32-byte public key (verification). Prefixes are
-      required — they are what `verify/4` dispatches on.
+      required; they are what `verify/4` dispatches on.
 
   `headers_for_mode/5` emits `:standard`, `:dual` (Standard Webhooks and
   legacy), or `:legacy` headers for the delivery runtime. Rotation options
@@ -45,7 +45,7 @@ defmodule AshHooks.Signing do
   Signs the canonical string with HMAC-SHA256 under the decoded symmetric
   secret: `"v1," <> base64(mac)`.
 
-  Raises `ArgumentError` on invalid inputs — the send path fails loud on
+  Raises `ArgumentError` on invalid inputs; the send path fails loud on
   config or programming errors.
   """
   @spec sign(String.t(), integer(), binary(), String.t()) :: String.t()
@@ -96,16 +96,16 @@ defmodule AshHooks.Signing do
 
   `headers` is a map with lowercased header names as string keys
   and single binary values (`"webhook-id"`, `"webhook-timestamp"`,
-  `"webhook-signature"`) — the shape Plug and the inbound seam supply after
+  `"webhook-signature"`); the shape Plug and the inbound seam supply after
   normalization. Mixed-case keys or multi-value header lists are
   `{:error, :missing_header}` (fail closed); callers normalize before this
   boundary.
 
   Options:
 
-    * `:now` — integer unix seconds (default `System.system_time(:second)`).
-    * `:tolerance` — allowed `|now - timestamp|` in seconds (default 300).
-    * `:ignore_timestamp` — skip the tolerance check (dead-letter re-drives,
+    * `:now`; integer unix seconds (default `System.system_time(:second)`).
+    * `:tolerance`; allowed `|now - timestamp|` in seconds (default 300).
+    * `:ignore_timestamp`; skip the tolerance check (dead-letter re-drives,
       offline verification); the timestamp must still parse.
 
   Returns `{:ok, %{id: id, timestamp: ts}}` or `{:error, reason}`. Never
@@ -154,7 +154,7 @@ defmodule AshHooks.Signing do
   The three Standard Webhooks headers. `:whsec` and/or `:whsk` select the
   signature schemes; `:previous_whsec` / `:previous_whsk`
   append the rotated-out key's signature (space-delimited, per the spec's
-  zero-downtime rotation — symmetric and asymmetric alike).
+  zero-downtime rotation; symmetric and asymmetric alike).
   """
   @spec headers(String.t(), integer(), binary(), keyword()) :: %{String.t() => String.t()}
   def headers(msg_id, unix_ts, payload, opts \\ []) do
@@ -178,16 +178,16 @@ defmodule AshHooks.Signing do
   end
 
   @doc """
-  The full header set for a subscription's `signing_mode` (ADR-0002):
+  The headers produced for each signing mode:
 
-    * `:standard` — the three SW headers.
-    * `:dual` — SW headers PLUS the byte-identical legacy envelope
+    * `:standard`; the three SW headers.
+    * `:dual`; SW headers PLUS the byte-identical legacy envelope
       (`x-webhook-signature`, via `AshHooks.Legacy`); requires
       `:legacy_secret` (dual MEANS both envelopes).
-    * `:legacy` — the legacy envelope only.
+    * `:legacy`; the legacy envelope only.
 
   Legacy options: `:legacy_secret`, `:legacy_previous_secret`. SW options:
-  `:whsec`, `:whsk`, `:previous_whsec`.
+  `:whsec`, `:whsk`, `:previous_whsec`, and `:previous_whsk`.
   """
   @spec headers_for_mode(:legacy | :dual | :standard, String.t(), integer(), binary(), keyword()) ::
           %{String.t() => String.t()}

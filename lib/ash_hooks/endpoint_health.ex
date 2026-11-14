@@ -1,23 +1,16 @@
 defmodule AshHooks.EndpointHealth do
   @moduledoc """
-  Endpoint health over the attempt history, and the sustained-failure
-  auto-disable policy.
+  Computes endpoint health from attempt history and applies an optional
+  sustained-failure disable policy.
 
-  `stats/2` computes one endpoint's trailing-window health from its
-  attempt rows: the success rate and nearest-rank latency percentiles
-  (p50/p90/p99, in milliseconds, over the attempts that reached the
-  wire), with FIRST-ATTEMPT success reported separately from EVENTUAL
-  success (a delivery whose first attempt succeeded vs. one that
-  succeeded after retries). `sweep/3` applies the endpoint resource's `auto_disable` policy
-  (a configurable duration and failure share, beside the existing 410
-  rule): an endpoint whose window meets the failure share with the
-  minimum evidence is DISABLED through the same durable switch the 410
-  rule uses, after a warning fired first at the warning thresholds.
-  Re-enabling is an explicit application action — the package never
-  re-enables.
+  Latency percentiles use attempts with a recorded duration, including failed
+  request attempts. First-attempt successes count successful attempt 1 rows.
+  Eventual successes count deliveries with any successful attempt, including
+  attempt 1.
 
-  Schedule both alongside your retention sweeps (an Oban cron, a mix
-  task): `stats/2` per endpoint page, `sweep/3` per endpoint resource.
+  Schedule `stats/2` per endpoint and `sweep/3` per endpoint resource. The
+  application owns the sweep schedule and prevents overlapping sweeps.
+  The package does not re-enable disabled endpoints.
   """
 
   require Ash.Expr
@@ -44,9 +37,9 @@ defmodule AshHooks.EndpointHealth do
   rows (requires an `AshHooks.OutboundAttempt` resource).
 
   Options: `:endpoint_id` (required), `:window_seconds` (default 86,400),
-  `:now` (the application clock), `:from`/`:to` (explicit `DateTime`
-  bounds instead of the trailing window), and `:tenant` (the tenancy
-  pre-flight applies).
+  `:now` (the application clock), `:from`/`:to` (explicit DateTime bounds),
+  and `:tenant`. When supplying explicit bounds, provide `:from`; `:to`
+  is optional. Supplying `:to` alone can raise during comparison.
 
       {:ok, %{attempts: 40, success_rate: 0.925, latency_p50_ms: 120, ...}} =
         AshHooks.EndpointHealth.stats(MyApp.Attempt, endpoint_id: endpoint.id)
@@ -61,27 +54,19 @@ defmodule AshHooks.EndpointHealth do
   end
 
   @doc """
-  Applies the endpoint resource's `auto_disable` policy to every enabled
-  endpoint, from the attempt history:
+  Applies the endpoint resource's `auto_disable` policy to enabled endpoints.
 
-    * the FIRST sweep that sees an endpoint meeting `:failure_share`
-      with at least `:min_attempts` of evidence WARNED: it emits
-      `[:ash_hooks, :endpoint, :disable_warning]` (`failure_share` and
-      `attempts` in the metadata), durably stamps `disable_warned_at`
-      (the marker column the `auto_disable` declaration injects), and
-      leaves the endpoint enabled — the notify surface gets at least one
-      full sweep interval before the breaker can open;
-    * the NEXT sweep that still sees qualifying failure disables through
-      the same durable switch the 410 rule uses, emits
-      `[:ash_hooks, :endpoint, :disable]` with
-      `reason: :sustained_failure`, and clears the stamp;
-    * an endpoint that meets the share with less evidence (the warning
-      thresholds) warns the same way and stays enabled;
-    * an endpoint that drops below the warning band has its stamp
-      cleared — a later degradation warns afresh.
+  A qualifying endpoint without `disable_warned_at` gets a warning marker and
+  `[:ash_hooks, :endpoint, :disable_warning]` telemetry. A later sweep can
+  attempt disablement once that marker exists. No minimum warning interval is
+  enforced; prevent overlapping sweeps and schedule the desired interval.
+  Endpoints below the failure thresholds have their warning marker cleared.
 
-  Resources without an `auto_disable` section are skipped wholesale.
-  Options: `:now`, `:tenant`. Returns `{:ok, %{disabled: n, warned: n}}`.
+  Disable attempts emit `[:ash_hooks, :endpoint, :disable]` with reason
+  `:sustained_failure`. The write result is not checked. The `disabled` count
+  reports attempts, not confirmed writes. Read the endpoint to confirm its state.
+
+  Options: `:now` and `:tenant`. Returns `{:ok, %{disabled: n, warned: n}}`.
   """
   @spec sweep(module(), module(), keyword()) ::
           {:ok, %{disabled: non_neg_integer(), warned: non_neg_integer()}} | {:error, term()}

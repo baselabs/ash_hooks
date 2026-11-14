@@ -5,7 +5,7 @@ changes, and include the evidence needed to review that behavior.
 
 ## Development environment
 
-AshHooks supports Elixir `~> 1.20`, Erlang/OTP 28 and 29, and Ash `>= 3.37.2 and < 4.0`.
+AshHooks supports Elixir `~> 1.20`, Erlang/OTP 28 and 29, and Ash `>= 3.37.2 and < 4.0.0-0`.
 The repository pins Elixir 1.20.5 and Erlang/OTP 29.1.2 in `.tool-versions` for development.
 Use macOS or Linux; Windows contributors should use WSL2.
 
@@ -46,7 +46,7 @@ endpoint before the test run.
 - Do not add mocks, stubs, fake services, canned socket peers, self-signed conformance
   fixtures, or hard-coded samples standing in for a real call. Exercise the real database,
   queue, receiving service, protocol endpoint, or vendor-published vector. If the required
-  substrate is unavailable, stop and describe what is needed rather than replacing it.
+  database, queue, or receiving service is unavailable, stop and describe what is needed rather than replacing it.
 - Existing test doubles may support isolated unit checks, but a passing double establishes
   only the local call contract. Boundary and interoperability claims require a real peer.
 - Provider changes need the vendor's current public signing documentation, official test
@@ -60,8 +60,7 @@ endpoint before the test run.
 
 Run focused checks while developing. Before every push, run the whole-tree gates in one
 command: the format check, compilation with warnings as errors (test support included),
-Credo, the generated DSL documentation check, the documentation build, the candidate
-Hex archive check, and the documentation's mounting examples:
+Credo, the generated DSL documentation check, the documentation build, the Hex archive check, and the documentation's mounting examples:
 
 ```sh
 mix precommit
@@ -96,39 +95,39 @@ as above and run:
 ASH_HOOKS_POSTGRES=1 ASH_HOOKS_HTTPBUN=1 elixir scripts/check-ash-floor.exs
 ```
 
-This opt-in check uses Httpbun's public HTTPS `/status/103` endpoint and a fresh BEAM
-process consuming a real Oban.Basic job. It keeps the checkout's main lock, dependency,
-and build files unchanged, using `_build/ash-floor` for the minimum graph. Public
-Httpbun checks are excluded from ordinary tests and CI; use them deliberately and
-respect the service's usage policy.
+This opt-in check sends a real HTTPS request using the endpoint configured in
+`test/ash_hooks/tenant_worker_postgres_test.exs` and consumes a persisted Oban.Basic
+job in a fresh BEAM process. It keeps the main lock, dependencies, and build files
+unchanged by using `_build/ash-floor` for the minimum supported graph. Opt-in
+public HTTPS checks are excluded from ordinary tests and CI.
 
 CI additionally checks the minimum supported Elixir/Ash consumer graph, Erlang/OTP 28 and
-29, an installation with Oban and Plug absent, real PostgreSQL behavior, the candidate
-Hex archive, and the headless Livebook against that archive. A pull request is ready to
+29, an installation with Oban and Plug absent, real PostgreSQL behavior, the Hex archive, and the headless Livebook against that archive. A pull request is ready to
 merge only when the aggregate `all-checks-pass` job succeeds.
 
 ## Code and documentation
 
-Every documentation block that mounts `AshHooks.Plug` or `AshHooks.BodyReader` carries a
-`<!-- tested: name -->` marker on the line before its fence.
-`test/ash_hooks/documentation_examples_test.exs` reads each marked block, compiles it
-unchanged in a real Phoenix endpoint and router, and sends it real requests; an unmarked
-mounting block, or mounting code in a module's documentation, fails it. Add a new example
-to that test when you add its marker.
+Every Elixir block in README, UPGRADING, usage rules, and the tutorials carries a
+`<!-- tested: name -->` marker on the line before its fence. Fragments say which
+complete application example contains them. `test/ash_hooks/documentation_examples_test.exs`
+reads the blocks unchanged, compiles modules and configuration in their application
+contexts, and executes their calls. Mounting fragments run in a real Phoenix
+endpoint against SQLite. The complete PostgreSQL tutorial runs with
+`ASH_HOOKS_POSTGRES=1` and the connection variables above. Missing, duplicate,
+or unexecuted markers fail the gate. Module documentation links to these tested
+mounting examples instead of repeating routing fragments.
 
 - Public behavior includes the DSL, public functions, injected attributes and actions,
   telemetry payloads, error classes, and worker options. Update tests and user-facing docs
   together when one of these changes.
 - Keep consumer-owned boundaries explicit: applications own migrations, Ash policies,
   secret storage, business effects, queue scheduling, and retention scheduling.
-- Security changes must preserve finite resource bounds and fail-closed behavior. Read the
-  applicable decision record under
-  [docs/adr](https://github.com/baselabs/ash_hooks/tree/main/docs/adr) before changing
-  verification, SSRF handling, secret resolution, transport, tenancy, or delivery fences.
-- Add a decision record for a new long-lived architectural contract. Do not use one for a
-  routine defect correction.
+- Security changes must preserve finite resource bounds and reject unverified
+  input before business processing. Review the public contracts for signature
+  verification, destination checks, secret resolution, transport, tenancy,
+  and delivery ownership before changing those paths.
 - Use US English in code, documentation, tests, commit messages, and pull requests.
-- Add user-visible changes to `CHANGELOG.md` under `## Unreleased`, and add migration
+- Add user-visible changes to `CHANGELOG.md` in the entry matching the version declared in `mix.exs`, and add migration
   steps to `UPGRADING.md` when an adopter must change code, schema, or operations.
 
 ## Bugs and security reports

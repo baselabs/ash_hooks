@@ -5,10 +5,10 @@ defmodule AshHooks.Provider.Mock do
   echoing typed event.
 
   `parse_event_type/1` resolves the type string with `String.to_existing_atom/1`
-  — fail-closed: a type that was not already an atom is reported as an unknown
+  ; fail-closed: a type that was not already an atom is reported as an unknown
   event, never converted into a newly created one (no atom-table growth from
   webhook input). The Mock imposes NO taxonomy beyond that: any pre-existing
-  atom is accepted as a type (it is a general test double — real providers
+  atom is accepted as a type (it is a general test double; real providers
   match their vendor's known type strings). JSON scalar values (`nil`, `true`,
   `false`, decoded from JSON null/true/false and from their string forms) are
   rejected as malformed, not event types.

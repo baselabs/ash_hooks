@@ -1,11 +1,8 @@
 defmodule AshHooks.Transport do
   @moduledoc """
-  The delivery transport behavior: route one endpoint's deliveries to your
-  own transport instead of HTTP — a developer's local forwarder behind a
-  CLI "listen" command, a message bus, a test collector — while the SAME
-  signing, attempt history, classification, backoff, and telemetry apply,
-  because the transport IS the adapter-shaped seam the delivery runtime
-  drives.
+  Use another transport for an endpoint while retaining signing, retry handling,
+  attempt history, and telemetry. A transport implements the same `request/5`
+  contract as an HTTP adapter.
 
       defmodule MyApp.CliForwarderTransport do
         @behaviour AshHooks.Transport
@@ -22,7 +19,7 @@ defmodule AshHooks.Transport do
   `transport: {module, function}` / a 2-arity fn receiving the endpoint
   record and tenant, returning the transport module (or `nil` to keep the
   HTTP adapter). A resolver that crashes, or a non-module return, falls
-  back to the HTTP adapter path — the HTTP guarantees stay the default.
+  back to the HTTP adapter path; the HTTP guarantees stay the default.
 
   The callback contract is `AshHooks.Http`'s adapter contract verbatim:
   one `request/5` returning `{:ok, %{status, headers, body}}` or

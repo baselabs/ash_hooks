@@ -27,7 +27,7 @@ defmodule AshHooks.Errors do
   behavior returns) to its splode error, passing `opts` through to
   `exception/1`.
 
-  Raises on an unmapped reason — that is a programming error on the caller's
+  Raises on an unmapped reason; that is a programming error on the caller's
   side, not webhook input.
   """
   @spec from_reason(atom(), Keyword.t()) :: struct()

@@ -8,8 +8,9 @@ defmodule AshHooks.InboundDelivery.Payload do
   wire encoding and must not be used to reconstruct bytes for verification.
 
   Storage uses the same JSON representation as `:map`. Maps and lists cast
-  directly; a JSON-encoded binary is decoded before casting. Other decoded
-  scalar values are rejected.
+  directly; a JSON-encoded binary is decoded before casting. `nil`, including
+  decoded JSON `null`, is accepted by the type; the resource's nullability
+  constraint decides whether it can be stored. Other scalar values are rejected.
   """
 
   use Ash.Type

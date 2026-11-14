@@ -111,9 +111,9 @@ defmodule AshHooks.Provider do
   @typedoc """
   Where a provider's webhook signing secret lives:
 
-    * `:app_level`: one app-wide shared secret signs every connection's
-      webhooks. The default when the callback is not implemented.
-    * `:per_connection`: each connection carries its own signing secret.
+    * `:app_level`: resolves the inbound declaration's secret source, which may
+      be application-wide or tenant-aware. This is the default.
+    * `:per_connection`: uses the provider's secret callback for the connection.
   """
   @type webhook_secret_scope :: :app_level | :per_connection
 
@@ -124,8 +124,8 @@ defmodule AshHooks.Provider do
   Resolves the signing secret used to verify an inbound webhook.
 
   The secret SOURCE is provider-dependent, so it lives with the provider
-  module rather than in the generic ingress. App-level providers read an
-  app-wide config value; per-connection providers read it off the `connection`
+  module rather than in the generic ingress. App-level providers use the declaration's source, which can be tenant-aware;
+  per-connection providers read it from the `connection`
   argument. Returns `{:error, :no_webhook_secret}` when unconfigured; the
   caller verifies nothing and does not run the handler.
   """
@@ -152,7 +152,8 @@ defmodule AshHooks.Provider do
   The request header this provider's signature scheme carries a trustworthy
   timestamp in (`nil` when the scheme has none). A DSL `replay_window_seconds`
   requires a non-`nil` value here: the compile-time verifier rejects the
-  combination otherwise, and there is no replay protection without it.
+  combination otherwise. Other provider-defined timestamp checks and JWS
+  expiration and not-before checks can apply independently.
   Optional, defaulting to `nil`.
   """
   @callback timestamp_header() :: String.t() | nil
@@ -317,7 +318,9 @@ defmodule AshHooks.Provider do
   Optional payload decoder, called only after signature verification succeeds.
   Returns a map or list. Providers without it retain JSON decoding. A route's
   explicit `body_format` takes precedence. Custom decoders must return an error
-  for malformed input; the ledger then records a permanent malformed payload.
+  for malformed input. Decoder failures normally become permanent
+  malformed-payload rows. If the provider's identity callback cannot derive
+  an identity, ingress returns an error before creating the accepted row.
   """
   @callback decode_payload(raw_body()) :: {:ok, map() | list()} | {:error, term()}
 

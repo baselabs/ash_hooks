@@ -7,7 +7,7 @@ defmodule AshHooks.Delivery do
   The delivery row owns retry policy: the
   driver refuses to re-send `:succeeded`/`:dead_letter` rows, waits on
   `next_attempt_at`, counts `attempts` against the ceiling, and honors
-  `Retry-After` (bounded). Oban is the durable trigger — `{:snooze, s}`
+  `Retry-After` (bounded). Oban is the durable trigger; `{:snooze, s}`
   re-drives later without exhausting the job (snooze extends
   max_attempts; only this module's ceiling decides dead-letter).
 
@@ -25,20 +25,20 @@ defmodule AshHooks.Delivery do
 
   Response classification:
 
-    * 2xx → `:succeeded` (status + allowlisted content-type summary — no
+    * 2xx → `:succeeded` (status + allowlisted content-type summary; no
       body bytes by default; a per-call `snippet_capture: true` config
       persists a bounded, redacted body marked `[captured]`)
     * 408/429/5xx → retryable, `Retry-After` when present (integer seconds or
       HTTP-date; clamped `[1, retry_after_cap_seconds]`), else backoff
     * 410 → `:disable_pending`, then conditional endpoint disable and `:dead_letter`
     * other 4xx → `:dead_letter` (client errors do not self-heal)
-    * 3xx → `:dead_letter` (`redirect_refused` — never followed)
+    * 3xx → `:dead_letter` (`redirect_refused`; never followed)
     * transport error / secret-resolution failure → retryable
       backoff
     * unresolvable DNS at the send-time destination check → retryable
       backoff under `nxdomain` (every family answered authoritatively
       negative) or `resolve_timeout` (resolver outage, congestion, mixed
-      evidence — transport, not a verdict on the destination); a
+      evidence; transport, not a verdict on the destination); a
       permanently dead domain dead-letters at the row ceiling carrying
       its label. The HTTP adapter's umbrella for the same failures is
       `unresolved_host`
@@ -49,8 +49,9 @@ defmodule AshHooks.Delivery do
       packaged gate, `:default` → the gate runs unchanged; a contained
       callback failure retries under `destination_policy_failed`
 
-  Backoff: `min(base · 2^min(attempts, 16), max_backoff)` seconds plus
-  `:rand.uniform(delay)` jitter, re-clamped — always ≥ 1 second.
+  Backoff: let `step = min(base * 2^min(attempts, 16), max_backoff)`.
+  Add a random value from zero through `step - 1`, then apply the maximum
+  again. The delay is at least one second.
 
   The 410 auto-disable is a durable two-step system write. A live attempt
   first stores `:disable_pending` with the endpoint configuration snapshot;
@@ -120,22 +121,22 @@ defmodule AshHooks.Delivery do
                           ])
 
   @doc """
-  Lists delivery rows by filter with keyset pagination (newest first) —
+  Lists delivery rows by filter with keyset pagination (newest first) ;
   the delivery-log view behind endpoint pages and resend UIs.
 
   Options:
 
-    * `:endpoint_id` — one endpoint's deliveries.
-    * `:status` — a list of statuses (e.g. `[:failed_retryable, :dead_letter]`).
-    * `:event_type` — one event type's deliveries.
-    * `:test` — `true`/`false` on `test_tracking :on` resources: filter
+    * `:endpoint_id`; one endpoint's deliveries.
+    * `:status`; a list of statuses (e.g. `[:failed_retryable, :dead_letter]`).
+    * `:event_type`; one event type's deliveries.
+    * `:test`; `true`/`false` on `test_tracking :on` resources: filter
       the delivery log to (or exclude) test sends.
-    * `:from` / `:to` — `DateTime` bounds on `inserted_at` (inclusive).
-    * `:limit` — page size (default 50, max 500; anything else is
+    * `:from` / `:to`; `DateTime` bounds on `inserted_at` (inclusive).
+    * `:limit`; page size (default 50, max 500; anything else is
       `{:error, :invalid_limit}`).
-    * `:after` — the cursor from a previous page's `:next_cursor` (a
+    * `:after`; the cursor from a previous page's `:next_cursor` (a
       malformed cursor is `{:error, :invalid_cursor}`).
-    * `:tenant` — required on multitenant resources (the named
+    * `:tenant`; required on multitenant resources (the named
       `{:error, :tenant_required}` pre-flight otherwise).
 
   The resource needs `inserted_at` (add `timestamps()`) and an `:id`
@@ -232,18 +233,17 @@ defmodule AshHooks.Delivery do
   `inserted_at` (add Ash `timestamps()` to the resource and its
   migration). Non-terminal rows are never deleted. Returns
   `{:ok, deleted_count}`, or `{:error, error}` when the resource lacks
-  `inserted_at` — the same error contract as `AshHooks.Ingress.prune/2`.
+  `inserted_at`; the same error contract as `AshHooks.Ingress.prune/2`.
 
-  `:tenant` scopes the sweep (required on multitenant resources — a
+  `:tenant` scopes the sweep (required on multitenant resources; a
   tenant-less global sweep over them is the named
   `{:error, :tenant_required}` before any data access).
   `:batch_size` defaults to 500 and accepts integers from 1 through 5,000;
   invalid values return `{:error, :invalid_batch_size}`.
 
   `:attempts` (an `AshHooks.OutboundAttempt` resource) prunes the
-  pruned rows' attempt history WITH them — every batch's delivery rows
-  delete first, then their attempt rows by `delivery_pk`, so history
-  never outlives its delivery (and never orphans).
+  pruned rows' attempt history after each delivery batch is deleted. These
+  deletions are not one transaction, and history-deletion failures are ignored.
   """
   @spec prune(module(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def prune(deliv_mod, opts) do
@@ -348,12 +348,12 @@ defmodule AshHooks.Delivery do
   The tenant arg is the enqueue seam's serialized row tenant
   (the worker reads it off the multitenancy attribute at enqueue time);
   `run/2` re-parses it through the resource's tenancy pipeline by passing
-  it as the tenant on every data call — a worker restart or replica
+  it as the tenant on every data call; a worker restart or replica
   handoff recovers full tenant context from args alone.
 
   Returns `:ok` (terminal or attempted-to-terminal), `{:snooze, seconds}`
   (retry later), or `{:error, term}` for a broken trigger (row missing →
-  `:ok`; the durable row is the record — a missing row is a completed or
+  `:ok`; the durable row is the record; a missing row is a completed or
   reaped delivery, not a failure). A tenant-less trigger against
   multitenant resources is `{:error, :tenant_required}` before any data
   access. A trigger whose resource, source, route, or complete primary key does
@@ -366,7 +366,7 @@ defmodule AshHooks.Delivery do
   `Retry-After` cap. Omitted or `nil` retry options use these defaults.
   `:http`, `:http_opts`, `:tenant_aware_secrets`,
   `:snippet_capture`, `:snippet_redactor`, `:destination_policy`
-  (`{module, function}` or a 2-arity fn — `AshHooks.DestinationPolicy`), and
+  (`{module, function}` or a 2-arity fn; `AshHooks.DestinationPolicy`), and
   `:now` customize the documented seams.
 
   Optional `:retryable_statuses` replaces the retry set with a list of HTTP
@@ -701,24 +701,21 @@ defmodule AshHooks.Delivery do
   defp bind_direct_source(row, _config, _tenant), do: {:ok, row}
 
   @doc """
-  Bulk replay: re-arms every matching TERMINAL delivery row for a resend
-  (same contract as `resend/2` — same event ids, fresh ladders, who asked
-  recorded per row) with a dry-run count and a rate limit.
+  Re-arms matching terminal delivery rows through `resend/2`.
 
-  Filters: `:endpoint_id`, `:event_type`, `:status` (a list; required),
-  and `:from` / `:to` `DateTime` bounds on `inserted_at`. The resource
-  needs `inserted_at`.
+  Filters: `:endpoint_id`, `:event_type`, required `:status` list, and
+  `:from` / `:to` DateTime bounds on `inserted_at`. The resource needs that
+  timestamp attribute.
 
-  Options: `:endpoints` and `:requested_by` (required, as `resend/2`),
-  `:enqueue` (per-row seam), `:tenant`, `:now`, `:dry_run` (count the
-  matching rows and touch nothing — `{:ok, %{count: n}}`), `:limit` (max
-  rows this call; default 100, max 1,000, applied after the dry-run
-  filter), and `:per_second` (the rate limit — rows re-armed per second,
-  default 50; the call sleeps between second-sized batches, so page larger
-  replays through repeated calls).
+  Options: required `:endpoints` and `:requested_by`, plus `:enqueue`,
+  `:tenant`, `:now`, `:dry_run`, `:limit` (default 100, maximum 1,000), and
+  `:per_second` (default 50). Dry run counts the selected batch after applying
+  `:limit`, returning `{:ok, %{count: n}}` without changing rows.
 
-  Rows whose endpoint is gone or disabled are skipped and counted (never
-  re-armed): `{:ok, %{resent: n, skipped: n}}`.
+  A mutating call sleeps between second-sized batches to limit re-arming.
+  Gone or disabled endpoints are skipped: `{:ok, %{resent: n, skipped: n}}`.
+  Repeated calls can select skipped rows again; this API returns no pagination
+  cursor.
   """
   @spec replay(module(), keyword()) ::
           {:ok, %{resent: non_neg_integer(), skipped: non_neg_integer()}}
@@ -854,22 +851,24 @@ defmodule AshHooks.Delivery do
 
   @doc """
   Sends one signed synthetic TEST event of a chosen type to ONE endpoint,
-  OUTSIDE subscriptions — no subscription row is consulted or needed, and
+  OUTSIDE subscriptions; no subscription row is consulted or needed, and
   the delivery lands in your ledger like any other (the delivery log is
   the record).
 
-  The event gets a fresh `msg_` id (every test send is a new event — no
-  dedup suppression), the chosen type verbatim, and the endpoint's normal
-  signing mode. The default payload marks itself:
+  The event gets a fresh `msg_` id (every test send is a new event; no
+  dedup suppression), the chosen type verbatim, and the `:signing_mode`
+  option, defaulting to `:standard`. The default payload marks itself:
 
       {"test": true, "type": "invoice.paid", "timestamp": "..."}
 
-  A caller-supplied `:payload` (exact bytes) is used VERBATIM — wrap your
+  A caller-supplied `:payload` (exact bytes) is used VERBATIM; wrap your
   own test marker into it; the package never rewrites caller bytes.
 
-  Options: `:type` (required — atom or nonempty binary), `:payload`,
+  No subscription signing mode is inferred. `:signing_mode` defaults to `:standard`.
+
+  Options: `:type` (required, atom or nonempty binary), `:payload`, `:signing_mode`,
   `:deliveries` (the delivery resource, required), `:secret_resolver`
-  (required, the driver contract), `:max_attempts` (default 1 — a test
+  (required, the driver contract), `:max_attempts` (default 1; a test
   send reports one attempt's outcome; raise it for a retried test),
   plus the driver passthroughs (`:http`, `:http_opts`,
   `:destination_policy`, `:ssrf_check`, `:tenant_aware_secrets`,
@@ -1030,14 +1029,14 @@ defmodule AshHooks.Delivery do
 
   Options:
 
-    * `:endpoints` (required) — the endpoint resource, for the live check.
-    * `:requested_by` (required, nonempty binary ≤ 255) — recorded on the
+    * `:endpoints` (required); the endpoint resource, for the live check.
+    * `:requested_by` (required, nonempty binary ≤ 255); recorded on the
       row (`last_resend_by`/`last_resend_at`, `resend_count` bumps).
-    * `:enqueue` — the same enqueue seam dispatch uses (`{module, function}`
+    * `:enqueue`; the same enqueue seam dispatch uses (`{module, function}`
       or a 2-arity fn); `nil` re-arms the row and leaves driving to your
       worker/recovery.
-    * `:tenant` — the tenancy pre-flight applies.
-    * `:now` — the application clock for `last_resend_at`.
+    * `:tenant`; the tenancy pre-flight applies.
+    * `:now`; the application clock for `last_resend_at`.
 
   Only live endpoints resend: gone or disabled endpoints return
   `{:error, :endpoint_not_live}` before any write; a non-terminal row is
@@ -2611,8 +2610,8 @@ defmodule AshHooks.Delivery do
   # ────────────────────────── snippets + redaction ──────────────────────────
 
   @doc """
-  The DEFAULT response-snippet summary (ADR-0005's 2026-08-22 amendment):
-  a fixed grammar over the status and one ALLOWLISTED content-type token —
+  The default response summary:
+  a fixed grammar over the status and one ALLOWLISTED content-type token ;
   never body bytes, never a body-derived digest (a hash is correlation
   material that explains nothing).
 
@@ -2621,7 +2620,7 @@ defmodule AshHooks.Delivery do
 
   The status is an integer, the kind comes from a fixed vocabulary
   (`json | html | text | xml | binary | other`), and the token is either an
-  exact allowlist member or the literal `other` — a hostile Content-Type
+  exact allowlist member or the literal `other`; a hostile Content-Type
   header cannot smuggle material into the ledger through this string.
   """
   @spec summarize(integer() | nil, keyword() | list() | nil) :: String.t()
@@ -2636,14 +2635,12 @@ defmodule AshHooks.Delivery do
   end
 
   @doc """
-  The package snippet floor (ADR-0005, amended 2026-08-22) — what
-  opt-in-captured bodies pass through before persistence: NFKC
-  normalization (fullwidth homoglyph markers fold), a bounded-fixpoint
-  decode chain (percent ×2 + JSON \\u per-escape, re-run until stable — a
-  `\\u0025` escape can materialize `%` only after the percent layers), the
-  separator-tolerant marker patterns, the ≥16-char union-alphabet entropy
-  rule, a control-byte strip, and the 2048 cap. Un-redaction is impossible
-  by construction; invalid UTF-8 collapses to `[binary]`.
+  The built-in response-body redaction for opt-in capture.
+
+  Normalizes Unicode, decodes encoded text, removes recognized secret patterns
+  and control characters, and limits the result to 2,048 bytes. Invalid UTF-8
+  returns `[binary]`. Applications must add rules for sensitive values the
+  built-in patterns do not recognize.
   """
   @spec redact(term()) :: String.t() | nil
   def redact(body) when is_binary(body) do

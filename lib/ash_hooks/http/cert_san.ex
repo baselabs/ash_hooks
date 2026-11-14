@@ -1,14 +1,8 @@
 defmodule AshHooks.Http.CertSan do
   @moduledoc """
-  iPAddress Subject-Alternative-Name matching for the literal-IP https
-  floor (ADR-0009's TLS posture): a destination addressed by IP literal
-  has no hostname for RFC 6125 to check, so the peer certificate must
-  carry the exact IP in its `iPAddress` SAN — chain validation alone
-  would let ANY publicly-trusted cert authenticate the peer.
-
-  Works on the DER bytes `:ssl.peercert/1` returns. Fails CLOSED: a
-  malformed certificate, an undecodable SAN extension, or a missing SAN
-  never matches.
+  Checks that an HTTPS certificate names the destination's literal IP address
+  in an IP subject alternative name. Certificate-chain validation alone does
+  not establish that match.
   """
 
   @spec ip_san_match?(binary(), :inet.ip_address()) :: boolean()

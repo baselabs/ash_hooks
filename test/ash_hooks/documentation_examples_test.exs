@@ -19,106 +19,36 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
 
     alias AshHooks.Test.Repo
 
-    @shipped ["README.md", "usage-rules.md"] ++
-               Path.wildcard("documentation/tutorials/*.md") ++
-               Path.wildcard("documentation/livebooks/*.livemd")
-
-    @mounting ~r/forward\s+"[^"]*",\s*AshHooks\.Plug|AshHooks\.BodyReader,\s*:read_body/
+    alias AshHooks.Test.Documentation, as: Docs
 
     @secret "documentation-example-secret"
-
-    # name => {endpoint block, router block}
     @examples %{
       "readme-fixed-source" => {"readme-fixed-source", "readme-fixed-source"},
-      "readme-resolver" => {"readme-fixed-source", "readme-resolver"},
-      "get-started-resolver" => {"get-started-endpoint", "get-started-resolver"},
       "verify-any-sender-signature-header" =>
         {"readme-install-endpoint", "verify-any-sender-signature-header"}
     }
 
     def secret, do: {:ok, @secret}
 
-    setup do
-      AshHooks.CountingProvider.put_sink(self())
-      AshHooks.CountingProvider.put_outcome(:ok)
-      on_exit(&AshHooks.CountingProvider.cleanup/0)
-      :ok
-    end
-
-    test "every shipped mounting example is marked, and every marker is run" do
-      blocks = Enum.flat_map(@shipped, &blocks/1)
-      mounting = Enum.filter(blocks, &Regex.match?(@mounting, &1.code))
-
-      for block <- mounting do
-        assert block.name,
-               "#{block.file}:#{block.line} mounts the plug or the body reader without a " <>
-                 "<!-- tested: name --> marker that #{Path.basename(__ENV__.file)} runs"
-      end
-
-      run = @examples |> Map.values() |> Enum.flat_map(&Tuple.to_list/1) |> Enum.uniq()
-      marked = Enum.flat_map(blocks, &List.wrap(&1.name))
-
-      for name <- run,
-          do:
-            assert(Enum.count(marked, &(&1 == name)) == 1, "#{name} must mark exactly one block")
-
-      for name <- marked, do: assert(name in run, "#{name} is marked but not run")
-    end
-
-    test "no module documentation carries untested mounting code" do
-      {:ok, modules} = :application.get_key(:ash_hooks, :modules)
-
-      for module <- modules,
-          {:docs_v1, _, _, _, moduledoc, _, docs} <- [Code.fetch_docs(module)],
-          %{"en" => text} <- [moduledoc | Enum.map(docs, &elem(&1, 3))] do
-        refute Regex.match?(~r/^\s{4,}(forward\s+"|plug\s+Plug\.Parsers)/m, text),
-               "#{inspect(module)} documents mounting code; link the tested README section instead"
-      end
-    end
-
+    @tag documented_examples: ["readme-fixed-source"]
     test "README: a fixed source in a Phoenix endpoint and router" do
       port = start_example("readme-fixed-source", ReadmeFixed, ledger(sources: [payments: :hmac]))
       raw = event("fixed")
-      assert {200, _} = post(port, "/webhooks/payments", raw, [{"x-signature", sign(raw)}])
-      assert_receive {:handled, :webhook, %{"via" => "fixed"}}
-      assert {400, _} = post(port, "/webhooks/payments", raw, [{"x-signature", sign("x")}])
+
+      assert {200, _} =
+               post(port, "/webhooks/payments", raw, [
+                 {"x-payments-signature", structured_sign(raw)}
+               ])
+
+      assert {400, _} =
+               post(port, "/webhooks/payments", raw, [
+                 {"x-payments-signature", structured_sign("x")}
+               ])
+
       assert [%{status: :processed}] = rows(ReadmeFixed)
     end
 
-    test "README: a resolver for a scoped, multitenant ledger" do
-      ledger = ledger(sources: [payments: :hmac], tenant: :organization_id, scope: :account_id)
-      port = start_example("readme-resolver", ReadmeResolver, ledger)
-      raw = event("resolver")
-
-      assert {200, _} =
-               post(port, "/webhooks/payments/endpoint-1", raw, [{"x-signature", sign(raw)}])
-
-      assert_receive {:handled, :webhook, %{"via" => "resolver"}}
-
-      assert {404, _} =
-               post(port, "/webhooks/payments/missing", raw, [{"x-signature", sign(raw)}])
-
-      assert [%{status: :processed, organization_id: "org-1", account_id: "account-1"}] =
-               rows(ReadmeResolver, "org-1")
-    end
-
-    test "get-started: the endpoint reader and a scoped resolver" do
-      port =
-        start_example(
-          "get-started-resolver",
-          GetStarted,
-          ledger(sources: [orders: :hmac], scope: :account_id)
-        )
-
-      raw = event("get-started")
-
-      assert {200, _} =
-               post(port, "/webhooks/orders/endpoint-1", raw, [{"x-signature", sign(raw)}])
-
-      assert_receive {:handled, :webhook, %{"via" => "get-started"}}
-      assert [%{status: :processed, account_id: "account-1"}] = rows(GetStarted)
-    end
-
+    @tag documented_examples: ["readme-install-endpoint", "verify-any-sender-signature-header"]
     test "verify-any-sender: a header-source provider named by signature_header" do
       port =
         start_example(
@@ -129,54 +59,14 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
 
       raw = event("billing")
       assert {200, _} = post(port, "/webhooks/billing", raw, [{"x-billing-signature", sign(raw)}])
-      assert_receive {:handled, :webhook, %{"via" => "billing"}}
       assert {400, _} = post(port, "/webhooks/billing", raw, [])
       assert [%{status: :processed}] = rows(VerifyAnySender)
     end
 
     # ── the documents ──
 
-    defp blocks(file) do
-      file
-      |> File.read!()
-      |> String.split("\n")
-      |> Enum.with_index(1)
-      |> collect(file, nil, nil, [])
-    end
-
-    defp collect([], _file, _marker, _open, acc), do: Enum.reverse(acc)
-
-    defp collect([{line, number} | rest], file, marker, nil, acc) do
-      cond do
-        line == "```elixir" ->
-          collect(rest, file, nil, {marker, number, []}, acc)
-
-        match = Regex.run(~r/^<!-- tested: ([a-z0-9-]+) -->$/, line) ->
-          collect(rest, file, Enum.at(match, 1), nil, acc)
-
-        true ->
-          collect(rest, file, nil, nil, acc)
-      end
-    end
-
-    defp collect([{"```", _} | rest], file, _marker, {name, number, lines}, acc) do
-      block = %{
-        file: file,
-        line: number,
-        name: name,
-        code: lines |> Enum.reverse() |> Enum.join("\n")
-      }
-
-      collect(rest, file, nil, nil, [block | acc])
-    end
-
-    defp collect([{line, _} | rest], file, marker, {name, number, lines}, acc),
-      do: collect(rest, file, marker, {name, number, [line | lines]}, acc)
-
     defp example(name) do
-      [block] = @shipped |> Enum.flat_map(&blocks/1) |> Enum.filter(&(&1.name == name))
-
-      case Code.string_to_quoted!(block.code) do
+      case Docs.ast(name) do
         {:__block__, _, expressions} -> expressions
         expression -> [expression]
       end
@@ -289,21 +179,6 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
                 resource MyApp.WebhookLedger
               end
             end
-
-            # The stored-endpoint lookup the resolver examples call.
-            defmodule MyApp.Integrations do
-              def find_webhook_endpoint(provider, "endpoint-1") do
-                {:ok,
-                 %{
-                   source: String.to_existing_atom(provider),
-                   organization_id: "org-1",
-                   account_id: "account-1",
-                   connection: nil
-                 }}
-              end
-
-              def find_webhook_endpoint(_provider, _endpoint_id), do: {:error, :not_found}
-            end
           end
         ]
     end
@@ -316,13 +191,8 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
       body =
         case kind do
           :hmac ->
-            quote do
-              use AshHooks.Provider,
-                verify: [algorithm: :hmac_sha256, signature: {:header, "x-signature"}]
-
-              @impl true
-              defdelegate handle_event(type, payload), to: AshHooks.CountingProvider
-            end
+            {:defmodule, _, [_module, [do: provider]]} = Docs.ast("readme-payments-provider")
+            provider
 
           :header ->
             quote do
@@ -342,7 +212,7 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
               def parse_event_type(_payload), do: {:ok, :webhook}
 
               @impl true
-              defdelegate handle_event(type, payload), to: AshHooks.CountingProvider
+              defdelegate handle_event(type, payload), to: AshHooks.Provider.Event, as: :build
             end
         end
 
@@ -406,6 +276,12 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
 
     defp event(via), do: Jason.encode!(%{"id" => "event-" <> via, "via" => via})
 
+    defp structured_sign(raw) do
+      timestamp = Integer.to_string(System.system_time(:second))
+      signature = sign(timestamp <> "." <> raw)
+      "t=#{timestamp},v1=#{signature}"
+    end
+
     defp sign(raw), do: :crypto.mac(:hmac, :sha256, @secret, raw) |> Base.encode16(case: :lower)
 
     defp post(port, path, raw, headers) do
@@ -423,4 +299,534 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
       Ash.read!(ledger, tenant: tenant, authorize?: false)
     end
   end
+end
+
+defmodule AshHooks.DocumentationContentTest do
+  use ExUnit.Case, async: false
+
+  alias AshHooks.Test.Documentation, as: Docs
+
+  @providers ~w(readme-payments-provider upgrade-shop-provider verify-orders-provider
+    verify-shop-provider verify-prefixed-provider-in-application
+    verify-encoded-key-provider-in-application verify-structured-provider-in-application
+    verify-standard-provider-in-application verify-request-provider-in-application
+    verify-crm-provider verify-fields-provider verify-date-provider
+    verify-migrating-provider verify-classification-provider verify-custom-provider)
+  @internal ~r/ADR-\d|\bH\d+\b|\bD3\b|wayfinder|ship report|sirtify|ash_age|by owner decision|review probes?|\bunreleased\b|\bcandidate\b/i
+  @vendors ~r/comply[ _]?cube|hubspot|twilio|stripe|shopify|woocommerce|shippo|easypost|magento|adobe commerce|bigcommerce|ecwid|squarespace|\bwix\b|salesforce|prestashop|opencart|github|\bhttpbun\b/i
+
+  @tag skip: not Code.ensure_loaded?(Phoenix.Endpoint)
+  test "every Elixir block has one marker and one executing test" do
+    files = Enum.map(Docs.guides(), &{&1, File.read!(&1)})
+    assert :ok = Docs.validate!(files, documented_examples())
+  end
+
+  test "the marker gate rejects missing, orphaned, duplicated, and unexecuted markers" do
+    code = "<!-- tested: example -->\n```elixir\n:ok\n```"
+    assert :ok = Docs.validate!([{"example.md", code}], ["example"])
+
+    for text <- [
+          String.replace(code, "<!-- tested: example -->\n", ""),
+          "<!-- tested: orphan -->\n" <> code,
+          code <> "\n" <> code
+        ] do
+      assert_raise RuntimeError, fn -> Docs.validate!([{"example.md", text}], ["example"]) end
+    end
+
+    assert_raise RuntimeError, fn -> Docs.validate!([{"example.md", code}], []) end
+  end
+
+  test "all shipped prose and compiled public documentation reject internal and vendor text" do
+    paths =
+      Mix.Project.config()[:package][:files]
+      |> Enum.flat_map(fn pattern ->
+        for path <- Path.wildcard(pattern),
+            file <- if(File.dir?(path), do: Path.wildcard(Path.join(path, "**/*")), else: [path]),
+            File.regular?(file),
+            do: file
+      end)
+      |> Enum.uniq()
+
+    for path <- paths, Path.extname(path) in [".md", ".livemd"] do
+      assert_public_text!(path, File.read!(path))
+    end
+
+    {:ok, modules} = :application.get_key(:ash_hooks, :modules)
+
+    for module <- modules,
+        {:docs_v1, _, _, _, %{"en" => moduledoc}, _, docs} <- [Code.fetch_docs(module)] do
+      assert_public_text!(inspect(module), moduledoc)
+
+      for {_, _, _, %{"en" => text}, _} <- docs,
+          do: assert_public_text!(inspect(module), text)
+    end
+  end
+
+  test "module documentation links to tested mounting examples" do
+    {:ok, modules} = :application.get_key(:ash_hooks, :modules)
+
+    for module <- modules,
+        {:docs_v1, _, _, _, moduledoc, _, docs} <- [Code.fetch_docs(module)],
+        %{"en" => text} <- [moduledoc | Enum.map(docs, &elem(&1, 3))] do
+      refute Regex.match?(~r/^\s{4,}(forward\s+"|plug\s+Plug\.Parsers)/m, text),
+             "#{inspect(module)} documents mounting code; link the tested README section"
+    end
+  end
+
+  test "the shipped-text gate rejects internal labels and named vendor recipes" do
+    for text <- [
+          "ADR-0005",
+          "H8",
+          "D3",
+          "wayfinder",
+          "ship report",
+          "sirtify",
+          "ash_age",
+          "by owner decision",
+          "review probes",
+          "Stripe",
+          "Twilio",
+          "ComplyCube",
+          "Shopify",
+          "GitHub",
+          "Httpbun"
+        ] do
+      assert_raise ExUnit.AssertionError, fn -> assert_public_text!("guide.md", text) end
+    end
+
+    assert_public_text!("CHANGELOG.md", "Removed AshHooks.Provider.Stripe.")
+    assert_public_text!("guide.md", "https://github.com/baselabs/ash_hooks")
+  end
+
+  for name <- @providers do
+    @tag documented_examples: [name]
+    test "runs #{name} with actual cryptographic signatures" do
+      name = unquote(name)
+      module = Docs.compile(name)
+      {body, ctx, secret} = Docs.vector(name)
+      assert :ok = module.verify_signature(body, ctx, secret)
+
+      assert {:error, :invalid_signature} =
+               module.verify_signature(body, %{ctx | headers: %{}}, secret)
+
+      unless name == "verify-fields-provider" do
+        assert {:error, :invalid_signature} = module.verify_signature(body <> " ", ctx, secret)
+      end
+
+      {:ok, payload} = Jason.decode(body)
+      assert {:ok, type} = module.parse_event_type(payload)
+      assert {:ok, %AshHooks.Provider.Event{type: ^type}} = module.handle_event(type, payload)
+
+      if name == "verify-fields-provider" do
+        assert {:ok, "signed-1"} = module.event_identity(payload)
+        altered = Jason.encode!(%{payload | "event_id" => "changed"})
+        assert {:error, :invalid_signature} = module.verify_signature(altered, ctx, secret)
+      end
+    end
+  end
+
+  @tag documented_examples: [
+         "verify-rsa-provider-in-application",
+         "verify-jws-provider-in-application"
+       ]
+  test "RSA and JWS recipe fragments verify actual public-key signatures" do
+    for {name, jws?} <- [
+          {"verify-rsa-provider-in-application", false},
+          {"verify-jws-provider-in-application", true}
+        ] do
+      module = Docs.compile(name)
+      {body, ctx, key} = Docs.rsa_vector(jws?)
+      assert :ok = module.verify_signature(body, ctx, key)
+      assert {:error, :invalid_signature} = module.verify_signature(body <> "x", ctx, key)
+
+      if jws? do
+        assert {:ok, payload} = module.decode_payload(body)
+        assert {:ok, identity} = module.event_identity(payload)
+        assert is_binary(identity)
+      end
+    end
+  end
+
+  @tag documented_examples: ["verify-form-provider"]
+  test "form recipe signs sorted form fields and checks the JSON body digest" do
+    module = Docs.compile("verify-form-provider")
+    secret = :crypto.strong_rand_bytes(32)
+    url = "https://hooks.example.com/form"
+    body = "b=2&a=1"
+    signature = :crypto.mac(:hmac, :sha, secret, url <> "a1b2") |> Base.encode64()
+    ctx = %{request_uri: url, headers: %{"x-form-signature" => signature}}
+    assert :ok = module.verify_signature(body, ctx, secret)
+    assert {:error, :invalid_signature} = module.verify_signature("b=3&a=1", ctx, secret)
+
+    body = ~s({"id":"event-1"})
+    digest = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
+    url = url <> "?body_digest=" <> digest
+    signature = :crypto.mac(:hmac, :sha, secret, url) |> Base.encode64()
+    ctx = %{ctx | request_uri: url, headers: %{"x-form-signature" => signature}}
+    assert :ok = module.verify_signature(body, ctx, secret)
+    assert {:error, :invalid_signature} = module.verify_signature(body <> " ", ctx, secret)
+  end
+
+  @tag documented_examples: ["verify-public-url-in-application"]
+  test "public URL function uses application configuration and the original path/query" do
+    namespace = Docs.namespace("verify-public-url-in-application")
+    code = Docs.ast("verify-public-url-in-application")
+
+    quote do
+      defmodule unquote(namespace) do
+        unquote(code)
+      end
+    end
+    |> Docs.lexical()
+    |> Code.compile_quoted()
+
+    previous = Application.get_env(:my_app, :public_webhook_base_url)
+    Application.put_env(:my_app, :public_webhook_base_url, "https://hooks.example.com")
+    on_exit(fn -> restore_env(:public_webhook_base_url, previous) end)
+    conn = %{request_path: "/hooks/orders", query_string: "account=1"}
+    assert namespace.public_url(conn) == "https://hooks.example.com/hooks/orders?account=1"
+  end
+
+  @tag documented_examples: [
+         "upgrade-dependency-1-0-4",
+         "upgrade-string-config-in-application",
+         "upgrade-dependency-1-0"
+       ]
+  test "upgrade constraints and both string-counting configurations evaluate as written" do
+    for {name, requirement} <- [
+          {"upgrade-dependency-1-0-4", "~> 1.0.4"},
+          {"upgrade-dependency-1-0", "~> 1.0"}
+        ] do
+      assert {{:ash_hooks, ^requirement}, _} = Code.eval_quoted(Docs.ast(name))
+    end
+
+    code = "import Config\n" <> Docs.block("upgrade-string-config-in-application").code
+    assert [ash: [default_string_length_count: :mixed]] = Config.Reader.eval!("config.exs", code)
+    assert Enum.count(Regex.scan(~r/default_string_length_count:/, code)) == 2
+  end
+
+  @tag documented_examples: ["upgrade-source-in-application", "upgrade-adoption-in-application"]
+  test "upgrade source and adoption fragments run against a scoped tenant ledger" do
+    namespace = Docs.namespace("upgrade-application")
+    source = Docs.ast("upgrade-source-in-application")
+
+    quote do
+      defmodule unquote(namespace) do
+        defmodule MyApp.Repo do
+          use AshSqlite.Repo, otp_app: :ash_hooks
+          @impl true
+          def write_transactions?, do: true
+          @impl true
+          def min_sqlite_version, do: %Version{major: 3, minor: 54, patch: 1}
+        end
+
+        defmodule MyApp.Webhooks.ExistingSource do
+          use AshHooks.Provider,
+            verify: [algorithm: :hmac_sha256, signature: {:header, "x-signature"}]
+
+          @impl true
+          def event_identity(%{"id" => id}), do: {:ok, id}
+        end
+
+        defmodule MyApp.InboundLedger do
+          use Ash.Resource,
+            domain: MyApp.Domain,
+            data_layer: AshSqlite.DataLayer,
+            extensions: [AshHooks, AshHooks.InboundDelivery]
+
+          sqlite do
+            repo(MyApp.Repo)
+            table "documentation_upgrade_ledger"
+          end
+
+          attributes do
+            attribute :org_id, :string, allow_nil?: false
+            attribute :account_id, :string, allow_nil?: false
+            timestamps()
+          end
+
+          multitenancy do
+            strategy :attribute
+            attribute :org_id
+          end
+
+          inbound_delivery do
+            scope_identity [:account_id]
+          end
+
+          actions do
+            defaults [:read]
+          end
+
+          unquote(source)
+        end
+
+        defmodule MyApp.Domain do
+          use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
+
+          resources do
+            resource MyApp.InboundLedger
+          end
+        end
+      end
+    end
+    |> Docs.lexical()
+    |> Code.compile_quoted()
+
+    repo = Module.concat([namespace, MyApp, Repo])
+    database = Path.join(System.tmp_dir!(), "ash_hooks_docs_#{Ash.UUID.generate()}.sqlite3")
+
+    start_supervised!(
+      {repo,
+       database: database,
+       pool_size: 1,
+       journal_mode: :wal,
+       busy_timeout: 5_000,
+       synchronous: :normal}
+    )
+
+    on_exit(fn ->
+      for suffix <- ["", "-wal", "-shm"], do: File.rm(database <> suffix)
+    end)
+
+    repo.query!("""
+    CREATE TABLE documentation_upgrade_ledger (
+      id TEXT PRIMARY KEY, provider TEXT NOT NULL, external_event_id TEXT NOT NULL,
+      external_event_type TEXT, payload TEXT NOT NULL, payload_digest TEXT NOT NULL,
+      status TEXT NOT NULL, fencing_token INTEGER NOT NULL DEFAULT 0,
+      lease_expires_at TEXT, error_class TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+      org_id TEXT NOT NULL, account_id TEXT NOT NULL, inserted_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )
+    """)
+
+    repo.query!(
+      "CREATE UNIQUE INDEX documentation_upgrade_identity ON documentation_upgrade_ledger (org_id, provider, external_event_id, account_id)"
+    )
+
+    ledger = Module.concat([namespace, MyApp, InboundLedger])
+    tenant = "org-1"
+    account_id = "account-1"
+
+    Ash.Changeset.for_create(
+      ledger,
+      :ingest,
+      %{
+        provider: :existing_source,
+        external_event_id: "old-body-digest",
+        external_event_type: "webhook",
+        payload: %{"id" => "canonical-1"},
+        payload_digest: "original-body-digest",
+        account_id: account_id
+      },
+      tenant: tenant
+    )
+    |> Ash.create!(authorize?: false)
+
+    {_value, binding} =
+      Docs.eval("upgrade-adoption-in-application", namespace,
+        tenant: tenant,
+        account_id: account_id
+      )
+
+    assert binding[:plan].unresolved == []
+    assert binding[:plan].conflicts == []
+
+    assert [%{external_event_id: "canonical-1"}] =
+             Ash.read!(ledger, tenant: tenant, authorize?: false)
+  end
+
+  @tag documented_examples: ["upgrade-binding-in-application"]
+  test "upgrade binding helpers produce declaration and queue identifiers" do
+    {_value, binding} = Docs.eval("upgrade-binding-in-application", __MODULE__)
+    assert String.starts_with?(binding[:source], "ash_hooks:")
+    assert String.starts_with?(binding[:route], "ash_hooks:")
+    assert binding[:source] != binding[:route]
+  end
+
+  @tag :postgres
+  @tag documented_examples: [
+         "get-started-migration-in-application",
+         "get-started-resources-in-application",
+         "get-started-ingress-in-application",
+         "get-started-dispatch-in-application",
+         "get-started-worker-in-application",
+         "get-started-telemetry-in-application"
+       ]
+  test "the complete guide runs migrations, handlers, dispatch, a persisted queue, and telemetry" do
+    namespace = Docs.namespace("get-started-application")
+    repo = Module.concat([namespace, MyApp, Repo])
+    domain = Module.concat([namespace, MyApp, Domain])
+    previous_domains = Application.get_env(:ash_hooks, :ash_domains)
+    Application.put_env(:ash_hooks, :ash_domains, [domain])
+
+    on_exit(fn ->
+      if is_nil(previous_domains),
+        do: Application.delete_env(:ash_hooks, :ash_domains),
+        else: Application.put_env(:ash_hooks, :ash_domains, previous_domains)
+    end)
+
+    quote do
+      defmodule unquote(namespace) do
+        unquote(Docs.ast("get-started-resources-in-application"))
+        unquote(Docs.ast("get-started-worker-in-application"))
+      end
+    end
+    |> Docs.lexical()
+    |> Code.compile_quoted()
+
+    config = AshHooks.TestPostgres.Repo.config()
+    previous_repo_config = Application.get_env(:my_app, repo)
+    Application.put_env(:my_app, repo, config)
+    on_exit(fn -> restore_env(repo, previous_repo_config) end)
+    start_supervised!({repo, config})
+    migration = Module.concat(namespace, Migration)
+    change = Docs.ast("get-started-migration-in-application")
+
+    quote do
+      defmodule unquote(migration) do
+        use Ecto.Migration
+
+        def change do
+          unquote(change)
+        end
+      end
+    end
+    |> Docs.lexical()
+    |> Code.compile_quoted()
+
+    [[migration_table]] = repo.query!("SELECT to_regclass('public.schema_migrations')::text").rows
+    :ok = Ecto.Migrator.up(repo, 3_100_001, migration, log: false)
+    oban_prefix = "documentation_examples_oban"
+    oban_migration = Module.concat(namespace, ObanMigration)
+
+    quote do
+      defmodule unquote(oban_migration) do
+        use Ecto.Migration
+        def up, do: Oban.Migrations.up(prefix: "documentation_examples_oban")
+        def down, do: Oban.Migrations.down(prefix: "documentation_examples_oban")
+      end
+    end
+    |> Code.compile_quoted()
+
+    :ok = Ecto.Migrator.up(repo, 3_100_002, oban_migration, log: false)
+
+    on_exit(fn ->
+      Ecto.Migrator.down(AshHooks.TestPostgres.Repo, 3_100_001, migration, log: false)
+      Ecto.Migrator.down(AshHooks.TestPostgres.Repo, 3_100_002, oban_migration, log: false)
+      AshHooks.TestPostgres.Repo.query!("DROP SCHEMA #{oban_prefix} CASCADE")
+
+      if is_nil(migration_table),
+        do: AshHooks.TestPostgres.Repo.query!("DROP TABLE schema_migrations")
+
+      :telemetry.detach("my-ash-hooks")
+      Application.delete_env(:my_app, :orders_webhook_secret)
+    end)
+
+    oban = Module.concat([namespace, MyApp, Oban])
+
+    start_supervised!(
+      {Oban,
+       repo: repo,
+       name: oban,
+       prefix: oban_prefix,
+       queues: false,
+       plugins: [],
+       engine: Oban.Engines.Basic,
+       testing: :disabled}
+    )
+
+    previous_url = System.get_env("PUBLIC_WEBHOOK_TEST_URL")
+    previous_secret = System.get_env("OUTBOUND_WEBHOOK_SECRET")
+    System.put_env("PUBLIC_WEBHOOK_TEST_URL", "http://localhost:52871/documentation-example")
+    System.put_env("OUTBOUND_WEBHOOK_SECRET", AshHooks.Signing.generate_secret())
+
+    on_exit(fn ->
+      restore_system_env("PUBLIC_WEBHOOK_TEST_URL", previous_url)
+      restore_system_env("OUTBOUND_WEBHOOK_SECRET", previous_secret)
+    end)
+
+    {_value, binding} = Docs.eval("get-started-ingress-in-application", namespace)
+    {_value, binding} = Docs.eval("get-started-dispatch-in-application", namespace, binding)
+    worker = Module.concat([namespace, MyApp, WebhookDeliveryWorker])
+    secrets = Module.concat([namespace, MyApp, Secrets])
+    assert {:ok, secret} = secrets.webhook_secret("outbound-main")
+    assert secret == System.fetch_env!("OUTBOUND_WEBHOOK_SECRET")
+    assert :ok = worker.enqueue(binding[:delivery], binding[:event])
+    assert [[1]] = repo.query!("SELECT count(*) FROM #{oban_prefix}.oban_jobs").rows
+    assert {:ok, _binding} = Docs.eval("get-started-telemetry-in-application", namespace)
+  end
+
+  @tag documented_examples: [
+         "get-started-dependencies-in-project",
+         "get-started-config-in-application"
+       ]
+  test "dependency and config fragments execute in their project and configuration contexts" do
+    namespace = Docs.namespace("get-started-dependencies-in-project")
+
+    quote do
+      defmodule unquote(namespace) do
+        unquote(Docs.ast("get-started-dependencies-in-project"))
+      end
+    end
+    |> Code.compile_quoted()
+
+    assert {:ash_hooks, "~> 3.1"} in namespace.deps()
+    code = "import Config\n" <> Docs.block("get-started-config-in-application").code
+
+    assert [ash: [default_string_length_count: :codepoints]] =
+             Config.Reader.eval!("config.exs", code)
+  end
+
+  defp documented_examples do
+    modules = [
+      __MODULE__,
+      AshHooks.DocumentationExamplesTest,
+      Docs.namespace("verify-provider-test-in-application")
+    ]
+
+    modules
+    |> Enum.filter(&function_exported?(&1, :__ex_unit__, 0))
+    |> Enum.flat_map(fn module -> module.__ex_unit__().tests end)
+    |> Enum.flat_map(fn test -> test.tags[:documented_examples] || [] end)
+    |> Enum.uniq()
+  end
+
+  defp assert_public_text!(path, text) do
+    refute Regex.match?(@internal, text), "#{path}: internal vocabulary in shipped text"
+    refute String.contains?(text, "—"), "#{path}: em dash in shipped text"
+
+    text = Regex.replace(~r{https://github\.com/baselabs/ash_hooks[^\s)]*}, text, "")
+
+    text =
+      if path == "UPGRADING.md" do
+        Regex.replace(~r/These modules no longer exist:.*?`AshHooks\.Provider\.Wix`\./s, text, "")
+      else
+        text
+      end
+
+    unless path == "CHANGELOG.md",
+      do: refute(Regex.match?(@vendors, text), "#{path}: vendor guidance in shipped text")
+  end
+
+  defp restore_env(key, nil), do: Application.delete_env(:my_app, key)
+  defp restore_env(key, value), do: Application.put_env(:my_app, key, value)
+  defp restore_system_env(key, nil), do: System.delete_env(key)
+  defp restore_system_env(key, value), do: System.put_env(key, value)
+end
+
+if Code.ensure_loaded?(AshHooks.Provider) do
+  namespace = AshHooks.Test.Documentation.namespace("verify-provider-test-in-application")
+  provider = AshHooks.Test.Documentation.ast("verify-orders-provider")
+  example = AshHooks.Test.Documentation.ast("verify-provider-test-in-application")
+
+  quote do
+    defmodule unquote(namespace) do
+      use ExUnit.Case, async: false
+      unquote(provider)
+      @tag documented_examples: ["verify-provider-test-in-application"]
+      unquote(example)
+    end
+  end
+  |> AshHooks.Test.Documentation.lexical()
+  |> Code.compile_quoted()
 end

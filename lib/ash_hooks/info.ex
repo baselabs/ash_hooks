@@ -1,8 +1,6 @@
 defmodule AshHooks.Info do
   @moduledoc """
-  Accessors for a resource's `webhooks` declarations, read via
-  `Spark.Dsl.Extension` (the ash_age pattern — no generated getter in this
-  spark version).
+  Reads compiled webhook declarations and delivery configuration.
   """
 
   alias Spark.Dsl.Extension
@@ -32,12 +30,8 @@ defmodule AshHooks.Info do
     do: Extension.get_opt(resource, [:outbound_delivery], :payload_attribute, :payload)
 
   @doc """
-  Whether the compiled `:dispatch`/`:ingest` action accepts a
-  caller-supplied `:id` (the runtimes classify created/duplicate by id
-  comparison in that shape; otherwise by an identity pre-read — H2).
-  Reads the accept-list transformer's PERSISTED decision, so the runtime
-  and the compiled action can never disagree (composite and non-`:id`
-  primary keys make a re-derived predicate diverge from the accept list).
+  Returns whether the compiled ingest or dispatch action accepts a
+  caller-supplied `:id`.
   """
   @spec writable_id?(module()) :: boolean()
   def writable_id?(resource),

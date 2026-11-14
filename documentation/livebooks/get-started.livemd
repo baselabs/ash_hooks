@@ -13,12 +13,13 @@
 * Verify directly, without a ledger, and see what an invalid configuration reports
 * Send an outbound webhook to an existing WebHook Tester inbox and verify its captured bytes
 * Scope a multi-tenant deployment: one tenant's dispatch never reaches another's rows
-* Fit the extensions to a domain that reserves `payload`, owns an `active` switch, and types its registers with atoms
+* Fit the extensions to a domain that reserves `payload`, owns an `active` switch, and uses atom-valued subscription types
 * Observe everything through telemetry
 * Prune old rows with the retention hooks
 
 This notebook uses a real SQLite database and an existing WebHook Tester
-receiver. The receiver must already answer at `http://127.0.0.1:52871`;
+receiver, an open-source request-capture server. The notebook checks captured
+request bytes, headers, and signatures. The receiver must already answer at `http://127.0.0.1:52871`;
 set `LOCAL_WEBHOOK_TESTER_PORT` to use another existing receiver. See
 the [local receiver guide](https://github.com/baselabs/ash_hooks/blob/main/ops/local/README.md).
 The notebook starts no server.
@@ -44,8 +45,8 @@ Mix.install(
 ```
 
 ```elixir
-# Ash 3.33+ requires every application to choose how string length is
-# counted before any resource compiles — this notebook is its own app.
+# Set Ash's string length counting mode before compiling any resource.
+# This notebook is its own application.
 # :codepoints is Ash's recommended value: max_length bounds value size
 # and matches how SQL data layers count.
 Application.put_env(:ash, :default_string_length_count, :codepoints)
@@ -133,7 +134,7 @@ defmodule Tour.Orders do
   # call and the ledger update re-runs it on redelivery.
   @impl true
   def handle_event(type, payload) do
-    Agent.update(Tour.Handled, &[payload["id"] | &1])
+    Agent.update(Tour.Handled, fn ids -> Enum.uniq([payload["id"] | ids]) end)
     {:ok, %Tour.VerifiedEvent{type: type, payload: payload}}
   end
 end
@@ -343,7 +344,7 @@ defmodule Tour.Attempt do
   # The attempt history: one durable row per delivery attempt (time,
   # outcome, classified reason, HTTP status, latency, the signing key
   # REFERENCE). Written by the delivery runtime when the worker config
-  # carries `attempts:` — the audit trail behind delivery logs and health.
+  # carries `attempts:`; the audit trail behind delivery logs and health.
   use Ash.Resource,
     domain: Tour.Domain,
     data_layer: AshSqlite.DataLayer,
@@ -491,7 +492,7 @@ Tour.Repo.query!("CREATE TABLE IF NOT EXISTS tour_orders (id TEXT PRIMARY KEY)")
 ## Observe everything: telemetry
 
 ```elixir
-# exact event names — :telemetry.execute/3 matches exact names only
+# exact event names; :telemetry.execute/3 matches exact names only
 :telemetry.attach_many(
   "tour",
   [
@@ -726,7 +727,7 @@ IO.inspect(sms.payload, label: "stored form payload")
 | `ingest/4` result | Meaning | Answer |
 | --- | --- | --- |
 | `{:ok, _, %{status: s}}` with `s` in `[:processed, :failed_permanent, :superseded]` | terminal: done, or permanently failed (on your operator surface) | 2xx |
-| `{:ok, _, _row}` with another status | your handler failed and can retry | 5xx, so the sender retries |
+| `{:ok, _, _row}` with another status | processing is pending, already running, or retryable; return 5xx to request redelivery | 5xx, so the sender retries |
 | `{:error, %InvalidSignature{}}`, `%StaleTimestamp{}`, `%MalformedPayload{}` | not authentic, a replay, or not decodable | 4xx |
 | `{:error, %NoWebhookSecret{}}` or `{:error, :source_paused}` | your configuration or a deliberate pause | 5xx, so nothing is lost |
 
@@ -784,7 +785,7 @@ receiver_session = Ash.UUID.generate()
 )
 IO.puts("using the existing receiver on #{port}")
 
-# Registration rejects private/loopback URLs by design — ash_hooks
+# Registration rejects private/loopback URLs by design; ash_hooks
 # treats webhook destinations as untrusted input. This demo needs a
 # trusted local receiver, so we register the endpoint with a public URL and
 # repoint the stored row for this local inspection; production
@@ -815,7 +816,7 @@ Ash.create!(Tour.Subscription, %{endpoint_id: endpoint.id, event_types: ["order_
 {:ok, event} = AshHooks.Event.new(type: :order_paid, payload: Jason.encode!(%{"order" => 1}))
 
 # No enqueue configured: dispatch persists the durable rows only
-# (the deferred pattern — an Oban-backed app wires enqueue: here)
+# (the deferred pattern; an Oban-backed app wires enqueue: here)
 {:ok, results} = AshHooks.dispatch(Tour.Order, :order_paid, event)
 IO.inspect(Enum.map(results, & &1.status), label: "dispatch results")
 ```
@@ -824,7 +825,7 @@ IO.inspect(Enum.map(results, & &1.status), label: "dispatch results")
 # Drive the delivery machine directly (the shape an Oban worker uses).
 # Two options permit this trusted loopback receiver: `ssrf_check` replaces the
 # send-time destination re-check, and http_opts' `validate_destination:
-# false` relaxes the HTTP adapter's own pin — both exist for tests and
+# false` relaxes the HTTP adapter's own pin; both exist for tests and
 # diagnostics; production configs keep both guards on.
 outbound_secret = AshHooks.Signing.generate_secret()
 config = [
@@ -877,7 +878,7 @@ IO.puts("receiver retained exact bytes and a valid signature")
 IO.puts("terminal redrive retained exactly one receiver request")
 
 # One attempt row was recorded beside the delivery: outcome, HTTP status,
-# latency, the signing key REFERENCE — and, because this endpoint opted in
+# latency, the signing key REFERENCE; and, because this endpoint opted in
 # per row, the redacted body and only allowlisted response headers.
 [attempt] = Ash.read!(Tour.Attempt, authorize?: false)
 :succeeded = attempt.outcome
@@ -904,7 +905,8 @@ IO.puts("delivery log and attempt history answer from the rows")
 IO.puts("""
 Response bodies stay off by default everywhere: without the endpoint's
 per-row opt-in, attempt rows carry the status + content-type summary only
-(the delivery row's response_snippet stays that summary in all cases).
+This run leaves the delivery row's snippet as a summary. A direct run with
+`snippet_capture: true` can store a bounded, redacted body there.
 """)
 ```
 
@@ -927,7 +929,7 @@ per-row opt-in, attempt rows carry the status + content-type summary only
 1 = re_armed.resend_count
 
 # Bulk replay counts before it touches anything (the re-armed row is
-# pending — that is the replays-eligible set here)
+# pending; that is the replays-eligible set here)
 {:ok, %{count: 1}} =
   AshHooks.Delivery.replay(Tour.Delivery,
     endpoints: Tour.Endpoint,
@@ -937,7 +939,7 @@ per-row opt-in, attempt rows carry the status + content-type summary only
   )
 
 # ...and the second sweep re-arms nothing more (the only row is pending,
-# not terminal — live rows are left to their schedule)
+# not terminal; live rows are left to their schedule)
 {:ok, %{resent: 0, skipped: 0}} =
   AshHooks.Delivery.replay(Tour.Delivery,
     endpoints: Tour.Endpoint,
@@ -946,7 +948,7 @@ per-row opt-in, attempt rows carry the status + content-type summary only
     per_second: 10
   )
 
-IO.puts("resend recorded who asked; replay counted and rate-limited")
+IO.puts("resend recorded who asked; replay counted matching rows and left nonmatching rows unchanged")
 ```
 
 <!-- livebook:{"break_marks":true} -->
@@ -1072,7 +1074,7 @@ end
 
 ```elixir
 # Tenant-bearing tables: the multitenancy attribute prefixes the unique
-# identity — "have I seen this event for this endpoint" is per-tenant
+# identity; "have I seen this event for this endpoint" is per-tenant
 Tour.Repo.query!("""
 CREATE TABLE tour_tenant_endpoints (
   id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
@@ -1126,7 +1128,7 @@ end
 
 {:ok, event} = AshHooks.Event.new(type: :order_paid, payload: Jason.encode!(%{"order" => 7}))
 
-# org_a dispatches: the fanout read itself is tenant-scoped — org_b's
+# org_a dispatches: the fanout read itself is tenant-scoped; org_b's
 # subscription is invisible, so no row, no signature, no bytes for org_b
 {:ok, [result]} = AshHooks.dispatch(Tour.TenantOrder, :order_paid, event, tenant: "org_a")
 IO.inspect(result.status, label: "org_a dispatch result")
@@ -1135,10 +1137,10 @@ IO.inspect(result.status, label: "org_a dispatch result")
 IO.inspect({a_row.org_id, a_row.status}, label: "org_a's row")
 
 [] = Ash.read!(Tour.TenantDelivery, authorize?: false, tenant: "org_b")
-IO.puts("org_b's partition: empty — the event never existed for org_b")
+IO.puts("org_b's partition: empty; the event never existed for org_b")
 
 # A tenant-less call against a multitenant set fails closed before any
-# data access — the named error, not a crash:
+# data access; the named error, not a crash:
 {:error, :tenant_required} = AshHooks.dispatch(Tour.TenantOrder, :order_paid, event)
 IO.puts("tenant-less dispatch: {:error, :tenant_required}")
 ```
@@ -1148,7 +1150,7 @@ IO.puts("tenant-less dispatch: {:error, :tenant_required}")
 ## Retention: prune the terminal rows
 
 ```elixir
-# Nothing is older than 30 days — prune finds nothing yet
+# Nothing is older than 30 days; prune finds nothing yet
 {:ok, 0} = AshHooks.Ingress.prune(Tour.Ledger, older_than: DateTime.add(DateTime.utc_now(), -30, :day))
 
 # Backdate the processed rows past a 30-day TTL and prune again
@@ -1172,9 +1174,9 @@ IO.puts("Pruned #{processed} terminal rows past the TTL; recent and non-terminal
 ## Fit the extensions to your domain
 
 ```elixir
-# A consumer whose domain reserves `payload` for its own sole store,
-# owns an `active` switch on the endpoint register, types its
-# subscription register as a closed atom enum, keys rows with
+# A consumer whose domain uses a custom payload column,
+# owns an `active` endpoint switch, uses atom-valued subscription types,
+# keys rows with
 # uuid_v7, and keeps the ledger append-only.
 defmodule Tour.FitEndpoint do
   use Ash.Resource,
@@ -1189,7 +1191,7 @@ defmodule Tour.FitEndpoint do
 
   attributes do
     uuid_v7_primary_key(:id)
-    # the consumer's own switch — the package injects no `status`
+    # the consumer's own switch; the package injects no `status`
     attribute(:active, :boolean, allow_nil?: false, default: true, public?: true)
   end
 
@@ -1220,7 +1222,7 @@ defmodule Tour.FitSubscription do
     uuid_v7_primary_key(:id)
 
     # the consumer's closed atom register replaces the injected
-    # {:array, :string} default ["*"] — matching handles atoms
+    # {:array, :string} default ["*"]; matching handles atoms
     attribute(:event_types, {:array, :atom},
       allow_nil?: false,
       public?: true,
@@ -1258,7 +1260,7 @@ defmodule Tour.FitDelivery do
   end
 
   outbound_delivery do
-    # the domain reserves `payload` — the exact-bytes column is renamed
+    # the domain reserves `payload`; the exact-bytes column is renamed
     payload_attribute(:event_bytes)
     # append-only ledger: no destroy action is injected at all
     prune_action(:none)

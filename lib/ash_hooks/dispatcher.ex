@@ -1,8 +1,8 @@
 defmodule AshHooks.Dispatcher do
   @moduledoc """
-  The outbound fanout driver: one event → every matching subscription's
-  endpoint → a durable per-endpoint delivery row (+ an enqueue handoff),
-  with per-endpoint isolation — the outbound twin of `AshHooks.Ingress`.
+  Creates one durable delivery for each matching enabled endpoint, then calls
+  the configured queue callback. A failure for one endpoint does not stop
+  the others.
 
       {:ok, event} =
         AshHooks.Event.new(
@@ -30,7 +30,7 @@ defmodule AshHooks.Dispatcher do
     * every matching enabled endpoint gets a delivery row unique on
       `{endpoint_id, event_uuid}`. The worker's queue identity adds the
       complete delivery key, resource modules, source, route, and tenant;
-    * the row persists before enqueue — payload bytes included —
+    * the row persists before enqueue; payload bytes included ;
       so a later runtime can sign and send from the ledger of record
       alone;
     * one endpoint's enqueue failure or raise records `:enqueue_failed`
@@ -42,7 +42,7 @@ defmodule AshHooks.Dispatcher do
       30-second lease, so a crashed claimant becomes recoverable without
       borrowing the send lease or retry schedule;
     * with no `:enqueue` configured the rows persist `:pending` and the
-      results say `:deferred` — the durable ledger IS the source of
+      results say `:deferred`; the durable ledger IS the source of
       truth; the delivery runtime (`AshHooks.Delivery`) drives pending
       rows from there.
 
@@ -51,9 +51,8 @@ defmodule AshHooks.Dispatcher do
   divergent effective signing modes for one endpoint) return
   `{:error, reason}` before any row is written. Subscriptions are read through the
   consumer's primary read action and endpoints through their resource's
-  `get` — both unauthorized, the signature of the inbound machine: the
-  dispatch call is the trust boundary for writes, read surfaces stay
-  governed by consumer policies (ADR-0005).
+  `get`. Internal dispatcher reads bypass authorization. Application policies
+  govern exposed reads; only trusted application code should call dispatch.
   """
 
   require Ash.Expr
@@ -82,23 +81,23 @@ defmodule AshHooks.Dispatcher do
 
   @doc """
   Fans one event out to every matching subscription's enabled endpoint.
-  Returns `{:ok, results}` — one map per endpoint
+  Returns `{:ok, results}`; one map per endpoint
   (`%{endpoint_id:, subscription_id:, status:, error:}` with `status` in
   `:created | :duplicate | :deferred | :enqueue_failed | :mark_failed |
-  :endpoint_error`) — or `{:error, reason}` for global failures.
+  :endpoint_error`); or `{:error, reason}` for global failures.
 
   Options:
 
-    * `:enqueue` — the enqueue seam: a 2-arity function
+    * `:enqueue`; the enqueue seam: a 2-arity function
       (`fn delivery, event -> :ok | {:error, term}`) or a `{module, function}`
       pair applied as `apply(module, function, [delivery, event])`. The
       delivery runtime `AshHooks.Delivery.run/2` via the worker macro is its
       canonical implementation; `nil` (the default) persists `:pending` rows
       and returns `:deferred` results.
-    * `:enqueue_key` — stable, nonempty binary (up to 512 bytes) or atom
+    * `:enqueue_key`; stable, nonempty binary (up to 512 bytes) or atom
       identity for an anonymous enqueue callback. Supply it when periodic
       recovery must reconstruct that route.
-    * `:tenant` — the dispatch tenant. On multitenant resources (the
+    * `:tenant`; the dispatch tenant. On multitenant resources (the
       tenancy contract: every touched resource declares attribute
       multitenancy over the same attribute) this scopes the fanout, the
       endpoint resolution, and every ledger write to the tenant; omitting
@@ -649,7 +648,7 @@ defmodule AshHooks.Dispatcher do
   same atomic update that checks its state and due time. Successful durable
   admission releases the token and PARKS the enqueue lease for one 30-second
   horizon (the row stays unclaimable while concurrent sweeps from the same
-  recovery window are in flight — a sweep inside that horizon sees the row as a
+  recovery window are in flight; a sweep inside that horizon sees the row as a
   contended `:duplicate`); the row's delivery state, attempts, retry time, send
   lease, and `last_error` diagnostic are preserved. A failed enqueue releases
   the claim fully and records its bounded error. A crash leaves a reclaimable lease. The enqueue

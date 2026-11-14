@@ -1,8 +1,8 @@
 defmodule AshHooks.OutboundEvent do
   @moduledoc """
   Turns the consumer's resource into the outbound EVENT log: exactly one
-  row per dispatched event — its id, type, declared payload version, time,
-  and exact payload bytes — recorded whether or not any endpoint was
+  row per dispatched event; its id, type, declared payload version, time,
+  and exact payload bytes; recorded whether or not any endpoint was
   enabled (or existed), with its own retention.
 
       use Ash.Resource,
@@ -16,12 +16,12 @@ defmodule AshHooks.OutboundEvent do
 
   The dispatcher writes through the injected `:record` machine action (an
   idempotent no-touch upsert on the event id); a log write failure never
-  stops the fanout — it surfaces as `[:ash_hooks, :event, :record_failed]`
+  stops the fanout; it surfaces as `[:ash_hooks, :event, :record_failed]`
   telemetry. The delivery ledger remains the delivery contract; this log
-  is the source of record for what was EMITTED — the answer behind "what
+  is the source of record for what was EMITTED; the answer behind "what
   did we send, ever, that endpoint X never received?".
 
-  Rows carry the exact payload bytes you dispatched — govern read access
+  Rows carry the exact payload bytes you dispatched; govern read access
   with your own policies. The resource needs `timestamps()` (the event's
   time is `inserted_at`), and your migration carries the table plus the
   `unique_event` index on `[:event_uuid]`.
@@ -154,24 +154,22 @@ defmodule AshHooks.OutboundEvent do
   # ────────────────────────── replay ──────────────────────────
 
   @doc """
-  Replays logged events to a CHOSEN endpoint — one event (`:event_uuid`)
-  or a filtered set (`:event_type` with optional `:from`/`:to`) —
-  including an endpoint that was disabled when the event happened or was
-  added later. Replays KEEP the event id (a Standard Webhooks receiver
-  deduplicates by it).
+  Replays selected logged events to one endpoint, preserving event IDs.
 
-  For each event: an endpoint with NO existing delivery row gets one
-  (created, driven by your `:enqueue` seam or recovery), an endpoint with
-  a TERMINAL row is re-armed through `AshHooks.Delivery.resend/2` — fresh
-  ladder, who asked recorded on the row — and a non-terminal row is left
-  to its schedule (counted `:skipped`). Every replay records who asked:
-  `:requested_by` (required) rides the row and the
-  `[:ash_hooks, :delivery, :resend]` telemetry.
+  Options: required `:deliveries`, `:endpoints`, and `:requested_by`; optional
+  `:enqueue`, `:tenant`, `:event_uuid`, `:event_type`, `:from`, `:to`,
+  `:dry_run`, `:limit`, and `:per_second`.
 
-  Options: `:event_uuid` or `:event_type` (+ `:from`/`:to`), `:requested_by`
-  (required), `:deliveries` and `:endpoints` (required resource modules),
-  `:enqueue`, `:limit` (max events this call; default 100, max 1,000),
-  and `:tenant`. Returns `{:ok, %{created: n, re_sent: n, skipped: n}}`.
+  A new-row replay creates an unbound delivery and calls enqueue with
+  `(logged_event, nil)`. This does not satisfy the generated worker's normal
+  dispatch contract or declaration-based recovery contract. Use a callback
+  that handles those arguments and drives the stored row explicitly.
+
+  Existing terminal rows use `AshHooks.Delivery.resend/2`. That nested call
+  does not forward `:tenant`, so multitenant terminal rows are skipped.
+  Existing terminal rows record the requester through resend; for new rows,
+  the requester is emitted only in telemetry, not stored on the delivery.
+  Nonterminal existing rows are skipped. Dry run returns the selected count.
   """
   @spec replay(module(), struct(), keyword()) ::
           {:ok,

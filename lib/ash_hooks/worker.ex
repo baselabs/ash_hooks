@@ -1,10 +1,8 @@
 defmodule AshHooks.Worker do
   @moduledoc """
-  The host-injected Oban worker (ADR-0004): the consuming app defines one
-  module, and the Oban beam compiles only where Oban exists. This macro
-  expands `use Oban.Worker` inside the host's compilation, so the package
-  itself never references a loaded Oban module and compiles Oban-free
-  (the CI no-optional leg's proof).
+  Defines an Oban worker in the consuming application. Define the worker in
+  your application when Oban is installed. The package also compiles and works
+  without Oban; use `AshHooks.Delivery.run/2` for direct delivery.
 
       defmodule MyApp.WebhookDeliveryWorker do
         use AshHooks.Worker,
@@ -20,84 +18,83 @@ defmodule AshHooks.Worker do
 
   Options:
 
-    * `:deliveries`, `:endpoints` (required) — the consumer's resource
+    * `:deliveries`, `:endpoints` (required); the consumer's resource
       modules carrying the `AshHooks.OutboundDelivery` / `AshHooks.Endpoint`
       extensions.
-    * `:attempts` (optional) — the consumer's resource module carrying
+    * `:attempts` (optional); the consumer's resource module carrying
       `AshHooks.OutboundAttempt`: when set, every delivery attempt records
       a durable history row (time, outcome, classified reason, HTTP
       status, latency, the signing key reference; per-endpoint-opt-in
       response capture) beside the delivery row. A history write failure
-      never fails the send — it surfaces as
+      never fails the send; it surfaces as
       `[:ash_hooks, :attempt, :record_failed]` telemetry.
-    * `:secret_resolver` (required, `{m, f}`) — resolves an endpoint's
+    * `:secret_resolver` (required, `{m, f}`); resolves an endpoint's
       secret reference: `f(ref) :: {:ok, secret_binary} | {:error, term}`.
       The returned value signs the Standard Webhooks envelope
       (its `whsk_`/`whsec_` prefix only selects the key slot for
       rotation); legacy envelopes, when the signing mode uses them, are
       signed from the endpoint's `legacy_secret_ref` /
       `legacy_previous_secret_ref` references through this same resolver.
-    * `:tenant_aware_secrets` (optional, default `false`) — switches the
+    * `:tenant_aware_secrets` (optional, default `false`); switches the
       resolver contract to 2-arity: `f(ref, tenant)`. The tenant is the
       run's args-threaded tenant (the delivery row's tenant, serialized at
       enqueue). Explicit, no arity magic: the default 1-arity contract is
       unchanged.
-    * `:snippet_redactor` (`{m, f}`, optional) — a consumer callback run
+    * `:snippet_redactor` (`{m, f}`, optional); a consumer callback run
       on the raw captured body ahead of the package's snippet floor
       (domain-specific tokens need raw input). Only consulted on per-call
       `snippet_capture: true` diagnostic runs; a crash or invalid return
       degrades to the sanitized summary, never raw bytes. The capture
-      flag itself is deliberately not a macro option (ADR-0005's snippet
-      amendment: compile-time knobs are broad and quiet) — pass it in the
-      `AshHooks.Delivery.run/2` config for a one-row diagnostic re-drive.
-    * `:destination_policy` (`{module, function}`, optional) — the public
+      flag is not a macro option. Enable diagnostic capture through a direct
+      `AshHooks.Delivery.run/2` call.
+    * `:destination_policy` (`{module, function}`, optional); the public
       send-time destination policy seam (`AshHooks.DestinationPolicy`):
       the callback receives the endpoint's URL and a context map
       (`%{endpoint_id:, tenant:}`) and returns `:allow` (skip the packaged
-      SSRF gate — pair it with the adapter's validation override for
+      SSRF gate; pair it with the adapter's validation override for
       destinations that check would refuse), `:deny` (terminal
       `destination_denied`), or `:default` (the packaged tri-state check
       runs unchanged). A crashing or out-of-vocabulary callback is
       contained as a retryable `destination_policy_failed`. A configured
       policy takes precedence over the boolean `:ssrf_check` seam.
-    * `:transport` — the per-endpoint delivery transport resolver
+    * `:transport`; the per-endpoint delivery transport resolver
       (`{module, function}` or a 2-arity fn of the endpoint record and
       tenant) returning an `AshHooks.Transport` module for one endpoint's
-      deliveries — a developer's local forwarder behind a CLI "listen"
-      command — or `nil` to keep the HTTP adapter. The same signing,
+      deliveries; a developer's local forwarder behind a CLI "listen"
+      command; or `nil` to keep the HTTP adapter. The same signing,
       attempts, and telemetry apply; a crashing resolver or non-module
       return falls back to the HTTP adapter.
-    * `:http` — the `AshHooks.Http` adapter (default `AshHooks.Http.Bounded`).
-    * `:retryable_statuses` — optional literal list of HTTP statuses/ranges;
+    * `:http`; the `AshHooks.Http` adapter (default `AshHooks.Http.Bounded`).
+    * `:retryable_statuses`; optional literal list of HTTP statuses/ranges;
       replaces the ordinary retry set. Omit it for 408/429/5xx. 2xx success,
       redirect refusal, and 410 disablement stay fixed.
-    * `:delivery_headers` — optional `{module, function}` called with
+    * `:delivery_headers`; optional `{module, function}` called with
       `(delivery, endpoint, tenant)` before each send. Return binary header
       pairs. Package signing, content-type, and framing headers cannot be
       overridden. Callback/validation failures retry without sending.
-    * `:certificate_pin` — optional `{module, function}` called with
+    * `:certificate_pin`; optional `{module, function}` called with
       `(endpoint, tenant)` each attempt. Return a pin supported by
       `AshHooks.Http.Bounded` or `nil` for off. Pin failure is non-retryable;
       a configured pin requires the bounded adapter and HTTPS. Computed
       host-wide pins can also be returned in `:http_opts`.
-    * `:http_opts` — adapter options as a literal keyword list or a
+    * `:http_opts`; adapter options as a literal keyword list or a
       `{module, function, args}` callback resolved inside each job's monitored
       delivery deadline. Consumer-trusted config: a literal `timeout:` here
       must stay below `:attempt_timeout` (the macro refuses a larger one),
-      and `validate_destination: false` — the test seam loopback listeners
-      use — disables the adapter's resolve-and-pin defense, leaving only the
+      and `validate_destination: false`; the test seam loopback listeners
+      use; disables the adapter's resolve-and-pin defense, leaving only the
       driver's send-time destination check. The macro refuses to compile a
       literal bypass outside `:test`; never ship it to production.
-    * `:oban` — the Oban instance name (default the unnamed instance).
+    * `:oban`; the Oban instance name (default the unnamed instance).
     * `:queue` (default `:ash_hooks`), `:timeout` (35,000 ms), and
-      `:max_attempts` (20) — Oban Worker options. The job timeout must be
+      `:max_attempts` (20); Oban Worker options. The job timeout must be
       greater than `:attempt_timeout + :finalization_allowance`, and Oban's
       `:max_attempts` must exceed `:delivery_max_attempts`: error-class
       results (attempt timeout, driver crash, endpoint read errors) consume
       Oban executions in step with row attempts while snooze-class results
       consume none, so only the row ceiling may decide dead-letter.
     * `:attempt_timeout` (25,000 ms) and `:finalization_allowance` (5,000 ms)
-      — the driver deadline and extra send-lease interval. The attempt budget
+     ; the driver deadline and extra send-lease interval. The attempt budget
       includes endpoint lookup, secret resolution, signing, destination and
       DNS checks, HTTP, and result persistence. A literal `:http_opts`
       `timeout:` must stay below `:attempt_timeout` (the macro refuses a
@@ -105,27 +102,25 @@ defmodule AshHooks.Worker do
       compile-checked). Keep application clocks
       synchronized because lease comparisons use the application clock.
     * `:delivery_max_attempts` (default 10), `:base_backoff_seconds` (2),
-      `:max_backoff_seconds` (3600), `:retry_after_cap_seconds` (86_400) —
+      `:max_backoff_seconds` (3600), `:retry_after_cap_seconds` (86_400) ;
       the row-driven retry policy; every budget option must be a positive
       integer and `:max_backoff_seconds` at least `:base_backoff_seconds`.
       For direct `AshHooks.Delivery.run/2` calls,
       `:delivery_max_attempts` becomes `:max_attempts`; the other retry option
       names and defaults are unchanged. Omitted or `nil` retry options use
       these defaults. The `Retry-After` cap is
-      receiver-held-state budget: a receiver returning a large
-      `Retry-After` holds its delivery row and its Oban job for up to the
-      cap per attempt (the 86,400 default = up to 24 hours per attempt on
-      one header; a receiver honoring `Retry-After` deliberately asks for
-      exactly that). Lower the cap when the chosen posture is
-      exhaust-fast (a wedged receiver dead-letters at the ceiling instead
-      of holding state). The cap clamps `Retry-After`; it does not alter the
-      backoff ladder.
-    * `:runtime_config` (`{module, function}`, optional) — resolves the
+      the maximum delay a receiver can request on each attempt. A large
+      `Retry-After` can keep a delivery and its job pending for up to the cap
+      on each attempt. The default permits 24 hours per attempt.
+      Lower the cap when failures need to reach the attempt
+      limit sooner. The cap does not alter exponential backoff.
+    * `:runtime_config` (`{module, function}`, optional); resolves the
       worker-timing options PER PERFORM: `f(job_args) :: keyword()` returns
       overrides for `:delivery_max_attempts`, `:base_backoff_seconds`,
       `:max_backoff_seconds`, `:retry_after_cap_seconds`, `:attempt_timeout`,
       and `:finalization_allowance`, merged over the compiled defaults (the
-      compiled values remain the floor the macro validated). The Oban job
+      compiled values are defaults; overrides may be lower or higher while
+      staying within the compiled job timeout and attempt limits). The Oban job
       `:timeout` and `:max_attempts` stay compile-time (they are Oban Worker
       options baked into the generated module), so the compile-time misfit
       checks re-run at runtime against every resolved set: an override that
@@ -134,7 +129,7 @@ defmodule AshHooks.Worker do
       collides a literal `:http_opts` `timeout:` with a lowered
       `:attempt_timeout`, or names an unknown key fails
       `perform/1` with `{:error, {:invalid_runtime_config, reason}}` BEFORE
-      any delivery work — the row is untouched, Oban re-drives the job, and
+      any delivery work; the row is untouched, Oban re-drives the job, and
       a `[:ash_hooks, :worker, :invalid_runtime_config]` telemetry event
       carries the reason. A callback that raises or returns a non-keyword
       is contained the same way (`:callback_failed`). Raise the compiled
@@ -158,7 +153,7 @@ defmodule AshHooks.Worker do
   `tenant_from_attribute`, so `Delivery.run/2`'s forward
   `parse_attribute` round-trips for non-identity parsers too); the
   uniqueness identity includes the serialized tenant. The
-  tenant must round-trip Oban's JSON encoding — string tenants (uuids,
+  tenant must round-trip Oban's JSON encoding; string tenants (uuids,
   slugs) are the supported shape; adopters with a custom `parse_attribute`
   pair it with `tenant_from_attribute` (the default inverse is identity).
   """
@@ -234,18 +229,18 @@ defmodule AshHooks.Worker do
   Resolves a worker's delivery config for one perform: when the worker
   declared `:runtime_config: {module, function}`, the callback runs with
   the job's args map (string keys, tenant included when the row carries
-  one) and its overrides are merged over the compiled defaults — after
+  one) and its overrides are merged over the compiled defaults; after
   the compiled-budget misfit checks re-run as runtime validation.
 
   Returns `{:ok, config}` (the driver-ready keyword list) or
   `{:error, {:invalid_runtime_config, reason}}`, where `reason` is
-  `:callback_failed` (a crash or a non-keyword return — contained, never
+  `:callback_failed` (a crash or a non-keyword return; contained, never
   raised through), `{:unknown_key, key}`, `:not_positive_integer`,
   `:backoff_inversion`, `:envelope_exceeded` (the resolved attempt
   deadline overruns the baked Oban job timeout, or a literal
   `:http_opts` `timeout:` collides with a lowered `:attempt_timeout`),
   or `:oban_ceiling_exceeded` (the resolved delivery ceiling reaches the
-  baked Oban job ceiling — only the row ceiling may decide dead-letter).
+  baked Oban job ceiling; only the row ceiling may decide dead-letter).
   A rejection emits `[:ash_hooks, :worker, :invalid_runtime_config]` and
   leaves the delivery row untouched.
   """

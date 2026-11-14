@@ -1,6 +1,6 @@
 defmodule AshHooks.InboundDelivery do
   @moduledoc """
-  Turns the consumer's resource into the inbound webhook ledger — the
+  Turns the consumer's resource into the inbound webhook ledger; the
   durable deduplication record used by `AshHooks.Ingress`.
 
   Attach next to the consumer's own data layer:
@@ -37,7 +37,7 @@ defmodule AshHooks.InboundDelivery do
   ingress and reapers. See the ordered upgrade in `UPGRADING.md`.
 
   The injected actions are low-level primitives: the conditional gates
-  (claim only from `:received` or an expired lease; mark/renew only by the
+  (claim received rows, retryable failures, or claimed rows whose lease expired; mark/renew only by the
   current token under an unexpired lease) live in the query filters that
   `AshHooks.Ingress` builds. Call the driver APIs to preserve those
   conditions; restrict direct access to the generated machine actions.
@@ -45,7 +45,7 @@ defmodule AshHooks.InboundDelivery do
   This ledger stores decoded provider payloads, the signed-body digest,
   event IDs, and scope keys. Payloads can contain personal information.
   Define read policies in your domain; the extension does not inject them.
-  The README's Security section shows an example.
+  The README's retention and security section explains these obligations.
   """
 
   @statuses [
@@ -77,14 +77,12 @@ defmodule AshHooks.InboundDelivery do
         type: {:in, [:off, :on]},
         default: :off,
         doc: """
-        Whether the ingress-counting columns are injected (default `:off`
-        — existing schemas stay untouched). With `:on`, the extension
-        injects the `duplicates` counter column (bumped on every duplicate
-        ingest) and `AshHooks.Ingress` persists a payload-less
-        `:failed_verification` rejection row (digest identity) for every
-        request that fails signature verification — the two numbers
-        `AshHooks.Ingress.counts/2` answers besides its row-derived ones.
-        Requires a migration for the column.
+        With `:on`, injects a `duplicates` counter and attempts to store a
+        payload-less `:failed_verification` rejection row per source, scope,
+        and raw-body digest. Repeated rejected bodies share one row.
+        `failed_verification` counts stored rows, not rejected requests.
+        Duplicate accepted deliveries increment `duplicates`. Requires a
+        migration for that column.
         """
       ],
       scope_identity: [
@@ -103,7 +101,7 @@ defmodule AshHooks.InboundDelivery do
         default: 30,
         doc: """
         Default claim lease duration. When a claim's lease expires the row
-        becomes claimable again (reaper path) — the stale owner can no
+        becomes claimable again (reaper path); the stale owner can no
         longer mark it.
         """
       ]

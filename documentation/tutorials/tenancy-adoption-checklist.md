@@ -1,47 +1,40 @@
 # Multi-tenant adoption checklist
 
-ash_hooks supports Ash attribute multitenancy: every dispatch, ingest,
-delivery run, sweep, and reconciliation threads an explicit tenant, and the
-package fails closed with a named error when a multitenant resource is
-touched without one. This checklist walks one app — two tenants or two
-thousand — through the same steps. The reasoning behind the floor is
-[ADR-0011](https://github.com/baselabs/ash_hooks/tree/main/docs/adr).
+ash_hooks supports Ash attribute multitenancy: pass an explicit tenant to dispatch, ingest,
+delivery runs, sweeps, and reconciliation. Tenant validation checks the resource
+set supplied by the caller, with the limitations listed below. This checklist walks one app; two tenants or two
+thousand; through the same steps. The reasoning behind the floor is
+`AshHooks.Tenancy`.
 
 ## The contract
 
 Declare the SAME attribute strategy on the resources a given operation
-touches — for the full outbound machine that is your Subscription, your
-Endpoint, and your OutboundDelivery ledger; for inbound, your
-InboundDelivery ledger. (An inbound-only app declares tenancy on its
-ledger alone — each operation verifies the set it actually reads.)
+touches: Subscription, Endpoint, and OutboundDelivery for outbound, plus
+OutboundAttempt and OutboundEvent when those features are enabled; the
+inbound ledger for inbound receipt. `resolve/2` checks only modules supplied
+by its caller. Some callers omit optional resources; see `AshHooks.Tenancy`
+and the tenant-forwarding limitation in `AshHooks.OutboundEvent.replay/3`.
 
-```elixir
-attributes do
-  # ...the extension's injected fields...
-  attribute :org_id, :string, allow_nil?: false
-end
-
-multitenancy do
-  strategy :attribute
-  attribute :org_id
-end
-```
+Add a non-nullable tenant attribute (for example `:org_id`) and declare
+`multitenancy` with `strategy :attribute` and `attribute :org_id` on each resource.
+The [Livebook](../livebooks/get-started.livemd) executes complete multitenant
+resource declarations and calls.
 
 Two declarations are rejected outright with `{:error, :tenancy_mismatch}`:
 
-- `global?: true` — it looks consistent while silently allowing
+- `global?: true`; it looks consistent while silently allowing
   tenant-less reads, which would disable every guarantee below.
-- non-`:attribute` strategies — attribute is the only strategy that
+- non-`:attribute` strategies; attribute is the only strategy that
   works across every data layer the package supports.
 
 ## The ordered steps
 
-If you are also upgrading from 1.x to 2.0, complete the schema and declaration/route
+If you are also upgrading from a version >= 1.0.0 and < 2.0.0 to 2.0.1 or later, complete the schema and declaration/route
 backfill in [UPGRADING](../../UPGRADING.md) before enabling the new runtime.
 
-**0. Drain in-flight Oban jobs from the 1.1.x shape** (skip if you have
+**0. Drain Oban jobs created before 1.2.0** (skip if you have
 no queued deliveries). The moment your resources declare multitenancy,
-jobs enqueued by the old version — whose args carry no tenant — start
+jobs enqueued by the old version; whose args carry no tenant; start
 failing closed with `{:error, :tenant_required}` when they run. That is
 the correct, safe behavior, but it is noisy: drain or complete the old
 queue BEFORE deploying the version whose resources declare tenancy.
@@ -55,7 +48,7 @@ ALTER TABLE webhook_endpoints ADD COLUMN org_id TEXT;
 --    outbound_deliveries
 ```
 
-Then backfill — every legacy row must get its tenant value:
+Then backfill; every legacy row must get its tenant value:
 
 ```sql
 -- your mapping from existing rows to their owning tenant
@@ -73,7 +66,7 @@ SELECT COUNT(*) FROM outbound_deliveries WHERE org_id IS NULL;
 ```
 
 A NULL-tenant row is a quiet trap: the unique identities become
-tenant-scoped in step 2, and NULL never equals a tenant value — so a new
+tenant-scoped in step 2, and NULL never equals a tenant value; so a new
 delivery creates a separate row instead of matching the old one and may repeat
 its network effect. NULL-tenant rows are also invisible to every
 tenant-scoped sweep. Backfill before proceeding; the count above is the
@@ -82,44 +75,37 @@ gate.
 **2. Regenerate migrations so the unique identities include the tenant.**
 The unique identities (`unique_delivery` on endpoint+event,
 `unique_ingest` on provider+external id + scope) become tenant-prefixed
-unique indexes — run your `mix ash.codegen` / migration generator after
+unique indexes; run your `mix ash.codegen` / migration generator after
 adding the declarations. Dedup is per-tenant by construction from here:
 the same provider event id in two tenants is two rows, both processed.
 
 **3. Deploy, and thread the tenant through your call sites.**
 
-```elixir
-# outbound — every call
-AshHooks.dispatch(Order, :order_paid, event, tenant: org.id)
-
-# inbound — the tenant rides the request context
-AshHooks.Ingress.ingest(WebhookLedger, :payments, raw_body, %{headers: conn.req_headers, tenant: org.id})
-
-# the worker (unchanged) — the enqueue serializes the row's tenant into
-# job args; Delivery.run/2 recovers it after any restart
-```
+Pass `tenant: tenant` to `AshHooks.dispatch/4` and include `tenant: tenant` in
+the request context passed to `AshHooks.Ingress.ingest/4`. The generated worker
+serializes the tenant from the row into job args and restores it on execution.
 
 **4. Adopt the per-tenant operations surface.**
 
 - Sweeps are per-tenant: `reap/2` and both `prune/2`s take `:tenant`;
   `AshHooks.reap_all/2` and `AshHooks.prune_all/2` sweep a list of
-  tenants sequentially — one tenant's failure never stops the others —
+  tenants sequentially; one tenant's failure never stops the others ;
   and return each tenant's result plus a total:
   `{:ok, %{results: %{"org_a" => {:ok, 3}, ...}, total: 3}}`.
 - Reconciliation of stale pending rows, enqueue failures, due retries, expired
   sends, and pending endpoint disables:
   `AshHooks.reconcile_pending(Order, :order_paid, tenant: org.id,
   enqueue: {MyWorker, :enqueue})`. The delivery resource needs
-  `timestamps()` (`inserted_at` drives the staleness cutoff — the
+  `timestamps()` (`inserted_at` drives the staleness cutoff; the
   default is five minutes). Use the same declaration and durable queue route.
   Concurrent reconcilers use separate expiring enqueue claims; the enqueue callback
-  receives the event reconstructed from the row (id, type, payload —
+  receives the event reconstructed from the row (id, type, payload ;
   its metadata map is empty), so write custom callbacks accordingly.
 - Tenant-aware secrets (all optional): the worker macro's
   `tenant_aware_secrets: true` (resolver becomes `f(ref, tenant)`), the
   inbound `secret fn tenant -> {:ok, secret} end`, and the provider
   `webhook_signing_secret(connection, tenant)` override for
-  per-Organization connection custody.
+  per-tenant signing-secret resolution.
 
 ## The isolation guarantees (what you may rely on)
 
@@ -142,4 +128,4 @@ AshHooks.Ingress.ingest(WebhookLedger, :payments, raw_body, %{headers: conn.req_
 ## Single-tenant apps
 
 Leave multitenancy undeclared and omit `:tenant`. The same entry points work
-with a single-tenant ledger; the 2.0 schema upgrade still applies.
+with a single-tenant ledger; the schema upgrade introduced in 2.0.1 still applies.

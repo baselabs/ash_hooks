@@ -62,7 +62,7 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     @doc """
     `body_reader` entry point. `Plug.Parsers` invokes the configured MFA as
-    `apply(mod, fun, [conn, opts | extra_args])` — extras arrive as a THIRD
+    `apply(mod, fun, [conn, opts | extra_args])`; extras arrive as a THIRD
     positional argument, so the arity-3 clause is the one the parser calls;
     `opts` and `extra` merge.
     """

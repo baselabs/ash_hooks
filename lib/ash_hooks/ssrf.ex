@@ -15,7 +15,7 @@ defmodule AshHooks.Ssrf do
 
   A hostname that fails to resolve fails as `:nxdomain` when every queried
   family returned an authoritative negative answer, and as `:resolve_timeout`
-  otherwise (timeout, temporary resolver failure, or mixed evidence — the
+  otherwise (timeout, temporary resolver failure, or mixed evidence; the
   conservative retryable label). `safe_url?/1` stays boolean: both are
   `false` there.
 

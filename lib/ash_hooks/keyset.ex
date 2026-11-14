@@ -3,7 +3,7 @@ defmodule AshHooks.Keyset do
   Shared keyset pagination over a stable `(time, id)` ordering: newest
   first, opaque cursors, and `{:ok, %{records:, next_cursor:}}` pages.
 
-  The cursor is the last row's `{time, id}` pair, base64url-encoded JSON —
+  The cursor is the last row's `{time, id}` pair, base64url-encoded JSON ;
   stable across engines because the page query filters by tuple order
   (`time < cursor.time OR (time == cursor.time AND id < cursor.id)` under
   the matching `DESC, DESC` sort), never by offset. `id` is the tiebreak
@@ -13,7 +13,7 @@ defmodule AshHooks.Keyset do
   @default_limit 50
   @max_limit 500
 
-  @typedoc "A page result: the records and the cursor for the next page (nil on the last)."
+  @typedoc "A page result: the records and the cursor for the next page (nil on a shorter page; a full page carries a cursor even if it is the final nonempty page)."
   @type page(records) :: {:ok, %{records: records, next_cursor: binary() | nil}}
 
   @doc "The page size in force: the default when unset, a validation error outside 1..500."
@@ -29,7 +29,7 @@ defmodule AshHooks.Keyset do
   @doc """
   Decodes a page cursor into `%{time: DateTime.t(), id: term()}`. `nil`
   (the first page) decodes to `{:ok, nil}`; anything malformed is the
-  named `{:error, :invalid_cursor}` — attacker-shaped cursors never raise.
+  named `{:error, :invalid_cursor}`; attacker-shaped cursors never raise.
   """
   @spec decode_cursor(binary() | nil) ::
           {:ok, nil | %{time: DateTime.t(), id: term()}} | {:error, :invalid_cursor}
@@ -67,8 +67,8 @@ defmodule AshHooks.Keyset do
 
   @doc """
   Reads one page: sorts newest-first, applies the limit, and returns the
-  `page/0` shape. `time_field` must exist on the resource (the caller's
-  pre-flight checks it — `:inserted_at` on consumer ledgers is optional).
+  `t:page/1` result shape. `time_field` must exist on the resource (the caller's
+  pre-flight checks it; `:inserted_at` on consumer ledgers is optional).
   """
   @spec read_page(module(), keyword(), atom(), (Ash.Query.t() -> Ash.Query.t()), term()) ::
           page([struct()]) | {:error, term()}

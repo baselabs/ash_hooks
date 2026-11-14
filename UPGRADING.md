@@ -1,6 +1,6 @@
 # Upgrading
 
-## 3.0.x → 3.1.0
+## 3.0.0 → 3.1.0
 
 The Ash floor rises from 3.34.3 to 3.37.2, because three published advisories
 affect Ash releases the old floor admitted (EEF-CVE-2026-101028, -114214 and
@@ -21,7 +21,7 @@ provider, set the plug's `signature_header:` to the header it read. Code that
 read `conn.private[:ash_hooks_raw_body]` should call
 `AshHooks.BodyReader.raw_body/1` instead; the key is internal.
 
-## 2.x → 3.0.0
+## Versions >= 2.0.1 and < 3.0.0 → 3.0.0
 
 3.0.0 makes inbound verification generic. It removes the vendor-specific
 verifier modules and the name-to-module convention, and adds a configuration
@@ -29,21 +29,24 @@ layer that expresses each removed scheme, and many others, in one small module
 in your application. There are two breaking changes; nothing else changes shape.
 No migration and no dependency change is needed.
 
-If you are upgrading from an earlier 2.x release, also read the section for each
+If you are upgrading from a release >= 2.0.1 and < 3.0.0, also read the section for each
 release you skip.
 
 ### Breaking: every inbound declaration needs `provider`
 
-2.x resolved a missing `provider` to `AshHooks.Provider.<CamelizedName>`, so
-`inbound :comply_cube` found `AshHooks.Provider.ComplyCube`. That convention is
+Versions >= 2.0.1 and < 3.0.0 resolved a missing `provider` to `AshHooks.Provider.<CamelizedName>`, so
+an inbound name selected a built-in provider by convention. That convention is
 gone. A declaration without `provider` fails to compile with a message naming
 the fix:
 
+Replace `:existing_source` with your existing inbound name; do not rename it.
+
+<!-- tested: upgrade-source-in-application -->
 ```elixir
 webhooks do
-  inbound :comply_cube do
-    provider MyApp.Webhooks.ComplyCube
-    secret {:app_env, [:my_app, :complycube_secret]}
+  inbound :existing_source do
+    provider MyApp.Webhooks.ExistingSource
+    secret {:app_env, [:my_app, :webhook_secret]}
   end
 end
 ```
@@ -66,80 +69,33 @@ These modules no longer exist: `AshHooks.Provider.ComplyCube` (with
 Replace each with a provider module in your application. Most need only
 configuration:
 
+This application-defined example verifies a base64 HMAC of the raw body.
+
+<!-- tested: upgrade-shop-provider -->
 ```elixir
-defmodule MyApp.Webhooks.Shopify do
+defmodule MyApp.Webhooks.Shop do
   use AshHooks.Provider,
     verify: [
       algorithm: :hmac_sha256,
-      signature: {:header, "x-shopify-hmac-sha256"},
+      signature: {:header, "x-shop-signature"},
       encoding: :base64
     ]
 end
 ```
 
-The table gives the configuration that reproduces each removed module's
-signature check. These rows are migration examples, not maintained integrations.
-Each sender's documentation is authoritative, and the guide's recipes link to it.
-The [Verify any sender](documentation/tutorials/verify-any-sender.md) guide has
-the complete modules for the rows marked *recipe*, which need a host function.
+Define an application provider from the sender's current signing documentation.
+The [generic verification guide](documentation/tutorials/verify-any-sender.md)
+explains supported signature shapes. Preserve existing source names, event-type
+mappings, and delivery identities. Consult the provider source shipped in
+ash_hooks 2.3.0 when preserving an existing mapping. The historical
+[event-type mapping source](https://github.com/baselabs/ash_hooks/blob/v2.3.0/lib/ash_hooks/provider/comply_cube.ex)
+and [batch-provider source](https://github.com/baselabs/ash_hooks/blob/v2.3.0/lib/ash_hooks/provider/hub_spot_v3.ex)
+remain available in the public repository.
 
-| Removed module | Replacement `verify:` options |
-| --- | --- |
-| `ComplyCube` | `algorithm: :hmac_sha256, signature: {:header, "complycube-signature"}, encoding: :hex` |
-| `HubSpotV3` | `algorithm: :hmac_sha256, signature: {:header, "x-hubspot-signature-v3"}, encoding: :base64, timestamp: {:header, "x-hubspot-request-timestamp"}, timestamp_unit: :milliseconds`, plus a `signed_input` function for its URI decoding (*recipe*: [Method, URL, body, and timestamp](documentation/tutorials/verify-any-sender.md#method-url-body-and-timestamp)) |
-| `Twilio` | `algorithm: :hmac_sha1, signature: {:header, "x-twilio-signature"}, encoding: :base64`, plus a `signed_input` function for its sorted form fields and `bodySHA256` (*recipe*: [Sorted form fields](documentation/tutorials/verify-any-sender.md#sorted-form-fields)) |
-| `Stripe` | `algorithm: :hmac_sha256, signature: {:structured_header, "stripe-signature", signature_key: "v1"}, timestamp: {:signature_field, "t"}, signed_input: [:timestamp, ".", :body]` |
-| `Shopify` | `algorithm: :hmac_sha256, signature: {:header, "x-shopify-hmac-sha256"}, encoding: :base64` |
-| `WooCommerce` | `algorithm: :hmac_sha256, signature: {:header, "x-wc-webhook-signature"}, encoding: :base64` |
-| `Shippo` | as `Stripe`, with `{:structured_header, "shippo-auth-signature", signature_key: "v1"}` |
-| `EasyPost` (v1) | `algorithm: :hmac_sha256, signature: {:header, "x-hmac-signature", prefix: "hmac-sha256-hex="}, encoding: :hex`; return the NFKD-normalized secret from your secret source |
-| `EasyPost` (v2) | `algorithm: :hmac_sha256, signature: {:header, "x-hmac-signature-v2", prefix: "hmac-sha256-hex="}, encoding: :hex_any, signed_input: [{:header, "x-timestamp"}, :method, :path, :body], tolerance_seconds: 60`, plus a `timestamp` function for RFC 2822 (*recipe*: [A timestamp in another format](documentation/tutorials/verify-any-sender.md#a-timestamp-in-another-format)); choose v1 or v2 per request as in [Two schemes on one route](documentation/tutorials/verify-any-sender.md#two-schemes-on-one-route) |
-| `Magento2` | `algorithm: :rsa_pkcs1_sha256, signature: {:header, "x-adobe-commerce-webhook-signature"}, encoding: :base64, signed_input: [{:base64, :body}]`; the secret source returns the public PEM key |
-| `BigCommerce` | `algorithm: :hmac_sha256, signature: {:structured_header, "webhook-signature", signature_key: "v1", pair_separator: " ", key_value_separator: ","}, encoding: :base64, timestamp: {:header, "webhook-timestamp"}, signed_input: [{:header, "webhook-id"}, ".", :timestamp, ".", :body]`; the secret source returns the raw client secret |
-| `Ecwid` | `algorithm: :hmac_sha256, signature: {:header, "x-ecwid-webhook-signature"}, encoding: :base64`, plus a `signed_input` function and `event_identity/1` (*recipe*: [A signature over selected payload fields](documentation/tutorials/verify-any-sender.md#a-signature-over-selected-payload-fields)) |
-| `Squarespace` | `algorithm: :hmac_sha256, signature: {:header, "squarespace-signature"}, encoding: :hex, key_encoding: :hex` |
-| `Wix` | `algorithm: :rsa_pkcs1_sha256, signature: :jws_body`; the secret source returns the public PEM key |
-
-Configured providers read their signature from the request headers. In your
-controller, pass `headers: conn.req_headers` to `AshHooks.Ingress.ingest/4`;
-`ctx.signature` is no longer needed for them. Keep
-passing `method` and the public `request_uri` for schemes that sign them.
-
-Differences from the removed modules, all deliberate:
-
-- A configured provider classifies every request as `:webhook` and returns
-  `AshHooks.Provider.Event`. `ComplyCube` and `HubSpotV3` mapped event names to
-  atoms and returned their own event structs. If your handlers or stored
-  `external_event_type` values depend on those atoms, override
-  `parse_event_type/1` with the same mapping (the 2.3.0 source lists both
-  tables:
-  [ComplyCube](https://github.com/baselabs/ash_hooks/blob/v2.3.0/lib/ash_hooks/provider/comply_cube.ex),
-  [HubSpotV3](https://github.com/baselabs/ash_hooks/blob/v2.3.0/lib/ash_hooks/provider/hub_spot_v3.ex))
-  and keep the atom names.
-- `HubSpotV3` and `Ecwid` implemented `event_identity/1`. If your ledger already
-  holds rows for those sources, implement the same identity in your provider so
-  redeliveries keep matching existing rows. For Ecwid that is the signed
-  `eventId` (shown in the recipe). For HubSpot it was a SHA-256 of the batch that
-  ignored each event's `attemptNumber`, sorted object keys and the outer event
-  order, and kept nested list order; copy the
-  [2.3.0 implementation](https://github.com/baselabs/ash_hooks/blob/v2.3.0/lib/ash_hooks/provider/hub_spot_v3.ex)
-  if you depend on it.
-- `Twilio` decoded JSON or form bodies itself. Declare `body_format :form` on a
-  form route, or implement `decode_payload/1`.
-- Signature prefixes are matched without regard to ASCII case.
-- EasyPost v2 accepted 60 seconds of age and 30 seconds of future skew; a
-  configured tolerance is symmetric.
-- `Wix` deduplicated on the SHA-256 of the raw body. A configured `:jws_body`
-  provider deduplicates on the SHA-256 of the verified payload, so a redelivery
-  of an event recorded under 2.x gets a new identity and runs again. If your
-  ledger holds Wix rows, move them with
-  `AshHooks.Ingress.plan_legacy_identity_adoption/3` and
-  `adopt_legacy_identity/3`, or keep the raw-body identity: write the provider
-  with plain `use AshHooks.Provider`, call `Scheme.verify/4` from
-  `verify_signature/3` and `Scheme.decode_payload/2` from `decode_payload/1`, and
-  return `:body` from `signature_source/0`.
-- `Wix` accepted padded base64url segments. JWS verification accepts only
-  unpadded segments, as RFC 7515 requires.
+When replacing a raw-body identity with a verified-payload identity, plan and
+apply legacy identity adoption before resuming ingress. Preserve the former
+provider's identity unless intentionally migrating it; an invalid provider
+identity fails ingestion rather than falling back to the body digest.
 
 ### What stays the same
 
@@ -163,7 +119,7 @@ Differences from the removed modules, all deliberate:
   lines are joined with `", "` in `ctx.headers`. A map you pass is still delivered
   unchanged, but it has already lost repeated lines, so a provider that reads a
   header that can repeat should read `ctx.header_list`. If you passed a list in
-  2.x, outside the documented map type, providers now receive a map in
+  releases >= 2.0.1 and < 3.0.0, outside the documented map type, providers now receive a map in
   `ctx.headers`.
 - A configured `:jws_body` provider deduplicates on its verified payload
   (`Scheme.payload_identity/1`).
@@ -213,14 +169,14 @@ See [README.md](README.md) for examples.
 - **`auto_disable` declarants gain the `disable_warned_at` column.** The
   warning-first fix stores the standing "a warning sweep has fired" fact
   on the endpoint; declaring `auto_disable` now injects the marker column
-  and its machine action — add the column to the endpoint table's
+  and its machine action; add the column to the endpoint table's
   migration when you upgrade. A disable lands one sweep after the first
   qualifying warning, which is the behavior 2.2.0's moduledoc already
   described.
 
-## 2.1.x → 2.2.0
+## 2.1.0 → 2.2.0
 
-New OPTIONAL surface — nothing changes for an install that adopts none of
+New OPTIONAL surface; nothing changes for an install that adopts none of
 it: no existing column, action, event, or default behavior moves.
 
 - **Attempt history (opt-in).** To record every delivery attempt (time,
@@ -235,7 +191,7 @@ it: no existing column, action, event, or default behavior moves.
 - **Per-endpoint response capture (opt-in).** Declaring
   `response_capture_attributes :on` on the endpoint resource injects four
   columns (`response_capture`, `response_capture_max_bytes`,
-  `response_capture_retention_seconds`, `response_header_allowlist`) —
+  `response_capture_retention_seconds`, `response_header_allowlist`) ;
   migrate them when you declare it. Capture remains per-row opt-in
   (`response_capture: true`); captured bytes are bounded, redacted, and
   header capture is allowlist-only.
@@ -244,12 +200,12 @@ it: no existing column, action, event, or default behavior moves.
   event type, and time range with keyset pagination; the delivery resource
   needs `timestamps()` and an `:id` attribute for them.
 - **Test-send flagging (opt-in).** Declaring `test_tracking :on` under
-  `outbound_delivery` injects the `test` boolean column — migrate it when
+  `outbound_delivery` injects the `test` boolean column; migrate it when
   you declare it. Attempt-history resources gain the `test` column in
   this release (the extension itself is new in 2.2).
 - **Inbound tracking (opt-in).** Declaring `ingress_tracking :on` on an
   inbound ledger injects the `duplicates` counter column and the
-  `failed_verification` status row (payload-less) — migrate the column
+  `failed_verification` status row (payload-less); migrate the column
   when you declare it. `previous_secret`/`paused` are declaration-level
   options (no migration).
 - **The event log (opt-in).** Create a resource with the new
@@ -259,23 +215,23 @@ it: no existing column, action, event, or default behavior moves.
   should record. Nothing records without the declaration.
 - **Subscription attribute filters (opt-in).** Declaring a nonempty
   `filter_attributes` list on the subscription resource injects the
-  `event_filters` column — migrate it when you declare it.
+  `event_filters` column; migrate it when you declare it.
 - **Payload-version pinning (opt-in).** Declaring `version_pinning :on`
-  on the endpoint resource injects the `pinned_payload_version` column —
+  on the endpoint resource injects the `pinned_payload_version` column ;
   migrate it when you declare it. Dispatch then resolves each endpoint's
   payload through the declaration's `payload_versions` variant builders.
 - **Secret rolling (opt-in).** Declaring `key_lifecycle :on` on the
   endpoint resource injects six timestamp columns
   (`secret_created_at`, `secret_first_used_at`, `secret_retired_at`,
   `previous_secret_created_at`, `previous_secret_first_used_at`,
-  `previous_secret_retired_at`) — migrate them when you declare it, and
+  `previous_secret_retired_at`); migrate them when you declare it, and
   backfill `secret_created_at` for incumbent keys whose creation time you
   know. Rolling then works through `AshHooks.Endpoint.roll_secret/2` and
   the expiry sweeps.
 - **Resend and bulk replay (opt-in).** Declaring `resend_tracking :on`
   under `outbound_delivery` injects four machine columns
   (`resend_baseline`, `resend_count`, `last_resend_by`, `last_resend_at`)
-  — migrate them when you declare it — and unlocks
+ ; migrate them when you declare it; and unlocks
   `AshHooks.Delivery.resend/2` / `replay/2`. Attempt ceilings are now
   series ceilings: a resent row's ladder restarts at its baseline while
   the lifetime `attempts` counter never resets (attempt-history identity
@@ -289,7 +245,7 @@ No schema or DSL changes. Two observable deltas:
 - **Unresolvable DNS at the send-time destination check now retries.** In
   2.0.4 a hostname that failed to resolve (resolver outage, congestion past
   the 2-second resolution ceiling, or a dead domain) dead-lettered
-  immediately as `unsafe_destination` at `attempts == 1`. In 2.0.5 it
+  immediately as `unsafe_destination` at `attempts == 1`. In 2.1.0 it
   retries as transport and dead-letters at the row ceiling carrying an
   honest label: `nxdomain` (every queried address family answered
   authoritatively negative) or `resolve_timeout` (outage, congestion,
@@ -301,8 +257,9 @@ No schema or DSL changes. Two observable deltas:
   ceiling instead.
 - **`use AshHooks.Worker` refuses misfit budgets at compile time.** Oban's
   `:max_attempts` must exceed `:delivery_max_attempts`; a literal
-  `:http_opts` `timeout:` must stay below `:attempt_timeout`; budget
-  options must be positive integers; `:max_backoff_seconds` must be at
+  `:http_opts` `timeout:` must stay below `:attempt_timeout`. The macro checks positive
+  attempt, finalization, base-backoff, and Retry-After budgets; all configured
+  budgets must be positive; `:max_backoff_seconds` must be at
   least `:base_backoff_seconds`. A literal `:http_opts`
   `validate_destination: false` refuses to compile outside `:test` (it is
   the loopback-listener test seam; with it baked in, the driver's send-time
@@ -310,18 +267,17 @@ No schema or DSL changes. Two observable deltas:
   while silently truncating the retry ladder, walling off slow sends, or
   disabling adapter pinning now raise `ArgumentError`.
 
-## 1.x → 2.0.1
+## Versions >= 1.0.0 and < 2.0.0 → 2.0.1
 
-2.0 changes the durable delivery schema and HubSpot's default event identity.
-Drain old jobs and migrate before activating the new runtime. Mixed 1.x/2.x
-workers against one ledger are unsupported.
+Version 2.0.1 changes the durable delivery schema and the default batch identity.
+Drain old jobs and migrate before activating the new runtime. Workers from before and after 2.0.1 running together against one ledger are unsupported.
 
 ### Ordered deployment
 
 1. Quiesce outbound producers, ingress, workers, inbound reapers, and recovery
-   schedulers. Drain in-flight 1.x Oban jobs. Record pending rows, retry times,
+   schedulers. Drain Oban jobs created before 2.0.1. Record pending rows, retry times,
    tenant partitions, declaration ownership, and the current queue binding.
-2. Upgrade to `{:ash_hooks, "~> 2.0"}` with Ash >= 3.34.3 and < 4.0. Generate
+2. Upgrade to `{:ash_hooks, "~> 2.0"}` with Ash `>= 3.34.3 and < 4.0.0-0`. Generate
    and inspect the AshPostgres migration for every resource carrying either
    delivery extension. Preserve existing endpoint/event and inbound dedup indexes.
 3. Add the outbound columns below and extend any database status constraint to
@@ -332,7 +288,7 @@ workers against one ledger are unsupported.
    from its actual emitting declaration, endpoint resource, and enqueue binding.
    Keep attempts and `next_attempt_at`; expired sends need recovery, rather than
    counter resets. Unresolved declaration or route mappings block activation.
-5. If a HubSpot declaration uses the former digest default, adopt retained
+5. If a declaration using the former batch provider uses the former digest default, adopt retained
    identities as described below while ingress and reapers remain quiesced.
    Declarations with an explicit `event_id` extractor keep that extractor.
 6. Deploy all 2.0 application nodes/workers together. Enable the periodic
@@ -355,6 +311,7 @@ workers against one ledger are unsupported.
 For a declaration and named worker, derive backfill values through
 `AshHooks.OutboundBinding.source/3` and `named_route/2`:
 
+<!-- tested: upgrade-binding-in-application -->
 ```elixir
 source = AshHooks.OutboundBinding.source(MyApp.Order, :order_paid, MyApp.WebhookEndpoint)
 route = AshHooks.OutboundBinding.named_route(MyApp.WebhookDeliveryWorker, :enqueue)
@@ -391,23 +348,30 @@ durable route. A 410 stores `disable_pending` before the endpoint write; it is
 not terminal until the matching old endpoint configuration is disabled, gone,
 or replaced. A storage error keeps that obligation recoverable without resending.
 
-### HubSpot identity adoption
+### Adopt a canonical provider identity
 
-The new HubSpot identity hashes a canonical whole batch. It ignores only outer
-`attemptNumber` values, sorts object keys and outer events, preserves batch
-multiplicity, and preserves order inside nested lists. Other changed event
-content remains a distinct event. The precedence is explicit declaration
-`event_id` extractor → provider `event_identity/1` → raw-body digest when the
-provider does not implement the callback. A callback error never becomes a digest.
+Implement `event_identity/1` in the application provider before planning adoption.
+An explicit declaration `event_id` extractor takes precedence over that callback.
+Invalid extractor results use the raw-body digest. An invalid provider identity
+fails ingestion.
 
-Plan each provider/scope/tenant partition and retain its audit before applying:
+The ledger must declare `timestamps()` and have matching timestamp columns.
+For AshSqlite, enable write transactions with the repo's `write_transactions?/0`
+callback and configure a pool and busy timeout suitable for writes. Adoption
+returns `{:error, :transactions_not_supported}` when the data layer does not
+advertise transaction support.
+The following fragment runs inside a complete application with a scoped,
+multitenant ledger, its provider, and a retained legacy row. `tenant` and
+`account_id` select the partition being migrated. Stop ingress and reapers,
+plan every partition, and retain each audit before applying:
 
+<!-- tested: upgrade-adoption-in-application -->
 ```elixir
 opts = [tenant: tenant, scope: %{account_id: account_id}]
-{:ok, plan} = AshHooks.Ingress.plan_legacy_identity_adoption(MyApp.InboundLedger, :hubspot, opts)
+{:ok, plan} = AshHooks.Ingress.plan_legacy_identity_adoption(MyApp.InboundLedger, :existing_source, opts)
 # Review plan.audit; resolve every item in plan.unresolved and plan.conflicts.
 {:ok, applied} =
-  AshHooks.Ingress.adopt_legacy_identity(MyApp.InboundLedger, :hubspot, Keyword.put(opts, :quiesced?, true))
+  AshHooks.Ingress.adopt_legacy_identity(MyApp.InboundLedger, :existing_source, Keyword.put(opts, :quiesced?, true))
 ```
 
 Within a canonical group the representative is processed first, then recoverable,
@@ -423,16 +387,6 @@ the transaction. The data layer must support transactions; otherwise adoption re
 to verify stable state. Run each
 partition with ingress/reapers stopped; `quiesced?: true` is an assertion by the
 operator, not an application-wide lock.
-
-A domain provider wrapping the built-in HubSpot provider must delegate
-`event_identity/1` along with its signature/type callbacks:
-
-```elixir
-defdelegate event_identity(payload), to: AshHooks.Provider.HubSpotV3
-```
-
-That module exists only in 2.x. In 3.0, implement the same identity in your own
-provider, as described in the 2.x → 3.0.0 section.
 
 Return a successful provider acknowledgment for `:processed`,
 `:failed_permanent`, and `:superseded`. Send permanent errors to your operator
@@ -456,7 +410,7 @@ surface; repeated provider retries cannot repair a terminal row.
   Its body cap ends reading immediately; interim 1xx responses precede the final
   response. Special-purpose IP ranges are rejected and IPv6 Host values are bracketed.
 
-## 1.2.1 → 1.3.x
+## 1.2.1 → 1.3.0
 
 **Nothing breaks and nothing is required.** This release is additive:
 new per-resource DSL options (`payload_attribute`, `prune_action`, the
@@ -473,7 +427,7 @@ knowing even if you change nothing:
 2. **The send path dead-letters an endpoint whose status is anything
    other than `:enabled`** (previously only an exact `:disabled`
    dead-lettered). Only affects consumers who redeclared `status` with
-   extra values — the fail-closed direction.
+   extra values; the fail-closed direction.
 
 New options, all opt-in: rename the exact-bytes column
 (`payload_attribute`), omit the retention destroy action
@@ -482,13 +436,13 @@ switch (`endpoint do status_attribute ... end`), and atom-typed
 subscription registers now match. The README's "Fitting the extensions
 to your domain" section shows each.
 
-## 1.1.1 → 1.2.x
+## 1.1.1 → 1.2.0 or 1.2.1
 
-### Multi-tenancy is available and opt-in (ADR-0011)
+### Multi-tenancy is available and opt-in
 
-Nothing changes unless you declare multitenancy on the four resources
-(Subscription, Endpoint, both ledgers). If you do, read the adoption
-checklist (`documentation/tutorials/tenancy-adoption-checklist.md`) —
+Declare the same attribute multitenancy contract on every resource used by an
+operation, including optional attempt-history and event-log resources. If you do, read the adoption
+checklist (`documentation/tutorials/tenancy-adoption-checklist.md`) ;
 the ordered transition for populated tables is **backfill the tenant
 attribute → regenerate identity indexes → enable multitenant
 dispatch**. A NULL-tenant legacy row forms a shadow partition: new
@@ -497,9 +451,9 @@ the same logical event.
 
 Two obligations for multi-tenant adopters:
 
-1. **Drain in-flight 1.1.x Oban jobs before serving multitenant
+1. **Drain Oban jobs created before 1.2.0 before serving multitenant
    dispatch.** Pre-tenancy job args carry no tenant and fail closed
-   (`{:error, :tenant_required}`) against multitenant resources —
+   (`{:error, :tenant_required}`) against multitenant resources ;
    correct, but noisy. Drain first.
 2. **String tenants are the supported job-args shape.** The worker
    serializes the row's tenant into Oban args (JSON), inverting the
@@ -514,17 +468,17 @@ The `%{endpoint_id, subscription_id, status, error}` dispatch result
 container is now a typespec'd public contract with one NEW status:
 `:reconciled`.
 
-## 1.0.4 → 1.1.x
+## 1.0.4 → 1.1.0 or 1.1.1
 
-### Elixir 1.20+ required (previously 1.17+)
+### Elixir `~> 1.20` required; previously `~> 1.17`
 
 The supported Elixir window is now `~> 1.20`. Applications resolving
 ash_hooks on Elixir 1.17–1.19 get a hard resolver error at deps
-loadpaths instead of a compile. Per ADR-0010 rule 4 a supported-floor
-bump ships as a MINOR release — so a `~> 1.0` pin will happily resolve
+loadpaths instead of a compile. An increase in the minimum supported version ships as a minor release; so a `~> 1.0` pin will happily resolve
 1.1.0 and then fail resolution on old Elixirs. If you cannot move to
 Elixir 1.20 yet, pin the floor release instead:
 
+<!-- tested: upgrade-dependency-1-0-4 -->
 ```elixir
 {:ash_hooks, "~> 1.0.4"}
 ```
@@ -537,11 +491,11 @@ Behavior corrections (all also under "Fixed" in the CHANGELOG; no API change):
 
 `AshHooks.Event.new/1` and dispatch previously accepted ids and types up to
 255 *characters* (graphemes). Long multi-byte values could pass that check
-and then fail the delivery write — under Ash 3.33's `:codepoints` counting,
+and then fail the delivery write; under Ash 3.33's `:codepoints` counting,
 every endpoint's dispatch errored on an event the library had validated.
 Ids and types are now rejected above 255 **bytes** at `Event.new/1`, with a
 clear error. If you build event types from multi-byte text, values between
-255 characters and 255 bytes now fail fast at construction — which, under
+255 characters and 255 bytes now fail fast at construction; which, under
 `:codepoints`, previously failed (less clearly) at dispatch.
 
 ### 2. Captured snippets and error fields are byte-capped
@@ -550,7 +504,7 @@ The 2048-character snippet cap and 255-character error-summary caps counted
 graphemes; they now cap **bytes** (on a codepoint boundary). Captured
 diagnostic snippets of multi-byte content come out slightly shorter, and a
 hostile response body built from combining characters can no longer crash
-the post-send ledger write — the same applies to thrown/exit error
+the post-send ledger write; the same applies to thrown/exit error
 classifications.
 
 ### 3. Handler failures with invalid-UTF-8 binaries still record
@@ -560,16 +514,13 @@ invalid UTF-8 previously made the failure-recording write itself fail, so
 the delivery stayed re-drivable with no record. It now records `[binary]`
 as the error class.
 
-## Ash 3.33+: the required `default_string_length_count` config
+## Required `default_string_length_count` configuration
 
-Ash 3.33 made `config :ash, :default_string_length_count` REQUIRED for
-every application that compiles Ash resources — resource compilation
-fails until it is set. This is an Ash-level requirement (part of the fix
-for GHSA-cwjv-574p-59f6, where grapheme-based counting let values built
-from unbounded combining characters through `max_length` limits), not an
-ash_hooks one; ash_hooks writes no `:ash` configuration for you. Set it
+Every Ash version supported by ash_hooks 3.1.0 requires this configuration
+before compiling resources. ash_hooks writes no `:ash` configuration for you. Set it
 in your application's `config/config.exs`:
 
+<!-- tested: upgrade-string-config-in-application -->
 ```elixir
 # Recommended: counts unicode codepoints, so max_length bounds value
 # size and validation matches how SQL data layers count.
@@ -586,7 +537,7 @@ ash_hooks injects onto ledger and delivery resources carry `max_length`
 constraints (event ids and error summaries at 255, response snippets at
 2048). Under `:codepoints` those bounds limit codepoints; under
 `:mixed`, Elixir-side validation of the same constraints counts
-graphemes — the exact tradeoff Ash documents for your own attributes.
+graphemes; the exact tradeoff Ash documents for your own attributes.
 The diagnostic response-snippet capture is capped in bytes (on a
 codepoint boundary), so a captured snippet always satisfies its
 constraint under either mode. Your application owns the choice. See
@@ -601,7 +552,7 @@ Two behavior corrections to know about (both security-posture fixes; no API chan
 ### 1. The alternate `:httpc` adapter refuses literal-IP HTTPS
 
 `AshHooks.Http.Httpc` (NOT the default) now returns `{:error, :ip_literal_https_needs_bounded}`
-for `https://<ip-literal>` destinations. It previously validated only the chain — which let
+for `https://<ip-literal>` destinations. It previously validated only the chain; which let
 any chain-valid certificate authenticate the endpoint IP. The default adapter
 (`AshHooks.Http.Bounded`) enforces the iPAddress-SAN floor and keeps working; if you swapped
 to `:httpc` AND deliver to literal-IP HTTPS endpoints, switch those deliveries back (or drop
@@ -610,20 +561,20 @@ the `:http` override).
 ### 2. `use AshHooks.Worker` no longer drops `:http_opts`
 
 `http_opts:` was accepted and silently ignored; it now threads to the adapter. A config that
-passed it with a wrong shape could start behaving differently (correctly) — see the `:cacerts`
+passed it with a wrong shape could start behaving differently (correctly); see the `:cacerts`
 seam in the README/CHANGELOG for the intended use (private-CA bundles: compile-time literals,
 or `{m, f, a}` resolved per-perform for computed values).
 
-## 0.2.x → 1.0.0
+## 0.2.0 through 0.2.2 → 1.0.0
 
-1.0.0 is the semver freeze (ADR-0010). There are **no public API removals or renames**
-from 0.2.x — upgrading is a version bump plus three behavior corrections to know about:
+1.0.0 defines the stable public API. There are **no public API removals or renames**
+from 0.2.0 through 0.2.2; upgrading is a version bump plus three behavior corrections to know about:
 
 ### 1. Truncated chunked bodies now retry (they previously "succeeded")
 
 `AshHooks.Http.Bounded` (the default adapter) returns `{:error, :truncated_body}` when a
-chunked response ends early — exactly as it already did for Content-Length responses. In
-0.2.x the chunked path returned a partial body as success, which could mark a delivery
+chunked response ends early; exactly as it already did for Content-Length responses. In
+0.2.0 through 0.2.2 the chunked path returned a partial body as success, which could mark a delivery
 `:succeeded` on partial bytes. If a receiver of yours streams chunked responses and
 closes mid-body, deliveries now retry instead of silently truncating.
 
@@ -635,14 +586,15 @@ rescued the old `ArgumentError`, replace it with an `{:error, error}` match.
 
 ### 3. Literal-IP https endpoints actually work now
 
-The literal-IP certificate check (IP must appear in the certificate's iPAddress SAN,
-ADR-0009) was dead-on-arrival in 0.2.x — it rejected **every** literal-IP https endpoint
+The literal-IP certificate check requires the IP in the certificate's IP subject
+alternative name. In 0.2.0 through 0.2.2, it rejected **every** literal-IP HTTPS endpoint
 fail-closed with `:cert_ip_mismatch`. It now verifies correctly: endpoints whose certs
 carry the IP SAN deliver; certs without it still fail closed. No action needed unless
 you had worked around the rejection.
 
 ### Install constraint
 
+<!-- tested: upgrade-dependency-1-0 -->
 ```elixir
 {:ash_hooks, "~> 1.0"}
 ```
@@ -651,4 +603,4 @@ you had worked around the rejection.
 
 `~> 1.0` now means: breaking changes only in 2.0, deprecations run two minors minimum,
 safety corrections ship as fixes even where the defective behavior was depended on
-(ADR-0010).
+.

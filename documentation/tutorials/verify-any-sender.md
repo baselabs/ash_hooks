@@ -8,16 +8,15 @@ fail-closed handling of every malformed input.
 There are no built-in vendor verifiers. A sender's documentation is the
 authority on its scheme, and a sender can change its scheme without waiting for
 a new ash_hooks release. The recipes below show how to configure common scheme
-shapes. Where a recipe names a vendor, it is an example of that shape, with a
-link to the vendor's own documentation. The vendor's documentation is
-authoritative, and a recipe is not a maintained integration: check the current
-contract before you rely on it.
+shapes. The recipes demonstrate application-defined signature shapes. Use the
+sender's documentation to configure its actual contract.
 
 ## The shape of a provider
 
 A provider is a module that implements `AshHooks.Provider`. For most senders,
 configuration is enough:
 
+<!-- tested: verify-orders-provider -->
 ```elixir
 defmodule MyApp.Webhooks.Orders do
   use AshHooks.Provider,
@@ -43,14 +42,9 @@ compiles and generates these callbacks:
 Every generated callback can be overridden. Point an inbound declaration at the
 module:
 
-```elixir
-webhooks do
-  inbound :orders do
-    provider MyApp.Webhooks.Orders
-    secret {:app_env, [:my_app, :orders_webhook_secret]}
-  end
-end
-```
+Declare this module as the required `provider` on the `:orders` inbound source.
+The complete ledger and secret-source declaration is in the
+[get-started application](get-started.md#declare-the-resources).
 
 The inbound name (`:orders`) is the source's identity in the ledger. It is not a
 module name and resolves nothing by convention: `provider` is required.
@@ -84,19 +78,16 @@ Configured providers read their signature and timestamp from the request
 headers, so a direct `Ingress.ingest/4` caller passes the headers, the exact raw
 body, and, when the scheme signs them, the method and the public request URL:
 
-```elixir
-raw_body = AshHooks.BodyReader.raw_body(conn)
-
-AshHooks.Ingress.ingest(MyApp.WebhookLedger, :orders, raw_body, %{
-  headers: conn.req_headers,
-  method: conn.method,
-  request_uri: MyApp.Webhooks.public_url(conn)
-})
-```
+Call `AshHooks.Ingress.ingest/4` with the ledger resource, inbound source name,
+exact raw body, and a context containing `headers: conn.req_headers`, `method: conn.method`,
+and the configured public `request_uri`. Include the scope and tenant for resources
+that require them. The [get-started application](get-started.md#verify-and-handle-an-incoming-event)
+executes direct ingestion against its database.
 
 Pass `conn.req_headers` as it is: an ordered list that keeps every header line.
 Providers receive it twice. `ctx.headers` is a map in which repeated header
-lines are joined with `", "`, the HTTP rule for repeated fields, and
+lines are joined with `", "`. Use `ctx.header_list` when the signing contract
+needs individual header lines;
 `ctx.header_list` keeps each line separately, in arrival order. A map you build
 yourself is passed through unchanged, but it has already lost repeated lines.
 Configured header names are matched without regard to case.
@@ -105,6 +96,7 @@ Configured header names are matched without regard to case.
 `conn` carries the internal scheme, host, and port, so build the public URL from
 a base URL you configure:
 
+<!-- tested: verify-public-url-in-application -->
 ```elixir
 def public_url(conn) do
   base = Application.fetch_env!(:my_app, :public_webhook_base_url)
@@ -187,16 +179,22 @@ key or signature bytes:
 Ingress turns these into `AshHooks.Errors` values before it writes a delivery
 row. With `ingress_tracking :on`, a rejected request records only a digest row
 for `counts/2`. Answer `:invalid_signature` and `:stale_timestamp` with a 4xx
-response. Answer `:no_webhook_secret`, a paused source, and handler failures with
-a 5xx, so the sender retries once you fix the cause.
+response. Return 5xx for missing secrets, paused sources, and retryable handler
+failures. Acknowledge terminal permanent failures with 200 and expose them to
+operators.
 
 ## Recipes
+
+Each `use AshHooks.Provider` fragment below belongs inside a provider module.
+These fragments are compiled inside complete provider modules and exercised in
+a real application. Complete module blocks can be placed in their own files.
 
 ### HMAC of the body in a header
 
 The most common shape: an HMAC over the exact raw body, hex or base64 encoded,
 in one header.
 
+<!-- tested: verify-shop-provider -->
 ```elixir
 defmodule MyApp.Webhooks.Shop do
   use AshHooks.Provider,
@@ -208,25 +206,23 @@ defmodule MyApp.Webhooks.Shop do
 end
 ```
 
-Examples of this shape: [Shopify](https://shopify.dev/docs/apps/build/webhooks/verify-deliveries)
-(`x-shopify-hmac-sha256`, base64) and
-[WooCommerce](https://developer.woocommerce.com/docs/apis/rest-api/v1/webhooks/)
-(`x-wc-webhook-signature`, base64, its default algorithm).
+This example verifies a base64-encoded HMAC-SHA256 of the exact request body.
 
 ### A signature header with a fixed prefix
 
 Some senders put the algorithm name in front of the signature.
 
+<!-- tested: verify-prefixed-provider-in-application -->
 ```elixir
 use AshHooks.Provider,
   verify: [
     algorithm: :hmac_sha256,
-    signature: {:header, "x-hub-signature-256", prefix: "sha256="},
+    signature: {:header, "x-hook-signature", prefix: "sha256="},
     encoding: :hex
   ]
 ```
 
-Example: [GitHub](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries).
+This example expects `sha256=` before a lowercase hexadecimal signature.
 The prefix is matched without regard to ASCII case and is not part of the
 signature.
 
@@ -235,18 +231,18 @@ signature.
 When the sender's documentation says to decode the secret before using it as
 the HMAC key, set `key_encoding`.
 
+<!-- tested: verify-encoded-key-provider-in-application -->
 ```elixir
 use AshHooks.Provider,
   verify: [
     algorithm: :hmac_sha256,
-    signature: {:header, "squarespace-signature"},
+    signature: {:header, "x-encoded-key-signature"},
     encoding: :hex,
     key_encoding: :hex
   ]
 ```
 
-Example: [Squarespace](https://commerce-apis.squarespace.com/webhooks/verifying-notifications),
-whose subscription secret is hexadecimal.
+This example decodes a hexadecimal secret before computing the HMAC.
 
 ### A timestamp and signatures in one header
 
@@ -254,27 +250,27 @@ A structured header carries `key=value` pairs: a timestamp and one or more
 signatures. Any listed signature that verifies is accepted, which lets the sender
 rotate keys.
 
+<!-- tested: verify-structured-provider-in-application -->
 ```elixir
 use AshHooks.Provider,
   verify: [
     algorithm: :hmac_sha256,
-    signature: {:structured_header, "stripe-signature", signature_key: "v1"},
+    signature: {:structured_header, "x-payments-signature", signature_key: "v1"},
     timestamp: {:signature_field, "t"},
     signed_input: [:timestamp, ".", :body],
     tolerance_seconds: 300
   ]
 ```
 
-Examples: [Stripe](https://docs.stripe.com/webhooks/signature) (`t=...,v1=...`;
-its `whsec_...` secret is used as the key exactly as issued, so set no
-`key_prefix`) and [Shippo](https://docs.goshippo.com/tracking/webhook-security)
-(`shippo-auth-signature`, same shape).
+This example uses the secret unchanged and signs `timestamp.body`. It accepts
+any valid `v1` signature in the structured header.
 
 ### Standard Webhooks
 
 [Standard Webhooks](https://www.standardwebhooks.com) senders sign
 `id.timestamp.body` and send a space-separated list of `v1,<base64>` signatures.
 
+<!-- tested: verify-standard-provider-in-application -->
 ```elixir
 use AshHooks.Provider,
   verify: [
@@ -294,16 +290,15 @@ For the asymmetric `v1a` variant, use `algorithm: :ed25519`,
 `signature_key: "v1a"`, and `key_prefix: "whpk_"`; the secret source returns the
 sender's public key.
 
-Example: [BigCommerce](https://docs.bigcommerce.com/developer/docs/beta/webhooks/http-webhooks#webhook-signature)
-uses this shape with its raw app client secret as the key, so leave out
-`key_prefix` and `key_encoding` for it. ash_hooks signs its own outbound webhooks
-with this scheme (`AshHooks.Signing`).
+ash_hooks signs its outbound webhooks using Standard Webhooks. Configure
+inbound key decoding according to the sender's documented key format.
 
 ### Method, URL, body, and timestamp
 
 Some senders sign the request line as well as the body. The signed parts are
 listed in order:
 
+<!-- tested: verify-request-provider-in-application -->
 ```elixir
 use AshHooks.Provider,
   verify: [
@@ -316,19 +311,18 @@ use AshHooks.Provider,
   ]
 ```
 
-When the sender transforms the URL before signing, use a host function for the
-signed input. [HubSpot's v3 scheme](https://developers.hubspot.com/docs/apps/legacy-apps/authentication/validating-requests)
-signs `method <> uri <> body <> timestamp` after decoding a fixed set of
-percent-escapes in the URI:
+Some application-defined schemes transform selected URL escapes before signing.
+Implement that transformation in a trusted `signed_input` function:
 
+<!-- tested: verify-crm-provider -->
 ```elixir
 defmodule MyApp.Webhooks.Crm do
   use AshHooks.Provider,
     verify: [
       algorithm: :hmac_sha256,
-      signature: {:header, "x-hubspot-signature-v3"},
+      signature: {:header, "x-request-signature"},
       encoding: :base64,
-      timestamp: {:header, "x-hubspot-request-timestamp"},
+      timestamp: {:header, "x-request-timestamp"},
       timestamp_unit: :milliseconds,
       signed_input: {__MODULE__, :signed_input}
     ]
@@ -343,7 +337,7 @@ defmodule MyApp.Webhooks.Crm do
   def signed_input(raw_body, ctx) do
     with method when is_binary(method) <- ctx[:method],
          uri when is_binary(uri) <- ctx[:request_uri],
-         timestamp when is_binary(timestamp) <- Signature.header(ctx, "x-hubspot-request-timestamp") do
+         timestamp when is_binary(timestamp) <- Signature.header(ctx, "x-request-timestamp") do
       method <> decode(uri) <> raw_body <> timestamp
     end
   end
@@ -361,17 +355,16 @@ verification.
 
 ### Sorted form fields
 
-[Twilio](https://www.twilio.com/docs/usage/webhooks/webhooks-security) signs the
-public URL followed by every form field name and value, sorted by name, with
-HMAC-SHA1. JSON requests instead carry the body's SHA-256 in a `bodySHA256`
-query parameter and sign the URL alone.
+This application-defined example uses HMAC-SHA1 over the public URL and sorted
+form fields. Its JSON variant verifies a body digest before signing the URL.
 
+<!-- tested: verify-form-provider -->
 ```elixir
 defmodule MyApp.Webhooks.Voice do
   use AshHooks.Provider,
     verify: [
       algorithm: :hmac_sha1,
-      signature: {:header, "x-twilio-signature"},
+      signature: {:header, "x-form-signature"},
       encoding: :base64,
       signed_input: {__MODULE__, :signed_input}
     ]
@@ -381,7 +374,7 @@ defmodule MyApp.Webhooks.Voice do
   def signed_input(raw_body, %{request_uri: url}) when is_binary(url) do
     query = URI.parse(url).query || ""
 
-    case for {"bodySHA256", hash} <- URI.query_decoder(query), do: hash do
+    case for {"body_digest", hash} <- URI.query_decoder(query), do: hash do
       [] ->
         url <> form_suffix(raw_body)
 
@@ -414,21 +407,22 @@ so the verified form body is decoded into the ledger payload.
 
 ### A signature over selected payload fields
 
-[Ecwid](https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_webhooks.md#webhooks-security)
-signs `eventCreated.eventId` from the JSON body, not the whole body:
+This example authenticates selected payload fields and derives its delivery
+identity from the authenticated event ID.
 
+<!-- tested: verify-fields-provider -->
 ```elixir
 defmodule MyApp.Webhooks.Store do
   use AshHooks.Provider,
     verify: [
       algorithm: :hmac_sha256,
-      signature: {:header, "x-ecwid-webhook-signature"},
+      signature: {:header, "x-fields-signature"},
       encoding: :base64,
       signed_input: {__MODULE__, :signed_input}
     ]
 
   def signed_input(raw_body, _ctx) do
-    with {:ok, %{"eventCreated" => created, "eventId" => id}} <- Jason.decode(raw_body),
+    with {:ok, %{"created_at" => created, "event_id" => id}} <- Jason.decode(raw_body),
          true <- is_integer(created) and created >= 0,
          {:ok, id} <- event_id(id) do
       Integer.to_string(created) <> "." <> id
@@ -437,7 +431,7 @@ defmodule MyApp.Webhooks.Store do
 
   # Deduplicate on the signed id: unsigned fields must not mint a new identity.
   @impl true
-  def event_identity(%{"eventId" => id}), do: event_id(id)
+  def event_identity(%{"event_id" => id}), do: event_id(id)
   def event_identity(_payload), do: {:error, :malformed_payload}
 
   defp event_id(id) when is_binary(id) and id != "", do: {:ok, id}
@@ -452,14 +446,15 @@ and fetch authoritative data from the sender's API before acting on them.
 ### An RSA signature header
 
 For public-key schemes, the secret source returns the sender's public key as
-PEM. [Adobe Commerce](https://developer.adobe.com/commerce/extensibility/webhooks/signature-verification)
-signs the base64 encoding of the raw body with RSA and SHA-256:
+PEM. This example verifies an RSA PKCS#1 v1.5 signature with SHA-256 over the
+base64-encoded request body:
 
+<!-- tested: verify-rsa-provider-in-application -->
 ```elixir
 use AshHooks.Provider,
   verify: [
     algorithm: :rsa_pkcs1_sha256,
-    signature: {:header, "x-adobe-commerce-webhook-signature"},
+    signature: {:header, "x-rsa-signature"},
     encoding: :base64,
     signed_input: [{:base64, :body}]
   ]
@@ -472,12 +467,13 @@ fixed-width `r || s` form.
 ### A JWS or JWT as the body
 
 Some senders deliver a compact JWS, often a JWT (JSON Web Token), as the whole
-body. The algorithm is pinned by your configuration and never read from the
-token. A token whose header names a different algorithm, `none`, a critical
+body. Your configuration selects the algorithm. Verification rejects a token whose
+protected `alg` header does not match. A token whose header names a different algorithm, `none`, a critical
 extension, or an unencoded payload is rejected. So is a token with padded
 segments. When the payload is a JSON object with `exp` or `nbf` claims, they are
 enforced.
 
+<!-- tested: verify-jws-provider-in-application -->
 ```elixir
 use AshHooks.Provider,
   verify: [
@@ -488,11 +484,11 @@ use AshHooks.Provider,
 
 The generated `decode_payload/1` stores the verified JWS payload in the ledger,
 and ingress needs no signature header. The generated `event_identity/1`
-deduplicates on the SHA-256 of that payload (`AshHooks.Provider.Scheme.payload_identity/1`),
+deduplicates on the SHA-256 of the verified payload encoded as canonical JSON
+with object keys sorted and array order preserved (`AshHooks.Provider.Scheme.payload_identity/1`),
 so the same signed content counts once even if it arrives with a differently
-encoded signature. Example:
-[Wix](https://dev.wix.com/docs/build-apps/develop-your-app/api-integrations/events-and-webhooks/about-webhooks),
-an RS256 JWT verified with the app's public key.
+encoded signature. The example pins RS256 and loads a PEM-encoded RSA public key
+from the secret source.
 
 ### A timestamp in another format
 
@@ -500,12 +496,13 @@ When the timestamp is not Unix seconds or milliseconds, read it with a host
 function that returns `{:ok, unix_seconds}` or `:error`. This example also
 signs a header value and the request path:
 
+<!-- tested: verify-date-provider -->
 ```elixir
 defmodule MyApp.Webhooks.Parcels do
   use AshHooks.Provider,
     verify: [
       algorithm: :hmac_sha256,
-      signature: {:header, "x-hmac-signature-v2", prefix: "hmac-sha256-hex="},
+      signature: {:header, "x-dated-signature", prefix: "sha256="},
       encoding: :hex_any,
       signed_input: [{:header, "x-timestamp"}, :method, :path, :body],
       timestamp: {__MODULE__, :timestamp},
@@ -536,7 +533,8 @@ defmodule MyApp.Webhooks.Parcels do
 end
 ```
 
-Example: [EasyPost's v2 HMAC](https://support.easypost.com/hc/en-us/articles/39826034964237-Webhook-HMAC-Validation).
+This example parses an RFC 2822 timestamp and signs the timestamp header,
+method, path, and body.
 A signed path must come from your own routing (`request_uri`), never from a
 header the sender controls.
 
@@ -546,6 +544,7 @@ Override `verify_signature/3` and call `AshHooks.Provider.Scheme.verify/4` when
 a route must choose between schemes, for example while a sender migrates from
 one version to the next:
 
+<!-- tested: verify-migrating-provider -->
 ```elixir
 defmodule MyApp.Webhooks.Migrating do
   use AshHooks.Provider
@@ -584,84 +583,19 @@ tells ingress that the provider reads its own signature from the headers.
 
 ### HTTP Message Signatures (RFC 9421) with RequestSeal
 
-Senders that sign with [HTTP Message Signatures](https://www.rfc-editor.org/rfc/rfc9421.html)
-put `signature` and `signature-input` headers on the request, naming exactly
-which components they cover. Verify them with
-[RequestSeal](https://hex.pm/packages/request_seal) 1.0 or later, a separate package that adds
-what this scheme needs beyond a signature check: required covered components,
-freshness and expiry, body integrity through content digests
-([RFC 9530](https://www.rfc-editor.org/rfc/rfc9530.html)), and one-time nonces
-through a replay store you supervise.
+Use [RequestSeal](https://hex.pm/packages/request_seal) with
+`{:request_seal, "~> 1.0"}` for HTTP Message Signatures (RFC 9421). Its
+`RequestSeal.AshHooks` adapter integrates verification into a provider.
+Follow its [webhooks guide](https://hexdocs.pm/request_seal/ash-hooks.html) for
+the policy and key resolver.
 
-```elixir
-# mix.exs
-{:request_seal, "~> 1.0"}
-```
-
-Its `RequestSeal.AshHooks` adapter verifies inside a provider. The inbound
-`secret` source returns a key *reference*; your policy function turns it into a
-`RequestSeal.Policy`, so RequestSeal never treats the reference as key material:
-
-```elixir
-defmodule MyApp.Webhooks.Signed do
-  use AshHooks.Provider
-  alias AshHooks.Provider.Event
-
-  @components ~s[("@method" "@authority" "@path" "content-digest" "content-type")]
-
-  @impl true
-  def verify_signature(raw_body, ctx, key_reference) do
-    RequestSeal.AshHooks.verify_signature(raw_body, ctx, key_reference,
-      policy: &policy/2,
-      label: "sig"
-    )
-  end
-
-  # The adapter reads the signature headers itself; ingress needs no ctx.signature.
-  @impl true
-  def signature_source, do: :request
-
-  @impl true
-  defdelegate parse_event_type(payload), to: Event, as: :parse
-  @impl true
-  defdelegate handle_event(type, payload), to: Event, as: :build
-
-  # Called with the ingest tenant and the secret source's key reference.
-  def policy(_tenant, key_reference) do
-    {:ok, public_key} = MyApp.Keys.public_key(key_reference)
-
-    {:ok, policy} =
-      RequestSeal.Policy.new(%{
-        algorithms: ["ed25519"],
-        components: @components,
-        key_resolver: fn _params -> {:ok, %{algorithm: "ed25519", key: public_key}} end,
-        freshness: %{
-          clock: fn -> System.system_time(:second) end,
-          max_age: 300,
-          skew: 5,
-          require_expires: true
-        },
-        content: %{kind: :content, algorithms: ["sha-256"], section: :headers},
-        replay: :not_required
-      })
-
-    policy
-  end
-end
-```
-
-`replay: :not_required` keeps the example short. To accept each signed request
-once, configure a replay store in the policy, as RequestSeal's
-[replay protection guide](https://hexdocs.pm/request_seal/replay-protection.html)
-describes. ash_hooks still deduplicates deliveries on its ledger.
-
-Pass `headers: conn.req_headers` to ingress. The adapter rebuilds the signed
-request from `ctx.header_list`, so a covered header that arrives on several
-lines verifies exactly as it was sent. Pass the exact URL the sender signed,
-query included, as `request_uri`; ash_hooks hands it to the adapter unchanged.
-A policy function that fails makes verification fail; it never accepts the
-request. RequestSeal's [webhooks with ash_hooks guide](https://hexdocs.pm/request_seal/ash-hooks.html)
-also covers signing your outbound ash_hooks deliveries with RFC 9421.
+Pass the exact public request URL and `conn.req_headers` to ingress so the adapter
+can reconstruct covered components and individual header lines. Configure body
+integrity checks and required signed components in the policy. The ash_hooks
+ledger deduplicates deliveries; configure a RequestSeal replay store when each
+signature nonce must be accepted only once. A policy with `replay: :not_required`
+relies on the ledger for delivery deduplication and does not provide nonce reuse
+protection.
 
 ## Key rotation
 
@@ -674,21 +608,19 @@ Rotate a shared secret or a public key without dropping deliveries:
 - `AshHooks.Provider.Scheme.verify/4` and the `AshHooks.Provider.Signature`
   functions accept a list of keys.
 
-```elixir
-inbound :orders do
-  provider MyApp.Webhooks.Orders
-  secret {:app_env, [:my_app, :orders_secret]}
-  previous_secret {:app_env, [:my_app, :orders_secret_previous]}
-end
-```
+Add `previous_secret` beside `secret` in the inbound declaration, using the
+same resolver shapes for the outgoing key. Both values can use tenant-aware
+sources. Remove the previous source when the overlap period ends.
 
 ## Classifying events and running your actions
 
 Configured providers classify every verified request as `:webhook` and keep the
 sender's event names in the payload. Override `parse_event_type/1` and
 `handle_event/2` to map event names to your own atoms and run idempotent
-application actions:
+application actions. This example returns the classified event; the
+[get-started application](get-started.md#declare-the-resources) shows a database update:
 
+<!-- tested: verify-classification-provider -->
 ```elixir
 defmodule MyApp.Webhooks.Orders do
   use AshHooks.Provider,
@@ -707,8 +639,8 @@ defmodule MyApp.Webhooks.Orders do
   def parse_event_type(_payload), do: {:error, :malformed_payload}
 
   @impl true
-  def handle_event(:order_paid, payload), do: MyApp.Orders.mark_paid(payload)
-  def handle_event(:order_refunded, payload), do: MyApp.Orders.mark_refunded(payload)
+  def handle_event(:order_paid, payload), do: {:ok, %AshHooks.Provider.Event{type: :order_paid, payload: payload}}
+  def handle_event(:order_refunded, payload), do: {:ok, %AshHooks.Provider.Event{type: :order_refunded, payload: payload}}
 end
 ```
 
@@ -733,6 +665,7 @@ Implement `verify_signature/3` yourself. The building blocks are public in
 - `header/2` reads a request header without regard to case;
 - `check_timestamp/3` applies a symmetric replay window.
 
+<!-- tested: verify-custom-provider -->
 ```elixir
 defmodule MyApp.Webhooks.Custom do
   use AshHooks.Provider
@@ -767,6 +700,7 @@ an error tuple for every malformed input.
 Test with the sender's published known-answer vectors where they exist, and
 with signatures you compute yourself:
 
+<!-- tested: verify-provider-test-in-application -->
 ```elixir
 test "accepts a signed body and rejects a changed byte" do
   secret = :crypto.strong_rand_bytes(32)

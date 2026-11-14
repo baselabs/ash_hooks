@@ -1,7 +1,7 @@
 defmodule AshHooks do
   @moduledoc """
-  Webhooks for Ash Framework — inbound (receive, verify, dedup → domain events)
-  and outbound (sign, deliver, retry, track).
+  Receive, verify, and deduplicate incoming webhooks.
+  Sign, deliver, retry, and track outgoing webhooks.
 
   Attach to a resource:
 
@@ -20,18 +20,15 @@ defmodule AshHooks do
         end
       end
 
-  Both halves are independently consumable: inbound-only consumers pull no
-  queue infrastructure (ADR-0004).
+  Inbound use does not require Oban.
 
-  Multi-tenant? Declare Ash attribute multitenancy on the four resources
-  (subscription, endpoint, both ledgers) and pass `:tenant` /
-  `ctx[:tenant]` to every entry point — every query, write, dedup
-  identity, sweep, and job arg is tenant-scoped, and a tenant-less call
-  against a multitenant resource fails closed with
-  `{:error, :tenant_required}` before any data access. Single-tenant
-  apps change nothing. The
+  Configure consistent attribute multitenancy on every resource you enable,
+  including attempt history and the event log. Pass `:tenant` or `ctx[:tenant]`
+  to every entry point. `AshHooks.Tenancy.resolve/2` validates the resource
+  modules supplied by each caller; some callers omit optional resources.
+  The
   [adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
-  walks the ordered transition (ADR-0011).
+  explains the transition.
   """
 
   @inbound %Spark.Dsl.Entity{
@@ -72,10 +69,10 @@ defmodule AshHooks do
         doc: """
         The signing-secret source: an `{M, f, a}` callback, `{:app_env, path}`,
         a 0-arity function (app-global), or a 1-arity function
-        (`tenant -> {:ok, secret} | {:error, :no_webhook_secret}` — resolves
+        (`tenant -> {:ok, secret} | {:error, :no_webhook_secret}`; resolves
         the TENANT's secret on multitenant ledgers; arity dispatch on literal
-        fns is unambiguous). A literal binary is rejected at parse time
-        (ADR-0005). Scope: this net catches the secret passed AS the option
+        fns is unambiguous). A literal binary is rejected at parse time.
+        This check catches the secret passed as the option
         value; arguments of an MFA source are the consumer's own code.
         """
       ],
@@ -97,7 +94,7 @@ defmodule AshHooks do
         The ROTATED-OUT signing secret source for this inbound declaration
         (the same source shapes as `secret`): during a rotation's overlap
         window, verification falls back to this key when the current one
-        does not match — both keys verify until you remove the option
+        does not match; both keys verify until you remove the option
         (the end of your overlap window).
         """
       ],
@@ -133,7 +130,7 @@ defmodule AshHooks do
     target: AshHooks.Outbound,
     describe: """
     Declares an outbound webhook event this resource emits to subscribed
-    endpoints — signed (Standard Webhooks canon by default) and delivered with
+    endpoints; signed (Standard Webhooks canon by default) and delivered with
     retry/backoff/dead-letter semantics.
     """,
     schema: [
@@ -147,14 +144,14 @@ defmodule AshHooks do
         default: :standard,
         doc: """
         Signature envelope: `:standard` (SW canon), `:dual` (SW canon + legacy
-        envelope for migrating receivers), `:legacy` (ADR-0002).
+        envelope for migrating receivers), or `:legacy` (legacy signature only).
         """
       ],
       subscriptions: [
         type: :atom,
         doc: """
         The consumer's Subscription resource module (carrying
-        `AshHooks.Subscription`) this event fans out through — the
+        `AshHooks.Subscription`) this event fans out through; the
         dispatcher matches its rows against the event type.
         """
       ],
@@ -169,7 +166,7 @@ defmodule AshHooks do
       description: [
         type: :string,
         doc: """
-        The catalog description of this event type — what it means, when
+        The catalog description of this event type; what it means, when
         it fires. Read back through `AshHooks.Catalog` for event pickers
         and generated docs.
         """
@@ -177,7 +174,7 @@ defmodule AshHooks do
       example: [
         type: :string,
         doc: """
-        A catalog example payload for this event type — the exact bytes
+        A catalog example payload for this event type; the exact bytes
         (or a representative JSON document) shown in event pickers and
         generated docs, and sent by nothing (test sends synthesize their
         own payloads; wire your own sample through `test_send`'s
@@ -187,7 +184,7 @@ defmodule AshHooks do
       payload_schema: [
         type: :any,
         doc: """
-        The catalog's payload contract for this event type — a JSON-Schema
+        The catalog's payload contract for this event type; a JSON-Schema
         map, a types module, or any term your docs renderer understands.
         Data for tooling only; the dispatcher never validates against it.
         """
@@ -205,8 +202,8 @@ defmodule AshHooks do
         doc: """
         The consumer's OutboundEvent resource module (carrying
         `AshHooks.OutboundEvent`): when set, every dispatch records the
-        event ONCE — id, type, declared version, time, exact payload
-        bytes — whether or not any endpoint was enabled. The log has its
+        event ONCE; id, type, declared version, time, exact payload
+        bytes; whether or not any endpoint was enabled. The log has its
         own retention (`AshHooks.OutboundEvent.prune/2`) and answers
         replays (`AshHooks.OutboundEvent.replay/3`).
         """
@@ -229,7 +226,7 @@ defmodule AshHooks do
   @webhooks %Spark.Dsl.Section{
     name: :webhooks,
     describe: """
-    Webhook declarations — inbound sources and outbound events for this
+    Webhook declarations; inbound sources and outbound events for this
     resource.
     """,
     entities: [@inbound, @outbound]
@@ -248,7 +245,7 @@ defmodule AshHooks do
   alias AshHooks.Errors.Unknown.UnknownError
 
   @doc """
-  Fans an outbound event out to its subscribed endpoints — the outbound
+  Fans an outbound event out to its subscribed endpoints; the outbound
   entry point, delegating to `AshHooks.Dispatcher.dispatch/4` (the
   `AshHooks.Ingress.ingest/4` twin).
   """
@@ -267,7 +264,7 @@ defmodule AshHooks do
   defdelegate reconcile_pending(resource, name, opts \\ []), to: AshHooks.Dispatcher
 
   @typedoc """
-  The per-tenant sweep totals: one result per tenant (error-isolated — one
+  The per-tenant sweep totals: one result per tenant (error-isolated; one
   tenant's failure never stops the others) plus the sum of the successful
   counts.
   """
@@ -278,7 +275,7 @@ defmodule AshHooks do
 
   @doc """
   Maps `AshHooks.Ingress.reap/2` over `tenants:` SEQUENTIALLY, per-tenant
-  error isolation — a tenant-less global reap over a multitenant ledger is
+  error isolation; a tenant-less global reap over a multitenant ledger is
   impossible by construction (each tenant's call carries its own
   pre-flight). Sequential by design: the shared repo pool is the one
   cross-tenant starvation surface, so per-tenant sweeps do not contend.
@@ -296,7 +293,7 @@ defmodule AshHooks do
   @doc """
   Maps the retention prune over `tenants:` sequentially (routing by the
   resource's extension: inbound ledgers through `AshHooks.Ingress.prune/2`,
-  outbound deliveries through `AshHooks.Delivery.prune/2`) — the same
+  outbound deliveries through `AshHooks.Delivery.prune/2`); the same
   per-tenant isolation and sequencing as `reap_all/2`.
 
       {:ok, %{results: %{"org_a" => {:ok, 2}}, total: 2}} =
@@ -366,15 +363,15 @@ defmodule AshHooks do
   end
 
   @doc """
-  Schema validator for the `paused` option — the same source shapes as
+  Schema validator for the `paused` option; the same source shapes as
   `secret`, resolving to a boolean at ingest time.
   """
   @spec validate_pause_source(term()) :: {:ok, term()} | {:error, String.t()}
   def validate_pause_source(source), do: validate_secret_source(source)
 
   @doc """
-  Schema validator for the `secret` option — accepts only secret SOURCES,
-  rejecting a literal binary at DSL parse time (ADR-0005).
+  Schema validator for the `secret` option; accepts only secret SOURCES,
+  rejecting a literal binary at DSL parse time.
   """
   @spec validate_secret_source(term()) :: {:ok, term()} | {:error, String.t()}
   def validate_secret_source({m, f, a} = source)

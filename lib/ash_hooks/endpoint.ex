@@ -49,7 +49,7 @@ defmodule AshHooks.Endpoint do
   @statuses [:enabled, :disabled]
 
   @doc """
-  The endpoint lifecycle statuses — `:disabled` is the durable circuit
+  The endpoint lifecycle statuses; `:disabled` is the durable circuit
   breaker the 410 rule and operators flip.
   """
   @spec statuses() :: list(atom())
@@ -94,10 +94,10 @@ defmodule AshHooks.Endpoint do
 
   @doc """
   Rolls the endpoint's signing secret reference with an overlap window:
-  the incumbent reference moves to `previous_secret_ref` — the Standard
-  Webhooks zero-downtime seam: BOTH keys sign every delivery until the
-  window ends — the new reference takes its place, and the old key's
-  retirement is scheduled.
+  the incumbent reference moves to `previous_secret_ref` and the new reference
+  takes its place. Both keys sign while the previous reference remains stored.
+  Schedule `expire_previous_secrets/2` to remove expired references; signing
+  can continue past the deadline if that sweep is delayed.
 
       {:ok, rolled} =
         AshHooks.Endpoint.roll_secret(endpoint,
@@ -106,11 +106,11 @@ defmodule AshHooks.Endpoint do
           overlap_seconds: 24 * 3_600
         )
 
-  Options: `:new_secret_ref` (required — a fresh store reference; rolling
+  Options: `:new_secret_ref` (required; a fresh store reference; rolling
   onto the incumbent is `{:error, :same_reference}`), `:overlap_seconds`
   (default 86,400), `:now` (the application clock), `:tenant`. Emits
   `[:ash_hooks, :endpoint, :roll]` with the endpoint id. The row carries
-  references and lifecycle timestamps only — never secret material. The
+  references and lifecycle timestamps only; never secret material. The
   gated write fences concurrent rolls
   (`{:error, :rolled_underneath}` when the incumbent moved first); a
   resource without `key_lifecycle :on` fails with a named error.
@@ -171,7 +171,7 @@ defmodule AshHooks.Endpoint do
   no previous key is returned unchanged.
 
   `:tenant` applies to the gated write (required on multitenant
-  resources — the tenancy pre-flight runs before it).
+  resources; the tenancy pre-flight runs before it).
   """
   @spec expire_previous_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
   def expire_previous_secret(endpoint, opts \\ []) do
@@ -212,8 +212,8 @@ defmodule AshHooks.Endpoint do
   @doc """
   The scheduled retirement sweep: expires every endpoint whose previous
   key's overlap window has ended (`previous_secret_retired_at <= now`).
-  Schedule it alongside your retention sweeps; the window an endpoint
-  never outlives is the one `roll_secret/2` set. Returns
+  Schedule it alongside your retention sweeps. Signing uses the previous key
+  until its reference is removed, even after the scheduled deadline. Returns
   `{:ok, retired_count}`.
 
   Options: `:now` (the application clock) and `:tenant` (required on
@@ -291,7 +291,7 @@ defmodule AshHooks.Endpoint do
     The sustained-failure auto-disable policy, beside the 410 rule: the
     health sweep (`AshHooks.EndpointHealth.sweep/3`) disables an endpoint
     whose trailing failure window meets the configured failure share with
-    at least `min_attempts` of evidence — only on the sweep AFTER one
+    at least `min_attempts` of evidence; only on the sweep AFTER one
     that warned (the declaration injects the `disable_warned_at` marker
     column the warning sweep stamps; migrate it with the declaration).
     Recovery below the warning band clears the marker. Re-enabling is an
@@ -343,13 +343,13 @@ defmodule AshHooks.Endpoint do
         type: :atom,
         doc: """
         The consumer's enable/disable attribute the package maps onto
-        (e.g. `active`). When set, `status` is not injected — the mapped
+        (e.g. `active`). When set, `status` is not injected; the mapped
         attribute is the one durable switch: the dispatcher skips
         endpoints whose value is outside `enabled_values`, and the 410
         auto-disable sets it to `disabled_value`. The attribute must be
         declared in the resource's own `attributes` block (not another
         extension's injection), and `enabled_values`/`disabled_value`
-        must be spelled out explicitly — fail-closed at compile.
+        must be spelled out explicitly; fail-closed at compile.
         """
       ],
       version_pinning: [
@@ -357,7 +357,7 @@ defmodule AshHooks.Endpoint do
         default: :off,
         doc: """
         Whether the payload-version pinning column is injected (default
-        `:off` — existing schemas stay untouched). With `:on`, the
+        `:off`; existing schemas stay untouched). With `:on`, the
         extension injects `pinned_payload_version` (integer, nullable):
         an endpoint pinning a version its event's declaration carries (in
         `payload_versions`) receives THAT variant builder's bytes instead
@@ -371,14 +371,16 @@ defmodule AshHooks.Endpoint do
         default: :off,
         doc: """
         Whether the signing-key lifecycle columns are injected (default
-        `:off` — existing schemas stay untouched). With `:on`, the
+        `:off`; existing schemas stay untouched). With `:on`, the
         extension injects `secret_created_at`, `secret_first_used_at`,
         `secret_retired_at`, `previous_secret_created_at`,
         `previous_secret_first_used_at`, and `previous_secret_retired_at`
-        (the scheduled — then actual — retirement of the old key), and
-        `AshHooks.Endpoint.roll_secret/2` /
-        `expire_previous_secret(s)/1,2` become available. Declaring `:on`
-        requires a migration for the six columns. Timestamps only — never
+        (the scheduled retirement time of the previous key). Removing the
+        previous reference does not update that timestamp to the actual removal
+        time. `roll_secret/2`, `expire_previous_secret/2` (one endpoint), and
+        `expire_previous_secrets/2` (a resource) accept optional arguments.
+        Declaring `:on`
+        requires a migration for the six columns. Timestamps only; never
         secret material.
         """
       ],
@@ -387,7 +389,7 @@ defmodule AshHooks.Endpoint do
         default: :off,
         doc: """
         Whether the per-endpoint response-capture columns are injected
-        (default `:off` — existing schemas stay untouched). With `:on`,
+        (default `:off`; existing schemas stay untouched). With `:on`,
         the extension injects `response_capture` (boolean, default
         `false`), `response_capture_max_bytes` (integer, default 2048),
         `response_capture_retention_seconds` (integer, default 30 days),
@@ -406,7 +408,7 @@ defmodule AshHooks.Endpoint do
         Required with `status_attribute`: the mapped attribute's values
         that make the endpoint deliverable (e.g. `[true]`). A defaulted
         list against a boolean or custom-enum switch would silently
-        match nothing — zero deliveries, no error — so the mapping
+        match nothing; zero deliveries, no error; so the mapping
         refuses to compile without it.
         """
       ],

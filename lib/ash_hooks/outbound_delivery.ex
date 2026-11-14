@@ -15,7 +15,7 @@ defmodule AshHooks.OutboundDelivery do
         payload_attribute :event_bytes
       end
 
-  The extension injects the delivery fields (`event_uuid` — the webhook
+  The extension injects the delivery fields (`event_uuid`; the webhook
   id, immutable across retries; the exact `payload` bytes to sign;
   `endpoint_id`/`subscription_id`; immutable `dispatch_source` and
   `dispatch_route`; the lifecycle `status`; accounting `attempts`; fenced
@@ -34,12 +34,12 @@ defmodule AshHooks.OutboundDelivery do
 
   Storage-level uniqueness on `unique_delivery` is the idempotency
   primitive: the consumer's migration must carry the matching unique
-  index (ADR-0003's argument, applied outbound).
+  index. Your migration must create the matching unique index.
 
-  `response_status`, `response_snippet` (the no-body summary by default —
+  `response_status`, `response_snippet` (the no-body summary by default ;
   status + allowlisted content-type token; the `[captured]`-marked,
   redacted body only on the runtime's per-call opt-in), and `next_attempt_at`
-  are `writable?: false` — no consumer create/update input accepts them;
+  are `writable?: false`; no consumer create/update input accepts them;
   they reach the ledger only
   as arguments of the runtime's machine primitives (`:mark_succeeded`,
   `:mark_send_failed`), fenced to the current attempt. Request and response
@@ -51,18 +51,18 @@ defmodule AshHooks.OutboundDelivery do
   Policy obligation: the package injects write actions; your application
   defines their authorization.
   Under a permissive base policy fragment (an authorize-if-active-member
-  fallback), every actor could otherwise reach the machine primitives —
+  fallback), every actor could otherwise reach the machine primitives ;
   mark a delivery succeeded (suppressing a real send), dead-letter one,
   requeue, or prune the ledger. The injected write actions on this
   resource: `:dispatch`, `:mark_enqueue_failed`, `:bind_dispatch_source`,
   `:bind_dispatch_route`, `:claim_enqueue`, `:release_enqueue`, `:requeue`, `:prune`
-  (the retention destroy — omittable via `prune_action :none`),
+  (the retention destroy; omittable via `prune_action :none`),
   `:mark_sending`, `:mark_succeeded`, `:mark_send_failed`,
   `:mark_disable_pending`, `:finalize_disable`. Cover each
   with an action-specific policy (the runtime's internal calls run
   `authorize?: false` and never consult them), or ensure no actor-facing
   surface (json_api/graphql/code_interface/admin) exposes the resource.
-  The runtime writes through these actions — a policy per action is
+  The runtime writes through these actions; a policy per action is
   the complete seam.
   """
 
@@ -105,12 +105,12 @@ defmodule AshHooks.OutboundDelivery do
         type: {:in, [:off, :on]},
         default: :off,
         doc: """
-        Whether the `test` flag column is injected (default `:off` —
+        Whether the `test` flag column is injected (default `:off` ;
         existing schemas stay untouched). With `:on`, the extension
         injects `test` (boolean, default `false`): rows created by
         `AshHooks.Delivery.test_send/2` carry `test: true`, attempt
         history rows flag themselves the same way, and both list queries
-        filter on `test:` — test sends appear in the delivery log,
+        filter on `test:`; test sends appear in the delivery log,
         clearly marked. Requires a migration for the column.
         """
       ],
@@ -118,11 +118,11 @@ defmodule AshHooks.OutboundDelivery do
         type: {:in, [:off, :on]},
         default: :off,
         doc: """
-        Whether the resend-tracking columns are injected (default `:off` —
+        Whether the resend-tracking columns are injected (default `:off` ;
         existing schemas stay untouched). With `:on`, the extension injects
         `resend_baseline` (the attempt number where the current retry
         ladder started), `resend_count`, `last_resend_by`, and
-        `last_resend_at` — machine-written columns behind
+        `last_resend_at`; machine-written columns behind
         `AshHooks.Delivery.resend/2` and `replay/2` (both fail closed with
         a named error on resources without them). Declaring `:on` requires
         a migration for the four columns.
@@ -133,10 +133,10 @@ defmodule AshHooks.OutboundDelivery do
         default: :destroy,
         doc: """
         Whether the retention `destroy :prune` action is injected
-        (default `:destroy`). Set `:none` on an append-only audit ledger
-        — no destroy action exists on the resource at all, and
-        `AshHooks.Delivery.prune/2` fails loud with a named error:
-        deletion is then the consumer's own surface.
+        (default `:destroy`). With `:none`, this extension does not inject
+        the `:prune` destroy action; application-defined destroy actions remain.
+        `AshHooks.Delivery.prune/2` then returns a named error. The application
+        owns deletion through any separately defined actions.
         """
       ]
     ]

@@ -10,8 +10,8 @@ Security fixes are released for the newest minor release in the current major li
 
 | Release line | Supported |
 | --- | --- |
-| 3.1.x | Yes |
-| 3.0.x and earlier | No |
+| >= 3.1.0 and < 3.2.0 | Yes |
+| < 3.1.0 | No |
 
 Upgrade to a supported release before requesting a backport. Safety corrections may
 tighten behavior in a patch release when the previous behavior accepted unsafe input or
@@ -19,7 +19,7 @@ misclassified an incomplete operation.
 
 ## Report a vulnerability privately
 
-Do not open a public issue. Use GitHub's
+Do not open a public issue. Use the repository's
 [private vulnerability report](https://github.com/baselabs/ash_hooks/security/advisories/new).
 
 Please include:
@@ -41,12 +41,13 @@ the reporter.
 
 ### Inbound verification
 
-- Signatures are checked against the exact request bytes with constant-time comparison
-  behind an equal-length guard. Decode the payload only after `AshHooks.Ingress` accepts
-  it.
+- HMAC verification compares signature bytes in constant time after checking their
+  lengths. Public-key verification uses OTP's cryptographic verification functions.
+  Decode the payload only after `AshHooks.Ingress` accepts it.
 - Verification fails closed: a missing, malformed, or undecodable signature, key, header,
-  or signed-input part returns an error, never an exception, and errors never carry key
-  or signature bytes.
+  or signed-input part returns a classified error from the packaged signature functions
+  and validated scheme verifier. Application providers and secret resolvers must
+  provide their own error handling. Errors omit key and signature bytes.
 - Keys and algorithms come only from the host's provider configuration and secret
   sources. The package never fetches keys from a URL, a header, or the token being
   verified. A JWS body is verified only with the host-pinned algorithm; `none`, an
@@ -64,7 +65,9 @@ the reporter.
 - Inbound headers are not stored. Decoded payloads and a digest of the signed raw
   body remain in the ledger until the host applies redaction or retention policies.
 
-### Outbound requests
+#Application providers and secret resolvers must provide their own error handling.
+
+## Outbound requests
 
 - `AshHooks.Http.Bounded` is the default adapter. By default it limits the combined
   response header stream to 32 KiB, retained response bodies to 64 KiB, interim
@@ -125,5 +128,4 @@ receiver-side deduplication are outside the package's enforcement boundary. Cust
 adapters and explicit destination-validation or bound overrides replace the corresponding
 built-in guarantee and should be assessed as part of the host application.
 
-The public support and compatibility policy is recorded in
-[ADR-0010](https://github.com/baselabs/ash_hooks/blob/main/docs/adr/0010-semver-and-support-policy.md).
+The supported version range is `>= 3.1.0 and < 3.2.0`.
