@@ -99,8 +99,10 @@ defmodule AshHooks.KeyIssuing do
     end)
   end
 
-  defp finish({:error, _} = result, owner, ref, opts),
-    do: with(:ok <- Transitions.cleanup(owner, ref, opts), do: result)
+  defp finish({:error, _} = result, owner, ref, opts) do
+    Transitions.cleanup(owner, ref, opts)
+    result
+  end
 
   defp finish(result, _owner, _ref, _opts), do: result
 

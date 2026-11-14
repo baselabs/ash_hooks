@@ -64,6 +64,7 @@ defmodule AshHooks.Test.KeyIssuingCases do
       :adoption_resolvers,
       :adoption_store_failure,
       :store_results,
+      :cleanup_failure_keeps_cause,
       :store_crash_recovery,
       :lost_owner_cas,
       :lost_registry_cas,
@@ -726,6 +727,33 @@ defmodule AshHooks.Test.KeyIssuingCases do
     refute inspect(metadata) =~ disclosure
   end
 
+  def cleanup_failure_keeps_cause(ctx) do
+    registry = Module.concat(ctx.registry, CleanupFailure)
+    endpoint = Module.concat(ctx.endpoint, CleanupFailure)
+
+    configured =
+      %{ctx | registry: registry, endpoint: endpoint}
+      |> Map.put(:registry_repo, &KeyRegistryCases.repo/2)
+
+    Process.put(:registry_wrong_repo, ctx.repo)
+    KeyRegistryCases.compile_registry(configured)
+    compile_owner(configured, endpoint, custodian: AshHooks.Test.IssuingCustodian)
+
+    on_exit(fn ->
+      for module <- [registry, endpoint] do
+        :code.purge(module)
+        :code.delete(module)
+      end
+    end)
+
+    Process.put(:issuing_store_answer, :break_cleanup)
+    assert {:error, %AshHooks.Errors.Unknown.KeyUnavailable{}} = create(configured)
+    Process.put(:registry_wrong_repo, ctx.repo)
+    assert [%{state: :issued}] = rows(configured)
+    sweep!(configured)
+    assert [%{state: :destroyed}] = rows(configured)
+  end
+
   def store_crash_recovery(ctx) do
     resource = Module.concat(ctx.endpoint, CrashingOwner)
 
@@ -1113,6 +1141,10 @@ defmodule AshHooks.Test.IssuingCustodian do
 
       {:throw, reason} ->
         throw(reason)
+
+      :break_cleanup ->
+        Process.put(:registry_wrong_repo, AshHooks.Test.RegistryOtherRepo)
+        {:error, :unavailable}
 
       {:sweep, ctx} ->
         {:ok, _} =

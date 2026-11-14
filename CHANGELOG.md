@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Keep an issuing failure's original classification when cleanup also fails.
+
 - Contain custodian callback faults as classified outages, retry outbound
   attempts, and avoid recording outages as failed-verification rejections.
 
