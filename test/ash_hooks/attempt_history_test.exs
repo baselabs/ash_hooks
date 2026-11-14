@@ -132,6 +132,7 @@ defmodule AshHooks.AttemptHistoryTest do
 
   alias Ash.Resource.Info, as: ResourceInfo
   alias AshHooks.Delivery, as: DeliveryRuntime
+  alias AshHooks.Test.RealReceiver
 
   @endpoints "attempt_history_endpoints"
   @deliveries "attempt_history_deliveries"
@@ -880,33 +881,13 @@ defmodule AshHooks.AttemptHistoryTest do
   @tag release_fix: 7
   @tag :real_receiver
   test "release HTTP 410 history retains real duration and signing reference" do
-    port = System.fetch_env!("ASH_HOOKS_REAL_RECEIVER_PORT")
-    base = "http://localhost:#{port}"
-
-    options =
-      Jason.encode!(%{
-        status_code: 410,
-        headers: [],
-        delay: 1,
-        response_body_base64: Base.encode64("gone")
-      })
-
-    {:ok, {{_, 200, _}, _, reply}} =
-      :httpc.request(
-        :post,
-        {to_charlist(base <> "/api/session"), [], ~c"application/json", options},
-        [],
-        body_format: :binary
-      )
-
-    session = Jason.decode!(reply)["uuid"]
-
-    on_exit(fn ->
-      :httpc.request(:delete, {to_charlist(base <> "/api/session/" <> session), []}, [], [])
-    end)
+    session = RealReceiver.open!(status: 410, delay: 1, body: "gone")
+    on_exit(fn -> RealReceiver.close!(session) end)
 
     endpoint =
-      Ash.create!(Endpoint, %{url: base <> "/" <> session, secret_ref: "hist-main"},
+      Ash.create!(
+        Endpoint,
+        %{url: RealReceiver.url(session), secret_ref: "hist-main"},
         authorize?: false
       )
 

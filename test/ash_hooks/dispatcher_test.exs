@@ -269,8 +269,8 @@ defmodule AshHooks.DispatcherTest do
   alias Ash.Resource.Info, as: ResourceInfo
   alias AshHooks.Dispatcher
   alias AshHooks.Event
+  alias AshHooks.Test.RealReceiver
   alias AshHooks.Test.Repo
-  alias AshHooks.Test.SubscriptionPauseReceiver
 
   @endpoints "dispatcher_test_endpoints"
   @subscriptions "dispatcher_test_subscriptions"
@@ -450,11 +450,11 @@ defmodule AshHooks.DispatcherTest do
 
     @tag :real_receiver
     test "a delivery created before pausing still reaches the real receiver" do
-      session = SubscriptionPauseReceiver.open!()
-      on_exit(fn -> SubscriptionPauseReceiver.close!(session) end)
+      session = RealReceiver.open!()
+      on_exit(fn -> RealReceiver.close!(session) end)
 
       endpoint =
-        Ash.create!(Endpoint, %{url: session.url, secret_ref: "pause-test-key"},
+        Ash.create!(Endpoint, %{url: RealReceiver.url(session), secret_ref: "pause-test-key"},
           authorize?: false
         )
 
@@ -491,7 +491,7 @@ defmodule AshHooks.DispatcherTest do
 
       assert %{status: :succeeded, attempts: 1} = Ash.get!(Delivery, row.id, authorize?: false)
       assert Ash.get!(PausableSubscription, subscription.id, authorize?: false).paused
-      [request] = SubscriptionPauseReceiver.requests!(session)
+      [request] = RealReceiver.requests!(session)
       headers = Map.new(request["headers"], &{String.downcase(&1["name"]), &1["value"]})
       assert headers["webhook-id"] == event.id
       assert {:ok, _} = AshHooks.Signing.verify(event.payload, headers, secret)

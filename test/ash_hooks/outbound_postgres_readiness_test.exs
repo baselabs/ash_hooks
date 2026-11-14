@@ -246,14 +246,12 @@ if Code.ensure_loaded?(Oban) do
 
     alias AshHooks.Delivery, as: DeliveryRuntime
     alias AshHooks.{Dispatcher, Event, OutboundBinding, PrimaryKey}
-    alias AshHooks.Http.Bounded
     alias AshHooks.OutboundPostgresReadinessTest.Worker
+    alias AshHooks.Test.RealReceiver
     alias AshHooks.TestPostgres.Repo
 
     @moduletag :postgres
     @oban_schema "outbound_readiness_oban"
-    @receiver_port String.to_integer(System.get_env("ASH_HOOKS_REAL_RECEIVER_PORT", "52871"))
-    @receiver_root "http://127.0.0.1:#{@receiver_port}"
     @secret AshHooks.Signing.generate_secret()
     @payload Jason.encode!(%{"qualification" => "outbound", "version" => 2})
 
@@ -1322,47 +1320,14 @@ if Code.ensure_loaded?(Oban) do
       """)
     end
 
-    defp receiver_session!(opts \\ []) do
-      body =
-        Jason.encode!(%{
-          "status_code" => Keyword.get(opts, :status, 200),
-          "headers" =>
-            opts
-            |> Keyword.get(:headers, %{})
-            |> Enum.map(fn {name, value} -> %{"name" => name, "value" => value} end),
-          "delay" => Keyword.get(opts, :delay, 0),
-          "response_body_base64" => Base.encode64(~s({"captured":true}))
-        })
+    defp receiver_session!(opts \\ []),
+      do: RealReceiver.open!([host: "127.0.0.1", body: ~s({"captured":true})] ++ opts)
 
-      {:ok, %{status: status, body: response}} =
-        Bounded.request(
-          :post,
-          @receiver_root <> "/api/session",
-          %{"content-type" => "application/json"},
-          body,
-          validate_destination: false,
-          max_body_bytes: 65_536
-        )
-
-      assert status in 200..299
-      Jason.decode!(response)["uuid"]
-    end
-
-    defp receiver_url(session), do: @receiver_root <> "/" <> session
+    defp receiver_url(session), do: RealReceiver.url(session)
 
     defp receiver_count(session, event_id) do
-      {:ok, %{status: 200, body: body}} =
-        Bounded.request(
-          :get,
-          @receiver_root <> "/api/session/" <> session <> "/requests",
-          %{},
-          "",
-          validate_destination: false,
-          max_body_bytes: 1_048_576
-        )
-
-      body
-      |> Jason.decode!()
+      session
+      |> RealReceiver.requests!()
       |> Enum.count(fn request ->
         Enum.any?(request["headers"], fn header ->
           String.downcase(header["name"]) == "webhook-id" and header["value"] == event_id
