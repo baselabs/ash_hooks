@@ -177,9 +177,10 @@ defmodule AshHooks.OutboundEvent do
           | {:error, term()}
   def replay(resource, endpoint, opts) do
     with {:ok, requested_by} <- validate_requested_by(opts[:requested_by]),
-         {:ok, tenant} <- Tenancy.resolve([resource, endpoint.__struct__], opts[:tenant]),
          {:ok, deliveries} <- require_module(opts[:deliveries], :deliveries),
          {:ok, endpoints} <- require_module(opts[:endpoints], :endpoints),
+         {:ok, tenant} <-
+           Tenancy.resolve([resource, endpoint.__struct__, deliveries, endpoints], opts[:tenant]),
          {:ok, events} <- replay_targets(resource, opts, tenant),
          {:ok, declaration} <- replay_declaration(resource, deliveries, endpoints, opts),
          {:ok, route} <- AshHooks.OutboundBinding.route(opts[:enqueue], opts) do

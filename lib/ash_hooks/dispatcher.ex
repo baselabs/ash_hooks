@@ -114,7 +114,11 @@ defmodule AshHooks.Dispatcher do
          {:ok, deliv_mod} <- resolve_module(entity, :deliveries),
          {:ok, endpoint_mod} <- resolve_endpoint_resource(subs_mod),
          {:ok, route} <- OutboundBinding.route(opts[:enqueue], opts),
-         {:ok, tenant} <- Tenancy.resolve([subs_mod, endpoint_mod, deliv_mod], opts[:tenant]),
+         {:ok, tenant} <-
+           Tenancy.resolve(
+             Enum.reject([subs_mod, endpoint_mod, deliv_mod, entity.events], &is_nil/1),
+             opts[:tenant]
+           ),
          {:ok, matches, error_entries} <-
            match_subscriptions(subs_mod, endpoint_mod, event, tenant),
          :ok <- check_conflicts(matches, entity) do

@@ -134,6 +134,8 @@ defmodule AshHooks.EventLogTest do
       resource(AshHooks.EventLogTest.Delivery)
       resource(AshHooks.EventLogTest.EventLog)
       resource(AshHooks.EventLogTest.Emitter)
+      resource(AshHooks.EventLogTest.TenantLog)
+      resource(AshHooks.EventLogTest.MismatchedEmitter)
     end
   end
 
@@ -721,5 +723,103 @@ defmodule AshHooks.EventLogTest do
   def capture_replay(row, event) do
     send(self(), {:release_replay, row, event})
     :ok
+  end
+
+  defmodule TenantLog do
+    use Ash.Resource,
+      domain: AshHooks.EventLogTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.OutboundEvent]
+
+    sqlite do
+      table "event_log_tenant_events"
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      attribute :org_id, :string, allow_nil?: false
+      timestamps()
+    end
+
+    multitenancy do
+      strategy :attribute
+      attribute :org_id
+    end
+
+    actions do
+      defaults [:read]
+    end
+  end
+
+  defmodule MismatchedEmitter do
+    use Ash.Resource, domain: AshHooks.EventLogTest.Domain, extensions: [AshHooks]
+
+    webhooks do
+      outbound :order_paid do
+        subscriptions(AshHooks.EventLogTest.Subscription)
+        deliveries(AshHooks.EventLogTest.Delivery)
+        events(AshHooks.EventLogTest.TenantLog)
+      end
+    end
+  end
+
+  @tag release_fix: 9
+  test "release dispatch validates the optional event log before reads or writes" do
+    {:ok, event} = AshHooks.Event.new(type: :order_paid, payload: @payload)
+    assert {:error, :tenancy_mismatch} = AshHooks.dispatch(MismatchedEmitter, :order_paid, event)
+  end
+
+  @tag release_fix: 9
+  test "release delivery execution validates optional history" do
+    config = [
+      deliveries: Delivery,
+      endpoints: Endpoint,
+      attempts: TenantLog,
+      secret_resolver: fn _ -> {:error, :missing} end
+    ]
+
+    assert {:error, :tenancy_mismatch} =
+             AshHooks.Delivery.run(
+               %{"endpoint_id" => Ash.UUID.generate(), "event_uuid" => "missing"},
+               config
+             )
+  end
+
+  @tag release_fix: 9
+  test "release pruning validates optional history" do
+    assert {:error, :tenancy_mismatch} =
+             AshHooks.Delivery.prune(Delivery,
+               attempts: TenantLog,
+               older_than: DateTime.utc_now()
+             )
+  end
+
+  @tag release_fix: 9
+  test "release test sends validate optional history before creating a delivery" do
+    endpoint = endpoint!()
+
+    assert {:error, :tenancy_mismatch} =
+             AshHooks.Delivery.test_send(endpoint,
+               type: :order_paid,
+               deliveries: Delivery,
+               attempts: TenantLog,
+               secret_resolver: fn _ -> {:error, :missing} end
+             )
+
+    assert Ash.read!(Delivery, authorize?: false) == []
+  end
+
+  @tag release_fix: 9
+  test "release replay validates its configured delivery and endpoint resources" do
+    endpoint = endpoint!()
+    {:ok, []} = dispatch!("release-replay-tenancy-set")
+
+    assert {:error, :tenancy_mismatch} =
+             AshHooks.OutboundEvent.replay(EventLog, endpoint,
+               deliveries: TenantLog,
+               endpoints: Endpoint,
+               event_uuid: "release-replay-tenancy-set",
+               requested_by: "operator"
+             )
   end
 end

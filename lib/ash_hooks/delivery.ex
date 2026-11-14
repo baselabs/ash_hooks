@@ -249,7 +249,8 @@ defmodule AshHooks.Delivery do
   def prune(deliv_mod, opts) do
     older_than = DateTime.truncate(Keyword.fetch!(opts, :older_than), :microsecond)
 
-    with {:ok, tenant} <- Tenancy.resolve([deliv_mod], opts[:tenant]) do
+    with {:ok, tenant} <-
+           Tenancy.resolve(Enum.reject([deliv_mod, opts[:attempts]], &is_nil/1), opts[:tenant]) do
       cond do
         is_nil(ResourceInfo.action(deliv_mod, :prune)) ->
           # prune_action :none (the append-only opt-out): the hook must
@@ -487,7 +488,10 @@ defmodule AshHooks.Delivery do
     config = resolve_http_opts(config)
 
     with {:ok, tenant} <-
-           Tenancy.resolve([config[:deliveries], config[:endpoints]], value(args, :tenant)),
+           Tenancy.resolve(
+             Enum.reject([config[:deliveries], config[:endpoints], config[:attempts]], &is_nil/1),
+             value(args, :tenant)
+           ),
          {:ok, row} <- fetch_row_result(config[:deliveries], args, tenant),
          {:ok, row} <- validate_or_bind_execution(row, args, config, tenant) do
       if row, do: drive_row(row, config, tenant), else: :ok
@@ -914,7 +918,11 @@ defmodule AshHooks.Delivery do
 
     with {:ok, type} <- validate_test_type(opts[:type]),
          {:ok, deliveries} <- require_deliveries_module(opts[:deliveries]),
-         {:ok, tenant} <- Tenancy.resolve([deliveries, endpoints], opts[:tenant]),
+         {:ok, tenant} <-
+           Tenancy.resolve(
+             Enum.reject([deliveries, endpoints, opts[:attempts]], &is_nil/1),
+             opts[:tenant]
+           ),
          :ok <- live_endpoint(endpoints, PrimaryKey.scalar!(endpoint), tenant),
          {:ok, event} <-
            AshHooks.Event.new(
