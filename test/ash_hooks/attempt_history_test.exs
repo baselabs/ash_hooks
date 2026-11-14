@@ -569,6 +569,7 @@ defmodule AshHooks.AttemptHistoryTest do
 
       assert [%{id: id3}, %{id: id2}] = page2
       assert id3 == Enum.at(rows, 2).id
+      assert id2 == Enum.at(rows, 1).id
 
       {:ok, %{records: page3, next_cursor: nil}} =
         AshHooks.Delivery.list(Delivery,
@@ -598,8 +599,10 @@ defmodule AshHooks.AttemptHistoryTest do
           outcome: [:dead_letter]
         )
 
-      {:ok, %{records: [attempt]}} =
+      {:ok, %{records: [by_type]}} =
         AshHooks.OutboundAttempt.list(Attempt, event_type: "order_paid")
+
+      assert by_type.id == attempt.id
 
       {:ok, %{records: []}} =
         AshHooks.OutboundAttempt.list(Attempt,
@@ -633,7 +636,7 @@ defmodule AshHooks.AttemptHistoryTest do
       endpoint =
         receiver_endpoint!(2,
           response_capture: true,
-          response_capture_max_bytes: 5,
+          response_capture_max_bytes: 14,
           body: "{\"note\": \"caf\u00e9 \u2713\"}"
         )
 
@@ -642,9 +645,8 @@ defmodule AshHooks.AttemptHistoryTest do
       assert :ok = run!(endpoint, row)
 
       [attempt] = attempts_for(row)
-      assert String.starts_with?(attempt.response_snippet, "[captured] ")
-      # capped at or under 5 bytes, still valid UTF-8 through redaction
-      assert byte_size(attempt.response_snippet) <= @snippet_max
+      # 14 bytes would split the two-byte "é"; the cap backs off to 13
+      assert attempt.response_snippet == "[captured] " <> ~s({"note": "caf)
     end
 
     test "a read error on the history query surfaces as an error" do
@@ -876,8 +878,9 @@ defmodule AshHooks.AttemptHistoryTest do
   end
 
   @tag release_fix: 7
+  @tag :real_receiver
   test "release HTTP 410 history retains real duration and signing reference" do
-    port = System.get_env("ASH_HOOKS_REAL_RECEIVER_PORT", "52871")
+    port = System.fetch_env!("ASH_HOOKS_REAL_RECEIVER_PORT")
     base = "http://localhost:#{port}"
 
     options =
@@ -913,5 +916,56 @@ defmodule AshHooks.AttemptHistoryTest do
     [attempt] = attempts_for(row)
     assert is_integer(attempt.latency_ms) and attempt.latency_ms >= 1_000
     assert attempt.signing_key_ref == "hist-main"
+  end
+
+  @tag release_fix: 7
+  test "release finalization of a disable stored before attempt history keeps the stored summary" do
+    # a :disable_pending row written before 3.1.0: its snapshot carries no
+    # attempt history, and its endpoint has since been deleted
+    endpoint = endpoint!()
+    row = pending_row!(endpoint, "release-legacy-disable")
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET status = 'disable_pending', attempts = 1, response_status = 410, response_snippet = ?, endpoint_snapshot = ? WHERE id = ?",
+      [
+        "410 json token=application/json",
+        Jason.encode!(%{"endpoint_pk" => %{"id" => Ash.UUID.generate()}}),
+        row.id
+      ]
+    )
+
+    assert :ok = run!(endpoint, row)
+
+    final = Ash.get!(Delivery, row.id, authorize?: false)
+    assert final.status == :dead_letter
+    assert final.last_error == "gone_410_endpoint_gone"
+
+    [attempt] = attempts_for(row)
+    assert attempt.reason == "gone_410_endpoint_gone"
+    assert attempt.response_status == 410
+    assert attempt.response_snippet == "410 json token=application/json"
+    assert {attempt.latency_ms, attempt.signing_key_ref} == {nil, nil}
+  end
+
+  @tag release_fix: 6
+  test "release prune with history finishes on the empty batch after a full one" do
+    endpoint = receiver_endpoint!(1)
+    row = pending_row!(endpoint, "release-prune-full-batch")
+    assert :ok = run!(endpoint, row)
+
+    Repo.query!(
+      "UPDATE #{@deliveries} SET inserted_at = '2020-01-01T00:00:00Z' WHERE id = ?",
+      [row.id]
+    )
+
+    assert {:ok, 1} =
+             DeliveryRuntime.prune(Delivery,
+               attempts: Attempt,
+               older_than: DateTime.utc_now(),
+               batch_size: 1
+             )
+
+    assert Ash.read!(Delivery, authorize?: false) == []
+    assert attempts_for(row) == []
   end
 end

@@ -32,6 +32,10 @@ Application.put_env(:ash_hooks, AshHooks.Test.Repo,
 postgres? = System.get_env("ASH_HOOKS_POSTGRES") == "1"
 httpbun? = System.get_env("ASH_HOOKS_HTTPBUN") == "1"
 
+# The real webhook receiver (CI's postgres job runs it as a service and sets
+# ASH_HOOKS_REAL_RECEIVER_PORT): :real_receiver tests run only where one is.
+real_receiver? = System.get_env("ASH_HOOKS_REAL_RECEIVER_PORT") not in [nil, ""]
+
 if postgres? do
   Application.put_env(:ash_hooks, AshHooks.TestPostgres.Repo,
     hostname: System.get_env("ASH_HOOKS_TEST_PG_HOST", "localhost"),
@@ -46,7 +50,10 @@ if postgres? do
 end
 
 ExUnit.start(
-  exclude: if(postgres?, do: [], else: [:postgres]) ++ if(httpbun?, do: [], else: [:httpbun]),
+  exclude:
+    if(postgres?, do: [], else: [:postgres]) ++
+      if(httpbun?, do: [], else: [:httpbun]) ++
+      if(real_receiver?, do: [], else: [:real_receiver]),
   after_suite: [
     fn _stats ->
       if repo_pid = Process.whereis(AshHooks.Test.Repo), do: Supervisor.stop(repo_pid)

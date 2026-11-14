@@ -136,6 +136,8 @@ defmodule AshHooks.EventLogTest do
       resource(AshHooks.EventLogTest.Emitter)
       resource(AshHooks.EventLogTest.TenantLog)
       resource(AshHooks.EventLogTest.MismatchedEmitter)
+      resource(AshHooks.EventLogTest.PlainDelivery)
+      resource(AshHooks.EventLogTest.PlainEmitter)
     end
   end
 
@@ -148,6 +150,7 @@ defmodule AshHooks.EventLogTest do
   @deliveries "event_log_deliveries"
   @events "event_log_events"
   @emitters "event_log_emitters"
+  @plain_deliveries "event_log_plain_deliveries"
   @payload Jason.encode!(%{"order" => 1})
 
   setup_all do
@@ -202,9 +205,30 @@ defmodule AshHooks.EventLogTest do
 
     Repo.query!("CREATE TABLE IF NOT EXISTS #{@emitters} (id TEXT PRIMARY KEY)")
 
+    Repo.query!("""
+    CREATE TABLE IF NOT EXISTS #{@plain_deliveries} (
+      id TEXT PRIMARY KEY, event_uuid TEXT NOT NULL, event_type TEXT NOT NULL,
+      payload BLOB NOT NULL, endpoint_id TEXT NOT NULL, subscription_id TEXT,
+      signing_mode TEXT, status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0, response_status INTEGER,
+      response_snippet TEXT, last_error TEXT, next_attempt_at TEXT,
+      dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+      dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+      attempt_token TEXT, send_lease_expires_at TEXT,
+      enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+      endpoint_snapshot TEXT,
+      inserted_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )
+    """)
+
+    Repo.query!(
+      "CREATE UNIQUE INDEX IF NOT EXISTS #{@plain_deliveries}_unique_delivery_index ON #{@plain_deliveries} (endpoint_id, event_uuid)"
+    )
+
     on_exit(fn ->
       Repo.query!("DROP TABLE IF EXISTS #{@events}")
       Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
+      Repo.query!("DROP TABLE IF EXISTS #{@plain_deliveries}")
       Repo.query!("DROP TABLE IF EXISTS #{@subscriptions}")
       Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
       Repo.query!("DROP TABLE IF EXISTS #{@emitters}")
@@ -216,6 +240,7 @@ defmodule AshHooks.EventLogTest do
   setup do
     Repo.query!("DELETE FROM #{@events}")
     Repo.query!("DELETE FROM #{@deliveries}")
+    Repo.query!("DELETE FROM #{@plain_deliveries}")
     Repo.query!("DELETE FROM #{@subscriptions}")
     Repo.query!("DELETE FROM #{@endpoints}")
     Repo.query!("DELETE FROM #{@emitters}")
@@ -866,5 +891,98 @@ defmodule AshHooks.EventLogTest do
     assert_received {:replay_tick, first}
     assert_received {:replay_tick, second}
     assert second - first >= 1_000
+  end
+
+  # a delivery ledger without resend_tracking, bound by its own declaration
+  # over the same event log
+  defmodule PlainDelivery do
+    use Ash.Resource,
+      domain: AshHooks.EventLogTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.OutboundDelivery]
+
+    sqlite do
+      table "event_log_plain_deliveries"
+      repo(AshHooks.Test.Repo)
+    end
+
+    attributes do
+      timestamps()
+    end
+
+    actions do
+      defaults [:read]
+    end
+  end
+
+  defmodule PlainEmitter do
+    use Ash.Resource, domain: AshHooks.EventLogTest.Domain, extensions: [AshHooks]
+
+    webhooks do
+      outbound :order_paid do
+        subscriptions(AshHooks.EventLogTest.Subscription)
+        deliveries(AshHooks.EventLogTest.PlainDelivery)
+        events(AshHooks.EventLogTest.EventLog)
+      end
+    end
+  end
+
+  @tag release_fix: 2
+  test "release replay into a ledger without resend tracking creates the bound row" do
+    endpoint = endpoint!()
+    {:ok, []} = dispatch!("release-plain-replay")
+
+    assert {:ok, %{created: 1, re_sent: 0, skipped: 0}} =
+             AshHooks.OutboundEvent.replay(EventLog, endpoint,
+               event_uuid: "release-plain-replay",
+               deliveries: PlainDelivery,
+               endpoints: Endpoint,
+               declaration: {PlainEmitter, :order_paid},
+               requested_by: "operator"
+             )
+
+    assert [row] = Ash.read!(PlainDelivery, authorize?: false)
+    assert row.event_uuid == "release-plain-replay"
+
+    assert row.dispatch_source ==
+             AshHooks.OutboundBinding.source(PlainEmitter, :order_paid, Endpoint)
+
+    refute Map.has_key?(row, :last_resend_by)
+  end
+
+  @tag release_fix: 2
+  test "release replay requires its declaration before any write" do
+    endpoint = endpoint!()
+    {:ok, []} = dispatch!("release-replay-no-declaration")
+
+    assert {:error, :declaration_required} =
+             AshHooks.OutboundEvent.replay(EventLog, endpoint,
+               event_uuid: "release-replay-no-declaration",
+               deliveries: Delivery,
+               endpoints: Endpoint,
+               requested_by: "operator"
+             )
+
+    assert Ash.read!(Delivery, authorize?: false) == []
+  end
+
+  @tag release_fix: 14
+  test "release replay rejects a rate that is not a positive integer" do
+    endpoint = endpoint!()
+    {:ok, []} = dispatch!("release-replay-bad-rate")
+
+    for rate <- [0, -1, 1.5, "50"] do
+      assert {:error, :invalid_per_second} =
+               AshHooks.OutboundEvent.replay(EventLog, endpoint,
+                 event_uuid: "release-replay-bad-rate",
+                 deliveries: Delivery,
+                 endpoints: Endpoint,
+                 declaration: {Emitter, :order_paid},
+                 requested_by: "operator",
+                 per_second: rate
+               )
+    end
+
+    assert Ash.read!(Delivery, authorize?: false) == []
   end
 end

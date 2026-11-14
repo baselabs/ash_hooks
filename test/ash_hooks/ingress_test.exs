@@ -16,6 +16,16 @@ defmodule AshHooks.IngressTest do
     def handle_event(_, %{"kind" => "throw"}), do: throw(:handler_failure)
   end
 
+  defmodule ParseCrashProvider do
+    use AshHooks.Provider, verify: [algorithm: :hmac_sha256, signature: {:header, "x-signature"}]
+    @impl true
+    def parse_event_type(%{"kind" => "raise"}), do: raise("parse failure")
+    def parse_event_type(%{"kind" => "exit"}), do: exit(:parse_failure)
+    def parse_event_type(%{"kind" => "throw"}), do: throw(:parse_failure)
+    @impl true
+    def handle_event(type, payload), do: {:ok, %{type: type, payload: payload}}
+  end
+
   defmodule Ledger do
     @moduledoc false
     use Ash.Resource,
@@ -43,6 +53,11 @@ defmodule AshHooks.IngressTest do
     webhooks do
       inbound :raising do
         provider(AshHooks.IngressTest.RaisingProvider)
+        secret {AshHooks.IngressTest, :secret, []}
+      end
+
+      inbound :parse_crash do
+        provider(AshHooks.IngressTest.ParseCrashProvider)
         secret {AshHooks.IngressTest, :secret, []}
       end
 
@@ -954,6 +969,42 @@ defmodule AshHooks.IngressTest do
       assert {:ok, :created, row} = AshHooks.Ingress.ingest(Ledger, :raising, raw, context)
       assert row.status == :failed_retryable
       assert row.error_class == "handler_crashed"
+    end
+  end
+
+  for kind <- ["raise", "exit", "throw"] do
+    @tag release_fix: 8
+    test "release reaping contains a provider #{kind} outside the handler and keeps sweeping" do
+      valid = stranded_received_row("evt_reap_after_parse_crash")
+      {:ok, _, _} = Ingress.claim_delivery(Ledger, valid.id)
+      expire_lease("evt_reap_after_parse_crash")
+
+      Repo.query!(
+        "INSERT INTO " <>
+          @table <>
+          " (id, provider, external_event_id, payload, payload_digest, status, fencing_token, lease_expires_at, attempts, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          Ash.UUID.generate(),
+          "parse_crash",
+          "evt_parse_crash",
+          Jason.encode!(%{"kind" => unquote(kind)}),
+          "deadbeef",
+          "claimed",
+          1,
+          "2000-01-01T00:00:00Z",
+          1,
+          "acct-1"
+        ]
+      )
+
+      assert {:ok, 1} = Ingress.reap(Ledger)
+      assert_receive {:handled, :counted, _}
+      assert [%{status: :processed}] = rows()
+
+      assert [["claimed"]] =
+               Repo.query!(
+                 "SELECT status FROM " <> @table <> " WHERE external_event_id = 'evt_parse_crash'"
+               ).rows
     end
   end
 end

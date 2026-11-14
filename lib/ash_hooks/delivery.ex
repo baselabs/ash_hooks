@@ -321,12 +321,13 @@ defmodule AshHooks.Delivery do
           tenant: tenant
         )
 
+      # A history failure inside the transaction rolls the batch back
+      # within the bulk action itself; a returned failure ends here.
       with %Ash.BulkResult{status: :success, records: rows} <- result,
-           :ok <- prune_attempt_history(attempts_mod, rows, tenant) do
+           %Ash.BulkResult{status: :success} <- prune_attempt_history(attempts_mod, rows, tenant) do
         {:ok, rows}
       else
         %Ash.BulkResult{} = failure -> bulk_failure(failure)
-        {:error, _} = error -> error
       end
     end
 
@@ -348,27 +349,21 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  defp prune_attempt_history(nil, _rows, _tenant), do: :ok
-  defp prune_attempt_history(_attempts_mod, [], _tenant), do: :ok
+  defp prune_attempt_history(nil, _rows, _tenant), do: %Ash.BulkResult{status: :success}
+  defp prune_attempt_history(_attempts_mod, [], _tenant), do: %Ash.BulkResult{status: :success}
 
   defp prune_attempt_history(attempts_mod, rows, tenant) do
     keys = Enum.map(rows, &PrimaryKey.encode(&1))
 
-    result =
-      attempts_mod
-      |> Ash.Query.filter(delivery_pk in ^keys)
-      |> Ash.bulk_destroy(:prune, %{},
-        authorize?: false,
-        return_records?: false,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
-      )
-
-    case result do
-      %Ash.BulkResult{status: :success} -> :ok
-      %Ash.BulkResult{} = failure -> bulk_failure(failure)
-    end
+    attempts_mod
+    |> Ash.Query.filter(delivery_pk in ^keys)
+    |> Ash.bulk_destroy(:prune, %{},
+      authorize?: false,
+      return_records?: false,
+      return_errors?: true,
+      strategy: [:atomic],
+      tenant: tenant
+    )
   end
 
   @doc """
@@ -1781,8 +1776,7 @@ defmodule AshHooks.Delivery do
            %{
              response_status: status,
              response_snippet: snippet,
-             endpoint_snapshot:
-               Map.put(endpoint_snapshot(endpoint), "attempt_history", history || %{})
+             endpoint_snapshot: Map.put(endpoint_snapshot(endpoint), "attempt_history", history)
            },
            [:sending],
            tenant
