@@ -302,21 +302,26 @@ defmodule AshHooks.Ssrf do
   end
 
   # Bound send-time resolution by the shared DNS and operation deadlines.
+  # An expired deadline starts no lookup; it is classified with the same
+  # rule as a lookup that timed out.
   defp bounded_resolve(charlist, family, deadline) do
-    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+    timeout = deadline - System.monotonic_time(:millisecond)
 
-    if timeout == 0 do
-      {:error, :resolve_timeout}
+    if timeout > 0 do
+      charlist |> lookup(family, timeout) |> classify_lookup()
     else
-      task = Task.async(fn -> :inet.gethostbyname(charlist, family) end)
-
-      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-        {:ok, {:ok, {:hostent, _, _, _, _, addresses}}} -> {:ok, addresses}
-        {:ok, {:error, :nxdomain}} -> {:error, :nxdomain}
-        _timeout_or_temporary -> {:error, :resolve_timeout}
-      end
+      classify_lookup(:deadline_expired)
     end
   end
+
+  defp lookup(charlist, family, timeout) do
+    task = Task.async(fn -> :inet.gethostbyname(charlist, family) end)
+    Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill)
+  end
+
+  defp classify_lookup({:ok, {:ok, {:hostent, _, _, _, _, addresses}}}), do: {:ok, addresses}
+  defp classify_lookup({:ok, {:error, :nxdomain}}), do: {:error, :nxdomain}
+  defp classify_lookup(_timeout_or_temporary), do: {:error, :resolve_timeout}
 
   defp public_address?(address) do
     case normalize(address) do
