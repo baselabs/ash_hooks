@@ -103,6 +103,12 @@ defmodule AshHooks.RowSecurityTest do
   end
 
   for configuration <- [:primary, :split] do
+    @tag configuration: configuration
+    test "host rollback removes the joined enqueue failure with #{configuration} reads",
+         context do
+      Cases.joined_enqueue_rollback(context)
+    end
+
     for failure <- [:refusal, :read_error] do
       @tag configuration: configuration
       test "joined #{failure} preserves host writes with #{configuration} reads", context do

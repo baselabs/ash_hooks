@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Handle an enqueue refused inside a host transaction like that path's other
+  enqueue failures, with dispatch marking joining the host transaction.
+
 - Preserve declaration handshake and response policies on source-resolution
   failures; only an absent source row gets the early 404 response.
 

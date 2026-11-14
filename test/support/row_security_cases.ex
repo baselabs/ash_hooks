@@ -1729,10 +1729,26 @@ defmodule AshHooks.Test.RowSecurityCases do
 
     query = Ash.Query.set_context(ctx.delivery, %{data_layer: %{repo: ctx.repo}})
 
-    assert [%{status: :pending, attempts: 0}] =
+    assert [%{status: :enqueue_failed, attempts: 0, last_error: "inside_transaction"}] =
              Ash.read!(query, authorize?: false, tenant: tenant)
 
     :ok
+  end
+
+  def joined_enqueue_rollback(ctx) do
+    seeded = seed(ctx)
+
+    for {tenant, _endpoint} <- seeded do
+      assert {:error, _} =
+               Ash.transact(
+                 ctx.delivery,
+                 fn ->
+                   assert_inline_refusal(ctx, tenant)
+                   Ash.DataLayer.rollback(ctx.delivery, :host_rollback)
+                 end, tenant: tenant)
+
+      assert {:ok, %{records: []}} = Delivery.list(ctx.delivery, tenant: tenant)
+    end
   end
 
   def inherited_refusal(ctx, operation) do

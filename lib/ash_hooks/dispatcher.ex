@@ -488,8 +488,6 @@ defmodule AshHooks.Dispatcher do
   # Gated on :pending (the state an enqueue attempt owns): a late failure
   # can never overwrite a row a successful enqueue (or the send runtime)
   # already moved on.
-  defp mark_enqueue_failed(_deliv_mod, _row, "inside_transaction", _tenant), do: :ok
-
   defp mark_enqueue_failed(deliv_mod, row, reason, tenant) do
     result =
       with_transient_retry(fn ->
