@@ -76,7 +76,12 @@ defmodule AshHooks.EndpointHealth do
   def sweep(endpoints_mod, attempts_mod, opts \\ []) do
     with {:ok, tenant} <- Tenancy.resolve([endpoints_mod, attempts_mod], opts[:tenant]),
          policy when policy != nil <- Endpoint.auto_disable_policy(endpoints_mod),
-         {:ok, endpoints} <- Ash.read(endpoints_mod, authorize?: false, tenant: tenant) do
+         {:ok, endpoints} <-
+           AshHooks.Phase.run(
+             endpoints_mod,
+             tenant,
+             &Ash.read(&1, authorize?: false, tenant: tenant)
+           ) do
       # the ONE enabled-check (mapped switch or injected status)
       {disabled, warned} = sweep_endpoints(endpoints, attempts_mod, policy, now(opts), tenant)
       {:ok, %{disabled: disabled, warned: warned}}
@@ -163,15 +168,18 @@ defmodule AshHooks.EndpointHealth do
     if warned_previously?(endpoint) do
       false
     else
-      endpoint.__struct__
-      |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(endpoint))
-      |> Ash.Query.filter(is_nil(disable_warned_at))
-      |> Ash.bulk_update(:mark_disable_warned, %{warned_at: now},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        endpoint.__struct__
+        |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(endpoint))
+        |> Ash.Query.filter(is_nil(disable_warned_at)),
+        tenant,
+        &Ash.bulk_update(&1, :mark_disable_warned, %{warned_at: now},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
       |> committed?()
     end
@@ -185,15 +193,18 @@ defmodule AshHooks.EndpointHealth do
       stamped_at = endpoint.disable_warned_at
 
       _ =
-        endpoint.__struct__
-        |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(endpoint))
-        |> Ash.Query.filter(disable_warned_at == ^stamped_at)
-        |> Ash.bulk_update(:mark_disable_warned, %{warned_at: nil},
-          authorize?: false,
-          return_records?: false,
-          return_errors?: false,
-          strategy: [:atomic],
-          tenant: tenant
+        AshHooks.Phase.bulk(
+          endpoint.__struct__
+          |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(endpoint))
+          |> Ash.Query.filter(disable_warned_at == ^stamped_at),
+          tenant,
+          &Ash.bulk_update(&1, :mark_disable_warned, %{warned_at: nil},
+            authorize?: false,
+            return_records?: false,
+            return_errors?: false,
+            strategy: [:atomic],
+            tenant: tenant
+          )
         )
 
       :ok
@@ -208,16 +219,19 @@ defmodule AshHooks.EndpointHealth do
     stamped_at = endpoint.disable_warned_at
 
     committed =
-      endpoint.__struct__
-      |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(endpoint))
-      |> Ash.Query.do_filter(%{switch => Map.fetch!(endpoint, switch)})
-      |> Ash.Query.filter(disable_warned_at == ^stamped_at)
-      |> Ash.bulk_update(:disable, %{},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        endpoint.__struct__
+        |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(endpoint))
+        |> Ash.Query.do_filter(%{switch => Map.fetch!(endpoint, switch)})
+        |> Ash.Query.filter(disable_warned_at == ^stamped_at),
+        tenant,
+        &Ash.bulk_update(&1, :disable, %{},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
       |> committed?()
 
@@ -254,9 +268,12 @@ defmodule AshHooks.EndpointHealth do
     endpoint = Ash.Expr.ref(:endpoint_id)
     expression = Ash.Expr.expr(^endpoint == ^endpoint_id)
 
-    attempts_mod
-    |> Ash.Query.do_filter(expression)
-    |> Ash.read(authorize?: false, tenant: tenant)
+    AshHooks.Phase.run(
+      attempts_mod
+      |> Ash.Query.do_filter(expression),
+      tenant,
+      &Ash.read(&1, authorize?: false, tenant: tenant)
+    )
     |> case do
       {:ok, rows} ->
         {:ok,

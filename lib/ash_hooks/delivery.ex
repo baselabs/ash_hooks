@@ -314,15 +314,18 @@ defmodule AshHooks.Delivery do
   defp prune_delivery_batch(deliv_mod, older_than, tenant, batch_size, attempts_mod) do
     operation = fn ->
       result =
-        deliv_mod
-        |> Ash.Query.filter(status in [:succeeded, :dead_letter] and inserted_at < ^older_than)
-        |> Ash.Query.limit(batch_size)
-        |> Ash.bulk_destroy(:prune, %{},
-          authorize?: false,
-          return_records?: true,
-          return_errors?: true,
-          strategy: [:atomic],
-          tenant: tenant
+        AshHooks.Phase.bulk(
+          deliv_mod
+          |> Ash.Query.filter(status in [:succeeded, :dead_letter] and inserted_at < ^older_than)
+          |> Ash.Query.limit(batch_size),
+          tenant,
+          &Ash.bulk_destroy(&1, :prune, %{},
+            authorize?: false,
+            return_records?: true,
+            return_errors?: true,
+            strategy: [:atomic],
+            tenant: tenant
+          )
         )
 
       # A history failure inside the transaction rolls the batch back
@@ -338,16 +341,13 @@ defmodule AshHooks.Delivery do
     if attempts_mod do
       prune_transaction([deliv_mod, attempts_mod], operation, tenant)
     else
-      operation.()
+      AshHooks.Phase.run(deliv_mod, tenant, operation)
     end
   end
 
   defp prune_transaction(resources, operation, tenant) do
     if Enum.all?(resources, &Ash.DataLayer.can?(:transact, &1)) do
-      case Ash.transact(resources, operation, tenant: tenant) do
-        {:ok, {:ok, rows}} -> {:ok, rows}
-        {:error, _} = error -> error
-      end
+      AshHooks.Phase.run(resources, tenant, operation)
     else
       {:error, :transactions_not_supported}
     end
@@ -359,14 +359,17 @@ defmodule AshHooks.Delivery do
   defp prune_attempt_history(attempts_mod, rows, tenant) do
     keys = Enum.map(rows, &PrimaryKey.encode(&1))
 
-    attempts_mod
-    |> Ash.Query.filter(delivery_pk in ^keys)
-    |> Ash.bulk_destroy(:prune, %{},
-      authorize?: false,
-      return_records?: false,
-      return_errors?: true,
-      strategy: [:atomic],
-      tenant: tenant
+    AshHooks.Phase.bulk(
+      attempts_mod
+      |> Ash.Query.filter(delivery_pk in ^keys),
+      tenant,
+      &Ash.bulk_destroy(&1, :prune, %{},
+        authorize?: false,
+        return_records?: false,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
     )
   end
 
@@ -389,6 +392,10 @@ defmodule AshHooks.Delivery do
   multitenant resources is `{:error, :tenant_required}` before any data
   access. A trigger whose resource, source, route, or complete primary key does
   not match the fetched row fails explicitly.
+
+  An enclosing transaction on the delivery resource returns
+  `{:error, :inside_transaction}` before starting a process or accessing the
+  database. Enqueue a job for execution after the host transaction commits.
 
   Required config keys are `:deliveries`, `:endpoints`, and
   `:secret_resolver`. `:attempt_timeout` defaults to 25,000 ms and
@@ -422,7 +429,8 @@ defmodule AshHooks.Delivery do
   """
   @spec run(map(), keyword()) :: :ok | {:snooze, pos_integer()} | {:error, term()}
   def run(args, config) when is_map(args) do
-    with :ok <- validate_retryable_statuses(config[:retryable_statuses]),
+    with :ok <- AshHooks.Phase.outside_transaction(config[:deliveries]),
+         :ok <- validate_retryable_statuses(config[:retryable_statuses]),
          do: run_configured(args, config)
   end
 
@@ -473,8 +481,13 @@ defmodule AshHooks.Delivery do
       config
       |> Keyword.put(:claim_owner, owner)
 
+    context =
+      Ash.ProcessHelpers.get_context_for_transfer(tracer: Application.get_env(:ash, :tracer))
+
     {pid, monitor} =
       spawn_monitor(fn ->
+        Ash.ProcessHelpers.transfer_context(context)
+
         config =
           Keyword.put(
             config,
@@ -564,8 +577,12 @@ defmodule AshHooks.Delivery do
     owner = self()
     result_ref = make_ref()
 
+    context =
+      Ash.ProcessHelpers.get_context_for_transfer(tracer: Application.get_env(:ash, :tracer))
+
     {pid, monitor} =
       spawn_monitor(fn ->
+        Ash.ProcessHelpers.transfer_context(context)
         result = retry(row, reason, config, tenant, nil)
         send(owner, {:delivery_finalization, result_ref, self(), result})
       end)
@@ -628,8 +645,7 @@ defmodule AshHooks.Delivery do
         :missing
 
       {:ok, query} ->
-        query
-        |> Ash.read_one(authorize?: false, tenant: tenant)
+        AshHooks.Phase.run(query, tenant, &Ash.read_one(&1, authorize?: false, tenant: tenant))
         |> case do
           {:ok, nil} -> :missing
           {:ok, row} -> {:ok, row}
@@ -714,15 +730,18 @@ defmodule AshHooks.Delivery do
     bound = OutboundBinding.direct_source(config[:deliveries], config[:endpoints])
 
     result =
-      config[:deliveries]
-      |> Ash.Query.do_filter(PrimaryKey.filter(row))
-      |> Ash.Query.filter(dispatch_source == ^OutboundBinding.direct_unbound_source())
-      |> Ash.bulk_update(:bind_dispatch_source, %{dispatch_source: bound},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        config[:deliveries]
+        |> Ash.Query.do_filter(PrimaryKey.filter(row))
+        |> Ash.Query.filter(dispatch_source == ^OutboundBinding.direct_unbound_source()),
+        tenant,
+        &Ash.bulk_update(&1, :bind_dispatch_source, %{dispatch_source: bound},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
 
     case result do
@@ -790,7 +809,7 @@ defmodule AshHooks.Delivery do
           |> Ash.Query.sort(inserted_at: :asc)
           |> Ash.Query.limit(limit)
 
-        Ash.read(query, authorize?: false, tenant: tenant)
+        AshHooks.Phase.run(query, tenant, &Ash.read(&1, authorize?: false, tenant: tenant))
       else
         {:error,
          UnknownError.exception(
@@ -900,6 +919,9 @@ defmodule AshHooks.Delivery do
 
   No subscription signing mode is inferred. `:signing_mode` defaults to `:standard`.
 
+  Returns `{:error, :inside_transaction}` before starting a process or
+  accessing the database if the delivery resource has an enclosing transaction.
+
   Options: `:type` (required, atom or nonempty binary), `:payload`, `:signing_mode`,
   `:deliveries` (the delivery resource, required), `:secret_resolver`
   (required, the driver contract), `:max_attempts` (default 1, so a test
@@ -924,6 +946,7 @@ defmodule AshHooks.Delivery do
 
     with {:ok, type} <- validate_test_type(opts[:type]),
          {:ok, deliveries} <- require_deliveries_module(opts[:deliveries]),
+         :ok <- AshHooks.Phase.outside_transaction(deliveries),
          {:ok, tenant} <-
            Tenancy.resolve(
              Enum.reject([deliveries, endpoints, opts[:attempts]], &is_nil/1),
@@ -994,7 +1017,16 @@ defmodule AshHooks.Delivery do
       # the flag rides only resources that carry the column
       |> Map.drop(if ResourceInfo.attribute(deliveries, :test), do: [], else: [:test])
 
-    Ash.create(deliveries, input, action: :dispatch, authorize?: false, tenant: tenant)
+    AshHooks.Phase.run(
+      deliveries,
+      tenant,
+      &Ash.create(&1.resource, input,
+        context: AshHooks.Phase.context(deliveries),
+        action: :dispatch,
+        authorize?: false,
+        tenant: tenant
+      )
+    )
   end
 
   defp drive_test_row(row, opts, endpoints, tenant) do
@@ -1024,7 +1056,17 @@ defmodule AshHooks.Delivery do
   end
 
   defp final_test_row(row, tenant) do
-    final = Ash.get!(row.__struct__, row.id, authorize?: false, tenant: tenant)
+    final =
+      AshHooks.Phase.run(
+        row.__struct__,
+        tenant,
+        &Ash.get!(&1.resource, row.id,
+          authorize?: false,
+          tenant: tenant,
+          context: AshHooks.Phase.context(row.__struct__)
+        )
+      )
+
     {:ok, %{status: final.status, delivery: final}}
   end
 
@@ -1086,7 +1128,8 @@ defmodule AshHooks.Delivery do
   `requested_by`. Returns `{:ok, %{status: :resent, delivery: row}}`.
   """
   @spec resend(struct(), keyword()) ::
-          {:ok, %{status: :resent, delivery: struct()}} | {:error, term()}
+          {:ok, %{optional(:enqueue) => {:error, term()}, status: :resent, delivery: struct()}}
+          | {:error, term()}
   def resend(row, opts \\ []) do
     resource = row.__struct__
 
@@ -1130,7 +1173,15 @@ defmodule AshHooks.Delivery do
   defp resendable(_other_status), do: {:error, :not_resendable}
 
   defp live_endpoint(endpoints, endpoint_id, tenant) do
-    case Ash.get(endpoints, endpoint_id, authorize?: false, tenant: tenant) do
+    case AshHooks.Phase.run(
+           endpoints,
+           tenant,
+           &Ash.get(&1.resource, endpoint_id,
+             authorize?: false,
+             tenant: tenant,
+             context: AshHooks.Phase.context(endpoints)
+           )
+         ) do
       {:ok, endpoint} ->
         if AshHooks.Endpoint.enabled?(endpoint), do: :ok, else: {:error, :endpoint_not_live}
 
@@ -1143,23 +1194,27 @@ defmodule AshHooks.Delivery do
     requested_at = now(opts)
 
     result =
-      row.__struct__
-      |> Ash.Query.do_filter(PrimaryKey.filter(row))
-      |> Ash.Query.filter(
-        dispatch_source == ^row.dispatch_source and status in [:succeeded, :dead_letter]
-      )
-      |> Ash.bulk_update(
-        :resend,
-        %{
-          resend_baseline: row.attempts,
-          requested_by: requested_by,
-          requested_at: requested_at
-        },
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        row.__struct__
+        |> Ash.Query.do_filter(PrimaryKey.filter(row))
+        |> Ash.Query.filter(
+          dispatch_source == ^row.dispatch_source and status in [:succeeded, :dead_letter]
+        ),
+        tenant,
+        &Ash.bulk_update(
+          &1,
+          :resend,
+          %{
+            resend_baseline: row.attempts,
+            requested_by: requested_by,
+            requested_at: requested_at
+          },
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
 
     case result do
@@ -1226,7 +1281,15 @@ defmodule AshHooks.Delivery do
   end
 
   defp attempt_claimed(row, config, tenant) do
-    case Ash.get(config[:endpoints], row.endpoint_id, authorize?: false, tenant: tenant) do
+    case AshHooks.Phase.run(
+           config[:endpoints],
+           tenant,
+           &Ash.get(&1.resource, row.endpoint_id,
+             authorize?: false,
+             tenant: tenant,
+             context: AshHooks.Phase.context(config[:endpoints])
+           )
+         ) do
       # the ONE enabled-check (H4): the injected status attribute or the
       # consumer-mapped switch; exactly one attribute dead-letters
       {:ok, endpoint} ->
@@ -1527,15 +1590,18 @@ defmodule AshHooks.Delivery do
           Ash.Expr.expr(^Ash.Expr.ref(ref_field) == ^ref and is_nil(^Ash.Expr.ref(stamp_field)))
 
         _ =
-          resource
-          |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-          |> Ash.Query.filter(^fence)
-          |> Ash.bulk_update(action, %{used_at: used_at},
-            authorize?: false,
-            return_records?: false,
-            return_errors?: false,
-            strategy: [:atomic],
-            tenant: tenant
+          AshHooks.Phase.bulk(
+            resource
+            |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+            |> Ash.Query.filter(^fence),
+            tenant,
+            &Ash.bulk_update(&1, action, %{used_at: used_at},
+              authorize?: false,
+              return_records?: false,
+              return_errors?: false,
+              strategy: [:atomic],
+              tenant: tenant
+            )
           )
       end
     end
@@ -1726,7 +1792,16 @@ defmodule AshHooks.Delivery do
         signing_key_ref: history[:signing_key_ref]
       })
 
-    case Ash.create(attempts_mod, input, action: :record, authorize?: false, tenant: tenant) do
+    case AshHooks.Phase.run(
+           attempts_mod,
+           tenant,
+           &Ash.create(&1.resource, input,
+             context: AshHooks.Phase.context(attempts_mod),
+             action: :record,
+             authorize?: false,
+             tenant: tenant
+           )
+         ) do
       {:ok, _attempt} ->
         :ok
 
@@ -2004,9 +2079,12 @@ defmodule AshHooks.Delivery do
   end
 
   defp read_endpoint(resource, key, tenant) do
-    resource
-    |> Ash.Query.do_filter(key)
-    |> Ash.read_one(authorize?: false, tenant: tenant)
+    AshHooks.Phase.run(
+      resource
+      |> Ash.Query.do_filter(key),
+      tenant,
+      &Ash.read_one(&1, authorize?: false, tenant: tenant)
+    )
     |> case do
       {:ok, nil} -> :missing
       {:ok, endpoint} -> {:ok, endpoint}
@@ -2067,22 +2145,25 @@ defmodule AshHooks.Delivery do
 
   defp disable_matching_endpoint(row, endpoint, snapshot, switch, config, tenant) do
     result =
-      config[:endpoints]
-      |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-      |> Ash.Query.filter(url == ^snapshot["url"] and secret_ref == ^snapshot["secret_ref"])
-      |> optional_snapshot_filter(:previous_secret_ref, snapshot["previous_secret_ref"])
-      |> optional_snapshot_filter(:legacy_secret_ref, snapshot["legacy_secret_ref"])
-      |> optional_snapshot_filter(
-        :legacy_previous_secret_ref,
-        snapshot["legacy_previous_secret_ref"]
-      )
-      |> Ash.Query.do_filter(%{switch => Map.get(endpoint, switch)})
-      |> Ash.bulk_update(:disable, %{},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        config[:endpoints]
+        |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+        |> Ash.Query.filter(url == ^snapshot["url"] and secret_ref == ^snapshot["secret_ref"])
+        |> optional_snapshot_filter(:previous_secret_ref, snapshot["previous_secret_ref"])
+        |> optional_snapshot_filter(:legacy_secret_ref, snapshot["legacy_secret_ref"])
+        |> optional_snapshot_filter(
+          :legacy_previous_secret_ref,
+          snapshot["legacy_previous_secret_ref"]
+        )
+        |> Ash.Query.do_filter(%{switch => Map.get(endpoint, switch)}),
+        tenant,
+        &Ash.bulk_update(&1, :disable, %{},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
 
     case result do
@@ -2231,21 +2312,25 @@ defmodule AshHooks.Delivery do
       |> eligible_exhausted_query(row.status, now)
 
     result =
-      Ash.bulk_update(
+      AshHooks.Phase.bulk(
         query,
-        :mark_send_failed,
-        %{
-          error: "attempt_ceiling",
-          next_attempt_at: nil,
-          dead_letter?: true,
-          response_status: nil,
-          response_snippet: nil
-        },
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+        tenant,
+        &Ash.bulk_update(
+          &1,
+          :mark_send_failed,
+          %{
+            error: "attempt_ceiling",
+            next_attempt_at: nil,
+            dead_letter?: true,
+            response_status: nil,
+            response_snippet: nil
+          },
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
 
     case result do
@@ -2311,15 +2396,19 @@ defmodule AshHooks.Delivery do
       |> maybe_baseline_fence(row)
 
     result =
-      Ash.bulk_update(
+      AshHooks.Phase.bulk(
         query,
-        :mark_sending,
-        %{attempt_token: token, send_lease_expires_at: lease},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+        tenant,
+        &Ash.bulk_update(
+          &1,
+          :mark_sending,
+          %{attempt_token: token, send_lease_expires_at: lease},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
 
     case result do
@@ -2558,13 +2647,16 @@ defmodule AshHooks.Delivery do
       |> Ash.Query.filter(dispatch_source == ^row.dispatch_source and status in ^statuses)
       |> maybe_attempt_fence(row, statuses, now)
 
-    query
-    |> Ash.bulk_update(action, input,
-      authorize?: false,
-      return_records?: true,
-      return_errors?: true,
-      strategy: [:atomic],
-      tenant: tenant
+    AshHooks.Phase.bulk(
+      query,
+      tenant,
+      &Ash.bulk_update(&1, action, input,
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
     )
     |> case do
       %Ash.BulkResult{status: :success, records: records} -> {:ok, records}

@@ -159,7 +159,16 @@ defmodule AshHooks.Dispatcher do
           payload: event.payload
         }
 
-        case Ash.create(events_mod, input, action: :record, authorize?: false, tenant: tenant) do
+        case AshHooks.Phase.run(
+               events_mod,
+               tenant,
+               &Ash.create(&1.resource, input,
+                 context: AshHooks.Phase.context(events_mod),
+                 action: :record,
+                 authorize?: false,
+                 tenant: tenant
+               )
+             ) do
           {:ok, _logged} ->
             :ok
 
@@ -300,15 +309,18 @@ defmodule AshHooks.Dispatcher do
   # sees the row someone else already claimed).
   defp claim_for_enqueue_result(deliv_mod, row, tenant) do
     with_transient_retry(fn ->
-      deliv_mod
-      |> Ash.Query.do_filter(PrimaryKey.filter(row))
-      |> Ash.Query.filter(status == :enqueue_failed)
-      |> Ash.bulk_update(:requeue, %{},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        deliv_mod
+        |> Ash.Query.do_filter(PrimaryKey.filter(row))
+        |> Ash.Query.filter(status == :enqueue_failed),
+        tenant,
+        &Ash.bulk_update(&1, :requeue, %{},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
     end)
   end
@@ -344,10 +356,15 @@ defmodule AshHooks.Dispatcher do
     id = Ash.UUID.generate()
 
     case with_transient_retry(fn ->
-           Ash.create(deliv_mod, Map.put(input, :id, id),
-             action: :dispatch,
-             authorize?: false,
-             tenant: tenant
+           AshHooks.Phase.run(
+             deliv_mod,
+             tenant,
+             &Ash.create(&1.resource, Map.put(input, :id, id),
+               context: AshHooks.Phase.context(deliv_mod),
+               action: :dispatch,
+               authorize?: false,
+               tenant: tenant
+             )
            )
          end) do
       {:ok, row} -> {:ok, row, if(row.id == id, do: :created, else: :duplicate)}
@@ -365,7 +382,16 @@ defmodule AshHooks.Dispatcher do
 
   defp create_pre_read_row(deliv_mod, input, tenant) do
     with_transient_retry(fn ->
-      Ash.create(deliv_mod, input, action: :dispatch, authorize?: false, tenant: tenant)
+      AshHooks.Phase.run(
+        deliv_mod,
+        tenant,
+        &Ash.create(&1.resource, input,
+          context: AshHooks.Phase.context(deliv_mod),
+          action: :dispatch,
+          authorize?: false,
+          tenant: tenant
+        )
+      )
     end)
     |> case do
       {:ok, row} -> {:ok, row, :created}
@@ -376,9 +402,12 @@ defmodule AshHooks.Dispatcher do
   defp fetch_delivery(deliv_mod, endpoint_id, event_uuid, tenant) do
     result =
       with_transient_retry(fn ->
-        deliv_mod
-        |> Ash.Query.filter(endpoint_id == ^endpoint_id and event_uuid == ^event_uuid)
-        |> Ash.read_one(authorize?: false, tenant: tenant)
+        AshHooks.Phase.run(
+          deliv_mod
+          |> Ash.Query.filter(endpoint_id == ^endpoint_id and event_uuid == ^event_uuid),
+          tenant,
+          &Ash.read_one(&1, authorize?: false, tenant: tenant)
+        )
       end)
 
     case result do
@@ -457,20 +486,25 @@ defmodule AshHooks.Dispatcher do
   # Gated on :pending (the state an enqueue attempt owns): a late failure
   # can never overwrite a row a successful enqueue (or the send runtime)
   # already moved on.
+  defp mark_enqueue_failed(_deliv_mod, _row, "inside_transaction", _tenant), do: :ok
+
   defp mark_enqueue_failed(deliv_mod, row, reason, tenant) do
     result =
       with_transient_retry(fn ->
         # the reason arrives ALREADY classified (enqueue_result applied
         # error_string); re-classifying would mangle the prefixed forms
-        deliv_mod
-        |> Ash.Query.do_filter(PrimaryKey.filter(row))
-        |> Ash.Query.filter(status == :pending)
-        |> Ash.bulk_update(:mark_enqueue_failed, %{error: reason},
-          authorize?: false,
-          return_records?: true,
-          return_errors?: true,
-          strategy: [:atomic],
-          tenant: tenant
+        AshHooks.Phase.bulk(
+          deliv_mod
+          |> Ash.Query.do_filter(PrimaryKey.filter(row))
+          |> Ash.Query.filter(status == :pending),
+          tenant,
+          &Ash.bulk_update(&1, :mark_enqueue_failed, %{error: reason},
+            authorize?: false,
+            return_records?: true,
+            return_errors?: true,
+            strategy: [:atomic],
+            tenant: tenant
+          )
         )
       end)
 
@@ -482,9 +516,12 @@ defmodule AshHooks.Dispatcher do
 
   defp reload(deliv_mod, row, tenant) do
     case with_transient_retry(fn ->
-           deliv_mod
-           |> Ash.Query.do_filter(PrimaryKey.filter(row))
-           |> Ash.read_one(authorize?: false, tenant: tenant)
+           AshHooks.Phase.run(
+             deliv_mod
+             |> Ash.Query.do_filter(PrimaryKey.filter(row)),
+             tenant,
+             &Ash.read_one(&1, authorize?: false, tenant: tenant)
+           )
          end) do
       {:ok, row} when not is_nil(row) -> row
       _missing_or_error -> nil
@@ -542,23 +579,29 @@ defmodule AshHooks.Dispatcher do
 
   defp read_subscriptions(subs_mod, tenant) do
     case with_transient_retry(fn ->
-           Ash.read(subs_mod, authorize?: false, tenant: tenant)
+           AshHooks.Phase.run(subs_mod, tenant, &Ash.read(&1, authorize?: false, tenant: tenant))
          end) do
-      {:ok, subscriptions} -> collect_pages(subscriptions, [])
+      {:ok, subscriptions} -> collect_pages(subscriptions, [], subs_mod, tenant)
       {:error, error} -> {:error, error}
     end
   end
 
-  defp collect_pages(%{results: results, more?: true} = page, acc) do
-    with {:ok, next} <- with_transient_retry(fn -> Ash.page(page, :next) end) do
-      collect_pages(next, [results | acc])
+  defp collect_pages(%{results: results, more?: true} = page, acc, resource, tenant) do
+    result =
+      with_transient_retry(fn ->
+        AshHooks.Phase.run(resource, tenant, fn -> Ash.page(page, :next) end)
+      end)
+
+    with {:ok, next} <- result do
+      collect_pages(next, [results | acc], resource, tenant)
     end
   end
 
-  defp collect_pages(%{results: results}, acc),
+  defp collect_pages(%{results: results}, acc, _resource, _tenant),
     do: {:ok, acc |> Enum.reverse() |> Enum.concat() |> Kernel.++(results)}
 
-  defp collect_pages(subscriptions, []) when is_list(subscriptions), do: {:ok, subscriptions}
+  defp collect_pages(subscriptions, [], _resource, _tenant) when is_list(subscriptions),
+    do: {:ok, subscriptions}
 
   # Endpoint resolution distinguishes three outcomes per subscription
   # : an ENABLED endpoint matches; a gone or disabled
@@ -586,7 +629,15 @@ defmodule AshHooks.Dispatcher do
   # outcome shape.
   defp resolve_endpoint(subscription, endpoint_mod, tenant) do
     case with_transient_retry(fn ->
-           Ash.get(endpoint_mod, subscription.endpoint_id, authorize?: false, tenant: tenant)
+           AshHooks.Phase.run(
+             endpoint_mod,
+             tenant,
+             &Ash.get(&1.resource, subscription.endpoint_id,
+               authorize?: false,
+               tenant: tenant,
+               context: AshHooks.Phase.context(endpoint_mod)
+             )
+           )
          end) do
       # the ONE enabled-check (H4): the injected status attribute or the
       # consumer-mapped switch; exactly one attribute decides
@@ -735,14 +786,17 @@ defmodule AshHooks.Dispatcher do
 
     result =
       with_transient_retry(fn ->
-        deliv_mod
-        |> Ash.Query.filter(dispatch_source == ^source)
-        |> recovery_candidate_filter(cutoff, now)
-        |> Ash.read(authorize?: false, tenant: tenant)
+        AshHooks.Phase.run(
+          deliv_mod
+          |> Ash.Query.filter(dispatch_source == ^source)
+          |> recovery_candidate_filter(cutoff, now),
+          tenant,
+          &Ash.read(&1, authorize?: false, tenant: tenant)
+        )
       end)
 
     case result do
-      {:ok, rows} -> collect_pages(rows, [])
+      {:ok, rows} -> collect_pages(rows, [], deliv_mod, tenant)
       {:error, error} -> {:error, error}
     end
   end
@@ -852,18 +906,21 @@ defmodule AshHooks.Dispatcher do
 
       row.dispatch_route == OutboundBinding.unbound_route() ->
         result =
-          deliv_mod
-          |> Ash.Query.do_filter(PrimaryKey.filter(row))
-          |> Ash.Query.filter(
-            dispatch_source == ^row.dispatch_source and
-              dispatch_route == ^OutboundBinding.unbound_route()
-          )
-          |> Ash.bulk_update(:bind_dispatch_route, %{dispatch_route: route},
-            authorize?: false,
-            return_records?: true,
-            return_errors?: true,
-            strategy: [:atomic],
-            tenant: tenant
+          AshHooks.Phase.bulk(
+            deliv_mod
+            |> Ash.Query.do_filter(PrimaryKey.filter(row))
+            |> Ash.Query.filter(
+              dispatch_source == ^row.dispatch_source and
+                dispatch_route == ^OutboundBinding.unbound_route()
+            ),
+            tenant,
+            &Ash.bulk_update(&1, :bind_dispatch_route, %{dispatch_route: route},
+              authorize?: false,
+              return_records?: true,
+              return_errors?: true,
+              strategy: [:atomic],
+              tenant: tenant
+            )
           )
 
         bulk_one(result, :dispatch_route_conflict)
@@ -882,21 +939,25 @@ defmodule AshHooks.Dispatcher do
     lease = DateTime.add(now, @enqueue_lease_seconds, :second)
 
     result =
-      deliv_mod
-      |> Ash.Query.do_filter(PrimaryKey.filter(row))
-      |> Ash.Query.filter(
-        dispatch_source == ^row.dispatch_source and dispatch_route == ^row.dispatch_route and
-          (is_nil(enqueue_lease_expires_at) or enqueue_lease_expires_at <= ^now)
-      )
-      |> recovery_state_filter(row.status, cutoff, now)
-      |> Ash.bulk_update(
-        :claim_enqueue,
-        %{enqueue_token: token, enqueue_lease_expires_at: lease},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        deliv_mod
+        |> Ash.Query.do_filter(PrimaryKey.filter(row))
+        |> Ash.Query.filter(
+          dispatch_source == ^row.dispatch_source and dispatch_route == ^row.dispatch_route and
+            (is_nil(enqueue_lease_expires_at) or enqueue_lease_expires_at <= ^now)
+        )
+        |> recovery_state_filter(row.status, cutoff, now),
+        tenant,
+        &Ash.bulk_update(
+          &1,
+          :claim_enqueue,
+          %{enqueue_token: token, enqueue_lease_expires_at: lease},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
 
     bulk_one(result, :enqueue_contended)
@@ -946,17 +1007,23 @@ defmodule AshHooks.Dispatcher do
       end
 
     result =
-      deliv_mod
-      |> Ash.Query.do_filter(PrimaryKey.filter(row))
-      |> Ash.Query.filter(
-        dispatch_source == ^row.dispatch_source and enqueue_token == ^row.enqueue_token
-      )
-      |> Ash.bulk_update(:release_enqueue, %{error: error, enqueue_lease_expires_at: parked},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        deliv_mod
+        |> Ash.Query.do_filter(PrimaryKey.filter(row))
+        |> Ash.Query.filter(
+          dispatch_source == ^row.dispatch_source and enqueue_token == ^row.enqueue_token
+        ),
+        tenant,
+        &Ash.bulk_update(
+          &1,
+          :release_enqueue,
+          %{error: error, enqueue_lease_expires_at: parked},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
 
     case bulk_one(result, :stale_enqueue_claim) do

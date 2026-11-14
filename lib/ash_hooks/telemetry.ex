@@ -114,7 +114,7 @@ defmodule AshHooks.Telemetry do
     eacces econnrefused econnreset ehostunreach einval enetunreach enoent
     etimedout endpoint_disabled endpoint_gone endpoint_replaced gone_410
     invalid_destination invalid_event invalid_enqueue_result invalid_enqueuer
-    invalid_headers invalid_method invalid_response invalid_route invalid_url
+    invalid_headers invalid_method invalid_response invalid_route invalid_url inside_transaction
     max_attempts no_secret nxdomain reconcile_pending resolve_timeout
     secret_resolution signing_failed source_conflict stale_row timeout
     tls_alert truncated_body unsafe_destination unresolved_host

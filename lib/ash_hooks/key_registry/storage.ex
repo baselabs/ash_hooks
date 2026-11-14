@@ -21,8 +21,7 @@ defmodule AshHooks.KeyRegistry.Storage do
   end
 
   def repo(resource) do
-    info = Module.concat(Ash.DataLayer.data_layer(resource), :Info)
-    info.repo(resource, :mutate)
+    AshHooks.Phase.repo(resource)
   end
 
   def compatible?(registry, owner) do
@@ -46,27 +45,15 @@ defmodule AshHooks.KeyRegistry.Storage do
 
   def phase(registry, owner, tenant, fun) do
     with :ok <- check(registry, owner) do
-      reason = %{
-        type: :custom,
-        tenant: tenant,
-        metadata: %{tenant: tenant}
-      }
-
-      Ash.DataLayer.transaction(
-        owner,
-        fn -> transaction_result(owner, fun.()) end,
-        30_000,
-        reason
-      )
+      AshHooks.Phase.run(owner, tenant, fn -> phase_result(fun.()) end)
     end
   end
 
-  defp transaction_result(_owner, {:ok, result}), do: result
-  defp transaction_result(_owner, :ok), do: :ok
-  defp transaction_result(owner, {:error, error}), do: Ash.DataLayer.rollback(owner, error)
+  defp phase_result(:ok), do: {:ok, :ok}
+  defp phase_result(result), do: result
 
   def query(resource) do
-    Ash.Query.set_context(resource, %{data_layer: %{repo: repo(resource)}})
+    AshHooks.Phase.query(resource)
   end
 
   def owner_query(resource, tenant) do
@@ -75,7 +62,7 @@ defmodule AshHooks.KeyRegistry.Storage do
     |> Ash.Query.for_read(:read_custody_owner, %{}, authorize?: false, tenant: tenant)
   end
 
-  def context(resource), do: %{data_layer: %{repo: repo(resource)}}
+  def context(resource), do: AshHooks.Phase.context(resource)
 
   defp tenancy(resource) do
     attribute = Info.attribute(resource, Info.multitenancy_attribute(resource))

@@ -275,12 +275,15 @@ defmodule AshHooks.Ingress do
     from = Keyword.get(opts, :from) || DateTime.add(now, -86_400, :second)
     to = Keyword.get(opts, :to) || now
 
-    resource
-    |> Ash.Query.filter(inserted_at >= ^from and inserted_at <= ^to)
-    |> then(fn query ->
-      if opts[:source], do: ingress_eq(query, :provider, opts[:source]), else: query
-    end)
-    |> Ash.read(authorize?: false, tenant: tenant)
+    AshHooks.Phase.run(
+      resource
+      |> Ash.Query.filter(inserted_at >= ^from and inserted_at <= ^to)
+      |> then(fn query ->
+        if opts[:source], do: ingress_eq(query, :provider, opts[:source]), else: query
+      end),
+      tenant,
+      &Ash.read(&1, authorize?: false, tenant: tenant)
+    )
     |> case do
       {:ok, rows} -> rows
       {:error, _reason} -> []
@@ -348,10 +351,15 @@ defmodule AshHooks.Ingress do
         |> Map.merge(Map.new(ctx[:scope] || %{}))
 
       _ =
-        Ash.create(resource, input,
-          action: :record_rejection,
-          authorize?: false,
-          tenant: ctx[:tenant]
+        AshHooks.Phase.run(
+          resource,
+          ctx[:tenant],
+          &Ash.create(&1.resource, input,
+            context: AshHooks.Phase.context(resource),
+            action: :record_rejection,
+            authorize?: false,
+            tenant: ctx[:tenant]
+          )
         )
     end
 
@@ -383,14 +391,17 @@ defmodule AshHooks.Ingress do
   defp count_duplicate(resource, delivery, tenant) do
     if Ash.Resource.Info.action(resource, :count_duplicate) do
       _ =
-        resource
-        |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(delivery))
-        |> Ash.bulk_update(:count_duplicate, %{},
-          authorize?: false,
-          return_records?: false,
-          return_errors?: false,
-          strategy: [:atomic],
-          tenant: tenant
+        AshHooks.Phase.bulk(
+          resource
+          |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(delivery)),
+          tenant,
+          &Ash.bulk_update(&1, :count_duplicate, %{},
+            authorize?: false,
+            return_records?: false,
+            return_errors?: false,
+            strategy: [:atomic],
+            tenant: tenant
+          )
         )
 
       :ok
@@ -444,10 +455,15 @@ defmodule AshHooks.Ingress do
     input = Map.put(input, :id, id)
 
     with_transient_retry(fn ->
-      case Ash.create(resource, input,
-             action: ingest_action(env),
-             authorize?: false,
-             tenant: tenant
+      case AshHooks.Phase.run(
+             resource,
+             tenant,
+             &Ash.create(&1.resource, input,
+               context: AshHooks.Phase.context(resource),
+               action: ingest_action(env),
+               authorize?: false,
+               tenant: tenant
+             )
            ) do
         {:ok, delivery} ->
           classify_and_emit(env, delivery.id == id, delivery)
@@ -468,7 +484,16 @@ defmodule AshHooks.Ingress do
 
   defp pre_read_create(resource, input, env, tenant) do
     with_transient_retry(fn ->
-      Ash.create(resource, input, action: ingest_action(env), authorize?: false, tenant: tenant)
+      AshHooks.Phase.run(
+        resource,
+        tenant,
+        &Ash.create(&1.resource, input,
+          context: AshHooks.Phase.context(resource),
+          action: ingest_action(env),
+          authorize?: false,
+          tenant: tenant
+        )
+      )
     end)
     |> case do
       {:ok, delivery} -> classify_and_emit(env, true, delivery)
@@ -487,11 +512,15 @@ defmodule AshHooks.Ingress do
   defp fetch_ingested(resource, env, tenant) do
     result =
       with_transient_retry(fn ->
-        resource
-        |> Ash.Query.do_filter(
-          [provider: env.name, external_event_id: env.external_event_id] ++ Map.to_list(env.scope)
+        AshHooks.Phase.run(
+          resource
+          |> Ash.Query.do_filter(
+            [provider: env.name, external_event_id: env.external_event_id] ++
+              Map.to_list(env.scope)
+          ),
+          tenant,
+          &Ash.read_one(&1, authorize?: false, tenant: tenant)
         )
-        |> Ash.read_one(authorize?: false, tenant: tenant)
       end)
 
     case result do
@@ -533,18 +562,21 @@ defmodule AshHooks.Ingress do
           attempt_now = now()
           lease_expires_at = DateTime.add(attempt_now, lease_seconds(resource), :second)
 
-          resource
-          |> Ash.Query.do_filter(key)
-          |> Ash.Query.filter(
-            status == :received or status == :failed_retryable or
-              (status == :claimed and lease_expires_at < ^attempt_now)
-          )
-          |> Ash.bulk_update(:claim, %{lease_expires_at: lease_expires_at},
-            authorize?: false,
-            return_records?: true,
-            return_errors?: true,
-            strategy: [:atomic],
-            tenant: tenant
+          AshHooks.Phase.bulk(
+            resource
+            |> Ash.Query.do_filter(key)
+            |> Ash.Query.filter(
+              status == :received or status == :failed_retryable or
+                (status == :claimed and lease_expires_at < ^attempt_now)
+            ),
+            tenant,
+            &Ash.bulk_update(&1, :claim, %{lease_expires_at: lease_expires_at},
+              authorize?: false,
+              return_records?: true,
+              return_errors?: true,
+              strategy: [:atomic],
+              tenant: tenant
+            )
           )
         end)
 
@@ -602,20 +634,23 @@ defmodule AshHooks.Ingress do
 
       result =
         with_transient_retry(fn ->
-          resource
-          |> Ash.Query.filter(
-            status in [:processed, :failed_permanent, :superseded] and
-              inserted_at < ^older_than
-          )
-          |> Ash.Query.sort(primary_key)
-          |> Ash.Query.limit(batch_size)
-          |> Ash.Query.select(primary_key)
-          |> Ash.bulk_destroy(:prune, %{},
-            authorize?: false,
-            return_records?: true,
-            return_errors?: true,
-            strategy: [:atomic],
-            tenant: tenant
+          AshHooks.Phase.bulk(
+            resource
+            |> Ash.Query.filter(
+              status in [:processed, :failed_permanent, :superseded] and
+                inserted_at < ^older_than
+            )
+            |> Ash.Query.sort(primary_key)
+            |> Ash.Query.limit(batch_size)
+            |> Ash.Query.select(primary_key),
+            tenant,
+            &Ash.bulk_destroy(&1, :prune, %{},
+              authorize?: false,
+              return_records?: true,
+              return_errors?: true,
+              strategy: [:atomic],
+              tenant: tenant
+            )
           )
         end)
 
@@ -800,9 +835,12 @@ defmodule AshHooks.Ingress do
 
       expired =
         with_transient_retry(fn ->
-          resource
-          |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now)
-          |> Ash.read!(authorize?: false, tenant: tenant)
+          AshHooks.Phase.run(
+            resource
+            |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now),
+            tenant,
+            &Ash.read!(&1, authorize?: false, tenant: tenant)
+          )
         end)
 
       re_driven =
@@ -980,17 +1018,20 @@ defmodule AshHooks.Ingress do
     with {:ok, key} <- normalize_primary_key(resource, delivery_id) do
       result =
         with_transient_retry(fn ->
-          resource
-          |> Ash.Query.do_filter(key)
-          |> Ash.Query.filter(
-            fencing_token == ^token and status == :claimed and lease_expires_at > ^now()
-          )
-          |> Ash.bulk_update(action, input,
-            authorize?: false,
-            return_records?: true,
-            return_errors?: true,
-            strategy: [:atomic],
-            tenant: tenant
+          AshHooks.Phase.bulk(
+            resource
+            |> Ash.Query.do_filter(key)
+            |> Ash.Query.filter(
+              fencing_token == ^token and status == :claimed and lease_expires_at > ^now()
+            ),
+            tenant,
+            &Ash.bulk_update(&1, action, input,
+              authorize?: false,
+              return_records?: true,
+              return_errors?: true,
+              strategy: [:atomic],
+              tenant: tenant
+            )
           )
         end)
 
@@ -1003,9 +1044,12 @@ defmodule AshHooks.Ingress do
   end
 
   defp read_by_key(resource, key, tenant) do
-    resource
-    |> Ash.Query.do_filter(key)
-    |> Ash.read_one(authorize?: false, tenant: tenant)
+    AshHooks.Phase.run(
+      resource
+      |> Ash.Query.do_filter(key),
+      tenant,
+      &Ash.read_one(&1, authorize?: false, tenant: tenant)
+    )
     |> case do
       {:ok, nil} -> {:error, :not_found}
       result -> result

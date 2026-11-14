@@ -78,12 +78,10 @@ defmodule AshHooks.InboundDelivery.LegacyAdoption do
     with :ok <- require_quiesced(opts),
          :ok <- require_transactions(resource),
          {:ok, %{unresolved: [], conflicts: []} = plan} <- plan(resource, name, opts),
-         {:ok, {:ok, applied}} <-
-           Ash.transact(
-             resource,
-             fn -> apply_groups_transactionally(resource, plan.groups, plan.tenant) end,
-             tenant: plan.tenant
-           ) do
+         {:ok, applied} <-
+           AshHooks.Phase.run(resource, plan.tenant, fn ->
+             apply_groups_transactionally(resource, plan.groups, plan.tenant)
+           end) do
       {:ok, %{plan | groups: applied.groups, audit: applied.audit}}
     else
       {:ok, %{unresolved: unresolved}} when unresolved != [] ->
@@ -159,9 +157,12 @@ defmodule AshHooks.InboundDelivery.LegacyAdoption do
   end
 
   defp read_partition(resource, name, scope, tenant) do
-    resource
-    |> Ash.Query.do_filter([provider: name] ++ Map.to_list(scope))
-    |> Ash.read(authorize?: false, tenant: tenant)
+    AshHooks.Phase.run(
+      resource
+      |> Ash.Query.do_filter([provider: name] ++ Map.to_list(scope)),
+      tenant,
+      &Ash.read(&1, authorize?: false, tenant: tenant)
+    )
   end
 
   defp build_plan(rows, provider, name, scope, tenant, canonical_ids) do
@@ -380,23 +381,27 @@ defmodule AshHooks.InboundDelivery.LegacyAdoption do
     key = decode_audit_key!(resource, change.before_key)
 
     result =
-      resource
-      |> Ash.Query.do_filter(key)
-      |> Ash.Query.filter(
-        external_event_id == ^change.external_event_id and status == ^change.before_status
-      )
-      |> Ash.bulk_update(
-        :adopt_legacy_identity,
-        %{
-          external_event_id: change.next_external_event_id,
-          status: change.after_status,
-          error_class: change.next_error_class
-        },
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        resource
+        |> Ash.Query.do_filter(key)
+        |> Ash.Query.filter(
+          external_event_id == ^change.external_event_id and status == ^change.before_status
+        ),
+        tenant,
+        &Ash.bulk_update(
+          &1,
+          :adopt_legacy_identity,
+          %{
+            external_event_id: change.next_external_event_id,
+            status: change.after_status,
+            error_class: change.next_error_class
+          },
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
 
     case result do

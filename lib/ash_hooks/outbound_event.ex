@@ -123,15 +123,18 @@ defmodule AshHooks.OutboundEvent do
   defp prune_batches(resource, older_than, tenant, batch_size, total)
        when is_integer(batch_size) and batch_size > 0 and batch_size <= 5_000 do
     result =
-      resource
-      |> Ash.Query.filter(inserted_at < ^older_than)
-      |> Ash.Query.limit(batch_size)
-      |> Ash.bulk_destroy(:prune, %{},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        resource
+        |> Ash.Query.filter(inserted_at < ^older_than)
+        |> Ash.Query.limit(batch_size),
+        tenant,
+        &Ash.bulk_destroy(&1, :prune, %{},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
 
     case result do
@@ -301,9 +304,12 @@ defmodule AshHooks.OutboundEvent do
     expression =
       Ash.Expr.expr(^ref == ^PrimaryKey.scalar!(endpoint) and ^uuid == ^logged.event_uuid)
 
-    deliveries
-    |> Ash.Query.do_filter(expression)
-    |> Ash.read_one(authorize?: false, tenant: tenant)
+    AshHooks.Phase.run(
+      deliveries
+      |> Ash.Query.do_filter(expression),
+      tenant,
+      &Ash.read_one(&1, authorize?: false, tenant: tenant)
+    )
     |> case do
       {:ok, nil} -> :missing
       {:ok, row} -> {:ok, row}
@@ -337,7 +343,13 @@ defmodule AshHooks.OutboundEvent do
         changeset
       end
 
-    Ash.create(changeset, authorize?: false, tenant: tenant)
+    AshHooks.Phase.run(changeset.resource, tenant, fn ->
+      Ash.create(changeset,
+        context: AshHooks.Phase.context(changeset.resource),
+        authorize?: false,
+        tenant: tenant
+      )
+    end)
   end
 
   defp replay_source({emitter, name}, endpoints),
@@ -352,12 +364,15 @@ defmodule AshHooks.OutboundEvent do
           single_target(resource, uuid, tenant)
 
         is_binary(type = opts[:event_type]) ->
-          resource
-          |> Ash.Query.filter(event_type == ^type)
-          |> replay_time_filters(opts)
-          |> Ash.Query.sort(inserted_at: :asc)
-          |> Ash.Query.limit(limit)
-          |> Ash.read(authorize?: false, tenant: tenant)
+          AshHooks.Phase.run(
+            resource
+            |> Ash.Query.filter(event_type == ^type)
+            |> replay_time_filters(opts)
+            |> Ash.Query.sort(inserted_at: :asc)
+            |> Ash.Query.limit(limit),
+            tenant,
+            &Ash.read(&1, authorize?: false, tenant: tenant)
+          )
 
         true ->
           {:error, :event_filter_required}
@@ -382,9 +397,12 @@ defmodule AshHooks.OutboundEvent do
   end
 
   defp single_target(resource, uuid, tenant) do
-    resource
-    |> Ash.Query.filter(event_uuid == ^uuid)
-    |> Ash.read_one(authorize?: false, tenant: tenant)
+    AshHooks.Phase.run(
+      resource
+      |> Ash.Query.filter(event_uuid == ^uuid),
+      tenant,
+      &Ash.read_one(&1, authorize?: false, tenant: tenant)
+    )
     |> case do
       {:ok, nil} -> {:error, :event_not_found}
       {:ok, logged} -> {:ok, [logged]}

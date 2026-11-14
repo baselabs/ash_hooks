@@ -16,6 +16,12 @@ defmodule AshHooks.Worker do
   Consumers pass `enqueue: {MyApp.WebhookDeliveryWorker, :enqueue}` to
   `AshHooks.dispatch/4`; the generated `enqueue/2` is that seam.
 
+  On multitenant ledgers the job args carry the row's tenant under "tenant"; for the string, integer or atom tenants a job can carry, `Ash.ToTenant` is the identity, so its text equals what a repository's `on_transaction_begin/1` derives from the transaction's tenant, and a host can secure its job table on `args->>'tenant'`.
+
+  Enqueue inserts in a bounded phase after the delivery persists. Configure
+  the Oban instance with the ledger's repo to share its tenant binding.
+  See the [row-level security guide](row-security.md).
+
   Options:
 
     * `:deliveries`, `:endpoints` (required): the consumer's resource
@@ -448,15 +454,18 @@ defmodule AshHooks.Worker do
   end
 
   defp bind_unbound_route(delivery, route, tenant, unbound_route) do
-    delivery.__struct__
-    |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(delivery))
-    |> Ash.Query.filter(dispatch_route == ^unbound_route)
-    |> Ash.bulk_update(:bind_dispatch_route, %{dispatch_route: route},
-      authorize?: false,
-      return_records?: true,
-      return_errors?: true,
-      strategy: [:atomic],
-      tenant: tenant
+    AshHooks.Phase.bulk(
+      delivery.__struct__
+      |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(delivery))
+      |> Ash.Query.filter(dispatch_route == ^unbound_route),
+      tenant,
+      &Ash.bulk_update(&1, :bind_dispatch_route, %{dispatch_route: route},
+        authorize?: false,
+        return_records?: true,
+        return_errors?: true,
+        strategy: [:atomic],
+        tenant: tenant
+      )
     )
     |> bind_route_result(delivery, route, tenant)
   end
@@ -476,9 +485,12 @@ defmodule AshHooks.Worker do
 
   defp reload_bound_route(delivery, route, tenant) do
     with {:ok, updated} <-
-           delivery.__struct__
-           |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(delivery))
-           |> Ash.read_one(authorize?: false, tenant: tenant) do
+           AshHooks.Phase.run(
+             delivery.__struct__
+             |> Ash.Query.do_filter(AshHooks.PrimaryKey.filter(delivery)),
+             tenant,
+             &Ash.read_one(&1, authorize?: false, tenant: tenant)
+           ) do
       case updated do
         %{dispatch_route: ^route} -> {:ok, updated}
         _ -> {:error, :dispatch_route_conflict}
@@ -763,7 +775,12 @@ defmodule AshHooks.Worker do
       end
 
       defp insert_durably(changeset, expected, retries_left) do
-        case Oban.insert(@ash_hooks_oban, changeset) do
+        result =
+          AshHooks.Phase.run(@ash_hooks_delivery_config[:deliveries], expected["tenant"], fn ->
+            Oban.insert(@ash_hooks_oban, changeset)
+          end)
+
+        case result do
           {:ok, %Oban.Job{} = job} ->
             if job.conflict? == true and not job_persisted?(job) and retries_left > 0 do
               Process.sleep(5)

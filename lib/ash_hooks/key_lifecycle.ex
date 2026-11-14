@@ -96,21 +96,22 @@ defmodule AshHooks.KeyLifecycle do
       params = roll_kind_argument(params, endpoint, fields)
 
       result =
-        lifecycle_query(resource, tenant)
-        |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-        |> Ash.Query.filter(
-          ^fence and
-            (is_nil(^Ash.Expr.ref(fields.previous_ref)) or
-               ^Ash.Expr.ref(fields.retired_at) <= ^rolled_at)
-        )
-        |> Ash.bulk_update(
-          fields.roll,
-          params,
-          authorize?: false,
-          return_records?: true,
-          return_errors?: true,
-          strategy: [:atomic],
-          tenant: tenant
+        AshHooks.Phase.bulk(
+          lifecycle_query(resource, tenant)
+          |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+          |> Ash.Query.filter(
+            ^fence and
+              (is_nil(^Ash.Expr.ref(fields.previous_ref)) or
+                 ^Ash.Expr.ref(fields.retired_at) <= ^rolled_at)
+          ),
+          tenant,
+          &Ash.bulk_update(&1, fields.roll, params,
+            authorize?: false,
+            return_records?: true,
+            return_errors?: true,
+            strategy: [:atomic],
+            tenant: tenant
+          )
         )
 
       case result do
@@ -169,9 +170,12 @@ defmodule AshHooks.KeyLifecycle do
 
   defp roll_conflict(endpoint, tenant, now, fields) do
     with {:ok, current} <-
-           lifecycle_query(endpoint.__struct__, tenant)
-           |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-           |> Ash.read_one(authorize?: false, tenant: tenant) do
+           AshHooks.Phase.run(
+             lifecycle_query(endpoint.__struct__, tenant)
+             |> Ash.Query.do_filter(PrimaryKey.filter(endpoint)),
+             tenant,
+             &Ash.read_one(&1, authorize?: false, tenant: tenant)
+           ) do
       {:error, conflict_reason(current, {fields, Map.fetch!(endpoint, fields.ref)}, now)}
     end
   end
@@ -203,17 +207,20 @@ defmodule AshHooks.KeyLifecycle do
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
          :ok <- require_previous_secret(endpoint, fields),
          {:ok, at} <- validate_retirement_time(at, opts[:now] || DateTime.utc_now(), resource) do
-      lifecycle_query(resource, tenant)
-      |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-      |> Ash.Query.filter(
-        ^Ash.Expr.ref(fields.previous_ref) == ^Map.fetch!(endpoint, fields.previous_ref)
-      )
-      |> Ash.bulk_update(fields.schedule, %{retired_at: at},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        lifecycle_query(resource, tenant)
+        |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+        |> Ash.Query.filter(
+          ^Ash.Expr.ref(fields.previous_ref) == ^Map.fetch!(endpoint, fields.previous_ref)
+        ),
+        tenant,
+        &Ash.bulk_update(&1, fields.schedule, %{retired_at: at},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
       |> case do
         %Ash.BulkResult{status: :success, records: [scheduled]} -> {:ok, scheduled}
@@ -280,19 +287,23 @@ defmodule AshHooks.KeyLifecycle do
       {:ok, endpoint}
     else
       result =
-        lifecycle_query(resource, tenant)
-        |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-        |> Ash.Query.filter(
-          ^Ash.Expr.ref(fields.previous_ref) == ^Map.fetch!(endpoint, fields.previous_ref)
-        )
-        |> Ash.bulk_update(
-          fields.retire,
-          %{retired_at: DateTime.truncate(retired_at, :microsecond)},
-          authorize?: false,
-          return_records?: true,
-          return_errors?: true,
-          strategy: [:atomic],
-          tenant: tenant
+        AshHooks.Phase.bulk(
+          lifecycle_query(resource, tenant)
+          |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+          |> Ash.Query.filter(
+            ^Ash.Expr.ref(fields.previous_ref) == ^Map.fetch!(endpoint, fields.previous_ref)
+          ),
+          tenant,
+          &Ash.bulk_update(
+            &1,
+            fields.retire,
+            %{retired_at: DateTime.truncate(retired_at, :microsecond)},
+            authorize?: false,
+            return_records?: true,
+            return_errors?: true,
+            strategy: [:atomic],
+            tenant: tenant
+          )
         )
 
       case result do
@@ -324,17 +335,20 @@ defmodule AshHooks.KeyLifecycle do
 
   defp byte_sweep(resource, fields, tenant, now) do
     result =
-      resource
-      |> Ash.Query.filter(
-        not is_nil(^Ash.Expr.ref(fields.previous_ref)) and
-          ^Ash.Expr.ref(fields.retired_at) <= ^now
-      )
-      |> Ash.bulk_update(fields.retire, %{retired_at: now},
-        authorize?: false,
-        return_records?: true,
-        return_errors?: true,
-        strategy: [:atomic],
-        tenant: tenant
+      AshHooks.Phase.bulk(
+        resource
+        |> Ash.Query.filter(
+          not is_nil(^Ash.Expr.ref(fields.previous_ref)) and
+            ^Ash.Expr.ref(fields.retired_at) <= ^now
+        ),
+        tenant,
+        &Ash.bulk_update(&1, fields.retire, %{retired_at: now},
+          authorize?: false,
+          return_records?: true,
+          return_errors?: true,
+          strategy: [:atomic],
+          tenant: tenant
+        )
       )
 
     case result do
@@ -368,7 +382,8 @@ defmodule AshHooks.KeyLifecycle do
         do: Ash.Query.lock(query, :for_update),
         else: query
 
-    with {:ok, loaded} <- Ash.read_one(query, authorize?: false, tenant: tenant) do
+    with {:ok, loaded} <-
+           AshHooks.Phase.run(query, tenant, &Ash.read_one(&1, authorize?: false, tenant: tenant)) do
       current = loaded || endpoint
       finish_custody_write(write.(current), current, fields, tenant, Transitions.now(opts))
     end
@@ -395,10 +410,13 @@ defmodule AshHooks.KeyLifecycle do
 
   defp retire_if_absent(before, ref, tenant, now) do
     with {:ok, persisted} <-
-           before.__struct__
-           |> Storage.owner_query(tenant)
-           |> Ash.Query.do_filter(PrimaryKey.filter(before))
-           |> Ash.read_one(authorize?: false, tenant: tenant) do
+           AshHooks.Phase.run(
+             before.__struct__
+             |> Storage.owner_query(tenant)
+             |> Ash.Query.do_filter(PrimaryKey.filter(before)),
+             tenant,
+             &Ash.read_one(&1, authorize?: false, tenant: tenant)
+           ) do
       if Transitions.holds_ref?(persisted, ref),
         do: :ok,
         else: Transitions.retire(before.__struct__, ref, now, tenant: tenant)
@@ -415,7 +433,8 @@ defmodule AshHooks.KeyLifecycle do
       )
 
     with :ok <- Storage.check(Storage.registry(resource), resource),
-         {:ok, rows} <- Ash.read(query, authorize?: false, tenant: tenant) do
+         {:ok, rows} <-
+           AshHooks.Phase.run(query, tenant, &Ash.read(&1, authorize?: false, tenant: tenant)) do
       Enum.reduce_while(rows, {:ok, 0}, &expire_candidate(&1, &2, fields, tenant, now, opts))
     end
   end

@@ -86,7 +86,7 @@ defmodule AshHooks.Keyset do
         |> Ash.Query.sort([{time_field, :desc}, {:id, :desc}])
         |> Ash.Query.limit(limit)
 
-      case Ash.read(query, authorize?: false, tenant: tenant) do
+      case AshHooks.Phase.run(query, tenant, &Ash.read(&1, authorize?: false, tenant: tenant)) do
         {:ok, records} -> {:ok, page_result(records, limit, time_field)}
         {:error, reason} -> {:error, reason}
       end
