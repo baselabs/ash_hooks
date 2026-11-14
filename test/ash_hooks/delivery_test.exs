@@ -881,6 +881,18 @@ defmodule AshHooks.DeliveryTest do
       assert row!(row.id).status == :failed_retryable
       assert HttpDouble.calls() == []
     end
+
+    test "a byte slot with no resolver anywhere is a permanent key_kind_mismatch" do
+      cfg = config(secret_resolver: nil)
+      ep = endpoint!()
+      row = pending_row!(ep)
+
+      assert :ok = DeliveryRuntime.run(args(row), cfg)
+      stored = row!(row.id)
+      assert stored.status == :dead_letter
+      assert stored.last_error == "key_kind_mismatch"
+      assert HttpDouble.calls() == []
+    end
   end
 
   describe "response snippet redaction (the floor lives on the CAPTURED path post-#17)" do

@@ -2036,7 +2036,7 @@ defmodule AshHooks.Delivery do
            kind: kind
          }}
 
-      custodian && is_nil(resolver) ->
+      is_nil(resolver) ->
         {:error, KeyKindMismatch.exception([])}
 
       true ->
