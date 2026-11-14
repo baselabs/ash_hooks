@@ -822,4 +822,23 @@ defmodule AshHooks.EventLogTest do
                requested_by: "operator"
              )
   end
+
+  @tag release_fix: 13
+  test "release event-log dry run counts its batch without creating deliveries" do
+    endpoint = endpoint!()
+    for id <- ["dry-run-one", "dry-run-two"], do: dispatch!(id)
+
+    assert {:ok, %{count: 1}} =
+             AshHooks.OutboundEvent.replay(EventLog, endpoint,
+               event_type: "order_paid",
+               deliveries: Delivery,
+               endpoints: Endpoint,
+               declaration: {Emitter, :order_paid},
+               requested_by: "operator",
+               dry_run: true,
+               limit: 1
+             )
+
+    assert Ash.read!(Delivery, authorize?: false) == []
+  end
 end

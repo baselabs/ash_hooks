@@ -186,13 +186,21 @@ defmodule AshHooks.OutboundEvent do
          {:ok, route} <- AshHooks.OutboundBinding.route(opts[:enqueue], opts) do
       opts = Keyword.merge(opts, declaration: declaration, dispatch_route: route)
 
-      counts =
-        Enum.reduce(events, {0, 0, 0}, fn logged, acc ->
-          replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant, acc)
-        end)
-
-      {:ok, %{created: elem(counts, 0), re_sent: elem(counts, 1), skipped: elem(counts, 2)}}
+      if opts[:dry_run] do
+        {:ok, %{count: length(events)}}
+      else
+        replay_events(events, endpoint, deliveries, endpoints, requested_by, opts, tenant)
+      end
     end
+  end
+
+  defp replay_events(events, endpoint, deliveries, endpoints, requested_by, opts, tenant) do
+    counts =
+      Enum.reduce(events, {0, 0, 0}, fn logged, acc ->
+        replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant, acc)
+      end)
+
+    {:ok, %{created: elem(counts, 0), re_sent: elem(counts, 1), skipped: elem(counts, 2)}}
   end
 
   defp replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant, acc) do
