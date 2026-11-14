@@ -18,6 +18,7 @@ defmodule AshHooks.EndpointHealth do
   require Ash.Query
 
   alias AshHooks.{Endpoint, Tenancy}
+  alias Spark.Dsl.Extension
 
   @typedoc "One endpoint's trailing-window health."
   @type stats :: %{
@@ -201,7 +202,7 @@ defmodule AshHooks.EndpointHealth do
 
   defp disable_sustained(endpoint, tenant) do
     switch =
-      Spark.Dsl.Extension.get_opt(endpoint.__struct__, [:endpoint], :status_attribute, nil) ||
+      Extension.get_opt(endpoint.__struct__, [:endpoint], :status_attribute, nil) ||
         :status
 
     stamped_at = endpoint.disable_warned_at

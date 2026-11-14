@@ -1250,7 +1250,7 @@ defmodule AshHooks.TenancyTest do
     assert expired_a.status == :processed
   end
 
-  test "a handler that THROWS or EXITS mid-redrive is contained — reap skips the row, never aborts the sweep" do
+  test "throwing and exiting handlers record retryable tenant failures without stopping the sweep" do
     AshHooks.CountingProvider.put_sink(self())
 
     # first poisoned redrive throws, second exits, then the healthy row
@@ -1293,7 +1293,7 @@ defmodule AshHooks.TenancyTest do
       nil
     )
 
-    assert {:ok, 1} = Ingress.reap(Ledger, tenant: "org_a")
+    assert {:ok, 3} = Ingress.reap(Ledger, tenant: "org_a")
 
     # both poison handlers RAN (their crash was contained at the handler,
     # not skipped before it)
@@ -1309,7 +1309,8 @@ defmodule AshHooks.TenancyTest do
       # attempts == 1 proves the redrive CLAIMED the row and the handler
       # RAN (claim bumps attempts) — the crash was contained at the
       # handler, not skipped before it
-      assert row.status == :claimed
+      assert row.status == :failed_retryable
+      assert row.error_class == "handler_crashed"
       assert row.attempts == 1
     end
 

@@ -35,6 +35,7 @@ defmodule AshHooks.OutboundEvent do
 
   alias AshHooks.{Delivery, Keyset, PrimaryKey, Tenancy}
   alias AshHooks.Errors.Unknown.UnknownError
+  alias Spark.Dsl.Extension
 
   # ────────────────────────── queries + retention ──────────────────────────
 
@@ -267,19 +268,13 @@ defmodule AshHooks.OutboundEvent do
   defp replay_declaration(resource, deliveries, endpoints, opts) do
     case opts[:declaration] do
       {emitter, name} when is_atom(emitter) and is_atom(name) ->
-        case AshHooks.Info.outbound(emitter, name) do
-          %{events: ^resource, deliveries: ^deliveries, subscriptions: subscriptions} ->
-            if Spark.Dsl.Extension.get_opt(
-                 subscriptions,
-                 [:subscription],
-                 :endpoint_resource,
-                 nil
-               ) == endpoints,
-               do: {:ok, {emitter, name}},
-               else: {:error, :declaration_mismatch}
-
-          _ ->
-            {:error, :declaration_mismatch}
+        with %{events: ^resource, deliveries: ^deliveries, subscriptions: subscriptions} <-
+               AshHooks.Info.outbound(emitter, name),
+             ^endpoints <-
+               Extension.get_opt(subscriptions, [:subscription], :endpoint_resource, nil) do
+          {:ok, {emitter, name}}
+        else
+          _ -> {:error, :declaration_mismatch}
         end
 
       _ ->

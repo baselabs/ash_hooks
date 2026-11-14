@@ -331,18 +331,20 @@ defmodule AshHooks.Delivery do
     end
 
     if attempts_mod do
-      resources = [deliv_mod, attempts_mod]
-
-      if Enum.all?(resources, &Ash.DataLayer.can?(:transact, &1)) do
-        case Ash.transact(resources, operation, tenant: tenant) do
-          {:ok, {:ok, rows}} -> {:ok, rows}
-          {:error, _} = error -> error
-        end
-      else
-        {:error, :transactions_not_supported}
-      end
+      prune_transaction([deliv_mod, attempts_mod], operation, tenant)
     else
       operation.()
+    end
+  end
+
+  defp prune_transaction(resources, operation, tenant) do
+    if Enum.all?(resources, &Ash.DataLayer.can?(:transact, &1)) do
+      case Ash.transact(resources, operation, tenant: tenant) do
+        {:ok, {:ok, rows}} -> {:ok, rows}
+        {:error, _} = error -> error
+      end
+    else
+      {:error, :transactions_not_supported}
     end
   end
 
