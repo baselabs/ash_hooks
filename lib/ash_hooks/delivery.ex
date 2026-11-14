@@ -1758,7 +1758,7 @@ defmodule AshHooks.Delivery do
   # count is checked — a zero-match "success" (the endpoint vanished
   # between fetch and write) is surfaced, never counted as a completed
   # circuit-break.
-  defp record(row, endpoint, %{status: 410} = response, config, tenant, _history) do
+  defp record(row, endpoint, %{status: 410} = response, config, tenant, history) do
     {status, snippet} = failure_summary(response)
 
     case fenced_update(
@@ -1768,7 +1768,8 @@ defmodule AshHooks.Delivery do
            %{
              response_status: status,
              response_snippet: snippet,
-             endpoint_snapshot: endpoint_snapshot(endpoint)
+             endpoint_snapshot:
+               Map.put(endpoint_snapshot(endpoint), "attempt_history", history || %{})
            },
            [:sending],
            tenant
@@ -2122,7 +2123,8 @@ defmodule AshHooks.Delivery do
         summary = {final.response_status, final.response_snippet}
         emit_result(final, summary, :dead_letter, error)
 
-        record_attempt(final, :dead_letter, error, summary, nil, config, tenant)
+        history = disable_attempt_history(final.endpoint_snapshot)
+        record_attempt(final, :dead_letter, error, summary, history, config, tenant)
 
         :telemetry.execute(
           [:ash_hooks, :delivery, :dead_letter],
@@ -2143,6 +2145,14 @@ defmodule AshHooks.Delivery do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp disable_attempt_history(snapshot) do
+    history = (snapshot || %{})["attempt_history"] || %{}
+
+    Map.new([:latency_ms, :signing_key_ref, :response_snippet, :response_headers], fn key ->
+      {key, Map.get(history, Atom.to_string(key), Map.get(history, key))}
+    end)
   end
 
   defp endpoint_snapshot(endpoint) do

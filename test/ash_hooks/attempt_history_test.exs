@@ -874,4 +874,44 @@ defmodule AshHooks.AttemptHistoryTest do
     assert Ash.get!(Delivery, row.id, authorize?: false).id == row.id
     assert length(attempts_for(row)) == 1
   end
+
+  @tag release_fix: 7
+  test "release HTTP 410 history retains real duration and signing reference" do
+    port = System.get_env("ASH_HOOKS_REAL_RECEIVER_PORT", "52871")
+    base = "http://localhost:#{port}"
+
+    options =
+      Jason.encode!(%{
+        status_code: 410,
+        headers: [],
+        delay: 1,
+        response_body_base64: Base.encode64("gone")
+      })
+
+    {:ok, {{_, 200, _}, _, reply}} =
+      :httpc.request(
+        :post,
+        {to_charlist(base <> "/api/session"), [], ~c"application/json", options},
+        [],
+        body_format: :binary
+      )
+
+    session = Jason.decode!(reply)["uuid"]
+
+    on_exit(fn ->
+      :httpc.request(:delete, {to_charlist(base <> "/api/session/" <> session), []}, [], [])
+    end)
+
+    endpoint =
+      Ash.create!(Endpoint, %{url: base <> "/" <> session, secret_ref: "hist-main"},
+        authorize?: false
+      )
+
+    row = pending_row!(endpoint, "release-real-410")
+    assert :ok = run!(endpoint, row)
+    assert Ash.get!(Delivery, row.id, authorize?: false).response_status == 410
+    [attempt] = attempts_for(row)
+    assert is_integer(attempt.latency_ms) and attempt.latency_ms >= 1_000
+    assert attempt.signing_key_ref == "hist-main"
+  end
 end
