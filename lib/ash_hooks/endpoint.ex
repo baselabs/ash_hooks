@@ -27,6 +27,11 @@ defmodule AshHooks.Endpoint do
 
   With `key_lifecycle :on`, a standard previous key signs only before its
   `previous_secret_retired_at`, even if the retirement sweep is delayed.
+  A roll inside an active overlap returns `{:error, :overlap_active}`;
+  use `expire_previous_secret/2` before rolling again immediately. An ended
+  window permits rolling before the sweep. `default_overlap_seconds`
+  configures the overlap (86,400 seconds when unset), and optional
+  `max_overlap_seconds` caps both rolling and retirement scheduling from now.
   A stored previous reference without a retirement time is an undated state:
   it keeps signing, the sweep skips it, and `roll_secret/2` refuses it with
   `{:error, :previous_secret_undated}`. Resolve it with
@@ -112,6 +117,11 @@ defmodule AshHooks.Endpoint do
   at that instant, signing stops using the previous key independently of
   `expire_previous_secrets/2`, which removes expired references.
 
+  A dated previous key still inside its window refuses the roll with
+  `{:error, :overlap_active}`. Call `expire_previous_secret/2` before rolling
+  again immediately, or wait for the window to end. An ended but unswept
+  window does not block rolling.
+
   An undated previous reference refuses the roll with
   `{:error, :previous_secret_undated}`. Schedule its retirement with
   `schedule_previous_retirement/3` or remove it with `expire_previous_secret/2`
@@ -120,13 +130,18 @@ defmodule AshHooks.Endpoint do
       {:ok, rolled} =
         AshHooks.Endpoint.roll_secret(endpoint,
           # your store already holds the new secret under this reference
-          new_secret_ref: "acme-2026-11",
+          new_secret_ref: "signing-key-2026-11",
           overlap_seconds: 24 * 3_600
         )
 
   Options: `:new_secret_ref` (required, a fresh store reference; rolling
   onto the incumbent is `{:error, :same_reference}`), `:overlap_seconds`
-  (default 86,400), `:now` (the application clock), `:tenant`. Emits
+  (a non-negative integer, defaulting to the resource's
+  `default_overlap_seconds` or 86,400 when unset), `:now` (the application
+  clock), `:tenant`. A negative or non-integer overlap returns
+  `{:error, :invalid_overlap}`. Zero stops the old key signing at the roll
+  instant. Above the resource's optional `max_overlap_seconds`, rolling
+  returns `{:error, {:overlap_exceeds_max, max}}`. Emits
   `[:ash_hooks, :endpoint, :roll]` with the endpoint id. The row carries
   references and lifecycle timestamps only, never secret material. The
   gated write fences concurrent rolls
@@ -139,16 +154,19 @@ defmodule AshHooks.Endpoint do
 
     with {:ok, new_ref} <- validate_new_secret_ref(endpoint, opts[:new_secret_ref]),
          :ok <- require_lifecycle(resource),
-         {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]) do
+         {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
+         {:ok, overlap} <- validate_overlap(resource, opts) do
       rolled_at = opts[:now] || DateTime.utc_now()
       rolled_at = DateTime.truncate(rolled_at, :microsecond)
-      retired_at = DateTime.add(rolled_at, opts[:overlap_seconds] || 86_400, :second)
+      retired_at = DateTime.add(rolled_at, overlap, :second)
 
       result =
         resource
         |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-        |> Ash.Query.filter(secret_ref == ^endpoint.secret_ref)
-        |> Ash.Query.filter(is_nil(previous_secret_ref) or not is_nil(previous_secret_retired_at))
+        |> Ash.Query.filter(
+          secret_ref == ^endpoint.secret_ref and
+            (is_nil(previous_secret_ref) or previous_secret_retired_at <= ^rolled_at)
+        )
         |> Ash.bulk_update(
           :roll_secret,
           %{
@@ -176,7 +194,7 @@ defmodule AshHooks.Endpoint do
           {:ok, rolled}
 
         %Ash.BulkResult{status: :success, records: []} ->
-          roll_conflict(endpoint, tenant)
+          roll_conflict(endpoint, tenant, rolled_at)
 
         %Ash.BulkResult{} = result ->
           {:error, List.first(result.errors || []) || result}
@@ -184,19 +202,40 @@ defmodule AshHooks.Endpoint do
     end
   end
 
-  defp roll_conflict(endpoint, tenant) do
-    with {:ok, current} <-
-           endpoint.__struct__
-           |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-           |> Ash.read_one(authorize?: false, tenant: tenant) do
-      case current do
-        %{secret_ref: ref, previous_secret_ref: previous, previous_secret_retired_at: nil}
-        when ref == endpoint.secret_ref and not is_nil(previous) ->
-          {:error, :previous_secret_undated}
+  defp validate_overlap(resource, opts) do
+    default = Extension.get_opt(resource, [:endpoint], :default_overlap_seconds, 86_400)
+    overlap = Keyword.get(opts, :overlap_seconds, default)
+    max = Extension.get_opt(resource, [:endpoint], :max_overlap_seconds, nil)
 
-        _ ->
-          {:error, :rolled_underneath}
-      end
+    cond do
+      not is_integer(overlap) or overlap < 0 -> {:error, :invalid_overlap}
+      max && overlap > max -> {:error, {:overlap_exceeds_max, max}}
+      true -> {:ok, overlap}
+    end
+  end
+
+  defp roll_conflict(endpoint, tenant, now) do
+    result =
+      endpoint.__struct__
+      |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+      |> Ash.read_one(authorize?: false, tenant: tenant)
+
+    case result do
+      {:ok, %{secret_ref: ref, previous_secret_ref: previous, previous_secret_retired_at: nil}}
+      when ref == endpoint.secret_ref and not is_nil(previous) ->
+        {:error, :previous_secret_undated}
+
+      {:ok, %{secret_ref: ref, previous_secret_ref: previous, previous_secret_retired_at: at}}
+      when ref == endpoint.secret_ref and not is_nil(previous) ->
+        if DateTime.compare(at, now) == :gt,
+          do: {:error, :overlap_active},
+          else: {:error, :rolled_underneath}
+
+      {:ok, _} ->
+        {:error, :rolled_underneath}
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -212,6 +251,9 @@ defmodule AshHooks.Endpoint do
   that the previous reference is still the one supplied; a concurrent change
   returns `{:error, :previous_secret_changed}`.
 
+  If the resource declares `max_overlap_seconds`, a retirement time beyond
+  that many seconds from now returns `{:error, {:overlap_exceeds_max, max}}`.
+
   Options: `:now` (the application clock, default UTC now) and `:tenant`
   (required on multitenant resources). Requires `key_lifecycle :on`.
   Authorize the caller before invoking this system write.
@@ -224,7 +266,7 @@ defmodule AshHooks.Endpoint do
     with :ok <- require_lifecycle(resource),
          {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
          :ok <- require_previous_secret(endpoint),
-         {:ok, at} <- validate_retirement_time(at, opts[:now] || DateTime.utc_now()) do
+         {:ok, at} <- validate_retirement_time(at, opts[:now] || DateTime.utc_now(), resource) do
       resource
       |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
       |> Ash.Query.filter(previous_secret_ref == ^endpoint.previous_secret_ref)
@@ -246,15 +288,23 @@ defmodule AshHooks.Endpoint do
   defp require_previous_secret(%{previous_secret_ref: nil}), do: {:error, :no_previous_secret}
   defp require_previous_secret(_endpoint), do: :ok
 
-  defp validate_retirement_time(%DateTime{} = at, now) do
+  defp validate_retirement_time(%DateTime{} = at, now, resource) do
     at = DateTime.truncate(at, :microsecond)
+    max = Extension.get_opt(resource, [:endpoint], :max_overlap_seconds, nil)
 
-    if DateTime.compare(at, now) == :lt,
-      do: {:error, :retirement_in_past},
-      else: {:ok, at}
+    cond do
+      DateTime.compare(at, now) == :lt ->
+        {:error, :retirement_in_past}
+
+      max && DateTime.compare(at, DateTime.add(now, max, :second)) == :gt ->
+        {:error, {:overlap_exceeds_max, max}}
+
+      true ->
+        {:ok, at}
+    end
   end
 
-  defp validate_retirement_time(_at, _now), do: {:error, :invalid_retirement_time}
+  defp validate_retirement_time(_at, _now, _resource), do: {:error, :invalid_retirement_time}
 
   @doc """
   Retires one endpoint's previous signing key at once: the old reference
@@ -482,12 +532,34 @@ defmodule AshHooks.Endpoint do
         its reference. An undated previous key keeps signing and blocks
         rolling until `schedule_previous_retirement/3` or
         `expire_previous_secret/2` resolves it; the sweep skips it.
+        An active overlap refuses another roll with `:overlap_active`;
+        expire the previous key before rolling again immediately, or wait
+        for the window to end. An ended window permits rolling before the sweep.
         `roll_secret/2`, `schedule_previous_retirement/3`,
         `expire_previous_secret/2` (one endpoint), and
         `expire_previous_secrets/2` (a resource) accept optional arguments.
         Declaring `:on`
         requires a migration for the six columns. Timestamps only, never
         secret material.
+        """
+      ],
+      max_overlap_seconds: [
+        type: :pos_integer,
+        doc: """
+        Optional maximum overlap for standard signing keys, in seconds.
+        `roll_secret/2` refuses a longer overlap with
+        `{:error, {:overlap_exceeds_max, max}}`. Retirement scheduling
+        refuses a deadline beyond that many seconds from the application
+        clock. Must be at least the effective `default_overlap_seconds`.
+        """
+      ],
+      default_overlap_seconds: [
+        type: :non_neg_integer,
+        doc: """
+        Default standard key overlap in seconds when `roll_secret/2`
+        receives no `:overlap_seconds`. If unset, the default is 86,400.
+        Zero stops the old key signing at the roll instant. Must not exceed
+        `max_overlap_seconds` when a maximum is configured.
         """
       ],
       response_capture_attributes: [
@@ -574,5 +646,8 @@ defmodule AshHooks.Endpoint do
       AshHooks.Endpoint.Transformers.AddEndpointFields,
       AshHooks.Endpoint.Transformers.AddEndpointActions
     ],
-    verifiers: [AshHooks.Verifiers.MultitenancyNoBypass]
+    verifiers: [
+      AshHooks.Endpoint.Verifiers.Overlap,
+      AshHooks.Verifiers.MultitenancyNoBypass
+    ]
 end

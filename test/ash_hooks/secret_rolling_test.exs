@@ -405,7 +405,8 @@ defmodule AshHooks.SecretRollingTest do
     assert {:error, %Ash.Error.Unknown{}} =
              AshHooks.Endpoint.roll_secret(moved,
                new_secret_ref: "ref-third",
-               overlap_seconds: 60
+               overlap_seconds: 60,
+               now: moved.previous_secret_retired_at
              )
 
     # the single-row retire paths fence the same way
@@ -419,7 +420,8 @@ defmodule AshHooks.SecretRollingTest do
     {:ok, rolled} =
       AshHooks.Endpoint.roll_secret(with_previous,
         new_secret_ref: "ref-fourth",
-        overlap_seconds: 60
+        overlap_seconds: 60,
+        now: with_previous.previous_secret_retired_at
       )
 
     Repo.query!("""

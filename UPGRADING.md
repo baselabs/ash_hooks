@@ -66,6 +66,21 @@ with `AshHooks.Endpoint.expire_previous_secret/2`. Scheduling accepts a
 application clock and `:tenant` for multitenant resources. No retirement date
 is inferred from deployment time.
 
+A roll inside an active overlap now returns `{:error, :overlap_active}`
+without changing the endpoint. To roll again immediately, call
+`AshHooks.Endpoint.expire_previous_secret/2`, then roll. This ends the old
+key's signing window immediately. Once a dated window ends, rolling is
+allowed even if the retirement sweep has not removed the old reference.
+
+The `:overlap_seconds` option must be a non-negative integer; other values
+return `{:error, :invalid_overlap}`. Zero cuts off the previous key at the
+roll instant. The `endpoint` DSL accepts optional `max_overlap_seconds`
+(a positive integer) and `default_overlap_seconds` (a non-negative integer).
+The default remains 86,400 seconds when unset. Compilation refuses a maximum
+below the effective default. A roll above the maximum, or retirement
+scheduling beyond that many seconds from the application clock, returns
+`{:error, {:overlap_exceeds_max, max}}`.
+
 There is no new schema requirement. Resources without `key_lifecycle :on`
 and the legacy signing slots retain their existing retirement behavior.
 

@@ -216,6 +216,8 @@ defmodule AshHooks.Test.PreviousKeyRetirementCases do
 
         assert_receive {:signed, sender}, 5_000
 
+        assert {:ok, endpoint} = Lifecycle.expire_previous_secret(endpoint, now: @clock)
+
         assert {:ok, rolled} =
                  Lifecycle.roll_secret(endpoint, new_secret_ref: "replacement", now: @clock)
 
@@ -318,6 +320,211 @@ defmodule AshHooks.Test.PreviousKeyRetirementCases do
         assert scheduled.previous_secret_retired_at == at
       end
 
+      test "a second roll inside an overlap refuses without changing the row, including a stale caller" do
+        endpoint = endpoint_without_previous!()
+
+        assert {:ok, rolled} =
+                 Lifecycle.roll_secret(endpoint,
+                   new_secret_ref: "next",
+                   overlap_seconds: 60,
+                   now: @clock
+                 )
+
+        before = Ash.get!(Endpoint, endpoint.id, authorize?: false)
+
+        for caller <- [
+              rolled,
+              %{rolled | previous_secret_ref: nil, previous_secret_retired_at: nil}
+            ] do
+          assert {:error, :overlap_active} =
+                   Lifecycle.roll_secret(caller,
+                     new_secret_ref: "third",
+                     now: DateTime.add(@clock, 59)
+                   )
+
+          assert Ash.get!(Endpoint, endpoint.id, authorize?: false) == before
+        end
+      end
+
+      test "a roll after immediate expiration succeeds" do
+        endpoint = endpoint_without_previous!()
+
+        assert {:ok, rolled} =
+                 Lifecycle.roll_secret(endpoint, new_secret_ref: "next", now: @clock)
+
+        assert {:ok, expired} = Lifecycle.expire_previous_secret(rolled, now: @clock)
+
+        assert {:ok, next} =
+                 Lifecycle.roll_secret(expired, new_secret_ref: "third", now: @clock)
+
+        assert next.secret_ref == "third"
+        assert next.previous_secret_ref == "next"
+      end
+
+      test "a roll at or after the window end succeeds without a sweep" do
+        for offset <- [0, 1] do
+          endpoint = endpoint_without_previous!()
+
+          assert {:ok, rolled} =
+                   Lifecycle.roll_secret(endpoint,
+                     new_secret_ref: "next",
+                     overlap_seconds: 60,
+                     now: @clock
+                   )
+
+          assert Ash.get!(Endpoint, endpoint.id, authorize?: false).previous_secret_ref ==
+                   "current"
+
+          now = DateTime.add(@clock, 60 + offset)
+
+          assert {:ok, next} =
+                   Lifecycle.roll_secret(rolled, new_secret_ref: "third", now: now)
+
+          assert next.secret_ref == "third"
+          assert next.previous_secret_ref == "next"
+          assert next.secret_created_at == now
+        end
+      end
+
+      test "concurrent rolls apply exactly once and refuse the stale incumbent" do
+        endpoint = endpoint_without_previous!()
+        parent = self()
+
+        tasks =
+          for ref <- ["next-a", "next-b"] do
+            Task.async(fn ->
+              send(parent, {:ready_to_roll, self()})
+
+              receive do
+                :roll -> Lifecycle.roll_secret(endpoint, new_secret_ref: ref, now: @clock)
+              after
+                5_000 -> raise "roll barrier was not released"
+              end
+            end)
+          end
+
+        for _ <- tasks, do: assert_receive({:ready_to_roll, _pid}, 5_000)
+        for task <- tasks, do: send(task.pid, :roll)
+        results = Task.await_many(tasks)
+
+        assert [{:ok, rolled}] = Enum.filter(results, &match?({:ok, _}, &1))
+        assert [{:error, :rolled_underneath}] = Enum.filter(results, &match?({:error, _}, &1))
+        stored = Ash.get!(Endpoint, endpoint.id, authorize?: false)
+        assert stored.secret_ref == rolled.secret_ref
+        assert stored.previous_secret_ref == "current"
+      end
+
+      test "negative overlap is refused without changing the row" do
+        assert_invalid_overlap(-1)
+      end
+
+      test "non-integer overlap is refused without changing the row" do
+        for overlap <- [1.5, "60", :invalid, nil, false], do: assert_invalid_overlap(overlap)
+      end
+
+      test "the built-in default overlap is one day" do
+        endpoint = endpoint_without_previous!()
+
+        assert {:ok, rolled} =
+                 Lifecycle.roll_secret(endpoint, new_secret_ref: "next", now: @clock)
+
+        assert rolled.previous_secret_retired_at == DateTime.add(@clock, 86_400)
+      end
+
+      @tag :overlap_configuration
+      test "the configured default overlap replaces one day, including zero" do
+        for overlap <- [60, 0] do
+          resource = configured_endpoint!(default_overlap_seconds: overlap)
+          endpoint = Ash.get!(resource, endpoint_without_previous!().id, authorize?: false)
+
+          assert {:ok, rolled} =
+                   Lifecycle.roll_secret(endpoint, new_secret_ref: "next", now: @clock)
+
+          assert rolled.previous_secret_retired_at == DateTime.add(@clock, overlap)
+        end
+      end
+
+      @tag :overlap_configuration
+      test "rolling above the configured maximum refuses and the exact maximum succeeds" do
+        resource = configured_endpoint!(max_overlap_seconds: 120, default_overlap_seconds: 60)
+        endpoint = Ash.get!(resource, endpoint_without_previous!().id, authorize?: false)
+        before = Ash.get!(resource, endpoint.id, authorize?: false)
+
+        assert {:error, {:overlap_exceeds_max, 120}} =
+                 Lifecycle.roll_secret(endpoint,
+                   new_secret_ref: "next",
+                   overlap_seconds: 121,
+                   now: @clock
+                 )
+
+        assert Ash.get!(resource, endpoint.id, authorize?: false) == before
+
+        assert {:ok, rolled} =
+                 Lifecycle.roll_secret(endpoint,
+                   new_secret_ref: "next",
+                   overlap_seconds: 120,
+                   now: @clock
+                 )
+
+        assert rolled.previous_secret_retired_at == DateTime.add(@clock, 120)
+      end
+
+      @tag :overlap_configuration
+      test "scheduling cannot extend a zero-overlap roll beyond the maximum" do
+        resource = configured_endpoint!(max_overlap_seconds: 120, default_overlap_seconds: 60)
+        endpoint = Ash.get!(resource, endpoint_without_previous!().id, authorize?: false)
+
+        assert {:ok, rolled} =
+                 Lifecycle.roll_secret(endpoint,
+                   new_secret_ref: "next",
+                   overlap_seconds: 0,
+                   now: @clock
+                 )
+
+        now = DateTime.add(@clock, 10)
+        before = Ash.get!(resource, endpoint.id, authorize?: false)
+
+        for at <- [DateTime.add(now, 121), DateTime.add(now, 120_000_001, :microsecond)] do
+          assert {:error, {:overlap_exceeds_max, 120}} =
+                   Lifecycle.schedule_previous_retirement(rolled, at, now: now)
+
+          assert Ash.get!(resource, endpoint.id, authorize?: false) == before
+        end
+
+        assert {:ok, scheduled} =
+                 Lifecycle.schedule_previous_retirement(rolled, DateTime.add(now, 120), now: now)
+
+        assert scheduled.previous_secret_retired_at == DateTime.add(now, 120)
+      end
+
+      @tag :real_receiver
+      test "zero overlap stops the old key signing at the roll instant" do
+        {endpoint, session} = endpoint!(@clock)
+        keys = Map.put(keys(), "next", "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32)))
+
+        assert {:ok, rolled} =
+                 Lifecycle.roll_secret(endpoint,
+                   new_secret_ref: "next",
+                   overlap_seconds: 0,
+                   now: @clock
+                 )
+
+        assert rolled.previous_secret_ref == "current"
+        assert rolled.previous_secret_retired_at == @clock
+        row = delivery!(rolled)
+        assert :ok = deliver(row, keys)
+        headers = received_headers!(session, row)
+        assert [_signature] = String.split(headers["webhook-signature"], " ")
+        assert {:ok, _} = AshHooks.Signing.verify(@body, headers, keys["next"])
+
+        assert {:error, :invalid_signature} =
+                 AshHooks.Signing.verify(@body, headers, keys["current"])
+
+        stored = Ash.get!(Endpoint, endpoint.id, authorize?: false)
+        assert stored.secret_first_used_at == @clock
+        assert is_nil(stored.previous_secret_first_used_at)
+      end
+
       @tag :real_receiver
       test "legacy-only deliveries never stamp standard keys that did not sign" do
         {endpoint, session} = endpoint!(DateTime.add(@clock, 60))
@@ -353,6 +560,75 @@ defmodule AshHooks.Test.PreviousKeyRetirementCases do
         Map.new(["current", "previous"], fn ref ->
           {ref, "whsec_" <> Base.encode64(:crypto.strong_rand_bytes(32))}
         end)
+      end
+
+      defp endpoint_without_previous! do
+        {:ok, endpoint} = Lifecycle.expire_previous_secret(lifecycle_endpoint!(nil), now: @clock)
+        endpoint
+      end
+
+      defp assert_invalid_overlap(overlap) do
+        endpoint = endpoint_without_previous!()
+        before = Ash.get!(Endpoint, endpoint.id, authorize?: false)
+
+        assert {:error, :invalid_overlap} =
+                 Lifecycle.roll_secret(endpoint,
+                   new_secret_ref: "next",
+                   overlap_seconds: overlap,
+                   now: @clock
+                 )
+
+        assert Ash.get!(Endpoint, endpoint.id, authorize?: false) == before
+      end
+
+      defp configured_endpoint!(opts) do
+        module = Module.concat(__MODULE__, "Configured#{System.unique_integer([:positive])}")
+        domain = Module.concat(module, Domain)
+        options = Enum.map(opts, fn {name, value} -> {name, [], [value]} end)
+        storage = unquote(Macro.escape(endpoint_storage))
+        layer = unquote(layer)
+
+        definitions =
+          Code.compile_quoted(
+            quote do
+              defmodule unquote(module) do
+                @moduledoc false
+                use Ash.Resource,
+                  domain: unquote(domain),
+                  data_layer: unquote(layer),
+                  extensions: [AshHooks.Endpoint]
+
+                unquote(storage)
+
+                endpoint do
+                  key_lifecycle(:on)
+                  unquote_splicing(options)
+                end
+
+                actions do
+                  defaults([:read])
+                end
+              end
+
+              defmodule unquote(domain) do
+                @moduledoc false
+                use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
+
+                resources do
+                  resource(unquote(module))
+                end
+              end
+            end
+          )
+
+        on_exit(fn ->
+          for {defined, _bytecode} <- definitions do
+            :code.purge(defined)
+            :code.delete(defined)
+          end
+        end)
+
+        module
       end
 
       defp lifecycle_endpoint!(retired_at, url \\ "https://hooks.example.test/retirement") do

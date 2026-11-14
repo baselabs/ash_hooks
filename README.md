@@ -216,6 +216,16 @@ once; receivers deduplicate using the stable `webhook-id`.
   `AshHooks.Endpoint.schedule_previous_retirement/3` sets its deadline or
   `AshHooks.Endpoint.expire_previous_secret/2` removes it. Without lifecycle
   tracking, previous keys sign until their references are removed.
+- A second roll during an active standard key overlap returns
+  `{:error, :overlap_active}`. Call `AshHooks.Endpoint.expire_previous_secret/2`
+  before rolling again immediately, or wait for the window to end; an ended
+  window permits rolling before the sweep. `:overlap_seconds` must be a
+  non-negative integer (`{:error, :invalid_overlap}` otherwise); zero stops
+  the old key signing at the roll instant. The `endpoint` DSL options
+  `default_overlap_seconds` and `max_overlap_seconds` configure the default
+  (86,400 seconds when unset) and an optional positive cap. Compilation
+  refuses a cap below the effective default. Rolling or scheduling retirement
+  beyond the cap from now returns `{:error, {:overlap_exceeds_max, max}}`.
 - Endpoint health uses recorded durations, including failed attempts. Eventual
   successes include first-attempt successes. Explicit time bounds need `:from`.
   Supplying `:to` without `:from` returns `{:error, :from_required}`. Health sweeps

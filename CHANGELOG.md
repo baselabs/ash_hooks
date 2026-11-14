@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `AshHooks.Ssrf.resolve_host_public/2` validates DNS names and IP literals,
   resolves both address families under a bounded deadline, and returns only
   public addresses for connection pinning.
+- Endpoint options `max_overlap_seconds` and `default_overlap_seconds` cap
+  the standard key overlap and configure its default. Rolling refuses
+  negative or non-integer durations with `{:error, :invalid_overlap}` and
+  durations above the cap with `{:error, {:overlap_exceeds_max, max}}`.
+  Retirement scheduling honors the same cap, measured from the application clock.
 - `AshHooks.Endpoint.schedule_previous_retirement/3` sets a retirement time
   for a standard previous key, including an undated reference adopted with
   `key_lifecycle :on`. Past times and absent previous references are refused.
@@ -37,6 +42,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ADR 0010, rule 3.
 - Unrecognized callback reasons become contents-free `UnknownError` values
   instead of raising or exposing backend terms.
+- A second key roll inside an active overlap silently dropped the older key
+  from signing. It now returns `{:error, :overlap_active}` without changing
+  the endpoint. An ended window permits rolling even before the sweep runs.
 - A transport resolver that raises, throws, exits, or returns an invalid value,
   and a `transport` setting that is not a resolver, refuse the attempt as a
   retryable `transport_resolution` failure instead of falling back to HTTP.
