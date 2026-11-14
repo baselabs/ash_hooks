@@ -361,19 +361,30 @@ defmodule AshHooks.KeyLifecycle do
     with {:ok, loaded} <- Ash.read_one(query, authorize?: false, tenant: tenant),
          current = loaded || endpoint,
          {:ok, updated} <- write.(current),
-         :ok <- retire_displaced(current, updated, fields, tenant, Transitions.now(opts)) do
+         :ok <- retire_displaced(current, fields, tenant, Transitions.now(opts)) do
       {:ok, updated}
     end
   end
 
-  defp retire_displaced(before, updated, fields, tenant, now) do
+  defp retire_displaced(before, fields, tenant, now) do
     ref = Map.get(before, fields.previous_ref)
 
-    if ref && Map.get(before, fields.previous_kind) &&
-         ref != Map.get(updated, fields.previous_ref) do
-      Transitions.retire(before.__struct__, ref, now, tenant: tenant)
+    if ref && Map.get(before, fields.previous_kind) do
+      retire_if_absent(before, ref, tenant, now)
     else
       :ok
+    end
+  end
+
+  defp retire_if_absent(before, ref, tenant, now) do
+    with {:ok, persisted} <-
+           before.__struct__
+           |> Storage.owner_query(tenant)
+           |> Ash.Query.do_filter(PrimaryKey.filter(before))
+           |> Ash.read_one(authorize?: false, tenant: tenant) do
+      if Transitions.holds_ref?(persisted, ref),
+        do: :ok,
+        else: Transitions.retire(before.__struct__, ref, now, tenant: tenant)
     end
   end
 
