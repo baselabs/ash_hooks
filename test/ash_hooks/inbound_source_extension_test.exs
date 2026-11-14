@@ -3,6 +3,10 @@ defmodule AshHooks.InboundSourceExtensionTest do
   alias Ash.Resource.Info
   require Spark.Test
 
+  defmodule ByteProvider do
+    def webhook_signing_secret(_), do: {:ok, "declaration-key"}
+  end
+
   test "injects identity, fields, actions and default acceptance before Ash consumers" do
     source = compile_source()
     assert Info.identity(source, :unique_source).keys == [:source, :account_id]
@@ -132,6 +136,23 @@ defmodule AshHooks.InboundSourceExtensionTest do
 
   test "a registry with incompatible storage or tenancy is refused" do
     assert_source_error([registry_tenancy: false], ~r/registr/)
+    assert_source_error([registry_repo: AshHooks.Test.RegistryOtherRepo], ~r/repo/)
+    assert_source_error([registry_extension: false], ~r/registr/)
+    assert_source_error([ledger_extension: false], ~r/ledger/)
+  end
+
+  test "provider allowlists are nonempty and have distinct aliases and module values" do
+    for providers <- [
+          [],
+          [checked: nil],
+          [checked: "provider"],
+          [
+            checked: AshHooks.Test.CustodySchemeProvider,
+            checked: AshHooks.Test.CustodyHmacProvider
+          ]
+        ] do
+      assert_source_error([providers: providers], ~r/providers/)
+    end
   end
 
   test "source resources compile in custody-only mode" do
@@ -146,6 +167,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
     end)
 
     assert compile_source()
+    assert_source_error([providers: [checked: ByteProvider]], ~r/custody_only/)
   end
 
   def canonical_decimal(value), do: Decimal.to_string(Decimal.normalize(value))
@@ -181,14 +203,37 @@ defmodule AshHooks.InboundSourceExtensionTest do
             domain: nil,
             validate_domain_inclusion?: false,
             data_layer: AshSqlite.DataLayer,
-            extensions: [unquote(extension)]
+            extensions:
+              unquote(
+                if Keyword.get(
+                     opts,
+                     if(module == ledger, do: :ledger_extension, else: :registry_extension),
+                     true
+                   ), do: [extension], else: []
+              )
 
           sqlite do
             table("source_extension")
-            repo(AshHooks.Test.RegistryRepo)
+
+            repo(
+              unquote(
+                if module == registry,
+                  do: Keyword.get(opts, :registry_repo, AshHooks.Test.RegistryRepo),
+                  else: AshHooks.Test.RegistryRepo
+              )
+            )
           end
 
           attributes do
+            unquote(
+              if not Keyword.get(
+                   opts,
+                   if(module == ledger, do: :ledger_extension, else: :registry_extension),
+                   true
+                 ),
+                 do: quote(do: uuid_primary_key(:id))
+            )
+
             attribute(unquote(name), unquote(type), allow_nil?: false)
             attribute(:account_id, :string, allow_nil?: false)
           end
@@ -196,7 +241,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
           unquote(tenancy(tenancy?, name, false))
 
           unquote(
-            if module == ledger do
+            if module == ledger and Keyword.get(opts, :ledger_extension, true) do
               quote do
                 inbound_delivery do
                   scope_identity([:account_id])
@@ -266,7 +311,11 @@ defmodule AshHooks.InboundSourceExtensionTest do
           ledger(unquote(ledger))
           key_registry(unquote(registry))
           custodian(AshHooks.Test.Custodian)
-          providers(checked: AshHooks.Test.CustodySchemeProvider)
+
+          providers(
+            unquote(Keyword.get(opts, :providers, checked: AshHooks.Test.CustodySchemeProvider))
+          )
+
           unquote_splicing(source_options)
         end
       end

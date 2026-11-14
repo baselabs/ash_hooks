@@ -44,6 +44,12 @@ defmodule AshHooks.InboundSource.Verifiers.Source do
           end) ->
         error(state, "providers must be a nonempty allowlist of distinct aliases and modules")
 
+      Application.get_env(:ash_hooks, :key_material) == :custody_only and
+          Enum.any?(providers, fn {_, module} ->
+            AshHooks.Provider.byte_secret_callback?(module)
+          end) ->
+        error(state, "key_material: :custody_only refuses provider signing-secret callbacks")
+
       true ->
         :ok
     end
