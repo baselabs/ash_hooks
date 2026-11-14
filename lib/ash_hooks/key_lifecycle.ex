@@ -63,9 +63,11 @@ defmodule AshHooks.KeyLifecycle do
   end
 
   defp roll_incumbent(current, endpoint, opts, fields) do
-    if Map.fetch!(current, fields.ref) == Map.fetch!(endpoint, fields.ref),
-      do: do_roll_secret(current, opts),
-      else: {:error, :rolled_underneath}
+    if Map.fetch!(current, fields.ref) == Map.fetch!(endpoint, fields.ref) do
+      with {:ok, rolled} <- do_roll_secret(current, opts), do: {:written, rolled}
+    else
+      {:error, :rolled_underneath}
+    end
   end
 
   defp do_roll_secret(endpoint, opts) do
@@ -261,6 +263,7 @@ defmodule AshHooks.KeyLifecycle do
       custody_write(endpoint, opts, &expire_unchanged(&1, endpoint, tenant, opts, fields))
     else
       expire_previous_secret_gated(endpoint, tenant, opts[:now] || DateTime.utc_now(), fields)
+      |> public_write_result()
     end
   end
 
@@ -293,12 +296,15 @@ defmodule AshHooks.KeyLifecycle do
         )
 
       case result do
-        %Ash.BulkResult{status: :success, records: [retired]} -> {:ok, retired}
+        %Ash.BulkResult{status: :success, records: [retired]} -> {:written, retired}
         %Ash.BulkResult{status: :success, records: []} -> {:ok, endpoint}
         %Ash.BulkResult{} = result -> {:error, List.first(result.errors || []) || result}
       end
     end
   end
+
+  defp public_write_result({:written, row}), do: {:ok, row}
+  defp public_write_result(result), do: result
 
   @spec expire_previous_secrets(module(), keyword()) ::
           {:ok, non_neg_integer()} | {:error, term()}
@@ -342,29 +348,40 @@ defmodule AshHooks.KeyLifecycle do
     fields = fields(Keyword.get(opts, :slot, :standard))
     registry = Storage.registry(owner)
 
-    with {:ok, tenant} <- Tenancy.resolve([registry], opts[:tenant]) do
-      Storage.phase(registry, owner, tenant, fn ->
-        custody_write_in_phase(endpoint, tenant, opts, fields, write)
-      end)
+    with {:ok, tenant} <- Tenancy.resolve([registry], opts[:tenant]),
+         {:ok, result} <-
+           Storage.phase(registry, owner, tenant, fn ->
+             {:ok, custody_write_in_phase(endpoint, tenant, opts, fields, write)}
+           end) do
+      result
     end
   end
 
   defp custody_write_in_phase(endpoint, tenant, opts, fields, write) do
     owner = endpoint.__struct__
-    query = owner |> Storage.owner_query(tenant) |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
+
+    query =
+      owner |> Storage.owner_query(tenant) |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
 
     query =
       if Ash.DataLayer.data_layer(owner) == AshPostgres.DataLayer,
         do: Ash.Query.lock(query, :for_update),
         else: query
 
-    with {:ok, loaded} <- Ash.read_one(query, authorize?: false, tenant: tenant),
-         current = loaded || endpoint,
-         {:ok, updated} <- write.(current),
-         :ok <- retire_displaced(current, fields, tenant, Transitions.now(opts)) do
-      {:ok, updated}
+    with {:ok, loaded} <- Ash.read_one(query, authorize?: false, tenant: tenant) do
+      current = loaded || endpoint
+      finish_custody_write(write.(current), current, fields, tenant, Transitions.now(opts))
     end
   end
+
+  defp finish_custody_write({:written, updated}, before, fields, tenant, now) do
+    case retire_displaced(before, fields, tenant, now) do
+      :ok -> {:ok, updated}
+      {:error, error} -> Ash.DataLayer.rollback(before.__struct__, error)
+    end
+  end
+
+  defp finish_custody_write(result, _before, _fields, _tenant, _now), do: result
 
   defp retire_displaced(before, fields, tenant, now) do
     ref = Map.get(before, fields.previous_ref)
@@ -429,7 +446,9 @@ defmodule AshHooks.KeyLifecycle do
   end
 
   defp lifecycle_query(resource, tenant) do
-    if Storage.custodian(resource), do: Storage.owner_query(resource, tenant), else: Ash.Query.new(resource)
+    if Storage.custodian(resource),
+      do: Storage.owner_query(resource, tenant),
+      else: Ash.Query.new(resource)
   end
 
   defp validate_new_secret_ref(endpoint, ref, fields) do
