@@ -750,3 +750,68 @@ end
 
 Direct calls accept a `:now_ms` entry in the context to pin the clock for
 timestamp tests. Ingress never forwards it from a request.
+
+## Receive with an inbound source resource
+
+Use `AshHooks.InboundSource` when the application owns inbound rotation,
+retirement, provider selection, and pause on an Ash resource. Keep the host's
+storage, policies, and multitenancy. Configure its `inbound_source` section with
+`ledger`, `key_registry`, `custodian`, a `providers` alias-to-module allowlist,
+and locally declared `scope` tuples. The default declaration-name attribute is
+`:source`; `source_attribute` can rename it. The generated identity combines
+that attribute and scope under tenancy. See the
+[source DSL](../dsls/DSL-AshHooks.InboundSource.md) for options and
+`AshHooks.InboundSource` for the injected columns, identity, and actions.
+
+The source, ledger, and registry share transactional storage and tenancy. Source
+and ledger tenant attribute names and types must agree; scope names, types,
+constraints, and nonnullable attributes must match the ledger's `scope_identity`.
+Migrate all injected columns. Set ledger `record_provider_alias :on`, migrate
+its nullable `provider_alias` atom column, and set the inbound declaration's
+`source_record` to the source resource. A row stores a provider alias, never a
+module from request data. Restrict injected machine actions and authorize callers
+before lifecycle functions, which use `authorize?: false`.
+
+With `source_resource`, `source_name`, `account_id`, `provider_alias`, and `tenant`
+resolved by the application, generate a sender's HMAC key and rotate it:
+
+<!-- tested: inbound-source-lifecycle -->
+```elixir
+{:ok, source, initial_disclosure} =
+  AshHooks.InboundSource.create_source(
+    source_resource,
+    %{source: source_name, account_id: account_id, provider: provider_alias},
+    tenant: tenant,
+    generate: {:standard_webhooks, :v1}
+  )
+
+{:ok, source, next_disclosure} =
+  AshHooks.InboundSource.roll_secret(source,
+    tenant: tenant,
+    generate: {:standard_webhooks, :v1},
+    overlap_seconds: 3600
+  )
+
+{:ok, source} = AshHooks.InboundSource.expire_previous_secret(source, tenant: tenant)
+```
+
+Deliver each disclosure securely once. It is never persisted, logged, or emitted
+in telemetry. Rotation admits the previous key only until its dated retirement
+time, and a second roll refuses while that overlap remains active. A lost
+current disclosure uses `reissue_secret/2`, preserving the previous key and its
+deadline. Import sender-issued bytes with `material:` and `kind:`; only standard
+v1 can be generated. For asymmetric senders, register their public key with
+`register_public_key/3` and `kind:`; private keys stay with the sender.
+
+Plug resolves the source once before handshake, then uses its selected provider
+for verification and response policy. Missing rows return 404. Paused rows still
+reach the provider's paused response policy. Claimed receipts use their stored
+provider alias, payload, and scope, so source deletion, pause, or rotation does
+not stop recovery. During migration, run `adopt_provider_alias/4` outside an
+outer transaction with the old module as `expected_provider:` until `remaining`
+is zero. See [the upgrade procedure](../../UPGRADING.md) for cutover ordering.
+
+Providers may implement `parse_event_type/2`, `event_identity/2`, and
+`handle_event/3` to receive `AshHooks.Provider.DeliveryContext`. These arities are
+preferred; existing arities still work. The context documents which fields are
+available at parsing, identity, and handling, including recovery.

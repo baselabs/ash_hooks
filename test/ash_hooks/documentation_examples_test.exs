@@ -756,6 +756,32 @@ defmodule AshHooks.DocumentationContentTest do
              Ash.read!(ledger, tenant: tenant, authorize?: false)
   end
 
+  @tag documented_examples: ["inbound-source-lifecycle"]
+  test "the inbound source lifecycle example issues and verifies with a real custodian" do
+    cases = AshHooks.Test.InboundSourceCases
+    namespace = Docs.namespace("inbound-source-lifecycle")
+
+    ctx =
+      cases.setup_all(namespace, AshSqlite.DataLayer, AshHooks.Test.RegistryRepo, "docs_source")
+
+    cases.clean(ctx)
+
+    {_, binding} =
+      Docs.eval("inbound-source-lifecycle", namespace,
+        source_resource: ctx.source,
+        source_name: :checked,
+        account_id: "account",
+        provider_alias: :first,
+        tenant: 17
+      )
+
+    assert binding[:source].previous_secret_ref == nil
+    assert {:ok, _, %{status: :processed}} = cases.ingest(ctx, binding[:next_disclosure])
+
+    assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
+             cases.ingest(ctx, binding[:initial_disclosure])
+  end
+
   @tag documented_examples: ["upgrade-binding-in-application"]
   test "upgrade binding helpers produce declaration and queue identifiers" do
     {_value, binding} = Docs.eval("upgrade-binding-in-application", __MODULE__)

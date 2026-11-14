@@ -2,6 +2,48 @@
 
 ## 3.1.0 → 3.2.0
 
+To adopt the inbound lifecycle:
+
+1. Create an `AshHooks.InboundSource` resource with the ledger's tenancy,
+   locally declared scope, provider allowlist, custodian, and key registry.
+   Source and ledger must both be single-tenant or use attribute tenancy with
+   the same attribute name and type. Scope names, types, constraints, and
+   nonnullable attributes must agree. Migrate the injected source columns.
+2. Create one source row per declaration and scope under each tenant using
+   `create_source/3`. Import the sender's current material and kind, optionally
+   its previous material and required retirement time, or pin its public key.
+   Generation supports only `{:standard_webhooks, :v1}` and returns a one-time
+   `whsec_` disclosure. Imported material is the key bytes for its recorded kind.
+3. Enable ledger `record_provider_alias :on` and migrate the nullable atom
+   `provider_alias` column. Switch the inbound declaration to `source_record`
+   naming the source resource. New receipts then record the provider alias.
+4. Run `AshHooks.InboundSource.adopt_provider_alias/4` for every source under
+   its tenant, with `expected_provider:` naming the old declaration's module.
+   Repeat bounded calls until `remaining` is zero. A live pre-switch claim can
+   keep it positive until finalization or lease expiry. Older nil-alias receipts
+   wait unclaimed until adoption; terminal receipts need no alias. Deduplication
+   identities do not change. Each claim uses the stored alias and scope without
+   reading the source, including after deletion, pause, rotation, or alias selection changes.
+
+Source creation, roll, reissue, and alias adoption return `:inside_transaction`
+inside an enclosing transaction; call them after it commits. `:kind_not_allowed`
+means that generation or reissue cannot generate the requested kind and issued
+nothing. Sender HMAC keys must be imported. `:owner_mismatch` means the create
+action did not persist one owner holding every issued reference and kind; its
+write rolled back. `:key_issue_expired` means a registry sweep or tombstone won
+before attachment; repeat for a fresh reference. Resolve `:overlap_active` or
+`:previous_secret_undated` by waiting, scheduling, or expiring the previous key.
+An absent source row returns `UnknownSource` (HTTP 404), distinct from an invalid
+signature. A lost generated disclosure can be replaced with
+`AshHooks.InboundSource.reissue_secret/2`; it preserves the previous key and deadline.
+
+Optional provider callbacks `parse_event_type/2`, `event_identity/2`, and
+`handle_event/3` receive `AshHooks.Provider.DeliveryContext` and take precedence
+over the existing arities. Parsing and identity receive nil delivery IDs;
+handling receives the stored IDs on ingest and recovery. Tenant, declaration
+name, scope, and provider alias are available in both phases. Existing arities
+remain supported, including declarations without a source resource.
+
 To move outbound endpoints from byte references to custody:
 
 1. Enable key lifecycle and migrate its columns. Before adoption, schedule the

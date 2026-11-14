@@ -5,7 +5,7 @@ defmodule AshHooks.MixProject do
   @source_url "https://github.com/baselabs/ash_hooks"
   # Every Spark extension the package ships. The formatter export and the DSL
   # references are generated from this one list.
-  @spark_extensions "AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.OutboundDelivery,AshHooks.KeyRegistry"
+  @spark_extensions "AshHooks,AshHooks.Endpoint,AshHooks.Subscription,AshHooks.InboundDelivery,AshHooks.InboundSource,AshHooks.OutboundDelivery,AshHooks.KeyRegistry"
 
   def project do
     [
@@ -201,6 +201,9 @@ defmodule AshHooks.MixProject do
           AshHooks.Plug,
           AshHooks.Ingress,
           AshHooks.InboundDelivery,
+          AshHooks.InboundSource,
+          AshHooks.Inbound.ResolvedSource,
+          AshHooks.Provider.DeliveryContext,
           AshHooks.InboundDelivery.Payload
         ],
         Outbound: [

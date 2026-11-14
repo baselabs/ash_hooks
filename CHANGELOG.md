@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `AshHooks.InboundSource` owns inbound custody keys, provider aliases, pause,
+  rotation, retirement, and public verification keys on a host Ash resource.
+  Source and ledger tenancy and scope have compile-time checks and request preflight.
+  Creation and rotation reuse the endpoint issuing and lifecycle core.
+- Inbound ledgers can record the authenticating provider alias. Claims and
+  recovery use that durable alias without consulting the source row.
+  `adopt_provider_alias/4` stamps and claims older receipts in bounded tenant
+  phases, with handlers running after each claim commits.
+- Optional provider callback arities accept `AshHooks.Provider.DeliveryContext`
+  with tenant, source, scope, provider alias, and persisted delivery identity.
+
 - Endpoint custody key issuance through `create_with_key/3`, `roll_secret/2`
   with `material:` or `generate:`, and `reissue_secret/2` for lost disclosures.
   Generation returns a one-time secret or Ed25519 public half without storing
