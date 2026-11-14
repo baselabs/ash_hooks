@@ -24,7 +24,7 @@ id, immutable across retries; the exact `payload` bytes to sign;
 `dispatch_route`; the lifecycle `status`; accounting `attempts`; fenced
 send and enqueue tokens/leases; the durable 410 endpoint snapshot;
 the machine-written `response_status`/`response_snippet`/
-`next_attempt_at`; bounded `last_error`), the `unique_delivery`
+`next_attempt_at`; bounded `last_error`) and the `unique_delivery`
 identity on `[:endpoint_id, :event_uuid]`. The ownership fields default to
 explicit direct/unbound markers so existing direct callers of `:dispatch`
 remain valid; the first authorized direct driver and worker route bind them

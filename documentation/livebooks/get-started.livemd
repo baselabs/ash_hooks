@@ -21,7 +21,7 @@ This notebook uses a real SQLite database and an existing WebHook Tester
 receiver, an open-source request-capture server. The notebook checks captured
 request bytes, headers, and signatures. The receiver must already answer at `http://127.0.0.1:52871`;
 set `LOCAL_WEBHOOK_TESTER_PORT` to use another existing receiver. See
-the [local receiver guide](https://github.com/baselabs/ash_hooks/blob/main/ops/local/README.md).
+the [local receiver guide](https://github.com/baselabs/ash_hooks/blob/v3.1.0/ops/local/README.md).
 The notebook starts no server.
 Uses ash_hooks **3.1.0**. The tour plays both sides of each webhook: it signs
 requests the way a sender would and verifies them the way your application does.
@@ -95,7 +95,7 @@ describes how the sender signs its requests; ash_hooks checks the options when
 the module compiles and generates the verification callbacks. The options come
 from the sender's documentation: the header, the algorithm, how the signature
 and secret are encoded, what is signed, and where the timestamp is. The
-[Verify any sender](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/verify-any-sender.md)
+[Verify any sender](https://github.com/baselabs/ash_hooks/blob/v3.1.0/documentation/tutorials/verify-any-sender.md)
 guide has recipes for common shapes, and `AshHooks.Provider.Scheme` documents
 every option.
 
@@ -1428,8 +1428,8 @@ IO.puts("Tour database removed; captured receiver requests follow the receiver's
 
 ## Where to go next
 
-* [Get-started tutorial](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/get-started.md): the full walkthrough with Oban
-* [Verify any sender](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/verify-any-sender.md): signature recipes and the configuration reference
-* [Multi-tenant adoption checklist](https://github.com/baselabs/ash_hooks/blob/main/documentation/tutorials/tenancy-adoption-checklist.md)
-* [DSL reference](https://github.com/baselabs/ash_hooks/tree/main/documentation/dsls)
+* [Get-started tutorial](https://github.com/baselabs/ash_hooks/blob/v3.1.0/documentation/tutorials/get-started.md): the full walkthrough with Oban
+* [Verify any sender](https://github.com/baselabs/ash_hooks/blob/v3.1.0/documentation/tutorials/verify-any-sender.md): signature recipes and the configuration reference
+* [Multi-tenant adoption checklist](https://github.com/baselabs/ash_hooks/blob/v3.1.0/documentation/tutorials/tenancy-adoption-checklist.md)
+* [DSL reference](https://github.com/baselabs/ash_hooks/tree/v3.1.0/documentation/dsls)
 * `AshHooks.Provider.Scheme`, `AshHooks.Provider.Signature`, `AshHooks.Telemetry`, `AshHooks.Delivery`, `AshHooks.Ingress` module docs

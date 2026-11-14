@@ -12,7 +12,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     `forward` a webhook route to this plug from the router, outside
     browser/session/CSRF pipelines: with `:source` for a fixed source on a
     single-tenant ledger, or with `:resolve` for a scoped or multitenant one. The
-    README's [Receive with AshHooks.Plug](README.md#3-receive-with-ashhooksplug)
+    README's [Mounting the plug](README.md#mounting-the-plug)
     section shows both in a Phoenix endpoint and router; the test suite compiles
     and runs those examples as written.
 

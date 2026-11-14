@@ -15,7 +15,7 @@ Nothing else changes for this reason: no schema change and no API change.
 `AshHooks.Plug` is new and optional. An existing controller that calls
 `AshHooks.Ingress.ingest/4` keeps working unchanged. To move to the plug, forward
 the webhook route to it and delete the controller; the
-[README](README.md#3-receive-with-ashhooksplug) shows both the fixed-source and the
+[README](README.md#mounting-the-plug) shows both the fixed-source and the
 resolver form. If that controller passes `ctx.signature` itself for a hand-written
 provider, set the plug's `signature_header:` to the header it read. Code that
 read `conn.private[:ash_hooks_raw_body]` should call
@@ -55,6 +55,12 @@ and `%{}` can also be a real payload. Review candidates for each tenant: with
 with `status: [:received, :failed_retryable, :claimed]`, passing each
 `next_cursor` as `after:` until it is `nil`; otherwise read the ledger with the
 same status filter. Then decide how to handle each row.
+
+`use AshHooks.Worker` now refuses at compile time a `:transport` that is not
+`{module, function}`, and a function literal (`fn ... end` or `&fun/arity`) for
+`:delivery_headers` or `:certificate_pin`. A worker that passed a function for
+`:transport` compiled before but sent every delivery through the HTTP adapter;
+move the function into a module and pass `{module, function}`.
 
 ## Versions >= 2.0.1 and < 3.0.0 → 3.0.0
 
@@ -253,8 +259,10 @@ it: no existing column, action, event, or default behavior moves.
   `event_filters` column; migrate it when you declare it.
 - **Payload-version pinning (opt-in).** Declaring `version_pinning :on`
   on the endpoint resource injects the `pinned_payload_version` column;
-  migrate it when you declare it. Dispatch then resolves each endpoint's
-  payload through the declaration's `payload_versions` variant builders.
+  migrate it when you declare it. Endpoints without a pin, or pinned to the
+  declaration's current `version`, receive the dispatch payload; other pins
+  select the matching `payload_versions` builder, and a pin on a version
+  with no builder fails that endpoint before a delivery row is created.
 - **Secret rolling (opt-in).** Declaring `key_lifecycle :on` on the
   endpoint resource injects six timestamp columns
   (`secret_created_at`, `secret_first_used_at`, `secret_retired_at`,
@@ -508,7 +516,7 @@ container is now a typespec'd public contract with one NEW status:
 ### Elixir `~> 1.20` required; previously `~> 1.17`
 
 The supported Elixir window is now `~> 1.20`. Applications resolving
-ash_hooks on Elixir 1.17–1.19 get a hard resolver error at deps
+ash_hooks on Elixir 1.17 to 1.19 get a hard resolver error at deps
 loadpaths instead of a compile. An increase in the minimum supported version ships as a minor release, so a `~> 1.0` pin will happily resolve
 1.1.0 and then fail resolution on old Elixirs. If you cannot move to
 Elixir 1.20 yet, pin the floor release instead:
@@ -529,9 +537,10 @@ Behavior corrections (all also under "Fixed" in the CHANGELOG; no API change):
 and then fail the delivery write; under Ash 3.33's `:codepoints` counting,
 every endpoint's dispatch errored on an event the library had validated.
 Ids and types are now rejected above 255 **bytes** at `Event.new/1`, with a
-clear error. If you build event types from multi-byte text, values between
-255 characters and 255 bytes now fail fast at construction; under
-`:codepoints`, they previously failed (less clearly) at dispatch.
+clear error. If you build ids or types from multibyte text, a value of at
+most 255 graphemes can exceed 255 bytes; such values now fail at
+construction. Previously they passed construction, and those over the
+ledger's 255-codepoint limit failed later, less clearly, at dispatch.
 
 ### 2. Captured snippets and error fields are byte-capped
 
@@ -608,10 +617,12 @@ from 0.2.0 through 0.2.2; upgrading is a version bump plus three behavior correc
 ### 1. Truncated chunked bodies now retry (they previously "succeeded")
 
 `AshHooks.Http.Bounded` (the default adapter) returns `{:error, :truncated_body}` when a
-chunked response ends early, exactly as it already did for Content-Length responses. In
+chunked response ends early, before its response-body cap is reached, exactly as it
+already did for Content-Length responses. At the cap it returns the captured bytes as
+success and closes the connection without reading the rest. In
 0.2.0 through 0.2.2 the chunked path returned a partial body as success, which could mark a delivery
 `:succeeded` on partial bytes. If a receiver of yours streams chunked responses and
-closes mid-body, deliveries now retry instead of silently truncating.
+closes mid-body before the cap, deliveries now retry instead of silently truncating.
 
 ### 2. `AshHooks.Delivery.prune/2` returns `{:error, error}` instead of raising
 

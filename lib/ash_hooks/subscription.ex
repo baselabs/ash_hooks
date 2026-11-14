@@ -120,8 +120,9 @@ defmodule AshHooks.Subscription do
         required: true,
         doc: """
         The resource module carrying `AshHooks.Endpoint` that
-        `endpoint_id` references. The dispatcher loads endpoints through
-        it to check `status` and reachability.
+        `endpoint_id` references. The dispatcher loads endpoint records
+        through it and calls `AshHooks.Endpoint.enabled?/1` to decide
+        whether they receive delivery rows.
         """
       ],
       filter_attributes: [

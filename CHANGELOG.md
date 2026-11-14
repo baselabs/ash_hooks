@@ -51,6 +51,8 @@ change; see [UPGRADING.md](UPGRADING.md).
 
 - With `ingress_tracking :on`, the generated `:record_rejection` action accepted `:id` even on ledgers without a writable `:id` attribute (for example one declared with `uuid_v7_primary_key`), which Ash's accept validation reports at compile time. It now accepts `:id` only when `:ingest` does.
 - A verified body that did not decode to a map or list could be rebuilt from its empty placeholder, handled, and marked processed. It is now recorded permanently malformed when written and never handled. Duplicate deliveries still drive the surviving row's stored payload.
+- `AshHooks.Delivery.list/2`, `AshHooks.OutboundAttempt.list/2`, `AshHooks.Ingress.list/2`, and `AshHooks.OutboundEvent.list/2` raised on a well-formed cursor whose time was not a string, and returned a query error for a cursor id the resource's id type cannot cast. Both now return `{:error, :invalid_cursor}`.
+- `use AshHooks.Worker` accepted a function literal for `:transport`, which reached the runtime as quoted syntax, so every endpoint silently kept the HTTP adapter. The worker now refuses at compile time any `:transport` other than `{module, function}`, and a function literal for `:delivery_headers` or `:certificate_pin`. The direct delivery config still accepts functions.
 - Event-log terminal replay forwards its tenant to resend.
 - Missing-row event-log replay binds the declaration and enqueue route, stores the requester, and enqueues the created delivery and event.
 - Health sweeps count and emit disable telemetry only for successful writes.
@@ -234,12 +236,13 @@ need; each block names its DSL declaration and migration. Read
   delivery attempt (time, outcome, classified reason, HTTP status, latency
   in milliseconds, and the signing key REFERENCE, never secret material),
   written by the runtime beside its fenced result transitions and idempotent
-  per `(delivery, attempt)`. Latency is the REQUEST's duration, recorded
-  whenever a request was attempted (including one that failed at
-  transport, at destination pinning, or in a crashing adapter) and `nil`
-  only when no request was ever made (destination-policy refusal, DNS
-  failure at the send gate, secret resolution), where the signing key is
-  `nil` too. Wire it with `attempts:` on the worker macro or
+  per `(delivery, attempt)`. Latency is the request's duration, recorded
+  with the signing-key reference for each attempted request (including one
+  that failed at transport, at destination pinning, or in a crashing
+  adapter). Both are `nil` when no request was made (destination-policy
+  refusal, DNS failure at the send gate, secret resolution) and when an
+  HTTP 410 disable obligation stored without attempt history is
+  finalized. Wire it with `attempts:` on the worker macro or
   the direct-run config. A history write failure never fails the send; it
   surfaces as `[:ash_hooks, :attempt, :record_failed]` telemetry.
 - **Per-endpoint response capture.** `response_capture_attributes :on` on
@@ -314,8 +317,9 @@ need; each block names its DSL declaration and migration. Read
   HTTP: an adapter-shaped `request/5` receiving the SAME signed request
   the wire would, with the runtime's attempts, attempt history,
   classification, backoff, and telemetry applying unchanged. Route per
-  endpoint with `transport: {module, function}` / a 2-arity fn (worker
-  option or direct-run config) returning the transport module or `nil` to
+  endpoint with `transport: {module, function}` (worker option or direct-run
+  config; the direct-run config also accepts a 2-arity function) returning
+  the transport module or `nil` to
   keep the HTTP adapter; a routed endpoint skips the packaged send-time
   destination gate (the transport owns destination semantics), and a
   crashing resolver or non-module return falls back to HTTP contained.
@@ -325,9 +329,9 @@ need; each block names its DSL declaration and migration. Read
   injects the `event_filters` column (`:map`): a subscription whose
   filters all equal the dispatching event's metadata values receives the
   delivery; multiple filters AND together, a list value matches any-of.
-  Filters are evaluated in the dispatcher BEFORE any delivery row is created; a
-  filter key outside the declared set (or a malformed filter value) never
-  matches, fail closed. Attribute values ride the event's `metadata`.
+  Filters are evaluated in the dispatcher before any delivery row is
+  created. A filter with an undeclared key or a malformed value never
+  matches; filtering fails closed. Attribute values ride the event's `metadata`.
 - **The event catalog and payload-version pinning.** The `outbound` DSL
   declares each event type's metadata: `description`, `payload_schema`
   (any term your docs renderer understands), `version` (default 1), and
@@ -335,11 +339,12 @@ need; each block names its DSL declaration and migration. Read
   variant builders). Read it back through `AshHooks.Catalog.entries/1` and
   `entry/2` for event pickers and doc generation. Declaring
   `version_pinning :on` on the endpoint resource injects
-  `pinned_payload_version`: an endpoint pinning a DECLARED version
-  receives that variant builder's exact bytes instead of the dispatch
-  payload (per-endpoint rows carry their own bytes); a pin on an
-  undeclared version, or a failing/crashing builder, fails that endpoint
-  closed before any row is written; the fanout continues.
+  `pinned_payload_version`. Endpoints without a pin, or pinned to the
+  declaration's current `version`, receive the dispatch payload; other pins
+  receive the matching `payload_versions` builder's exact bytes
+  (per-endpoint rows carry their own bytes). A pin on a version with no
+  builder, or a failing or crashing builder, fails that endpoint closed
+  before any row is written; the fanout continues.
 - **Endpoint health and sustained-failure auto-disable.**
   `AshHooks.EndpointHealth.stats/2` computes one endpoint's trailing-window
   health from its attempt history: success rate and nearest-rank latency
@@ -357,9 +362,11 @@ need; each block names its DSL declaration and migration. Read
   (created / first-used / retired for the current key and its predecessor,
   all timestamps and never secret material) and unlocks
   `AshHooks.Endpoint.roll_secret/2`: the incumbent reference moves to
-  `previous_secret_ref` (the Standard Webhooks zero-downtime seam, where both
-  keys sign every delivery until the window ends with multiple signatures on the
-  wire), the new reference takes its place, and the old key's retirement
+  `previous_secret_ref` (the Standard Webhooks zero-downtime seam: deliveries
+  carry both keys' signatures until the previous reference is removed; the
+  overlap deadline makes it eligible for removal by
+  `expire_previous_secrets/2`, and reaching the deadline alone does not stop
+  its use), the new reference takes its place, and the old key's retirement
   is scheduled (`:overlap_seconds`, default 24h).
   `expire_previous_secrets/2` is the scheduled sweep;
   `expire_previous_secret/1` retires at once on request. The delivery
@@ -722,8 +729,8 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
 - **Policy obligation at the extension site** (`OutboundDelivery`,
   `Endpoint` moduledocs): the injected write actions are named and the
   consumer-owned policy obligation is stated loudly, mirroring the inbound half's
-  "you write your own" posture outbound. The seven delivery
-  actions plus the endpoint's `:disable`.
+  "you write your own" posture outbound. This covers the seven delivery
+  write actions and the endpoint's `:disable` action.
 - **Deterministic `Event.id` guidance** (`Event`, `Dispatcher`
   moduledocs): derive the id from the artifact's stable id; a generated
   id turns every producer re-fire into a duplicate POST per sweep.
@@ -797,7 +804,7 @@ mechanically inert.
   `:tenant_aware_secrets` (2-arity `f(ref, tenant)` resolver contract);
   the inbound `secret fn tenant -> ... end` source; the provider
   behavior's optional `webhook_signing_secret/2`
-  (Organization × connection custody; `use AshHooks.Provider` ships an
+  (per-tenant secret custody; `use AshHooks.Provider` ships an
   overridable default delegating to `/1`); and `:tenant` in the
   `verify_signature/3` context map.
 - **Oban args carry the tenant**: the generated `enqueue/2` serializes
@@ -866,7 +873,7 @@ with `mix hex.audit` running in CI.
 
 - The supported Elixir window is now `~> 1.20` (was `~> 1.17`);
   nothing below Elixir 1.20 is supported; the OTP
-  floor is 28 (CI tests 28 and 29). Consumers on 1.17–1.19 get a
+  floor is 28 (CI tests 28 and 29). Consumers on 1.17 to 1.19 get a
   resolver-level refusal instead of a compile. The public support policy makes a
   supported-floor bump a MINOR release, so a `~> 1.0` pin resolves
   1.1.0 and then fails resolution on old Elixirs. Pin
@@ -1084,10 +1091,9 @@ see migration notes in [UPGRADING.md](UPGRADING.md).
   (a malformed 2xx can no longer classify as succeeded). Run-on
   chunk-size lines without a terminator are refused past a sane bound
   instead of being buffered.
-- `AshHooks.Delivery.prune/2` returns `{:error, error}` when the
-  resource lacks `inserted_at`, following the same contract as
-  `AshHooks.Ingress.prune/2` its `@spec` always promised (previously
-  raised `ArgumentError`).
+- `AshHooks.Delivery.prune/2` now returns `{:error, error}` when the
+  resource lacks `inserted_at`, matching `AshHooks.Ingress.prune/2` and its
+  own documented return type. It previously raised `ArgumentError`.
 
 ### Added
 

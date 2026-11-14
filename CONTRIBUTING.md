@@ -135,9 +135,9 @@ mounting examples instead of repeating routing fragments.
 Use the repository's
 [issue templates](https://github.com/baselabs/ash_hooks/issues/new/choose) for bugs and
 feature requests. Report vulnerabilities privately as described in
-[SECURITY.md](https://github.com/baselabs/ash_hooks/blob/main/SECURITY.md).
+[SECURITY.md](SECURITY.md).
 
 ## Releases
 
 Releases are maintainer-only. The authoritative procedure is the
-[publishing runbook](https://github.com/baselabs/ash_hooks/blob/main/docs/PUBLISHING.md).
+[publishing runbook](https://github.com/baselabs/ash_hooks/blob/v3.1.0/docs/PUBLISHING.md).

@@ -10,6 +10,8 @@ defmodule AshHooks.Keyset do
   for rows sharing one timestamp.
   """
 
+  alias Ash.Resource.Info
+
   @default_limit 50
   @max_limit 500
 
@@ -37,7 +39,7 @@ defmodule AshHooks.Keyset do
 
   def decode_cursor(encoded) when is_binary(encoded) do
     with {:ok, json} <- Base.url_decode64(encoded, padding: false),
-         {:ok, %{"time" => time, "id" => id}} <- Jason.decode(json),
+         {:ok, %{"time" => time, "id" => id}} when is_binary(time) <- Jason.decode(json),
          {:ok, time, _offset} <- DateTime.from_iso8601(time) do
       {:ok, %{time: DateTime.truncate(time, :microsecond), id: id}}
     else
@@ -74,7 +76,8 @@ defmodule AshHooks.Keyset do
           page([struct()]) | {:error, term()}
   def read_page(resource, opts, time_field, filter_fun, tenant) do
     with {:ok, limit} <- fetch_limit(opts),
-         {:ok, cursor} <- decode_cursor(opts[:after]) do
+         {:ok, cursor} <- decode_cursor(opts[:after]),
+         {:ok, cursor} <- cast_cursor_id(resource, cursor) do
       query =
         resource
         |> Ash.Query.new()
@@ -87,6 +90,19 @@ defmodule AshHooks.Keyset do
         {:ok, records} -> {:ok, page_result(records, limit, time_field)}
         {:error, reason} -> {:error, reason}
       end
+    end
+  end
+
+  # a decoded cursor's id must cast to the resource's own id type, or a
+  # tampered id would surface as a query error instead of the named one
+  defp cast_cursor_id(_resource, nil), do: {:ok, nil}
+
+  defp cast_cursor_id(resource, %{id: id} = cursor) do
+    attribute = Info.attribute(resource, :id)
+
+    case Ash.Type.cast_input(attribute.type, id, attribute.constraints) do
+      {:ok, cast} when not is_nil(cast) -> {:ok, %{cursor | id: cast}}
+      _invalid -> {:error, :invalid_cursor}
     end
   end
 

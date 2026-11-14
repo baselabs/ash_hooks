@@ -15,9 +15,10 @@ defmodule AshHooks.Catalog do
       end
 
   `entries/1` lists a resource's declared catalog; `entry/2` reads one.
-  `payload/3` resolves the bytes a dispatch sends to one endpoint: its
-  pinned variant when it pinned a declared version, the dispatch payload
-  otherwise.
+  `payload/3` resolves the bytes a dispatch sends to one endpoint: the
+  dispatch payload when the endpoint has no pin or pinned the declaration's
+  current `version`, otherwise the matching `payload_versions` builder's
+  bytes.
 
   A pin on a version the declaration does not carry fails that endpoint
   closed (`{:error, :unknown_pinned_version}`) BEFORE any delivery row is

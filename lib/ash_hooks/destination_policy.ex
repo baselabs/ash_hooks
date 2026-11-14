@@ -35,8 +35,9 @@ defmodule AshHooks.DestinationPolicy do
   `:endpoint_id` and `:tenant` (nil when the run carries none). A callback
   that raises, exits, throws, or returns a term outside the decision
   vocabulary is CONTAINED as a retryable failure
-  (`destination_policy_failed`). The row climbs the backoff ladder while
-  you fix the policy; a policy defect must not dead-letter deliveries.
+  (`destination_policy_failed`). The row retries with backoff while you fix
+  the policy and dead-letters with `destination_policy_failed` only when it
+  reaches its attempt ceiling, like any retryable failure.
 
   When no policy is configured, the packaged check runs exactly as before
   (the boolean `:ssrf_check` config keeps its behavior; a configured

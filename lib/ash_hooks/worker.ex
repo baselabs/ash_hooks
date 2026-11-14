@@ -57,9 +57,11 @@ defmodule AshHooks.Worker do
       runs unchanged). A crashing or out-of-vocabulary callback is
       contained as a retryable `destination_policy_failed`. A configured
       policy takes precedence over the boolean `:ssrf_check` seam.
-    * `:transport`: the per-endpoint delivery transport resolver
-      (`{module, function}` or a 2-arity fn of the endpoint record and
-      tenant) returning an `AshHooks.Transport` module for one endpoint's
+    * `:transport`: the per-endpoint delivery transport resolver, a
+      `{module, function}` called with the endpoint record and tenant (a
+      function literal is refused at compile time; the direct delivery
+      config also accepts a 2-arity function), returning an
+      `AshHooks.Transport` module for one endpoint's
       deliveries (a developer's local forwarder behind a CLI "listen"
       command, for example), or `nil` to keep the HTTP adapter. The same signing,
       attempts, and telemetry apply; a crashing resolver or non-module
@@ -223,6 +225,23 @@ defmodule AshHooks.Worker do
       "(f receives the URL and a context map; see AshHooks.DestinationPolicy) — " <>
       "got #{inspect(other)}"
   end
+
+  defp transport_error(other) do
+    "AshHooks.Worker :transport must be {module, function} " <>
+      "(f receives the endpoint record and tenant; a 2-arity function is " <>
+      "accepted in the direct delivery config). Got: #{Macro.to_string(other)}"
+  end
+
+  # Function literals (`fn ... end`, `&fun/arity`) reach the macro as AST and
+  # cannot be baked into the compiled config; refuse them at compile time
+  # instead of letting the runtime receive quoted syntax. Literal data passes.
+  defp refuse_function_literal!(option, {form, _meta, _args} = ast) when form in [:fn, :&] do
+    raise ArgumentError,
+          "AshHooks.Worker #{inspect(option)} must be {module, function} or literal data " <>
+            "(a function is accepted in the direct delivery config). Got: #{Macro.to_string(ast)}"
+  end
+
+  defp refuse_function_literal!(_option, value), do: value
 
   # ──────────────── the per-perform runtime-config seam ────────────────
 
@@ -616,24 +635,29 @@ defmodule AshHooks.Worker do
                   {module, function}
 
                 _malformed ->
-                  raise ArgumentError,
-                        "AshHooks.Worker :transport must be {module, function} or a 2-arity fn — got #{inspect(pair)}"
+                  raise ArgumentError, transport_error(pair)
               end
 
+            nil ->
+              nil
+
+            # a function literal arrives as AST and cannot be baked into the
+            # compiled config; it would reach the runtime as data and silently
+            # keep the HTTP adapter
             other ->
-              other
+              raise ArgumentError, transport_error(other)
           end,
         secret_resolver: {expand.(resolver_m), resolver_f},
         retryable_statuses: retryable_statuses!(Keyword.get(opts, :retryable_statuses)),
         delivery_headers:
           case Keyword.get(opts, :delivery_headers) do
             {m, f} when is_atom(f) -> {expand.(m), f}
-            other -> other
+            other -> refuse_function_literal!(:delivery_headers, other)
           end,
         certificate_pin:
           case Keyword.get(opts, :certificate_pin) do
             {m, f} when is_atom(f) -> {expand.(m), f}
-            other -> other
+            other -> refuse_function_literal!(:certificate_pin, other)
           end,
         snippet_redactor: snippet_redactor,
         tenant_aware_secrets: Keyword.get(opts, :tenant_aware_secrets, false),

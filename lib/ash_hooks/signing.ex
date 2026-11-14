@@ -9,8 +9,8 @@ defmodule AshHooks.Signing do
 
   Secret formats:
 
-    * symmetric: `whsec_` + base64 of 24–64 random bytes (prefix optional,
-      matching the references). `sign/4` enforces the 24–64 byte band (the
+    * symmetric: `whsec_` + base64 of 24 to 64 random bytes (prefix optional,
+      matching the references). `sign/4` enforces the 24 to 64 byte band (the
       emitter's length bound); verification accepts nonempty decoded symmetric
       secrets, including shorter keys, and rejects malformed base64.
     * asymmetric: `whsk_` + base64 of the 32-byte ed25519 seed (signing),
