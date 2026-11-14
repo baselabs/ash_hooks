@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Preserve declaration handshake and response policies on source-resolution
+  failures; only an absent source row gets the early 404 response.
+
 - Validate pinned public-key kinds before writes and pass typed public keys to
   providers, preventing an HMAC alias from accepting public-key forgeries.
 

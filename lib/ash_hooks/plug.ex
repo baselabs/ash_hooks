@@ -83,7 +83,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     @behaviour Plug
     require Logger
 
-    alias AshHooks.{BodyReader, Ingress, Provider}
+    alias AshHooks.{BodyReader, Info, Ingress, Provider}
     alias AshHooks.Errors.Invalid.{InvalidSignature, MalformedPayload, StaleTimestamp}
     alias AshHooks.Errors.Invalid.{KeyKindMismatch, UnknownKey, UnknownSource}
     alias Plug.Conn.Query
@@ -196,16 +196,26 @@ if Code.ensure_loaded?(Plug.Conn) do
     defp deliver(conn, raw, context, options) do
       case Ingress.resolve_source(options[:resource], context.source, Map.to_list(context)) do
         {:ok, resolved} ->
-          deliver_resolved(conn, raw, Map.put(context, :resolved_source, resolved), options)
+          deliver_resolved(
+            conn,
+            raw,
+            Map.put(context, :resolved_source, resolved),
+            resolved.provider,
+            options
+          )
 
         {:error, error} ->
-          answer(conn, default_response({:error, error}, options))
+          inbound = Info.inbound(options[:resource], context.source)
+
+          if (is_struct(error, UnknownSource) and inbound) && inbound.source_record do
+            answer(conn, default_response({:error, error}, options))
+          else
+            deliver_resolved(conn, raw, context, if(inbound, do: inbound.provider), options)
+          end
       end
     end
 
-    defp deliver_resolved(conn, raw, context, options) do
-      provider = context.resolved_source.provider
-
+    defp deliver_resolved(conn, raw, context, provider, options) do
       request = %{
         method: conn.method,
         query_params: Query.decode(conn.query_string),

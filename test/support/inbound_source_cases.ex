@@ -222,6 +222,7 @@ defmodule AshHooks.Test.InboundSourceCases do
       :declaration_context,
       :two_tenants,
       :unknown_source,
+      :plug_resolution_failures,
       :paused_source,
       :durable_provider,
       :independent_recovery,
@@ -1123,6 +1124,49 @@ defmodule AshHooks.Test.InboundSourceCases do
     assert receipts(ctx) == []
   end
 
+  def plug_resolution_failures(ctx) do
+    if Code.ensure_loaded?(Plug.Test) do
+      handler = make_ref()
+
+      :ok =
+        :telemetry.attach(
+          handler,
+          [:ash_hooks, :ingress, :verify],
+          &CustodySigningCases.receive_telemetry/4,
+          self()
+        )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      for context <- [
+            %{source: :checked, tenant: 17},
+            %{source: :checked, tenant: 17, scope: %{account_id: %{bad: true}}},
+            %{source: :checked, scope: %{account_id: "account"}}
+          ] do
+        options =
+          AshHooks.Plug.init(
+            resource: ctx.source_ledger,
+            resolve: {__MODULE__, :plug_context, [context]},
+            respond: {__MODULE__, :host_response, []}
+          )
+
+        conn = Plug.Test.conn(:post, "/webhooks", "{}") |> AshHooks.Plug.call(options)
+        assert conn.status == if(context[:tenant], do: 400, else: 503)
+
+        if context[:tenant] do
+          assert_received {:telemetry, [:ash_hooks, :ingress, :verify],
+                           %{source: :checked, outcome: :invalid, reason: :malformed_payload}}
+        else
+          refute_received {:telemetry, [:ash_hooks, :ingress, :verify], _}
+        end
+
+        assert_received {:host_response, {:error, _}}
+      end
+
+      assert receipts(ctx) == []
+    end
+  end
+
   def required_tenant(ctx) do
     {:ok, row, _} = create(ctx)
 
@@ -1475,6 +1519,8 @@ defmodule AshHooks.Test.InboundSourceCases do
 
   def plug_context(_conn),
     do: {:ok, %{source: :checked, tenant: 17, scope: %{account_id: "account"}}}
+
+  def plug_context(_conn, context), do: {:ok, context}
 
   def compile_source(ctx, module, opts \\ []) do
     definitions = Code.compile_quoted(source_definition(ctx, module, opts))

@@ -810,8 +810,9 @@ an `AshHooks.Custody.PublicKey` struct that pins the algorithm, digest, padding,
 and curve. HMAC refuses this value with `KeyKindMismatch` (HTTP 500), so a
 provider alias cannot turn published public bytes into an HMAC secret.
 
-Plug resolves the source once before handshake, then uses its selected provider
-for verification and response policy. Missing rows return 404.
+Plug resolves the source before handshake, then uses its selected provider
+for verification and response policy. Missing source rows return 404. Other
+resolution failures retain the declaration's handshake and response path.
 A reference destroyed after resolution triggers one fresh source read; verification
 retries only when the owner no longer admits the failed reference. A still-admitted
 reference unknown to custody remains `UnknownKey`. Paused rows still

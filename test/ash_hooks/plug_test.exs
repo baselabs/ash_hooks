@@ -457,6 +457,51 @@ if Code.ensure_loaded?(Plug.Conn) do
 
       if substrate == :postgres, do: @tag(:postgres)
 
+      test "#{substrate}: declaration resolution failures retain handshake and response policies" do
+        ledger = unquote(tenant_ledger)
+        handler = make_ref()
+
+        :ok =
+          :telemetry.attach(
+            handler,
+            [:ash_hooks, :ingress, :verify],
+            &AshHooks.Test.CustodySigningCases.receive_telemetry/4,
+            self()
+          )
+
+        on_exit(fn -> :telemetry.detach(handler) end)
+
+        for context <- [
+              %{source: :protocol, tenant: "org-a"},
+              %{source: :protocol, tenant: "org-a", scope: %{endpoint_id: %{bad: true}}},
+              %{source: :protocol, scope: %{endpoint_id: "endpoint"}}
+            ] do
+          request(body())
+          |> put_private(:plug_options,
+            resource: ledger,
+            resolve: {__MODULE__, :resolve, [{:ok, context}]},
+            respond: {__MODULE__, :respond, [{422, [], "policy"}]}
+          )
+          |> run()
+          |> assert_response(422, "policy")
+
+          assert_receive {:handshake, _}
+          assert_receive {:provider_response, {:error, _}}
+          assert_receive {:host_response, {:error, _}}
+
+          if context[:tenant] do
+            assert_receive {:telemetry, [:ash_hooks, :ingress, :verify],
+                            %{source: :protocol, outcome: :invalid, reason: :malformed_payload}}
+          else
+            refute_received {:telemetry, [:ash_hooks, :ingress, :verify], _}
+          end
+
+          assert Ash.read!(ledger, tenant: "org-a", authorize?: false) == []
+        end
+      end
+
+      if substrate == :postgres, do: @tag(:postgres)
+
       test "#{substrate}: resolver threads tenant, scope and connection into the ledger" do
         ledger = unquote(tenant_ledger)
         # Attacker partition first: identical bodies must remain independent.
