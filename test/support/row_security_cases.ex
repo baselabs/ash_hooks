@@ -1021,8 +1021,17 @@ defmodule AshHooks.Test.RowSecurityCases do
       assert ref == endpoint.secret_ref
     end
 
-    requests = RealReceiver.requests!(receiver)
-    assert length(requests) == 2
+    retained =
+      for {tenant, _endpoint} <- seeded do
+        {:ok, %{records: [row]}} = Delivery.list(ctx.delivery, tenant: tenant)
+        Map.fetch!(row, AshHooks.Info.payload_attribute(ctx.delivery))
+      end
+
+    received =
+      for request <- RealReceiver.requests!(receiver),
+          do: Base.decode64!(request["request_payload_base64"])
+
+    assert Enum.sort(received) == Enum.sort(retained)
   end
 
   def driver_state_phases(ctx) do

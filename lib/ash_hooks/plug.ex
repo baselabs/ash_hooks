@@ -208,7 +208,9 @@ if Code.ensure_loaded?(Plug.Conn) do
           inbound = Info.inbound(options[:resource], context.source)
           provider = if inbound, do: inbound.provider
 
-          if (is_struct(error, UnknownSource) and inbound) && inbound.source_record do
+          record_source? = inbound != nil and inbound.source_record != nil
+
+          if match?(%UnknownSource{}, error) and record_source? do
             answer(conn, default_response({:error, error}, options))
           else
             deliver_resolved(conn, raw, context, provider, options)
