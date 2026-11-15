@@ -1465,27 +1465,31 @@ defmodule AshHooks.Ingress do
 
   defp verify_resolved(source, body, ctx, inbound) do
     case verify_source_keys(source, body, ctx, inbound) do
-      {:error, %AshHooks.Errors.Invalid.UnknownKey{ref: ref}} = error
+      {:error, %AshHooks.Errors.Invalid.UnknownKey{ref: ref} = reason}
       when not is_nil(source.record) and is_binary(ref) ->
-        ledger = Storage.option(source.record.__struct__, :ledger)
-
-        with {:ok, fresh} <-
-               resolve_source(ledger, source.name, tenant: ctx[:tenant], scope: source.scope) do
-          if Enum.any?(fresh.keys, &(&1.ref == ref)) do
-            error
-          else
-            with :ok <- resolved_pause(fresh),
-                 :ok <- check_replay_window(inbound, fresh.provider, source.name),
-                 :ok <- verify_source_keys(fresh, body, ctx, inbound),
-                 do: {:ok, fresh}
-          end
-        end
+        refresh_source_keys(source, body, ctx, inbound, reason)
 
       :ok ->
         {:ok, source}
 
       error ->
         error
+    end
+  end
+
+  defp refresh_source_keys(source, body, ctx, inbound, reason) do
+    ledger = Storage.option(source.record.__struct__, :ledger)
+
+    with {:ok, fresh} <-
+           resolve_source(ledger, source.name, tenant: ctx[:tenant], scope: source.scope),
+         false <- Enum.any?(fresh.keys, &(&1.ref == reason.ref)) do
+      with :ok <- resolved_pause(fresh),
+           :ok <- check_replay_window(inbound, fresh.provider, source.name),
+           :ok <- verify_source_keys(fresh, body, ctx, inbound),
+           do: {:ok, fresh}
+    else
+      true -> {:error, reason}
+      error -> error
     end
   end
 

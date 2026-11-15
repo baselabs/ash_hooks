@@ -329,13 +329,18 @@ defmodule AshHooks.Test.KeyIssuingCases do
 
     compile_owner(
       Map.put(ctx, :endpoint_defaults, [:read, :destroy, create: accepted, update: accepted]),
-      owner, custodian: AshHooks.Test.IssuingCustodian, secret_resolver: {__MODULE__, :resolve})
+      owner,
+      custodian: AshHooks.Test.IssuingCustodian,
+      secret_resolver: {__MODULE__, :resolve}
+    )
 
     for field <- fields, string_keys? <- [false, true] do
       attrs = Map.put(%{url: url(), tenant_id: 17, secret_ref: "host-byte"}, field, @kind)
 
       attrs =
-        if string_keys?, do: Map.new(attrs, fn {k, v} -> {Atom.to_string(k), v} end), else: attrs
+        if string_keys?,
+          do: Map.new(attrs, &{Atom.to_string(elem(&1, 0)), elem(&1, 1)}),
+          else: attrs
 
       assert {:error, _} = Ash.create(owner, attrs, tenant: 17, authorize?: false)
       assert {:error, _} = Endpoint.create_with_key(owner, attrs, tenant: 17, generate: @kind)
@@ -351,9 +356,11 @@ defmodule AshHooks.Test.KeyIssuingCases do
 
     assert row.secret_ref == "host-byte"
     assert row.secret_kind == nil
+
     for field <- fields do
       assert {:error, _} = Ash.update(row, %{field => @kind}, tenant: 17, authorize?: false)
     end
+
     assert {:ok, row} = Ash.update(row, %{secret_ref: "next-byte"}, tenant: 17, authorize?: false)
     assert row.secret_ref == "next-byte"
     assert row.secret_kind == nil
@@ -1027,6 +1034,29 @@ defmodule AshHooks.Test.KeyIssuingCases do
     [request] = RealReceiver.requests!(session)
     headers = Map.new(request["headers"], &{String.downcase(&1["name"]), &1["value"]})
     assert {:ok, _} = Signing.verify(@body, headers, disclosure)
+
+    {:ok, removed, _} = create(ctx, attrs: %{url: RealReceiver.url(session)})
+
+    remove_owner = fn _url, _context ->
+      {:ok, fresh, _} = Endpoint.reissue_secret(removed, tenant: 17)
+      assert {:ok, _} = KeyRegistry.sweep(ctx.registry, tenant: 17)
+      Ash.destroy!(fresh, tenant: 17, authorize?: false)
+      :allow
+    end
+
+    assert {:ok, %{status: :failed_retryable, delivery: failed}} =
+             AshHooks.Delivery.test_send(removed,
+               deliveries: ctx.delivery,
+               tenant: 17,
+               type: :checked,
+               payload: @body,
+               max_attempts: 2,
+               destination_policy: remove_owner,
+               http_opts: [validate_destination: false]
+             )
+
+    refute failed.last_error == "unknown_key"
+    assert length(RealReceiver.requests!(session)) == 1
   end
 
   def resolve(ref) do
@@ -1203,54 +1233,49 @@ defmodule AshHooks.Test.IssuingCustodian do
     if answer == {:crash, :before_store}, do: Process.exit(self(), :kill)
     result = custodian.store(ref, material, tenant, kind)
 
-    case answer do
-      nil ->
-        result
+    store_answer(answer, result, ref)
+  end
 
-      {:crash, :after_store} ->
-        Process.exit(self(), :kill)
+  defp store_answer(nil, result, _ref), do: result
+  defp store_answer({:crash, :after_store}, _result, _ref), do: Process.exit(self(), :kill)
+  defp store_answer({:raise, message}, _result, _ref), do: raise(message)
+  defp store_answer({:exit, reason}, _result, _ref), do: exit(reason)
+  defp store_answer({:throw, reason}, _result, _ref), do: throw(reason)
 
-      {:raise, message} ->
-        raise(message)
+  defp store_answer(:break_cleanup, _result, _ref) do
+    Process.put(:registry_wrong_repo, AshHooks.Test.RegistryOtherRepo)
+    {:error, :unavailable}
+  end
 
-      {:exit, reason} ->
-        exit(reason)
+  defp store_answer({:sweep, ctx}, result, _ref) do
+    {:ok, _} =
+      AshHooks.KeyRegistry.sweep(ctx.registry,
+        tenant: 17,
+        now: DateTime.add(DateTime.utc_now(), 901)
+      )
 
-      {:throw, reason} ->
-        throw(reason)
+    result
+  end
 
-      :break_cleanup ->
-        Process.put(:registry_wrong_repo, AshHooks.Test.RegistryOtherRepo)
-        {:error, :unavailable}
+  defp store_answer({:roll, owner}, result, _ref) do
+    {:ok, _} = AshHooks.Endpoint.roll_secret(owner, tenant: 17, new_secret_ref: "racing-byte")
+    result
+  end
 
-      {:sweep, ctx} ->
-        {:ok, _} =
-          AshHooks.KeyRegistry.sweep(ctx.registry,
-            tenant: 17,
-            now: DateTime.add(DateTime.utc_now(), 901)
-          )
+  defp store_answer({:next_store, answer}, result, _ref) do
+    Process.put(:issuing_store_answer, answer)
+    result
+  end
 
-        result
+  defp store_answer({:pause, parent}, result, ref) do
+    send(parent, {:stored, self(), ref})
 
-      {:roll, owner} ->
-        {:ok, _} = AshHooks.Endpoint.roll_secret(owner, tenant: 17, new_secret_ref: "racing-byte")
-        result
-
-      {:next_store, answer} ->
-        Process.put(:issuing_store_answer, answer)
-        result
-
-      {:pause, parent} ->
-        send(parent, {:stored, self(), ref})
-
-        receive do
-          :continue -> result
-        end
-
-      other ->
-        other
+    receive do
+      :continue -> result
     end
   end
+
+  defp store_answer(other, _result, _ref), do: other
 
   def sign(ref, tenant, kind, input), do: custodian().sign(ref, tenant, kind, input)
   def verify(ref, tenant, kind, input, mac), do: custodian().verify(ref, tenant, kind, input, mac)

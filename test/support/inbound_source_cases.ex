@@ -12,20 +12,24 @@ defmodule AshHooks.Test.SourceProvider do
 
     with :ok <- Signature.hmac(body, context.headers["x-signature"], key, digest: digest),
          :ok <- check_timestamp(context) do
-      if context.headers["x-json-check"] == "required" do
-        case Jason.decode(body) do
-          {:ok, _} -> :ok
-          {:error, _} -> {:error, :malformed_payload}
-        end
-      else
-        :ok
-      end
+      check_payload(body, context)
     end
   end
 
   def verify_signature(body, context, %AshHooks.Custody.PublicKey{} = public_key) do
     notify({:pinned_key, public_key})
     Signature.ed25519(body, context.headers["x-signature"], public_key)
+  end
+
+  defp check_payload(body, context) do
+    if context.headers["x-json-check"] == "required" do
+      case Jason.decode(body) do
+        {:ok, _} -> :ok
+        {:error, _} -> {:error, :malformed_payload}
+      end
+    else
+      :ok
+    end
   end
 
   defp check_timestamp(context) do
@@ -120,6 +124,7 @@ defmodule AshHooks.Test.InboundSourceCases do
   import ExUnit.Callbacks, only: [on_exit: 1]
   alias AshHooks.Errors.Unknown.KeyUnavailable
   alias AshHooks.{InboundSource, Ingress, KeyRegistry, Signing}
+  alias AshHooks.KeyRegistry.Transitions
 
   alias AshHooks.Test.{
     AnswerCustodian,
@@ -485,6 +490,11 @@ defmodule AshHooks.Test.InboundSourceCases do
 
     assert {:error, %AshHooks.Errors.Invalid.UnknownKey{}} =
              ingest(ctx, disclosure, id: "still-held")
+
+    Ash.destroy!(fresh, tenant: 17, authorize?: false)
+
+    assert {:error, %AshHooks.Errors.Invalid.UnknownSource{}} =
+             ingest(ctx, disclosure, id: "owner-removed", resolved_source: resolved)
   end
 
   def retirement(ctx) do
@@ -667,6 +677,7 @@ defmodule AshHooks.Test.InboundSourceCases do
     end
 
     assert receipts(ctx) == []
+    assert {:ok, :created, _} = ingest(ctx, current, headers: %{"x-json-check" => "required"})
   end
 
   def declaration_context(ctx) do
@@ -1090,6 +1101,15 @@ defmodule AshHooks.Test.InboundSourceCases do
     end
 
     assert Ash.read!(ctx.source, tenant: 17, authorize?: false) == []
+
+    assert {:error, :invalid_material} =
+             create(ctx,
+               public_key: public,
+               kind: :ed25519,
+               previous: :crypto.strong_rand_bytes(32),
+               previous_retires_at: DateTime.add(@clock, 60)
+             )
+
     {:ok, row} = create(ctx, public_key: public, kind: :ed25519)
 
     for {key, kind} <- [{public, nil}, {public, @kind}, {public, :unknown}, {"bad", :ed25519}] do
@@ -1151,19 +1171,24 @@ defmodule AshHooks.Test.InboundSourceCases do
           )
 
         conn = Plug.Test.conn(:post, "/webhooks", "{}") |> AshHooks.Plug.call(options)
-        assert conn.status == if(context[:tenant], do: 400, else: 503)
-
-        if context[:tenant] do
-          assert_received {:telemetry, [:ash_hooks, :ingress, :verify],
-                           %{source: :checked, outcome: :invalid, reason: :malformed_payload}}
-        else
-          refute_received {:telemetry, [:ash_hooks, :ingress, :verify], _}
-        end
+        assert_resolution_outcome(conn, context)
 
         assert_received {:host_response, {:error, _}}
       end
 
       assert receipts(ctx) == []
+    end
+  end
+
+  defp assert_resolution_outcome(conn, context) do
+    if context[:tenant] do
+      assert conn.status == 400
+
+      assert_received {:telemetry, [:ash_hooks, :ingress, :verify],
+                       %{source: :checked, outcome: :invalid, reason: :malformed_payload}}
+    else
+      assert conn.status == 503
+      refute_received {:telemetry, [:ash_hooks, :ingress, :verify], _}
     end
   end
 
@@ -1319,6 +1344,13 @@ defmodule AshHooks.Test.InboundSourceCases do
   def parsed_attach(ctx) do
     ctx = parsed_context(ctx)
 
+    assert {:error, :invalid_tenant} =
+             AshHooks.Custody.canonical_tenant(
+               :invalid,
+               ctx.endpoint,
+               AshHooks.Custody.tenant_options(ctx.endpoint)
+             )
+
     assert {:ok, owner, _} =
              AshHooks.Endpoint.create_with_key(
                ctx.endpoint,
@@ -1336,7 +1368,7 @@ defmodule AshHooks.Test.InboundSourceCases do
   def parsed_delivery(ctx) do
     ctx = parsed_context(ctx)
     material = :crypto.strong_rand_bytes(32)
-    {:ok, key} = AshHooks.KeyRegistry.Transitions.issue(ctx.endpoint, @kind, tenant: "tenant:17")
+    {:ok, key} = Transitions.issue(ctx.endpoint, @kind, tenant: "tenant:17")
     :ok = ctx.custodian.store(key.ref, material, "17", @kind)
 
     owner =
@@ -1384,7 +1416,7 @@ defmodule AshHooks.Test.InboundSourceCases do
   def parsed_source(ctx) do
     ctx = parsed_context(ctx)
     material = :crypto.strong_rand_bytes(32)
-    {:ok, key} = AshHooks.KeyRegistry.Transitions.issue(ctx.source, @kind, tenant: "tenant:17")
+    {:ok, key} = Transitions.issue(ctx.source, @kind, tenant: "tenant:17")
     :ok = ctx.custodian.store(key.ref, material, "17", @kind)
 
     ctx.source
@@ -1522,7 +1554,7 @@ defmodule AshHooks.Test.InboundSourceCases do
 
   def plug_context(_conn, context), do: {:ok, context}
 
-  def compile_source(ctx, module, opts \\ []) do
+  def compile_source(ctx, module, opts) do
     definitions = Code.compile_quoted(source_definition(ctx, module, opts))
 
     if module != ctx.source do

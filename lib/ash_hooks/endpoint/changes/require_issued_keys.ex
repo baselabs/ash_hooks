@@ -1,17 +1,25 @@
 defmodule AshHooks.Endpoint.Changes.RequireIssuedKeys do
   @moduledoc false
   use Ash.Resource.Change
+  alias AshHooks.KeyRegistry.Transitions
 
   @impl true
   def change(changeset, opts, _context) do
     cond do
-      issued_update?(changeset) -> changeset
+      issued_update?(changeset) ->
+        changeset
+
       direct_kind_input?(changeset) ->
-        Ash.Changeset.add_error(changeset, field: :secret_kind,
-          message: "custody key kinds are package-owned")
+        Ash.Changeset.add_error(changeset,
+          field: :secret_kind,
+          message: "custody key kinds are package-owned"
+        )
+
       changeset.action_type == :update ->
         if direct_ref_input?(changeset), do: require_resolver(changeset, opts), else: changeset
-      true -> create(changeset, opts)
+
+      true ->
+        create(changeset, opts)
     end
   end
 
@@ -19,12 +27,13 @@ defmodule AshHooks.Endpoint.Changes.RequireIssuedKeys do
   def atomic(changeset, opts, context), do: {:ok, change(changeset, opts, context)}
 
   defp issued_update?(changeset),
-    do: changeset.action.name == :set_custody_keys and
-      is_map(changeset.context[:ash_hooks_issued_attributes])
+    do:
+      changeset.action.name == :set_custody_keys and
+        is_map(changeset.context[:ash_hooks_issued_attributes])
 
   defp direct_kind_input?(changeset) do
     changeset.resource
-    |> AshHooks.KeyRegistry.Transitions.slots()
+    |> Transitions.slots()
     |> Enum.any?(fn {_ref, kind} -> input?(changeset, kind) end)
   end
 
@@ -50,7 +59,9 @@ defmodule AshHooks.Endpoint.Changes.RequireIssuedKeys do
   end
 
   defp input?(changeset, field),
-    do: Map.has_key?(changeset.params, field) or Map.has_key?(changeset.params, Atom.to_string(field))
+    do:
+      Map.has_key?(changeset.params, field) or
+        Map.has_key?(changeset.params, Atom.to_string(field))
 
   defp require_resolver(changeset, opts) do
     if opts[:byte_resolver?],

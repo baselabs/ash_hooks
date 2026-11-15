@@ -1815,7 +1815,9 @@ defmodule AshHooks.Test.RowSecurityCases do
                  fn ->
                    assert_inline_refusal(ctx, tenant)
                    Ash.DataLayer.rollback(ctx.delivery, :host_rollback)
-                 end, tenant: tenant)
+                 end,
+                 tenant: tenant
+               )
 
       assert {:ok, %{records: []}} = Delivery.list(ctx.delivery, tenant: tenant)
     end

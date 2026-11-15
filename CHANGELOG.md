@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Cover parsed tenants, pinned algorithm mismatches, every signing mode and
+  owners removed during custody refresh.
+
 - Verify that a history-deletion failure rolls back joined delivery pruning
   on both supported databases.
 

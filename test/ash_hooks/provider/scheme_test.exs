@@ -1,7 +1,8 @@
 defmodule AshHooks.Provider.SchemeTest do
   use ExUnit.Case, async: true
   import ExUnit.CaptureIO
-  alias AshHooks.Provider.{Scheme, Signature}
+  alias AshHooks.Custody.PublicKey
+  alias AshHooks.Provider.{Hmac, Scheme, Signature}
 
   # RFC 4231 test case 1 and RFC 2202 test case 1.
   @key :binary.copy(<<11>>, 20)
@@ -491,7 +492,7 @@ defmodule AshHooks.Provider.SchemeTest do
       assert :ok = Scheme.verify(jws, %{}, key, algorithm: algorithm, signature: :jws_body)
 
       unless String.starts_with?(alg, "HS") do
-        assert {:ok, pinned} = AshHooks.Custody.PublicKey.new(key, algorithm)
+        assert {:ok, pinned} = PublicKey.new(key, algorithm)
         assert :ok = Scheme.verify("body", %{headers: %{"sig" => encoded}}, pinned, opts)
         assert :ok = Scheme.verify(jws, %{}, pinned, algorithm: algorithm, signature: :jws_body)
 
@@ -502,20 +503,9 @@ defmodule AshHooks.Provider.SchemeTest do
                  Signature.hmac("body", "00", pinned)
 
         assert {:error, %AshHooks.Errors.Invalid.KeyKindMismatch{}} =
-                 AshHooks.Provider.Hmac.verify_signature("body", %{signature: "00"}, pinned)
+                 Hmac.verify_signature("body", %{signature: "00"}, pinned)
 
-        if algorithm == :ecdsa_p256_sha256 do
-          assert {:error, :invalid_signature} =
-                   Signature.ecdsa("body", Base.encode64("short"), pinned, format: :raw)
-        end
-
-        if algorithm == :rsa_pkcs1_sha256 do
-          for different <- [:rsa_pkcs1_sha384, :rsa_pss_sha256] do
-            assert {:error, %AshHooks.Errors.Invalid.KeyKindMismatch{}} =
-                     Scheme.verify("body", %{headers: %{"sig" => encoded}}, pinned,
-                       algorithm: different, signature: {:header, "sig"})
-          end
-        end
+        assert_pinned_algorithm(algorithm, pinned, encoded)
 
         different = if algorithm == :ed25519, do: :rsa_pkcs1_sha256, else: :ed25519
 
@@ -780,6 +770,23 @@ defmodule AshHooks.Provider.SchemeTest do
   end
 
   def timestamp(_, _), do: {:ok, 100}
+
+  defp assert_pinned_algorithm(:ecdsa_p256_sha256, pinned, _signature) do
+    assert {:error, :invalid_signature} =
+             Signature.ecdsa("body", Base.encode64("short"), pinned, format: :raw)
+  end
+
+  defp assert_pinned_algorithm(:rsa_pkcs1_sha256, pinned, signature) do
+    for different <- [:rsa_pkcs1_sha384, :rsa_pss_sha256] do
+      assert {:error, %AshHooks.Errors.Invalid.KeyKindMismatch{}} =
+               Scheme.verify("body", %{headers: %{"sig" => signature}}, pinned,
+                 algorithm: different,
+                 signature: {:header, "sig"}
+               )
+    end
+  end
+
+  defp assert_pinned_algorithm(_algorithm, _pinned, _signature), do: :ok
 
   defp certificate(algorithm) do
     directory =

@@ -43,6 +43,7 @@ defmodule AshHooks.InboundSource do
   references through the key registry.
   """
 
+  alias AshHooks.Custody.PublicKey
   alias AshHooks.{KeyLifecycle, Keys, Phase, PrimaryKey, Tenancy}
   alias AshHooks.KeyRegistry.Storage
 
@@ -96,7 +97,7 @@ defmodule AshHooks.InboundSource do
   """
   def register_public_key(%resource{} = source, public_key, opts \\ []) do
     with {:ok, _tenant} <- Tenancy.resolve([resource], opts[:tenant]),
-         {:ok, _pin} <- AshHooks.Custody.PublicKey.new(public_key, opts[:kind]) do
+         {:ok, _pin} <- PublicKey.new(public_key, opts[:kind]) do
       update(
         source,
         :register_public_key,

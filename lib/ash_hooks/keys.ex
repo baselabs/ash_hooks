@@ -1,6 +1,7 @@
 defmodule AshHooks.Keys do
   @moduledoc false
   alias Ash.Resource.Info
+  alias AshHooks.Custody.PublicKey
   alias AshHooks.{KeyIssuing, KeyLifecycle, Phase, PrimaryKey, Tenancy}
   alias AshHooks.KeyRegistry.{Storage, Transitions}
   alias Spark.Dsl.Extension
@@ -196,7 +197,7 @@ defmodule AshHooks.Keys do
   defp source_current(opts) do
     if not is_nil(opts[:public_key]) and
          not Enum.any?([:generate, :material, :new_secret_ref], &Keyword.has_key?(opts, &1)) do
-      with {:ok, _pin} <- AshHooks.Custody.PublicKey.new(opts[:public_key], opts[:kind]),
+      with {:ok, _pin} <- PublicKey.new(opts[:public_key], opts[:kind]),
            do: {:ok, [], nil}
     else
       with {:ok, spec, disclosure} <- source_input(opts), do: {:ok, [spec], disclosure}

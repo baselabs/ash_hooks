@@ -417,10 +417,33 @@ defmodule AshHooks.Test.CustodySigningCases do
     fresh = Ash.get!(ctx.endpoint, owner.id, authorize?: false, tenant: 17)
     owner = update!(fresh, secret_ref: foreign.ref, secret_kind: foreign.kind)
     assert_delivery_error(ctx, owner, "unknown_key", :dead_letter)
+
+    # Every admitted mode keeps an unknown held ref final, including overlaps.
+    owner = update!(owner, secret_ref: key.ref, secret_kind: key.kind)
+
+    for mode <- [:legacy, :dual] do
+      held =
+        update!(owner,
+          legacy_secret_ref: "absent-legacy",
+          legacy_secret_kind: {:legacy_hmac, :sha256}
+        )
+
+      assert_delivery_error(ctx, held, "unknown_key", :dead_letter, mode)
+    end
+
+    held =
+      update!(owner,
+        legacy_secret_ref: nil,
+        legacy_secret_kind: nil,
+        previous_secret_ref: "absent-previous",
+        previous_secret_kind: key.kind
+      )
+
+    assert_delivery_error(ctx, held, "unknown_key", :dead_letter)
   end
 
-  defp assert_delivery_error(ctx, owner, token, status) do
-    row = delivery!(ctx, owner)
+  defp assert_delivery_error(ctx, owner, token, status, mode \\ :standard) do
+    row = delivery!(ctx, owner, mode)
     result = deliver(ctx, row)
     assert result == :ok or match?({:snooze, _}, result)
     stored = Ash.get!(ctx.delivery, row.id, authorize?: false, tenant: 17)

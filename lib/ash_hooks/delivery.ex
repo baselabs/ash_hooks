@@ -1952,38 +1952,35 @@ defmodule AshHooks.Delivery do
 
   defp signing_headers_with_refresh(row, endpoint, config, tenant) do
     case signing_headers(row, endpoint, config, tenant) do
-      {:error, %UnknownKey{ref: ref}} = error when is_binary(ref) ->
-        with {:ok, {fresh, canonical}} <-
-               AshHooks.Phase.run(
-                 config[:endpoints],
-                 tenant,
-                 &read_signing_endpoint(&1.resource, row.endpoint_id, tenant, config[:endpoints])
-               ) do
-          if admitted_signing_ref?(fresh, ref, row.signing_mode || :standard, config) do
-            error
-          else
-            # The destination has already passed its policy. Refresh only the
-            # signing slots on that authorized snapshot, including history and
-            # first-use metadata, without changing the destination mid-attempt.
-            fields =
-              Enum.flat_map([:standard, :legacy], fn slot ->
-                slot |> AshHooks.KeyLifecycle.fields() |> Map.values()
-              end)
-
-            snapshot = Map.merge(endpoint, Map.take(fresh, fields))
-            refreshed_config = Keyword.put(config, :custody_tenant, canonical)
-
-            with {:ok, {headers, refs}} <-
-                   signing_headers(row, snapshot, refreshed_config, tenant),
-                 do: {:ok, snapshot, headers, refs}
-          end
-        end
+      {:error, %UnknownKey{ref: ref} = reason} when is_binary(ref) ->
+        refresh_signing_headers(row, endpoint, config, tenant, reason)
 
       {:ok, {headers, refs}} ->
         {:ok, endpoint, headers, refs}
 
       error ->
         error
+    end
+  end
+
+  defp refresh_signing_headers(row, endpoint, config, tenant, %UnknownKey{ref: ref} = reason) do
+    with {:ok, {fresh, canonical}} <-
+           AshHooks.Phase.run(
+             config[:endpoints],
+             tenant,
+             &read_signing_endpoint(&1.resource, row.endpoint_id, tenant, config[:endpoints])
+           ),
+         false <- admitted_signing_ref?(fresh, ref, row.signing_mode || :standard, config) do
+      # Keep the authorized destination and refresh only its signing metadata.
+      fields = Enum.flat_map([:standard, :legacy], &Map.values(AshHooks.KeyLifecycle.fields(&1)))
+      snapshot = Map.merge(endpoint, Map.take(fresh, fields))
+      refreshed_config = Keyword.put(config, :custody_tenant, canonical)
+
+      with {:ok, {headers, refs}} <- signing_headers(row, snapshot, refreshed_config, tenant),
+           do: {:ok, snapshot, headers, refs}
+    else
+      true -> {:error, reason}
+      error -> error
     end
   end
 

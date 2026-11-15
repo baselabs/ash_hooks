@@ -89,6 +89,7 @@ defmodule AshHooks.Custody do
   alias Ash.Resource.Info
   alias AshHooks.Custody.{Fingerprint, Key}
   alias AshHooks.Errors
+  alias AshHooks.Errors.Invalid.UnknownKey
   alias AshHooks.KeyRegistry.Storage
 
   @type tenant :: String.t() | nil
@@ -199,7 +200,7 @@ defmodule AshHooks.Custody do
   end
 
   defp custody_result({:error, :unknown_ref}, ref),
-    do: {:error, AshHooks.Errors.Invalid.UnknownKey.exception(ref: ref)}
+    do: {:error, UnknownKey.exception(ref: ref)}
 
   defp custody_result(result, _ref), do: Errors.from_custody_result(result)
 

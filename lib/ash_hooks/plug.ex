@@ -206,11 +206,12 @@ if Code.ensure_loaded?(Plug.Conn) do
 
         {:error, error} ->
           inbound = Info.inbound(options[:resource], context.source)
+          provider = if inbound, do: inbound.provider
 
           if (is_struct(error, UnknownSource) and inbound) && inbound.source_record do
             answer(conn, default_response({:error, error}, options))
           else
-            deliver_resolved(conn, raw, context, if(inbound, do: inbound.provider), options)
+            deliver_resolved(conn, raw, context, provider, options)
           end
       end
     end

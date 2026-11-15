@@ -2,6 +2,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
   use ExUnit.Case, async: false
   alias Ash.Resource.Info
   alias AshHooks.InboundSource.Transformers.AddSourceFields
+  alias Spark.Dsl.Extension
   require Spark.Test
 
   defmodule ByteProvider do
@@ -194,7 +195,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
           record_provider_alias(:on)
           json_decoder({Jason, :decode, []})
         end,
-        Spark.Dsl.Extension.get_opt(source, [:inbound_source], :ledger)
+        Extension.get_opt(source, [:inbound_source], :ledger)
       )
 
     assert Info.attribute(ledger, :provider_alias).allow_nil?

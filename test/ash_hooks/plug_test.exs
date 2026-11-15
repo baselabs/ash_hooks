@@ -3,6 +3,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     use ExUnit.Case, async: false
     import Plug.Conn
     import ExUnit.CaptureLog
+    alias AshHooks.Test.CustodySigningCases
 
     alias AshHooks.Errors.Invalid.{
       InvalidSignature,
@@ -465,7 +466,7 @@ if Code.ensure_loaded?(Plug.Conn) do
           :telemetry.attach(
             handler,
             [:ash_hooks, :ingress, :verify],
-            &AshHooks.Test.CustodySigningCases.receive_telemetry/4,
+            &CustodySigningCases.receive_telemetry/4,
             self()
           )
 

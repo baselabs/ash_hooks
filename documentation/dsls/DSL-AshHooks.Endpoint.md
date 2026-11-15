@@ -85,6 +85,8 @@ Migrate nullable `:term` columns `secret_kind` and `previous_secret_kind`;
 with legacy lifecycle also migrate `legacy_secret_kind` and
 `legacy_previous_secret_kind`. Each kind marks only its adjacent reference
 as custody-owned. A null kind leaves the slot under its host byte resolver.
+Host create and update actions refuse direct kind input. Direct reference
+writes require a byte resolver and never mark the slot as custody-owned.
 Signing reads the custodian from this resource and derives its canonical
 tenant inside the phase reading the owner. Current and previous kinds may
 differ. Declare `secret_resolver {module, function}` for unmarked byte slots;

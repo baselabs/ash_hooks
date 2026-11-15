@@ -80,15 +80,14 @@ defmodule AshHooks.KeyRegistry.Transitions do
   def retire(owner, ref, destroy_after, opts) do
     registry = Storage.registry(owner)
 
-    with :ok <- Storage.check(registry, owner) do
-      query = registry |> Storage.query() |> Ash.Query.filter(ref == ^ref and state == :attached)
-
-      with {:ok, rows} <-
-             cas(query, %{state: :retired, destroy_after: destroy_after}, opts[:tenant]) do
-        case rows do
-          [_] -> :ok
-          [] -> {:error, :key_not_attached}
-        end
+    with :ok <- Storage.check(registry, owner),
+         query =
+           registry |> Storage.query() |> Ash.Query.filter(ref == ^ref and state == :attached),
+         {:ok, rows} <-
+           cas(query, %{state: :retired, destroy_after: destroy_after}, opts[:tenant]) do
+      case rows do
+        [_] -> :ok
+        [] -> {:error, :key_not_attached}
       end
     end
   end
