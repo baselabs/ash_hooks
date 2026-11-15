@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 3.2.0 (November 14, 2026)
+## 3.2.0 (November 15, 2026)
 
 ### Added
 
