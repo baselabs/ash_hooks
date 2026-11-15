@@ -143,6 +143,59 @@ if Code.ensure_loaded?(Oban) do
       def downcase(attr), do: String.downcase(attr)
     end
 
+    defmodule IntegerTenancyEndpoint do
+      @moduledoc false
+      use Ash.Resource,
+        domain: AshHooks.WorkerTest.Domain,
+        data_layer: AshSqlite.DataLayer,
+        extensions: [AshHooks.Endpoint]
+
+      sqlite do
+        table("worker_test_endpoints")
+        repo(AshHooks.Test.Repo)
+      end
+
+      attributes do
+        attribute(:org_id, :integer, allow_nil?: false)
+      end
+
+      multitenancy do
+        strategy(:attribute)
+        attribute(:org_id)
+      end
+
+      actions do
+        defaults([:read, :create, :update])
+        default_accept(:*)
+      end
+    end
+
+    defmodule IntegerTenancyDelivery do
+      @moduledoc false
+      use Ash.Resource,
+        domain: AshHooks.WorkerTest.Domain,
+        data_layer: AshSqlite.DataLayer,
+        extensions: [AshHooks.OutboundDelivery]
+
+      sqlite do
+        table("integer_tenancy_worker_deliveries")
+        repo(AshHooks.Test.Repo)
+      end
+
+      attributes do
+        attribute(:org_id, :integer, allow_nil?: false)
+      end
+
+      multitenancy do
+        strategy(:attribute)
+        attribute(:org_id)
+      end
+
+      actions do
+        defaults([:read])
+      end
+    end
+
     defmodule Domain do
       @moduledoc false
       use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
@@ -153,6 +206,8 @@ if Code.ensure_loaded?(Oban) do
         resource(AshHooks.WorkerTest.UnreadableDelivery)
         resource(AshHooks.WorkerTest.TenancyDelivery)
         resource(AshHooks.WorkerTest.ParsedTenancyDelivery)
+        resource(AshHooks.WorkerTest.IntegerTenancyEndpoint)
+        resource(AshHooks.WorkerTest.IntegerTenancyDelivery)
       end
     end
 
@@ -235,7 +290,7 @@ if Code.ensure_loaded?(Oban) do
       CREATE TABLE IF NOT EXISTS #{@endpoints} (
         id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
         secret_ref TEXT NOT NULL, previous_secret_ref TEXT, legacy_secret_ref TEXT,
-        legacy_previous_secret_ref TEXT
+        legacy_previous_secret_ref TEXT, org_id INTEGER
       )
       """)
 
@@ -258,33 +313,38 @@ if Code.ensure_loaded?(Oban) do
         "CREATE UNIQUE INDEX IF NOT EXISTS #{@deliveries}_unique_delivery_index ON #{@deliveries} (endpoint_id, event_uuid)"
       )
 
-      Repo.query!("""
-      CREATE TABLE IF NOT EXISTS tenancy_worker_deliveries (
-        id TEXT PRIMARY KEY,
-        event_uuid TEXT NOT NULL,
-        event_type TEXT NOT NULL,
-        payload BLOB NOT NULL,
-        endpoint_id TEXT NOT NULL,
-        subscription_id TEXT,
-        signing_mode TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        attempts INTEGER NOT NULL DEFAULT 0,
-        response_status INTEGER,
-        response_snippet TEXT,
-        last_error TEXT,
-        next_attempt_at TEXT,
-        dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
-        dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
-        attempt_token TEXT, send_lease_expires_at TEXT,
-        enqueue_token TEXT, enqueue_lease_expires_at TEXT,
-        endpoint_snapshot TEXT,
-        org_id TEXT NOT NULL
-      )
-      """)
+      for {table, tenant_type} <- [
+            {"tenancy_worker_deliveries", "TEXT"},
+            {"integer_tenancy_worker_deliveries", "INTEGER"}
+          ] do
+        Repo.query!("""
+        CREATE TABLE IF NOT EXISTS #{table} (
+          id TEXT PRIMARY KEY,
+          event_uuid TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          payload BLOB NOT NULL,
+          endpoint_id TEXT NOT NULL,
+          subscription_id TEXT,
+          signing_mode TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          attempts INTEGER NOT NULL DEFAULT 0,
+          response_status INTEGER,
+          response_snippet TEXT,
+          last_error TEXT,
+          next_attempt_at TEXT,
+          dispatch_source TEXT NOT NULL DEFAULT 'v1:direct:unbound',
+          dispatch_route TEXT NOT NULL DEFAULT 'v1:route:unbound',
+          attempt_token TEXT, send_lease_expires_at TEXT,
+          enqueue_token TEXT, enqueue_lease_expires_at TEXT,
+          endpoint_snapshot TEXT,
+          org_id #{tenant_type} NOT NULL
+        )
+        """)
 
-      Repo.query!(
-        "CREATE UNIQUE INDEX IF NOT EXISTS tenancy_worker_deliveries_unique_delivery_index ON tenancy_worker_deliveries (org_id, endpoint_id, event_uuid)"
-      )
+        Repo.query!(
+          "CREATE UNIQUE INDEX IF NOT EXISTS #{table}_unique_delivery_index ON #{table} (org_id, endpoint_id, event_uuid)"
+        )
+      end
 
       # a REAL Oban instance on the sqlite repo (Lite engine — the Oban
       # uniqueness facts ADR-0007 recorded from this same dep version)
@@ -335,6 +395,7 @@ if Code.ensure_loaded?(Oban) do
         Repo.query!("DROP TABLE IF EXISTS oban_jobs")
         Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
         Repo.query!("DROP TABLE IF EXISTS tenancy_worker_deliveries")
+        Repo.query!("DROP TABLE IF EXISTS integer_tenancy_worker_deliveries")
         Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
       end)
 
@@ -344,6 +405,7 @@ if Code.ensure_loaded?(Oban) do
     setup do
       Repo.query!("DELETE FROM #{@deliveries}")
       Repo.query!("DELETE FROM tenancy_worker_deliveries")
+      Repo.query!("DELETE FROM integer_tenancy_worker_deliveries")
       Repo.query!("DELETE FROM #{@endpoints}")
       Repo.query!("DELETE FROM oban_jobs")
       :ok
@@ -902,6 +964,68 @@ if Code.ensure_loaded?(Oban) do
           Ash.get!(ParsedTenancyDelivery, row.id, tenant: args["tenant"], authorize?: false)
 
         assert found.id == row.id
+      end
+
+      test "an integer tenant survives enqueue, persisted JSON args, and worker execution" do
+        defmodule IntegerTenantWorker do
+          @moduledoc false
+          use AshHooks.Worker,
+            deliveries: AshHooks.WorkerTest.IntegerTenancyDelivery,
+            endpoints: AshHooks.WorkerTest.IntegerTenancyEndpoint,
+            secret_resolver: {AshHooks.WorkerTest.Secrets, :webhook_secret},
+            queue: :ash_hooks_integer_tenancy,
+            oban: AshHooks.WorkerTest.Oban
+        end
+
+        tenant = 42
+
+        endpoint =
+          Ash.create!(
+            IntegerTenancyEndpoint,
+            %{url: "https://hooks.example.test/accept", secret_ref: "acme-main"},
+            tenant: tenant,
+            authorize?: false
+          )
+
+        row =
+          Ash.create!(
+            IntegerTenancyDelivery,
+            %{
+              event_uuid: "evt_integer_tenant_roundtrip",
+              event_type: "order_paid",
+              payload: @payload,
+              endpoint_id: endpoint.id
+            },
+            action: :dispatch,
+            tenant: tenant,
+            authorize?: false
+          )
+
+        assert row.org_id === tenant
+
+        # A retry waiting on its deadline proves the worker found this tenant's row.
+        due = DateTime.add(DateTime.utc_now(), 300) |> DateTime.to_iso8601()
+
+        Repo.query!(
+          """
+          UPDATE integer_tenancy_worker_deliveries
+          SET status = 'failed_retryable', next_attempt_at = ? WHERE id = ?
+          """,
+          [due, row.id]
+        )
+
+        assert :ok = IntegerTenantWorker.enqueue(row, nil)
+        [args] = job_args()
+        assert args["tenant"] === tenant
+        assert {:snooze, seconds} = IntegerTenantWorker.perform(%Oban.Job{args: args})
+        assert seconds > 0
+
+        found =
+          Ash.get!(IntegerTenancyDelivery, row.id, tenant: args["tenant"], authorize?: false)
+
+        assert found.org_id === tenant
+        assert found.status == :failed_retryable
+        assert found.attempts == 0
       end
 
       test "full identity admits a tenant-bound job beside a legacy tenant-less trigger" do

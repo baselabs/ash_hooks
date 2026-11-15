@@ -103,7 +103,7 @@ defmodule AshHooks.Http.Target do
   # TLS names the ORIGINAL host; a literal-IP destination has no name to
   # verify (SNI disabled, chain validation kept).
   #
-  # `cacerts/1` is the injectable trust-store seam (D3, 2026-08-22): the
+  # `cacerts/1` allows a caller to supply a trust store: the
   # default is UNCHANGED (the OTP CA store), but a caller (adapter opts
   # `[cacerts: der_list]`, threaded from the worker's `:http_opts`) can pin
   # a private CA bundle, which is also how the test suite drives CA-verified

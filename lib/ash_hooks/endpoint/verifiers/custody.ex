@@ -52,7 +52,7 @@ defmodule AshHooks.Endpoint.Verifiers.Custody do
 
   defp verify_repo(state, registry, owner)
        when is_atom(registry) and is_atom(owner) and registry != owner,
-       do: error(state, "custody owners and registries require the same mutate repo")
+       do: error(state, "custody owners and registries require the same repository for writes")
 
   defp verify_repo(_state, _registry, _owner), do: :ok
 

@@ -43,6 +43,24 @@ defmodule AshHooks.Http.Httpc do
     "trace" => :trace
   }
 
+  @doc """
+  Sends one request with an atom or case-insensitive method string, URL,
+  binary header map, and binary body (`nil` means empty).
+
+  Options are `:timeout` (15,000 ms for the whole operation),
+  `:connect_timeout` (5,000 ms), `:max_body_bytes` (65,536 retained bytes),
+  and `:cacerts` (DER certificates; defaults to the OTP CA store).
+  `validate_destination: false` bypasses public-address validation and is
+  intended only for controlled tests; keep validation enabled for untrusted URLs.
+
+  Only 200 and 206 response collection can stop at the body cap; other
+  statuses buffer inside `:httpc` before truncation. Streamed 206 is reported
+  as 200. Literal-IP HTTPS returns `{:error, :ip_literal_https_needs_bounded}`.
+
+  Returns `{:ok, %{status: status, headers: header_pairs, body: bytes}}` or
+  `{:error, reason}` for invalid input, destination refusal, TLS, transport,
+  timeout, or response framing failures. Redirects are returned without following.
+  """
   @impl true
   @spec request(atom(), String.t(), map(), binary() | nil, keyword()) ::
           {:ok, %{status: integer(), headers: list(), body: binary() | nil}}

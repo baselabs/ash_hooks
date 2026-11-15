@@ -14,8 +14,8 @@ To adopt the inbound lifecycle:
    its previous material and required retirement time, or pin its public key.
    Generation supports only `{:standard_webhooks, :v1}` and returns a one-time
    `whsec_` disclosure. Imported material is the key bytes for its recorded kind.
-3. Enable ledger `record_provider_alias :on` and migrate the nullable atom
-   `provider_alias` column. Switch the inbound declaration to `source_record`
+3. Declare ledger `record_provider_alias :on`, generate and apply the nullable
+   atom `provider_alias` migration, then activate the `source_record` declaration
    naming the source resource. New receipts then record the provider alias.
 4. Run `AshHooks.InboundSource.adopt_provider_alias/4` for every source under
    its tenant, with `expected_provider:` naming the old declaration's module.
@@ -25,14 +25,26 @@ To adopt the inbound lifecycle:
    identities do not change. Each claim uses the stored alias and scope without
    reading the source, including after deletion, pause, rotation, or alias selection changes.
 
+Alias adoption returns `:invalid_limit` for a nonpositive or noninteger limit,
+`:source_mismatch` when the declaration does not use the source resource, and
+`:provider_mismatch` for an unknown alias or a mismatched `expected_provider`.
+Correct these arguments before retrying.
+
+All inbound declarations, including existing declarations without `source_record`,
+now cast scope values through the ledger attributes and apply their constraints
+before verification. Missing, nil, or invalid values return `MalformedPayload`.
+Review route resolvers and providers that inspect scope: they now receive cast
+values instead of the original request values.
+
 Source creation, roll, reissue, and alias adoption return `:inside_transaction`
 inside an enclosing transaction; call them after it commits. `:kind_not_allowed`
 means that generation or reissue cannot generate the requested kind and issued
 nothing. Sender HMAC keys must be imported. `:owner_mismatch` means the create
 action did not persist one owner holding every issued reference and kind; its
 write rolled back. `:key_issue_expired` means a registry sweep or tombstone won
-before attachment; repeat for a fresh reference. Resolve `:overlap_active` or
-`:previous_secret_undated` by waiting, scheduling, or expiring the previous key.
+before attachment; repeat for a fresh reference. For `:overlap_active`, wait for
+the deadline or expire the previous key. For `:previous_secret_undated`, schedule
+its retirement or expire it; waiting alone cannot resolve it.
 An absent source row returns `UnknownSource` (HTTP 404), distinct from an invalid
 signature. A lost generated disclosure can be replaced with
 `AshHooks.InboundSource.reissue_secret/2`; it preserves the previous key and deadline.
@@ -46,11 +58,13 @@ remain supported, including declarations without a source resource.
 
 To move outbound endpoints from byte references to custody:
 
-1. Enable key lifecycle and migrate its columns. Before adoption, schedule the
-   retirement of every undated previous key with `schedule_previous_retirement/3`,
-   or remove it with `expire_previous_secret/2`.
-2. Add a key-registry resource on the same transactional data layer, mutate
-   repository, and tenancy as the endpoint. Migrate the registry and per-slot
+1. Enable `key_lifecycle :on` and migrate its columns. To adopt legacy slots,
+   also enable `legacy_key_lifecycle :on` and migrate its timestamps and kind
+   columns. Before adoption, schedule every undated previous key in each enabled
+   slot with `schedule_previous_retirement/3`, or remove it with
+   `expire_previous_secret/2`.
+2. Add a key-registry resource on the same transactional data layer,
+   repository used for writes, and tenancy as the endpoint. Migrate the registry and per-slot
    kind columns described below. Declare `custodian` and `key_registry` while
    keeping the endpoint's `secret_resolver`.
 3. Create new endpoints with `AshHooks.Endpoint.create_with_key/3`, supplying
@@ -59,11 +73,13 @@ To move outbound endpoints from byte references to custody:
    `{:ok, endpoint, disclosure}`; import returns `{:ok, endpoint}`. v1 discloses
    the `whsec_` secret; v1a discloses only the `whpk_` public half.
 4. Run `AshHooks.Endpoint.adopt_keys/2` for every existing row under its tenant.
-   Each row's occupied byte slots convert together, with every lifecycle
-   timestamp unchanged. Already adopted slots are left alone, so this process
-   is resumable. Unconverted slots keep signing through their byte resolver.
-   Host byte references never enter the registry.
-5. Confirm that every occupied slot has a kind marker, then remove
+   Occupied standard current and previous byte slots convert together, with
+   lifecycle timestamps unchanged. Legacy slots also convert with
+   `legacy_key_lifecycle :on`; otherwise they stay host byte references and keep
+   signing through `secret_resolver`. Already adopted slots are left alone,
+   so adoption is resumable. Original host references never enter the registry.
+5. Keep `secret_resolver` while any occupied slot has no kind marker, including
+   legacy slots without lifecycle tracking. After adopting every occupied slot, remove
    `secret_resolver`, remove byte material from the host's store, and optionally
    enable `key_material: :custody_only`.
 
@@ -110,6 +126,13 @@ An occupied unmarked slot without a resolver fails permanently as
 `key_kind_mismatch`; sender HMAC kinds are refused as `kind_not_allowed`.
 Existing byte signing APIs remain supported.
 
+For custody keys held by an endpoint or inbound source record, `UnknownKey`
+with a reference triggers one owner reread. If that reference has been replaced
+and is no longer among the admitted keys, signing or verification retries with
+the refreshed keys. An unchanged missing reference is not retried, and there
+is no repeated refresh loop. Outbound refresh updates signing metadata while
+preserving the destination authorized for that attempt.
+
 Custody tenant metadata is derived from the owner row inside its database phase,
 independently of a serialized job's tenant spelling. An endpoint whose tenant
 type is not UUID, UUIDv7, integer, string, or ci_string must declare
@@ -135,7 +158,9 @@ outside custody. Classified custody failures reach ingress, Plug, and telemetry
 without backend terms. `UnknownSource` returns HTTP 404. Missing keys and kind
 mismatches are configuration failures (HTTP 500 and permanent delivery failures); unavailable custody and
 unexplained answers return HTTP 503 and retry delivery. Invalid authentication
-retains its existing response.
+retains its existing response. Unavailable custody and unrecognized callback
+failures do not create failed-verification rejection rows or increase that
+rejection count. Paused sources are also excluded.
 
 Package database operations now open bounded tenant phases through
 `Ash.transact/3`. An RLS host configures its repository's
@@ -148,8 +173,8 @@ transaction once, with the same tenant. See the
 [row-level security guide](documentation/tutorials/row-security.md).
 
 On AshPostgres and transactional AshSqlite resources, package reads now use
-the mutate repository inside their phase. A host with a function `repo`
-routing `:read` elsewhere will see these reads on its mutate repository,
+the write repository inside their phase. If the host's `repo` function routes
+`:read` operations elsewhere, package phase reads still use the write repository,
 where the transaction and tenant binding exist. Data layers without
 transactions retain their behavior and are not RLS-capable.
 
@@ -230,7 +255,7 @@ returned address and keep the original name for TLS verification and server name
 indication. Its two-second resolution ceiling can be shortened with an absolute
 monotonic millisecond `:deadline`; destination policies cannot bypass this check.
 
-Key-custody implementers can adopt the `AshHooks.Custody` behaviour and run
+Key-custody implementers can adopt the `AshHooks.Custody` behavior and run
 `AshHooks.Custody.Conformance` against a fresh real store in their test suite.
 The contract requires global reference uniqueness, atomic tenant binding,
 kind assertions, and permanent tombstones. ExUnit is needed only in tests.
@@ -240,9 +265,9 @@ equality-preserving `custody_tenant_key` MFA option. The module documentation
 defines the callback and canonicalization contracts.
 
 For durable custody disposal, add a host Ash resource with
-`extensions: [AshHooks.KeyRegistry]`. Configure its table and mutate repo with
-the host's `postgres` or `sqlite` section and register it in the host domain.
-The registry and every owner must use the same data layer and mutate repo,
+`extensions: [AshHooks.KeyRegistry]`. Configure its table and write repository
+with the host's `postgres` or `sqlite` section and register it in the host domain.
+The registry and every owner must use the same data layer and write repository,
 with transaction support, and the same multitenancy strategy and tenant
 attribute type. SQLite repos must enable `write_transactions?/0`. Function
 repos are checked at each transition, including their dynamic repo instance;
@@ -292,6 +317,12 @@ reconciliation before calling custody outside any transaction. It handles
 owner actions, bulk deletion, cascades, direct SQL, and replacement of a
 slot reference. A rollback of an owner write also rolls back its retirement.
 Disposal uses the row's stored `custody_tenant` after owner deletion.
+
+The registry injects `:read`, `:issue_key`, `:transition_key`, and `:prune_keys`
+when the host has not supplied them. Restrict direct access to the machine write
+actions; `AshHooks.KeyRegistry` lists their input contracts. Retirement returns
+`:key_not_attached` when the registry reference is not attached, and the owner
+write rolls back. Repair the owner/registry inconsistency before retrying.
 
 Custody owners receive the reserved system read action `read_custody_owner`.
 It has no action filter, preparation or pagination, so a host primary read
@@ -436,8 +467,10 @@ Health sweeps enforce `warning_interval_seconds` (default 60) from the stored
 warning time. Counts and telemetry reflect committed marker and disable writes.
 Delivery pruning with `attempts:` requires transaction-capable resources and rolls
 back a batch if history deletion fails. For SQLite, enable `write_transactions?/0`
-on the repo. Early key retirement records its actual time; a previous key continues
-to sign until its stored reference is removed.
+on the repo. Early key retirement records its actual time. In 3.1.0, a previous
+key continued signing until its reference was removed. Starting in 3.2.0,
+lifecycle-tracked previous keys stop signing at their retirement deadline,
+even before removal.
 
 Every inbound ledger now has a generated `:record_malformed` create action.
 It uses the same accept list, unique identity, and no-touch upsert as `:ingest`.
@@ -650,7 +683,7 @@ it: no existing column, action, event, or default behavior moves.
 - **Test-send flagging (opt-in).** Declaring `test_tracking :on` under
   `outbound_delivery` injects the `test` boolean column; migrate it when
   you declare it. Attempt-history resources gain the `test` column in
-  this release (the extension itself is new in 2.2).
+  this release (the extension itself is new in 2.2.0).
 - **Inbound tracking (opt-in).** Declaring `ingress_tracking :on` on an
   inbound ledger injects the `duplicates` counter column and the
   `failed_verification` status row (payload-less); migrate the column
@@ -685,8 +718,8 @@ it: no existing column, action, event, or default behavior moves.
   when you declare it. Attempt ceilings are now
   series ceilings: a resent row's ladder restarts at its baseline while
   the lifetime `attempts` counter never resets (attempt-history identity
-  stays sound). Resources without the columns keep the exact pre-2.2
-  ceiling semantics.
+  stays sound). Resources without the columns keep the ceiling semantics
+  from versions before 2.2.0.
 
 ## 2.0.4 → 2.1.0
 
@@ -727,7 +760,7 @@ Drain old jobs and migrate before activating the new runtime. Workers from befor
 1. Quiesce outbound producers, ingress, workers, inbound reapers, and recovery
    schedulers. Drain Oban jobs created before 2.0.1. Record pending rows, retry times,
    tenant partitions, declaration ownership, and the current queue binding.
-2. Upgrade to `{:ash_hooks, "~> 2.0"}` with Ash `>= 3.34.3 and < 4.0.0-0`. Generate
+2. Upgrade to `{:ash_hooks, ">= 2.0.1 and < 3.0.0"}` with Ash `>= 3.34.3 and < 4.0.0-0`. Generate
    and inspect the AshPostgres migration for every resource carrying either
    delivery extension. Preserve existing endpoint/event and inbound dedup indexes.
 3. Add the outbound columns below and extend any database status constraint to
@@ -741,7 +774,7 @@ Drain old jobs and migrate before activating the new runtime. Workers from befor
 5. If a declaration using the former batch provider uses the former digest default, adopt retained
    identities as described below while ingress and reapers remain quiesced.
    Declarations with an explicit `event_id` extractor keep that extractor.
-6. Deploy all 2.0 application nodes/workers together. Enable the periodic
+6. Deploy all 2.0.1 application nodes and workers together. Enable the periodic
    recovery call for each declaration and tenant, then resume ingress and producers.
    Observe row transitions, persisted runnable jobs, endpoint-disable events, and
    a signed delivery through the actual receiver.
@@ -879,7 +912,7 @@ knowing even if you change nothing:
    failed Ash's `ValidateAccept` on the injected `:dispatch`/`:ingest`
    accept lists. Those resources now compile and classify
    created/duplicate by an identity pre-read. Storage uniqueness preserves the
-   row; it does not guarantee one network side effect. Version 2.0 adds durable
+   row; it does not guarantee one network side effect. Version 2.0.1 adds durable
    attempt and enqueue ownership. Receivers still need webhook-ID deduplication.
 2. **The send path dead-letters an endpoint whose status is anything
    other than `:enabled`** (previously only an exact `:disabled`
@@ -930,7 +963,7 @@ container is now a typespec'd public contract with one NEW status:
 ### Elixir `~> 1.20` required; previously `~> 1.17`
 
 The supported Elixir window is now `~> 1.20`. Applications resolving
-ash_hooks on Elixir 1.17 to 1.19 get a hard resolver error at deps
+ash_hooks on Elixir >= 1.17.0 and < 1.20.0 get a hard resolver error at deps
 loadpaths instead of a compile. An increase in the minimum supported version ships as a minor release, so a `~> 1.0` pin will happily resolve
 1.1.0 and then fail resolution on old Elixirs. If you cannot move to
 Elixir 1.20 yet, pin the floor release instead:
@@ -948,7 +981,7 @@ Behavior corrections (all also under "Fixed" in the CHANGELOG; no API change):
 
 `AshHooks.Event.new/1` and dispatch previously accepted ids and types up to
 255 *characters* (graphemes). Long multi-byte values could pass that check
-and then fail the delivery write; under Ash 3.33's `:codepoints` counting,
+and then fail the delivery write; under Ash >= 3.33.0 `:codepoints` counting,
 every endpoint's dispatch errored on an event the library had validated.
 Ids and types are now rejected above 255 **bytes** at `Event.new/1`, with a
 clear error. If you build ids or types from multibyte text, a value of at
@@ -984,7 +1017,7 @@ in your application's `config/config.exs`:
 # size and validation matches how SQL data layers count.
 config :ash, default_string_length_count: :codepoints
 
-# Keeps pre-3.33 behavior: graphemes are counted when validating in
+# Keeps behavior from Ash versions before 3.33.0: graphemes are counted when validating in
 # Elixir; a single grapheme can carry unboundedly many codepoints, so
 # max_length does not bound the size of a value.
 config :ash, default_string_length_count: :mixed
@@ -1061,6 +1094,6 @@ you had worked around the rejection.
 
 ### Semver from here
 
-`~> 1.0` now means: breaking changes only in 2.0, deprecations run two minors minimum,
-safety corrections ship as fixes even where the defective behavior was depended on
-.
+The `~> 1.0` constraint excludes versions >= 2.0.0. Deprecations remain supported
+for at least two minor releases. Safety corrections may change defective
+behavior in a patch release.

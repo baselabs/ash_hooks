@@ -31,7 +31,7 @@ defmodule AshHooks.Endpoint.SecretRef do
 
       Enum.any?(@secret_prefixes, &String.starts_with?(value, &1)) ->
         {:error,
-         "must be a secret REFERENCE, not secret material: store the consumer-side key that resolves the secret, never the secret itself (ADR-0005)"}
+         "must be a secret REFERENCE, not secret material: store the consumer-side key that resolves the secret, never the secret itself"}
 
       true ->
         {:ok, value}

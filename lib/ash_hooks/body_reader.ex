@@ -1,5 +1,5 @@
 # Plug is an optional dependency; the guard keeps the package compiling
-# where it is absent (ADR-0004). When the consumer's environment has Plug,
+# where it is absent. When the consumer's environment has Plug,
 # the module is defined and the installer's endpoint codemod wires it in.
 if Code.ensure_loaded?(Plug.Conn) do
   defmodule AshHooks.BodyReader do

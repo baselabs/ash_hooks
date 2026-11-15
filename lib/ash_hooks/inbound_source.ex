@@ -39,7 +39,7 @@ defmodule AshHooks.InboundSource do
   `:mark_current_secret_used`, `:mark_previous_secret_used`, `:set_custody_keys`
   and `:read_custody_owner`. Secret-bearing arguments are sensitive. Direct
   kind input is refused on host create and update actions. Direct reference
-  input without a byte resolver is refused; use `create_source/3` to issue and attach
+  input is always refused; use `create_source/3` to issue and attach
   references through the key registry.
   """
 
@@ -121,7 +121,11 @@ defmodule AshHooks.InboundSource do
   Options: `:tenant`, positive `:limit` (default 100), `:expected_provider`.
   Returns `{:ok, %{driven: count, remaining: count}}`. Remaining includes live
   pre-cutover claims; repeat until it reaches zero. Refuses enclosing transactions
-  before reading. Terminal nil-alias rows remain unchanged.
+  before reading with `{:error, :inside_transaction}`. Terminal nil-alias rows
+  remain unchanged. Returns `{:error, :invalid_limit}` for a nonpositive or
+  noninteger limit, `{:error, :source_mismatch}` when the declaration does not
+  use this source resource, and `{:error, :provider_mismatch}` for an unknown
+  alias or a mismatched `:expected_provider`. Correct the arguments before retrying.
   """
   def adopt_provider_alias(resource, name, alias, opts \\ []),
     do: AshHooks.Ingress.adopt_provider_alias(resource, name, alias, opts)
@@ -184,7 +188,10 @@ defmodule AshHooks.InboundSource do
       key_registry: [
         type: :module,
         required: true,
-        doc: "KeyRegistry resource on the same transactional data layer, mutate repo and tenancy."
+        doc: """
+        KeyRegistry resource with the same transactional data layer and repository
+        for writes, and matching attribute tenancy.
+        """
       ],
       max_overlap_seconds: [
         type: :pos_integer,

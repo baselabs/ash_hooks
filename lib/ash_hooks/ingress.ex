@@ -40,13 +40,15 @@ defmodule AshHooks.Ingress do
   `:failed_permanent`, or retained `:superseded`). Returned retry and permanent
   failures are recorded. Verification and configuration failures do not run the
   handler. With `ingress_tracking :on`, ingress may attempt a rejection-row
-  write before returning the error.
+  write before returning the error. Paused sources, unavailable custody keys,
+  and unrecognized callback failures do not create rejection rows or increase
+  the failed-verification count.
 
   The individual machine steps (`ingest_delivery/2`, `claim_delivery/3`,
   `mark_processed/4`, `mark_failed/6`, `renew/4`, `reap/2`) are public for
   composition and monitoring; a consumer-driven async pipeline (your own
   202-then-claim flow) and the reaper drive the same steps. Each accepts
-  the tenancy options; the pre-1.2 arities (one fewer argument) keep
+  the tenancy options; the arities from before 1.2.0 (one fewer argument) keep
   working for single-tenant ledgers.
 
   Internal ledger operations use `authorize?: false`; callers must restrict
@@ -233,7 +235,8 @@ defmodule AshHooks.Ingress do
   the statuses. `duplicates` and `failed_verification` require
   `ingress_tracking :on` on the ledger (the `duplicates` counter column
   and the payload-less `:failed_verification` rejection rows); without
-  them both report 0.
+  them both report 0. Paused sources, unavailable custody keys, and
+  unrecognized callback failures are excluded from rejection rows and their count.
   """
   @spec counts(module(), keyword()) ::
           {:ok,
@@ -322,8 +325,7 @@ defmodule AshHooks.Ingress do
   end
 
   # the verify event wraps resolution + signature verification; the
-  # reason is the FIXED error class atom, never the raw error payload
-  # (ADR-0005's telemetry floor)
+  # reason is the fixed error class atom, never the raw error payload.
   defp verify(resource, name, raw_body, ctx, started) do
     case resolve(resource, name, raw_body, ctx) do
       {:ok, _env} = ok ->
@@ -431,8 +433,11 @@ defmodule AshHooks.Ingress do
 
   @doc """
   Persists the decoded payload and signed-body digest before handling via the
-  no-touch unique upsert. Classifies `:created` by comparing the surviving
-  row's client-generated id against ours. The env carries the resolved
+  no-touch unique upsert. Returns `{:ok, created?, row}` or `{:error, reason}`.
+  For a writable `:id` primary key, compares the surviving ID with a fresh
+  client-generated ID. Other primary keys use a preliminary identity read;
+  concurrent inserts or rows hidden by a read filter can be reported as created
+  even when the database upsert deduplicates them. The env carries the resolved
   tenant (`env[:tenant]`). `env[:decode_result]` is `:ok` for decoded payloads
   (the default when omitted), or `{:error, :malformed_payload}` to record a
   terminal malformed row via `:record_malformed`. Both actions preserve the
@@ -1562,7 +1567,7 @@ defmodule AshHooks.Ingress do
 
   # The pause switch: while the declared source resolves true, every
   # request is refused BEFORE verification, persistence, or handling;
-  # the controller answers 5xx and the provider retries; nothing is lost.
+  # A 5xx response asks the sender to retry; recovery depends on its retry policy.
   defp check_paused(inbound, _name, tenant) do
     if inbound.paused && resolve_paused(inbound.paused, tenant) == true do
       {:error, :source_paused}

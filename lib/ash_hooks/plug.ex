@@ -156,7 +156,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     explicitly with the same options.
 
     Terminal rows (`:processed`, `:failed_permanent`, `:superseded`) get 200;
-    other successful ledger outcomes get 500 so the sender retries. Typed
+    other successful ledger outcomes get 500 to request a sender retry. Typed
     invalid-signature, stale-timestamp and malformed-payload errors get 400.
     `UnknownSource` gets 404; `KeyKindMismatch` and `UnknownKey` get 500.
     `KeyUnavailable` and unrecognized failures get 503 with `retry-after`

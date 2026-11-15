@@ -49,7 +49,7 @@ defmodule AshHooks.InboundSource.Verifiers.Source do
         error(state, "key registry requires compatible transactional storage and tenancy")
 
       Storage.declaration(registry) != Storage.declaration(state) ->
-        error(state, "key registry and source require the same mutate repo")
+        error(state, "key registry and source require the same repository for writes")
 
       true ->
         :ok

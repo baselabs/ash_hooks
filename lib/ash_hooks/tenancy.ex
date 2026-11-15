@@ -23,7 +23,7 @@ defmodule AshHooks.Tenancy do
   @type error :: :tenant_required | :tenancy_mismatch
 
   @doc """
-  Resolves the entry family's declaration set against the caller's tenant.
+  Validates the resources an operation touches against the caller's tenant.
 
   `modules` is the caller-supplied resource set. Only these modules are
   checked. `tenant` is the caller-supplied tenant, or `nil` when absent.

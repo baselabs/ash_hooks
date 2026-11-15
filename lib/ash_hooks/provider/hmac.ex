@@ -31,9 +31,11 @@ defmodule AshHooks.Provider.Hmac do
   authenticates the request; otherwise a custody failure (an unavailable,
   unknown or wrong-kind key) is returned ahead of a MAC mismatch.
 
-  Comparisons are constant time behind an equal-length guard. The verifier
-  keeps no state and never resolves network keys. Malformed inputs and callback
-  failures return an error without exposing their contents.
+  Byte-key comparisons use constant time behind an equal-length guard.
+  Custodians must provide the same guarantee for opaque keys. The byte-key
+  verifier keeps no state; custody operations use the configured custodian.
+  Malformed inputs and callback failures return an error without exposing
+  their contents.
 
   Algorithm known answers are published in [RFC 4231](https://www.rfc-editor.org/rfc/rfc4231)
   (SHA-256, SHA-384, SHA-512) and [RFC 2202](https://www.rfc-editor.org/rfc/rfc2202) (SHA-1).

@@ -46,7 +46,12 @@ defmodule AshHooks.Custody.PublicKey do
     ed25519: {:ed25519, :none, nil}
   }
 
-  @doc "Validates public verification material under a closed asymmetric kind."
+  @doc """
+  Validates public verification material for one of the supported asymmetric
+  kinds listed in the module contract. Returns `{:ok, public_key}` or
+  `{:error, %AshHooks.Errors.Invalid.KeyKindMismatch{}}` when the kind or
+  material is invalid or does not match.
+  """
   @spec new(term(), term()) :: {:ok, t()} | {:error, struct()}
   def new(key, kind) do
     pin = %__MODULE__{kind: kind, key: key}

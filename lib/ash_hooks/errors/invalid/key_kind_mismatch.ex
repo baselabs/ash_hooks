@@ -1,6 +1,6 @@
 defmodule AshHooks.Errors.Invalid.KeyKindMismatch do
   @moduledoc """
-  A custody key's kind cannot perform the requested operation.
+  A custody key or pinned public key has a kind that cannot perform the requested operation.
   This is a final configuration fault. Telemetry reason: `:key_kind_mismatch`.
   """
 

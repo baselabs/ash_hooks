@@ -80,7 +80,8 @@ defmodule AshHooks.Endpoint do
 
   With `custodian Module`, declare `key_registry Resource` and
   `key_lifecycle :on`. The registry uses `AshHooks.KeyRegistry`, the same
-  transactional AshPostgres or AshSqlite data layer, mutate repo and tenancy.
+  transactional AshPostgres or AshSqlite data layer and repository for writes,
+  with matching attribute tenancy.
   Migrate nullable `:term` columns `secret_kind` and `previous_secret_kind`;
   with legacy lifecycle also migrate `legacy_secret_kind` and
   `legacy_previous_secret_kind`. Each kind marks only its adjacent reference
@@ -88,8 +89,8 @@ defmodule AshHooks.Endpoint do
   Host create and update actions refuse direct kind input. Direct reference
   writes require a byte resolver and never mark the slot as custody-owned.
   Signing reads the custodian from this resource and derives its canonical
-  tenant inside the phase reading the owner. Current and previous kinds may
-  differ. Declare `secret_resolver {module, function}` for unmarked byte slots;
+  tenant inside the database transaction that reads the owner. Current and
+  previous kinds may differ. Declare `secret_resolver {module, function}` for unmarked byte slots;
   delivery and worker resolvers are also supported. Without a resolver, an
   occupied unmarked slot fails permanently as `key_kind_mismatch`.
   Sender HMAC kinds are refused as `kind_not_allowed` before custody is called.
@@ -274,10 +275,13 @@ defmodule AshHooks.Endpoint do
   end
 
   @doc """
-  Adopts every occupied byte slot through the resource's `secret_resolver`
-  into custody without changing any lifecycle timestamp. Kind-marked slots
-  remain unchanged, making adoption resumable and idempotent. Host byte
-  references remain host-owned and never enter the registry.
+  Adopts the occupied standard current and previous byte slots through the
+  resource's `secret_resolver` without changing lifecycle timestamps. Legacy
+  slots are also adopted when `legacy_key_lifecycle :on` supplies their kind
+  columns. Otherwise legacy slots remain host byte references and keep signing
+  through `secret_resolver`. Kind-marked slots remain unchanged, making adoption
+  resumable and idempotent. Original host byte references remain host-owned
+  and never enter the registry.
 
   Options: `:tenant`, `:now`, and `:tenant_aware_secrets` (pass the tenant as
   the resolver's second argument). An undated previous key returns
@@ -435,8 +439,11 @@ defmodule AshHooks.Endpoint do
       ],
       key_registry: [
         type: :module,
-        doc:
-          "Host resource using AshHooks.KeyRegistry, on the same transactional AshPostgres or AshSqlite data layer, mutate repo and tenancy as this endpoint."
+        doc: """
+        Host resource using `AshHooks.KeyRegistry`, with the same transactional
+        AshPostgres or AshSqlite data layer and repository for writes as this
+        endpoint, and matching attribute tenancy.
+        """
       ],
       status_attribute: [
         type: :atom,

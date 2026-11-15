@@ -3,16 +3,15 @@
 ash_hooks supports Ash attribute multitenancy: pass an explicit tenant to dispatch, ingest,
 delivery runs, sweeps, and reconciliation. Tenant validation checks the resource
 set touched by each operation, including optional history and event logs. This checklist walks one app (two tenants or two
-thousand) through the same steps. The reasoning behind the floor is
-`AshHooks.Tenancy`.
+thousand) through the same steps. `AshHooks.Tenancy` documents the supported
+tenancy strategies and validation rules.
 
 ## The contract
 
-Declare the SAME attribute strategy on the resources a given operation
-touches: Subscription, Endpoint, and OutboundDelivery for outbound, plus
-OutboundAttempt and OutboundEvent when those features are enabled; the
-inbound ledger for inbound receipt. Entry points supply every resource they
-read or write to `AshHooks.Tenancy.resolve/2`. Event-log replay also forwards
+Declare compatible attribute tenancy on every resource an operation touches:
+subscriptions, endpoints, outbound deliveries, enabled attempt and event logs,
+inbound ledgers, inbound sources, and custody registries. Entry points supply
+every resource they read or write to `AshHooks.Tenancy.resolve/2`. Event-log replay also forwards
 the tenant when it rearms an existing terminal delivery.
 
 Add a non-nullable tenant attribute (for example `:org_id`) and declare
@@ -29,8 +28,9 @@ Two declarations are rejected outright with `{:error, :tenancy_mismatch}`:
 
 ## The ordered steps
 
-If you are also upgrading from a version >= 1.0.0 and < 2.0.0 to 2.0.1 or later, complete the schema and declaration/route
-backfill in [UPGRADING](../../UPGRADING.md) before enabling the new runtime.
+If you are also upgrading from a version >= 1.0.0 and < 2.0.0 to 3.2.0, complete
+the intervening schema and declaration/route migrations in
+[UPGRADING](../../UPGRADING.md) before enabling the new runtime.
 
 **0. Drain Oban jobs created before 1.2.0** (skip if you have
 no queued deliveries). The moment your resources declare multitenancy,
@@ -39,7 +39,10 @@ failing closed with `{:error, :tenant_required}` when they run. That is
 the correct, safe behavior, but it is noisy: drain or complete the old
 queue BEFORE deploying the version whose resources declare tenancy.
 
-**1. Add the tenant columns, then backfill them.** First the columns
+**1. Add the tenant columns, then backfill them.** The following four tables
+are examples. Apply the same column, backfill, constraint, and isolation checks
+to every package resource your application uses, including optional attempt
+logs, event logs, inbound sources, and custody registries. First the columns
 (in the adopter's migration):
 
 <!-- tested: tenancy-add-columns -->
@@ -156,9 +159,11 @@ serializes the tenant from the row into job args and restores it on execution.
   renewal, and redaction are per-tenant.
 - A tenant-less call against a multitenant set returns
   `{:error, :tenant_required}` before any data access.
-- Workers recover full tenant context from job args alone (string
-  tenants are the supported shape; a custom `parse_attribute` pairs
-  with `tenant_from_attribute`, which the worker inverts through).
+- Multitenant jobs store the row's tenant in `args["tenant"]`. The tenant must
+  survive Oban's JSON encoding unchanged: strings (UUIDs and slugs) and integers
+  do; an atom arrives as a string. Pair a custom `parse_attribute` with
+  `tenant_from_attribute` so the stored attribute and job tenant round-trip.
+  Use `args->>'tenant'`, the tenant's text form, in the job table's policy.
 - Recovery is fenced to the row's declaration, route, tenant, and enqueue token.
   A crash after queue admission can still invoke a custom enqueue callback again;
   make that callback idempotent. The generated Oban worker requires a persisted

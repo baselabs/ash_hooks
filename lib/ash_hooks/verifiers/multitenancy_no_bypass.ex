@@ -1,6 +1,6 @@
 defmodule AshHooks.Verifiers.MultitenancyNoBypass do
   @moduledoc false
-  # The single-resource half of the tenancy contract (D3): a resource that
+  # The single-resource half of the tenancy contract: a resource that
   # declares multitenancy must not mark ANY action `multitenancy
   # :bypass`/`:bypass_all`: a bypassed action reads or writes globally
   # beside the tenant-scoped machine primitives, exactly the hole the
@@ -38,7 +38,7 @@ defmodule AshHooks.Verifiers.MultitenancyNoBypass do
             message:
               "a multitenant resource must not mark actions " <>
                 "`multitenancy :bypass` or `:allow_global`, which read and write " <>
-                "globally beside tenant-scoped ones (the tenancy contract, ADR-0011): " <>
+                "globally beside tenant-scoped ones: " <>
                 inspect(Enum.map(bypassed, & &1.name))
       end
     else

@@ -15,7 +15,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   def before?(Ash.Resource.Transformers.RequireUniqueActionNames), do: true
   def before?(_), do: false
 
-  # the :ingest accept list keys off the resource's PK shape (H2); the
+  # the :ingest accept list keys off the resource's PK shape; the
   # fields transformer must have injected (or the consumer declared) it
   # first; Spark's topological order does NOT follow the extension's
   # list order
@@ -40,7 +40,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
          {:ok, adopt_legacy_identity} <- build_adopt_legacy_identity(),
          {:ok, redact_payload} <- build_redact_payload(),
          {:ok, prune} <- build_prune() do
-      # the accept-list decision is PERSISTED for the runtime (H2): the
+      # the accept-list decision is PERSISTED for the runtime: the
       # Ingress reads the SAME answer, never a re-derived predicate that
       # could disagree with the compiled action (composite PKs and
       # non-:id PKs make naive ":id exists and is writable" diverge)
@@ -58,7 +58,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
     end
   end
 
-  # H2: `:id` rides the accept list exactly when the resource HAS a
+  # `:id` rides the accept list exactly when the resource HAS a
   # writable `:id` attribute: the shapes that always worked (the
   # package-injected PK; a consumer's writable `:id` beside a differently
   # named PK) keep it, and only the shapes Ash's ValidateAccept rejects
@@ -82,7 +82,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
 
   # No-touch upsert: on conflict nothing is updated; the surviving row is
   # returned, so created/duplicate classification compares ids (when the
-  # PK is writable; otherwise Ingress pre-reads the identity, H2).
+  # PK is writable; otherwise Ingress pre-reads the identity).
   # Touching observability columns on conflict is the consumer's choice
   # via their own action; the primitive keeps the fence minimal.
   defp build_ingest(scope, id_accepted, name \\ :ingest) do

@@ -5,6 +5,12 @@ defmodule AshHooks.Http.CertSan do
   not establish that match.
   """
 
+  @doc """
+  Checks DER-encoded certificate bytes for an IP subject alternative name
+  matching an IPv4 four-tuple or IPv6 eight-tuple. Takes no options.
+  Returns `true` for an exact match, or `false` for absent or mismatched IP
+  names and malformed DER or SAN data. Does not validate the certificate chain.
+  """
   @spec ip_san_match?(binary(), :inet.ip_address()) :: boolean()
   def ip_san_match?(der, address) when is_binary(der) do
     cert = :public_key.pkix_decode_cert(der, :plain)

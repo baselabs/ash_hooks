@@ -37,7 +37,8 @@ defmodule AshHooks.Provider do
   The generated absent-secret default is not a byte source. The setting is off
   by default; byte APIs remain supported.
 
-  Configured providers return generic typed events (`AshHooks.Provider.Event`).
+  Providers that keep the generated `parse_event_type` callback return generic
+  typed events (`AshHooks.Provider.Event`).
   Override `parse_event_type/1` and `handle_event/2` when ingress must classify
   events and execute application actions. Make those actions idempotent:
   durable ingress claims prevent overlapping ownership, but cannot make a remote
@@ -180,8 +181,9 @@ defmodule AshHooks.Provider do
   @doc """
   The request header this provider's signature scheme carries a trustworthy
   timestamp in (`nil` when the scheme has none). A DSL `replay_window_seconds`
-  requires a non-`nil` value here: the compile-time verifier rejects the
-  combination otherwise. Other provider-defined timestamp checks and JWS
+  requires a non-`nil` value here. A directly configured provider is checked
+  at compile time; a dynamically selected provider is checked at ingestion.
+  Other provider-defined timestamp checks and JWS
   expiration and not-before checks can apply independently.
   Optional, defaulting to `nil`.
   """

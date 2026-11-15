@@ -1,6 +1,6 @@
 defmodule AshHooks.Telemetry do
   @moduledoc """
-  Lifecycle events for ingress, queue admission, and outbound delivery.
+  Lifecycle events for ingress, queue admission, outbound delivery, and key disposal.
 
   Events carry identifiers, measurements, fixed atoms, and classified reasons.
   The package omits bodies, payloads, and resolved signing secrets. For a
@@ -57,6 +57,11 @@ defmodule AshHooks.Telemetry do
       after the write succeeds. HTTP 410 disablement uses
       `[:ash_hooks, :delivery, :disable]`
 
+    * `[:ash_hooks, :key_registry, :destroy_failed]`: measurement `%{count: 1}`;
+      metadata `%{registry: module, ref: reference, reason: reason}`, where
+      `reason` is `:tenant_mismatch` or `:unclassified`. The reference's
+      destruction could not complete and requires operator repair and rearming.
+
   `:telemetry.execute/3` matches exact event names, so consume the
   whole surface with one `attach_many`:
 
@@ -81,7 +86,8 @@ defmodule AshHooks.Telemetry do
           [:ash_hooks, :endpoint, :roll],
           [:ash_hooks, :endpoint, :disable_warning],
           [:ash_hooks, :endpoint, :disable],
-          [:ash_hooks, :event, :record_failed]
+          [:ash_hooks, :event, :record_failed],
+          [:ash_hooks, :key_registry, :destroy_failed]
         ],
         fn event, measurements, metadata, _ ->
           nil

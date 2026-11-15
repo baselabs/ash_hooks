@@ -34,8 +34,10 @@ defmodule AshHooks.Delivery do
     * other 4xx → `:dead_letter` (client errors do not self-heal)
     * 3xx → `:dead_letter` (`redirect_refused_<status>`, such as
       `redirect_refused_302`; redirects are never followed)
-    * transport error / secret-resolution failure → retryable
-      backoff
+    * transport error / byte-secret-resolution failure / unavailable custody →
+      retryable backoff
+    * `KeyKindMismatch`, `UnknownKey` after the one-time owner refresh, or
+      `:kind_not_allowed` → `:dead_letter` (permanent key configuration failures)
     * a transport resolver that raises, throws, exits, or returns an invalid
       value refuses the attempt and retries under `transport_resolution`;
       `nil` keeps the HTTP adapter
@@ -62,7 +64,8 @@ defmodule AshHooks.Delivery do
   recovery then conditionally disables that same configuration and finalizes
   the row. A changed endpoint is never disabled by an older 410. One
   410 disables the matching endpoint as a system action (`authorize?: false`).
-  The write has no application actor and is unattributed in a versioned register.
+  The write has no application actor. Applications that keep an audit history
+  must attribute this system change themselves.
   Without application notifications, delivery stops silently from the tenant's
   perspective. Attach `[:ash_hooks, :delivery, :disable]` to your operator or
   notification surface; it carries the tenant and endpoint IDs. The endpoint's
@@ -81,7 +84,7 @@ defmodule AshHooks.Delivery do
   alias AshHooks.{OutboundBinding, PrimaryKey, Signing, Tenancy}
   alias Spark.Dsl.Extension
 
-  # The ADR-0005 snippet floor (amended 2026-08-22): markers are
+  # Secret markers are
   # case-blind (NFKC folds homoglyphs, never case) and tolerate ≤3
   # separator chars at EVERY internal juncture: the split-token evasion
   # class ("whs-ec_…", "wh-sk_…", "whs.ec …", form-encoded "Bearer+…").
@@ -408,9 +411,11 @@ defmodule AshHooks.Delivery do
   2-second base backoff, 3,600-second maximum backoff, and an 86,400-second
   `Retry-After` cap. Omitted or `nil` retry options use these defaults.
   `:http`, `:http_opts`, `:tenant_aware_secrets`,
-  `:snippet_capture`, `:snippet_redactor`, `:destination_policy`
+  `:snippet_capture`, `:snippet_redactor`, `:transport`, `:destination_policy`
   (`{module, function}` or a 2-arity fn, as described in `AshHooks.DestinationPolicy`), and
-  `:now` customize the documented seams.
+  `:now` customize delivery. `:transport` accepts `{module, function}` or a
+  two-argument function receiving the endpoint and tenant. Return an
+  `AshHooks.Transport` module or `nil` for the HTTP adapter.
 
   Optional `:retryable_statuses` replaces the retry set with a list of HTTP
   status integers/ranges. `nil` preserves the default; `[]` retries no ordinary
@@ -1294,7 +1299,7 @@ defmodule AshHooks.Delivery do
            tenant,
            &read_signing_endpoint(&1.resource, row.endpoint_id, tenant, config[:endpoints])
          ) do
-      # the ONE enabled-check (H4): the injected status attribute or the
+      # the single enabled check: the injected status attribute or the
       # consumer-mapped switch; exactly one attribute dead-letters
       {:ok, {endpoint, custody_tenant}} ->
         config = Keyword.put(config, :custody_tenant, custody_tenant)
@@ -1419,7 +1424,7 @@ defmodule AshHooks.Delivery do
   defp classify_destination_decision(_invalid), do: {:error, :policy_failed}
 
   defp attempt_under_default_policy(row, endpoint, config, tenant) do
-    # send-time re-check: full DNS re-resolution by default (ADR-0005);
+    # send-time re-check: full DNS re-resolution by default;
     # the seam is injectable so deterministic tests use the
     # literal-only variant. The default runs the tri-state resolver so an
     # UNRESOLVABLE host retries under its honest label (a resolver
@@ -1866,8 +1871,8 @@ defmodule AshHooks.Delivery do
   defp attempt_snippet({_status, snippet}, _history), do: snippet
   defp attempt_snippet(nil, _history), do: nil
 
-  # the exact-bytes column's name is consumer-configurable (`payload_attribute`,
-  # H1); every runtime read goes through the row's own resource config
+  # The exact-bytes column is configured by `payload_attribute`; every
+  # runtime read goes through the row's own resource configuration.
   defp payload_bytes(row), do: Map.get(row, AshHooks.Info.payload_attribute(row.__struct__))
 
   defp record(row, _endpoint, %{status: status} = response, config, tenant, history)
@@ -1943,8 +1948,7 @@ defmodule AshHooks.Delivery do
     end)
   end
 
-  # failed rows keep the story-1 half of the snippet policy: status + kind,
-  # never body bytes (the #17 design note's D6b)
+  # Failed rows retain the status and error kind, never response body bytes.
   defp failure_summary(response),
     do: {response[:status], summarize(response[:status], response[:headers])}
 
@@ -3114,8 +3118,8 @@ defmodule AshHooks.Delivery do
   # Classify without contents (the dispatcher's rule: an arbitrary
   # consumer adapter/resolver term can carry secret or body material):
   # atoms are our own vocabulary; binaries pass only in the fixed error
-  # grammar; everything else collapses to "unclassified". This is BOTH
-  # the telemetry floor and the last_error ledger floor (#11 R1).
+  # grammar; everything else collapses to "unclassified".
+  # Telemetry and last_error retain fixed classification tokens only.
   defp error_string({:secret_resolution, _reason}), do: "secret_resolution"
   defp error_string({:adapter_crash, _inner}), do: "adapter_crash"
   defp error_string(:transport_resolution), do: "transport_resolution"

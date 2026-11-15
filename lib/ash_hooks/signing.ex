@@ -110,8 +110,11 @@ defmodule AshHooks.Signing do
   # -- Signing -------------------------------------------------------
 
   @doc """
-  Signs the canonical string with HMAC-SHA256 under the decoded symmetric
-  secret: `"v1," <> base64(mac)`.
+  Signs the canonical string with HMAC-SHA256 under a decoded byte secret,
+  returning `"v1," <> base64(mac)`. A custody key selects v1 HMAC or v1a
+  Ed25519 from its kind and returns the corresponding signature string.
+  Custody failures return classified package errors; sender-only kinds return
+  `{:error, :kind_not_allowed}`.
 
   Raises `ArgumentError` on invalid inputs; the send path fails loud on
   config or programming errors.
@@ -149,7 +152,10 @@ defmodule AshHooks.Signing do
 
   @doc """
   Signs the canonical string with ed25519 under the seed decoded from a
-  `whsk_` secret: `"v1a," <> base64(signature)`.
+  `whsk_` byte secret, returning `"v1a," <> base64(signature)`. Invalid byte
+  inputs raise `ArgumentError`. Custody keys delegate to `sign/4`: their kind
+  selects v1 or v1a, and failures return its classified errors or
+  `{:error, :kind_not_allowed}`.
   """
   @spec sign_ed25519(String.t(), integer(), binary(), String.t() | Key.t()) ::
           String.t() | {:error, struct() | :kind_not_allowed}
@@ -481,7 +487,7 @@ defmodule AshHooks.Signing do
   defp decode_b64!(encoded) do
     case decode_b64(encoded) do
       {:ok, decoded} -> decoded
-      # Never echo the value; it may be live secret material (ADR-0005).
+      # Never echo the value; it may be live secret material.
       :error -> raise ArgumentError, "secret is not valid base64 (#{byte_size(encoded)} bytes)"
     end
   end

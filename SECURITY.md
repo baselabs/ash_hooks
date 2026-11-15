@@ -41,9 +41,10 @@ the reporter.
 
 ### Inbound verification
 
-- HMAC verification compares signature bytes in constant time after checking their
-  lengths. Public-key verification uses OTP's cryptographic verification functions.
-  Decode the payload only after `AshHooks.Ingress` accepts it.
+- The package's byte-key HMAC verifier checks lengths and compares MAC bytes in
+  constant time. Custodians must provide the same full-MAC comparison guarantee
+  for opaque keys. Public-key verification uses OTP's cryptographic functions.
+  Give `AshHooks.Ingress` the exact raw body. It verifies before decoding the payload.
 - Verification fails closed: a missing, malformed, or undecodable signature, key, header,
   or signed-input part returns a classified error from the packaged signature functions
   and validated scheme verifier. Application providers and secret resolvers must
@@ -56,8 +57,9 @@ the reporter.
 - X.509 certificates supplied as keys are used only as containers for a key the host
   pins; their chain, expiry, and revocation are not evaluated.
 - Inbound DSL secret options accept resolver sources rather than literal binaries.
-  Runtime secrets come from callbacks, while persisted endpoint rows contain references
-  and reject known secret-material prefixes.
+  Byte-based verification obtains secrets from callbacks. Opaque custody keys sign
+  and verify through custodian callbacks without returning secret material.
+  Persisted endpoint rows contain references and reject known secret-material prefixes.
 - Timestamped schemes enforce their replay windows before handler execution, and only
   after the signature verifies. For schemes that sign no timestamp, retained ledger
   identities prevent repeated handling. Leases and fencing tokens prevent a stale or

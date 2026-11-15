@@ -2,7 +2,7 @@ defmodule AshHooks.Provider.Signature do
   @moduledoc """
   Stateless webhook signature verification with caller-pinned keys and algorithms.
 
-  HMAC, RSA, ECDSA and Ed25519 functions return `:ok`, `{:error, :invalid_signature}`
+  Byte-key HMAC, RSA, ECDSA and Ed25519 verification returns `:ok`, `{:error, :invalid_signature}`
   or `{:error, :no_webhook_secret}`; `jws/3` and `check_timestamp/3` can also return
   `{:error, :stale_timestamp}`. `jws/3` returns the authenticated payload bytes. Malformed input never raises.
 
@@ -15,7 +15,9 @@ defmodule AshHooks.Provider.Signature do
   classified custody errors. A successful rotation key authenticates the request;
   otherwise configuration and availability errors take precedence over a MAC
   mismatch. Byte-only failures keep their existing atom results.
-  HMAC evaluates all keys and compares bytes in constant time behind a length guard.
+  HMAC evaluates every key. Byte-key comparisons use a length guard
+  and constant-time comparison; custodians must provide the equivalent
+  full-MAC comparison guarantee for opaque keys.
 
   Asymmetric keys may be decoded `:public_key` terms or a PEM containing exactly
   one PUBLIC KEY, RSA PUBLIC KEY, or CERTIFICATE. A certificate is only a public

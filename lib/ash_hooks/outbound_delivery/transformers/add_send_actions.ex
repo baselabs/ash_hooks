@@ -162,8 +162,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
 
     # A terminal outcome RELEASES the enqueue claim: a reconciler whose enqueue
     # raced this worker's completion must find the token gone and no-op its
-    # release, never clobber the terminal diagnostic (the 2.0.3 review's
-    # stale-replay finding).
+    # release, preserving the terminal diagnostic.
     {:ok, clear_enqueue_token} =
       Builder.build_action_change(Builtins.set_attribute(:enqueue_token, nil))
 
@@ -204,7 +203,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddSendActions do
       Builder.build_action_change(Builtins.set_attribute(:next_attempt_at, arg(:next_attempt_at)))
 
     # failed rows carry the no-body summary when the attempt saw a
-    # response (#17 story 1); pre-send failures persist nils
+    # response; pre-send failures persist nils
     {:ok, code} =
       Builder.build_action_change(Builtins.set_attribute(:response_status, arg(:response_status)))
 

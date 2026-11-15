@@ -16,7 +16,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
   def before?(Ash.Resource.Transformers.RequireUniqueActionNames), do: true
   def before?(_), do: false
 
-  # the :dispatch accept list keys off the resource's PK shape (H2); the
+  # the :dispatch accept list keys off the resource's PK shape; the
   # fields transformer must have injected (or the consumer declared) it
   # first; Spark's topological order does NOT follow the extension's
   # list order
@@ -43,7 +43,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
          {:ok, dsl_state} <- add(dsl_state, bind_dispatch_route),
          {:ok, dsl_state} <- add(dsl_state, claim_enqueue),
          {:ok, dsl_state} <- add(dsl_state, release_enqueue) do
-      # the accept-list decision is PERSISTED for the runtime (H2): the
+      # the accept-list decision is PERSISTED for the runtime: the
       # Dispatcher reads the SAME answer, never a re-derived predicate
       # that could disagree with the compiled action (composite PKs and
       # non-:id PKs make naive ":id exists and is writable" diverge)
@@ -75,7 +75,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
 
   # No-touch upsert: on conflict nothing is updated; the surviving row is
   # returned, so created/duplicate classification compares ids (when the
-  # PK is writable; otherwise the Dispatcher pre-reads the identity, H2).
+  # PK is writable; otherwise the Dispatcher pre-reads the identity).
   # Retrying deliveries mutate rows only through the runtime's gated
   # updates.
   defp build_dispatch(dsl_state, payload_attribute, id_accepted) do
@@ -106,7 +106,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryActions do
     )
   end
 
-  # H2: `:id` rides the accept list exactly when the resource HAS a
+  # `:id` rides the accept list exactly when the resource HAS a
   # writable `:id` attribute: the shapes that always worked (the
   # package-injected PK; a consumer's writable `:id` beside a differently
   # named PK) keep it, and only the shapes Ash's ValidateAccept rejects

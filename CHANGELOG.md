@@ -8,8 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Cover parsed tenants, pinned algorithm mismatches, every signing mode and
-  owners removed during custody refresh.
+- Add regression tests for parsed tenant values, key-kind mismatches, all
+  signing modes, and owners deleted during a custody-key refresh.
 
 - Verify that a history-deletion failure rolls back joined delivery pruning
   on both supported databases.
@@ -44,106 +44,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Preserve classified provider errors during key overlaps, including timestamp
   and payload failures from either authenticating key.
-
-
-### Added
-
-- `AshHooks.InboundSource` owns inbound custody keys, provider aliases, pause,
-  rotation, retirement, and public verification keys on a host Ash resource.
-  Source and ledger tenancy and scope have compile-time checks and request preflight.
-  Creation and rotation reuse the endpoint issuing and lifecycle core.
-- Inbound ledgers can record the authenticating provider alias. Claims and
-  recovery use that durable alias without consulting the source row.
-  `adopt_provider_alias/4` stamps and claims older receipts in bounded tenant
-  phases, with handlers running after each claim commits.
-- Optional provider callback arities accept `AshHooks.Provider.DeliveryContext`
-  with tenant, source, scope, provider alias, and persisted delivery identity.
-
-- Endpoint custody key issuance through `create_with_key/3`, `roll_secret/2`
-  with `material:` or `generate:`, and `reissue_secret/2` for lost disclosures.
-  Generation returns a one-time secret or Ed25519 public half without storing
-  the disclosure on the endpoint. Issues commit before storage; attachment,
-  persisted ownership, and replacement retirement share one tenant transaction.
-- `AshHooks.Endpoint.adopt_keys/2` converts every occupied byte slot through
-  its declared resolver while preserving lifecycle timestamps. Existing custody
-  slots remain unchanged. Failed attempts retire their issued references, and
-  the registry sweep disposes of abandoned issues after crashes.
-- Custody endpoints without a byte resolver require `create_with_key/3` for
-  creation and refuse caller-chosen references when rolling. Issuing operations
-  refuse enclosing transactions, unsupported generation kinds, expired issues,
-  and persisted owners that do not hold the issued keys in their intended slots.
-
-- Outbound custody signing for Standard Webhooks and legacy envelopes, including
-  mixed custody and byte slots during migration. Slot kind markers select each
-  signer; sender-only kinds are refused before custody is called.
-- Inbound HMAC primitives and configured providers accept opaque custody keys,
-  rotation lists, and mixed byte and custody keys with classified failures.
-- Endpoint option `custody_tenant_key` defines the host's equality contract for
-  custom tenant types. Custody endpoints refuse unsupported types without it.
-- Opt-in `key_material: :custody_only` refuses endpoint and worker byte resolvers,
-  inbound byte-secret sources, and provider signing-secret callbacks at compile time.
-
-- Bounded tenant transactions for every package database phase, with reads on
-  the mutate repository for AshPostgres and transactional AshSqlite resources.
-  The new [row-level security guide](documentation/tutorials/row-security.md)
-  explains repository binding, table and job policies, and per-tenant sweeps.
-- Inbound ledger option `json_decoder` applies an application JSON policy to
-  JWS protected headers, claims, and delivered payloads for each request.
-- Optional provider callback `decode_payload/2` receives the request's JSON
-  decoder. Ledgers configuring `json_decoder` require it for host-defined
-  `decode_payload/1`; generated decoders honor the policy directly.
-- `AshHooks.Provider.Conformance` checks that a hand-written `decode_payload/2`
-  uses the supplied JSON decoder. ExUnit is required only in consumer tests.
-- `AshHooks.KeyRegistry`, a host-resource extension for durable custody-key
-  disposal. Issued references survive crashes, attachment and retirement share
-  the owner's transaction, and sweeps reconcile every owner deletion path.
-  Destruction uses the recorded canonical tenant outside transactions, retries
-  outages with capped exponential backoff, and parks classified final failures.
-  Operators can inspect `pending/2`, repair and `rearm/3`, and `prune/2` old
-  destroyed rows. Generation fences reject stale destruction results.
-- Endpoint options `custodian` and `key_registry` inject per-slot kind markers
-  with lifecycle tracking. Each slot's marker distinguishes custody references
-  from host byte references; rolling moves the marker with its reference, and
-  expiration retires custody references in the owner transaction.
-- Subscription option `pausable :on` injects a nonnullable boolean `paused`
-  column, defaulting to `false`. Paused subscriptions create no new delivery
-  rows; existing deliveries continue. The default `:off` keeps existing schemas
-  unchanged. Applications pause and resume through ordinary updates.
-- Endpoint option `legacy_key_lifecycle :on` opts legacy signing keys into
-  overlap validation, retirement scheduling, signing deadlines, and fenced
-  first-use timestamps. It requires `key_lifecycle :on` and a migration for
-  five nullable timestamp columns; the default is `:off`.
-- Endpoint lifecycle helpers accept `slot: :standard | :legacy` (default
-  `:standard`). Rolling validates a new reference against both the incumbent
-  and previous reference of the selected slot. Each operation leaves the
-  other slot unchanged.
-
-- `AshHooks.Ssrf.resolve_host_public/2` validates DNS names and IP literals,
-  resolves both address families under a bounded deadline, and returns only
-  public addresses for connection pinning.
-- Endpoint options `max_overlap_seconds` and `default_overlap_seconds` cap
-  the standard key overlap and configure its default. Rolling refuses
-  negative or non-integer durations with `{:error, :invalid_overlap}` and
-  durations above the cap with `{:error, {:overlap_exceeds_max, max}}`.
-  Retirement scheduling honors the same cap, measured from the application clock.
-- `AshHooks.Endpoint.schedule_previous_retirement/3` sets a retirement time
-  for a standard previous key, including an undated reference adopted with
-  `key_lifecycle :on`. Past times and absent previous references are refused.
-- `AshHooks.Custody`, a public key-custody behaviour with kind assertions,
-  canonical tenant identities, global tenant binding, and permanent reference
-  tombstones; `AshHooks.Custody.Key` carries opaque key metadata.
-- `AshHooks.Custody.Conformance`, test support for custodians covering key
-  bounds, signatures, fingerprints, tenant isolation, and store/destroy ordering.
-  ExUnit is required only by the consumer's tests.
-- `AshHooks.Signing.display_fingerprint/1` for spec-shaped keys and
-  `AshHooks.Custody.display_fingerprint/1` for opaque spec keys, using a
-  domain-separated fingerprint shared by both halves of an Ed25519 pair.
-  Sender and legacy keys have no display fingerprint. Fingerprints do not
-  protect weak secrets against offline guessing.
-- Classified `UnknownSource`, `KeyKindMismatch`, `UnknownKey`, and
-  `KeyUnavailable` errors with fixed telemetry reason tokens.
-
-### Fixed
 
 - During an inbound rotation overlap, when the current key fails with an
   invalid signature and the previous key cannot be checked (its key is
@@ -198,8 +98,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - IPv6 destination checks now refuse reserved and unallocated address space,
   including gaps within `2000::/3`, using the IANA allocation registry retrieved
   November 13, 2026. Existing globally reachable special-purpose exceptions and
-  IPv4 classification are preserved. This safety correction follows
-  ADR 0010, rule 3.
+  IPv4 classification are preserved.
 - Unrecognized callback reasons become contents-free `UnknownError` values
   instead of raising or exposing backend terms.
 - A second key roll inside an active overlap silently dropped the older key
@@ -217,6 +116,149 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   concurrent roll from stamping replacement keys. Undated previous keys keep
   signing, are skipped by the sweep, and refuse rolling until explicitly
   scheduled or expired.
+
+### Added
+
+- `AshHooks.Custody.canonical_tenant/3` and `tenant_type_supported?/2` expose
+  tenant canonicalization and tenant-type support checks. The canonicalizer
+  returns `{:error, :invalid_tenant}` for rejected values and
+  `{:error, :unsupported_tenant_type}` for unsupported types. The support check
+  returns a boolean.
+- `AshHooks.Custody.PublicKey` and `new/2` validate pinned asymmetric material
+  against its declared algorithm, digest, padding, and curve.
+- `AshHooks.Tenancy.from_row/1` recovers a stored row's tenant through
+  `tenant_from_attribute` before reuse in tenant options or custody.
+- `AshHooks.InboundSource` options `ledger`, `source_attribute`, `scope`,
+  `providers`, `custodian`, `custody_tenant_key`, `key_registry`,
+  `max_overlap_seconds`, and `default_overlap_seconds` configure source
+  identity, provider selection, custody, and rotation.
+- `AshHooks.InboundSource.create_source/3`, `roll_secret/2`, `reissue_secret/2`,
+  `schedule_previous_retirement/3`, `expire_previous_secret/2`,
+  `expire_previous_secrets/2`, `register_public_key/3`, `pause/2`, and `unpause/2`
+  expose source issuance, lost-disclosure recovery, retirement, public-key
+  registration, and pause control.
+- `AshHooks.InboundSource.adopt_provider_alias/4` returns `:invalid_limit`,
+  `:source_mismatch`, or `:provider_mismatch` for invalid adoption arguments.
+- `AshHooks.Ingress.resolve_source/3` and `AshHooks.Inbound.ResolvedSource`
+  expose resolved provider, cast scope, pause state, and verification keys.
+  Pass the result through the `:resolved_source` ingest context to reuse it.
+- Endpoint option `secret_resolver` resolves unmarked byte slots during migration.
+- Registry option `issue_timeout` defaults to 900 seconds.
+  `AshHooks.KeyRegistry.sweep/2` reconciles owners and destroys retired keys.
+  The extension injects `:read`, `:issue_key`, `:transition_key`, and `:prune_keys`
+  when absent. Destruction failures emit `[:ash_hooks, :key_registry, :destroy_failed]`
+  with measurement `%{count: 1}` and metadata `registry`, `ref`, and `reason`.
+- `AshHooks.Provider.Scheme.decode_payload/3` accepts a JSON decoder, and
+  `AshHooks.Provider.Signature.jws/3` accepts the `json_decoder:` option for
+  protected headers and claims.
+- Monitored delivery and finalization children inherit the caller's configured
+  tracer context.
+
+- `AshHooks.InboundSource` owns inbound custody keys, provider aliases, pause,
+  rotation, retirement, and public verification keys on a host Ash resource.
+  Source and ledger tenancy and scope have compile-time checks and request preflight.
+  Creation and rotation reuse the endpoint issuing and lifecycle core.
+- Inbound ledgers can record the authenticating provider alias. Claims and
+  recovery use that durable alias without consulting the source row.
+  `adopt_provider_alias/4` stamps and claims older receipts in bounded tenant
+  phases, with handlers running after each claim commits.
+- Optional provider callback arities accept `AshHooks.Provider.DeliveryContext`
+  with tenant, source, scope, provider alias, and persisted delivery identity.
+  The callbacks are `parse_event_type/2`, `event_identity/2`, and `handle_event/3`.
+
+- Endpoint custody key issuance through `create_with_key/3`, `roll_secret/2`
+  with `material:` or `generate:`, and `reissue_secret/2` for lost disclosures.
+  Generation returns a one-time secret or Ed25519 public half without storing
+  the disclosure on the endpoint. Issues commit before storage; attachment,
+  persisted ownership, and replacement retirement share one tenant transaction.
+- `AshHooks.Endpoint.adopt_keys/2` adopts occupied standard current and previous
+  byte slots through `secret_resolver` while preserving lifecycle timestamps.
+  Legacy slots also adopt with `legacy_key_lifecycle :on`; otherwise they remain
+  host byte references and keep signing through `secret_resolver`. Existing custody
+  slots remain unchanged. Failed attempts retire their issued references, and
+  the registry sweep disposes of abandoned issues after crashes.
+- Custody endpoints without a byte resolver require `create_with_key/3` for
+  creation and refuse caller-chosen references when rolling. Issuing operations
+  refuse enclosing transactions, unsupported generation kinds, expired issues,
+  and persisted owners that do not hold the issued keys in their intended slots.
+
+- Outbound custody signing for Standard Webhooks and legacy envelopes, including
+  mixed custody and byte slots during migration. Slot kind markers select each
+  signer; sender-only kinds are refused before custody is called.
+- Inbound HMAC primitives and configured providers accept opaque custody keys,
+  rotation lists, and mixed byte and custody keys with classified failures.
+- Endpoint option `custody_tenant_key` defines the host's equality contract for
+  custom tenant types. Custody endpoints refuse unsupported types without it.
+- Opt-in `key_material: :custody_only` refuses endpoint and worker byte resolvers,
+  inbound byte-secret sources, and provider signing-secret callbacks at compile time.
+
+- Bounded tenant transactions for every package database phase. Reads use
+  the write repository on AshPostgres and transactional AshSqlite resources.
+  The new [row-level security guide](documentation/tutorials/row-security.md)
+  explains repository binding, table and job policies, and per-tenant sweeps.
+- Inbound ledger option `json_decoder` applies an application JSON policy to
+  JWS protected headers, claims, and delivered payloads for each request.
+- Optional provider callback `decode_payload/2` receives the request's JSON
+  decoder. Ledgers configuring `json_decoder` require it for host-defined
+  `decode_payload/1`; generated decoders honor the policy directly.
+- `AshHooks.Provider.Conformance` checks that a hand-written `decode_payload/2`
+  uses the supplied JSON decoder. ExUnit is required only in consumer tests.
+- `AshHooks.KeyRegistry`, a host-resource extension for durable custody-key
+  disposal. Issued references survive crashes, attachment and retirement share
+  the owner's transaction, and sweeps reconcile every owner deletion path.
+  Destruction uses the recorded canonical tenant outside transactions, retries
+  outages with capped exponential backoff, and parks classified final failures.
+  Operators can inspect `pending/2`, repair and `rearm/3`, and `prune/2` old
+  destroyed rows. Generation fences reject stale destruction results.
+- Endpoint options `custodian` and `key_registry` inject per-slot kind markers
+  with lifecycle tracking. Each slot's marker distinguishes custody references
+  from host byte references; rolling moves the marker with its reference, and
+  expiration retires custody references in the owner transaction.
+- Subscription option `pausable :on` injects a nonnullable boolean `paused`
+  column, defaulting to `false`. Paused subscriptions create no new delivery
+  rows; existing deliveries continue. The default `:off` keeps existing schemas
+  unchanged. Applications pause and resume through ordinary updates.
+- Endpoint option `legacy_key_lifecycle :on` opts legacy signing keys into
+  overlap validation, retirement scheduling, signing deadlines, and fenced
+  first-use timestamps. It requires `key_lifecycle :on` and a migration for
+  five nullable timestamp columns; the default is `:off`.
+- Endpoint lifecycle helpers accept `slot: :standard | :legacy` (default
+  `:standard`). Rolling validates a new reference against both the incumbent
+  and previous reference of the selected slot. Each operation leaves the
+  other slot unchanged.
+
+- `AshHooks.Ssrf.resolve_host_public/2` validates DNS names and IP literals,
+  resolves both address families under a bounded deadline, and returns only
+  public addresses for connection pinning.
+- Endpoint options `max_overlap_seconds` and `default_overlap_seconds` configure
+  the maximum and default overlap for the selected standard or legacy slot.
+  Rolling refuses negative or non-integer durations with `{:error, :invalid_overlap}` and
+  durations above the cap with `{:error, {:overlap_exceeds_max, max}}`.
+  Retirement scheduling honors the same cap, measured from the application clock.
+- `AshHooks.Endpoint.schedule_previous_retirement/3` sets a retirement time
+  for the selected standard or legacy previous key, including an undated
+  reference adopted with `key_lifecycle :on`. Past times and absent previous
+  references are refused.
+- `AshHooks.Custody`, a public key-custody behavior with kind assertions,
+  canonical tenant identities, global tenant binding, and permanent reference
+  tombstones; `AshHooks.Custody.Key` carries opaque key metadata.
+- `AshHooks.Custody.Conformance`, test support for custodians covering key
+  bounds, signatures, fingerprints, tenant isolation, and store/destroy ordering.
+  ExUnit is required only by the consumer's tests.
+- `AshHooks.Signing.display_fingerprint/1` for spec-shaped keys and
+  `AshHooks.Custody.display_fingerprint/1` for opaque spec keys, using a
+  domain-separated fingerprint shared by both halves of an Ed25519 pair.
+  Sender and legacy keys have no display fingerprint. Fingerprints do not
+  protect weak secrets against offline guessing.
+- Classified `UnknownSource`, `KeyKindMismatch`, `UnknownKey`, and
+  `KeyUnavailable` errors with fixed telemetry reason tokens.
+
+### Changed
+
+- Every inbound declaration now casts and constrains scope through its ledger
+  attributes before verification, including declarations without `source_record`.
+  Missing, nil, or invalid scope returns `MalformedPayload`; provider callbacks
+  receive cast values.
 
 ## 3.1.0 (November 14, 2026)
 
@@ -249,7 +291,7 @@ change; see [UPGRADING.md](UPGRADING.md).
   no admitted Ash release carries a published advisory: EEF-CVE-2026-96581
   (HIGH, fixed in 3.37.2), EEF-CVE-2026-114214 (MEDIUM, 3.37.1) and
   EEF-CVE-2026-101028 (MEDIUM, 3.34.6) all affect releases the 3.0.0 floor
-  (3.34.3) admitted. A floor rise is a minor change (ADR 0010); see
+  (3.34.3) admitted. Increasing the minimum supported dependency version is a minor change; see
   [UPGRADING.md](UPGRADING.md).
 
 ### Security
@@ -320,8 +362,8 @@ each removed module. No schema or dependency changes.
   `AshHooks.Provider.Magento2`, `AshHooks.Provider.BigCommerce`,
   `AshHooks.Provider.Ecwid`, `AshHooks.Provider.Squarespace`, and
   `AshHooks.Provider.Wix`. Replacement: a provider module in your application,
-  usually `use AshHooks.Provider, verify: [...]` with the options UPGRADING lists
-  for each one.
+  usually `use AshHooks.Provider, verify: [...]` with application-defined verification options.
+  UPGRADING explains the generic replacement and how to preserve existing identities.
 - **Removed the name-to-module convention.** An inbound declaration without
   `provider` no longer resolves `AshHooks.Provider.<CamelizedName>`; it fails to
   compile with a message naming the fix. Replacement: set `provider` on every
@@ -384,20 +426,11 @@ each removed module. No schema or dependency changes.
   decoding; JSON stays the default. Providers can decode a signed body envelope
   after verification. Invalid UTF-8 fields are recorded as a permanent malformed
   payload.
-- Native signature verifiers for Twilio (form and JSON), Stripe, Shopify,
-  WooCommerce, Shippo, Adobe Commerce/Magento 2, BigCommerce Standard Webhooks,
-  Ecwid, Squarespace, and Wix RS256 body JWTs. Each module cites its vendor
-  contract. The new verifier modules classify every event as `:webhook` and
-  never convert input to atoms.
-- EasyPost's API/SDK `X-Hmac-Signature` verifier: exact `hmac-sha256-hex=` prefix,
-  lowercase-hex raw-body HMAC-SHA256, NFKD-normalized UTF-8 webhook secrets,
-  constant-time comparison, and overlap rotation through `previous_secret`.
-- Additive EasyPost v2 verification per its HMAC help article: UTF-8
-  timestamp/method/path/body HMAC-SHA256 with no separators, RFC 2822 numeric
-  timezone parsing, 60-second maximum age and 30-second future allowance,
-  case-insensitive constant-time signature comparison, and overlapping secrets.
-  The signed path must equal the host's existing `request_uri` context. A present
-  v2 header never falls back to v1. Existing v1 verification stays unchanged.
+- 2.3.0 added verifier modules for Twilio, Stripe, Shopify, WooCommerce, Shippo,
+  Adobe Commerce/Magento 2, BigCommerce, Ecwid, Squarespace, and Wix. 3.0.0
+  removed those modules.
+- 2.3.0 added the former `AshHooks.Provider.EasyPost` module. 3.0.0 removed it.
+- 2.3.0 extended the former EasyPost verifier. That module was removed in 3.0.0.
 - A host-configured HMAC verifier for emitter-defined contracts: header name,
   SHA-256/SHA-1, hex/base64, optional signed timestamp and tolerance, canonical
   input, and overlap keys, for application-defined signing contracts.
@@ -434,8 +467,7 @@ No new dependencies or schema changes.
   it with the declaration), the first qualifying sweep warns and stamps,
   and the disable lands on the next sweep that still qualifies, clearing
   the stamp. Recovery below the warning band clears the stamp, so a
-  later degradation gets a fresh warning cycle. (Found while adopting the
-  package in a downstream application.)
+  later degradation gets a fresh warning cycle.
 
 ## 2.2.0 (November 8, 2026)
 
@@ -504,7 +536,8 @@ need; each block names its DSL declaration and migration. Read
   with an overlap window (both keys verify until the option is removed),
   and `paused` (any secret-source shape resolving a boolean) refuses
   every request with `{:error, :source_paused}`; answer 5xx so the
-  provider retries; nothing is lost while paused.
+  sender may retry. Paused requests are not stored, and recovery depends
+  on that sender's retry policy.
 - **Tenancy across the new surface.** Every new entry point (attempt
   history reads and writes, delivery-log queries, resend and replay, test
   sends, health stats and the disable sweep, key rolling and expiry, the
@@ -699,14 +732,14 @@ compile time. No schema, DSL, or success-path change; read
 
 ### Dependencies
 
-- Lock-only substrate refresh clearing every published advisory and all
-  resolver-updatable drift (the shipped requirement lines are unchanged;
+- Update locked dependencies to remove the published advisories affecting the
+  previous lock (the shipped requirement lines are unchanged;
   the declared Ash floor stays `>= 3.34.3` and the floor qualification
   still pins it): ash 3.34.6 → 3.37.2 (EEF-CVE-2026-96581 HIGH,
   EEF-CVE-2026-114214 MEDIUM), ash_postgres 2.14.5 → 2.15.2
   (EEF-CVE-2026-115627, EEF-CVE-2026-115635, plus the retired-package
   notice), plug_crypto 2.2.0 → 2.2.1 (EEF-CVE-2026-105963), and the
-  currency drift igniter 0.8.5, oban 2.24.2, spark 2.7.9, splode 0.3.3
+  dependency updates igniter 0.8.5, oban 2.24.2, spark 2.7.9, splode 0.3.3
   (with their transitive closure). `mix hex.audit` and
   `scripts/check-currency.sh` are clean against the new lock.
 
@@ -723,7 +756,7 @@ compile time. No schema, DSL, or success-path change; read
   suite. Real Oban.Basic transaction tests force an unsaved conflict, verify
   retry after the winning transaction commits, and verify refusal after all
   twenty retries.
-- Dependency currency: Ash 3.34.4 → 3.34.6 (resolves EEF-CVE-2026-101028 in the
+- Dependency updates: Ash 3.34.4 → 3.34.6 (resolves EEF-CVE-2026-101028 in the
   locked graph) and AshPostgres 2.14.3 → 2.14.5.
 
 ## 2.0.3 (October 7, 2026)
@@ -769,7 +802,7 @@ compile time. No schema, DSL, or success-path change; read
   header-bearing 5xx snooze is clamped by `retry_after_cap_seconds` (default 86,400s),
   not `max_backoff_seconds` (default 3,600s); if you shortened `max_backoff_seconds` to finish retries sooner, also lower
   `retry_after_cap_seconds`.
-- Test dependency currency: `ash_postgres` 2.14.2 → 2.14.3.
+- Test dependency updates: `ash_postgres` 2.14.2 → 2.14.3.
 
 ## 2.0.1 (October 6, 2026)
 
@@ -781,7 +814,7 @@ for resources defined during notebook evaluation.
 
 - Disable protocol consolidation in the Livebook setup so dynamically defined Ash
   resources use their custom display without consolidation warnings.
-- Update the notebook, release tooling, and production consumer to 2.0.1.
+- Update the notebook and release tooling to 2.0.1.
 
 ## 2.0.0 (October 6, 2026)
 
@@ -789,10 +822,10 @@ The changes below first shipped in 2.0.1.
 
 Delivery rows now retain declaration and queue ownership, fence each send attempt,
 and recover unfinished work after queue exhaustion or an interrupted endpoint disable.
-HubSpot retries use a stable batch identity, and the default transport bounds the
-complete HTTP operation.
+The former `AshHooks.Provider.HubSpotV3` module used a stable batch identity for
+retries. The default transport bounds the complete HTTP operation.
 **Existing installations require the ordered schema and identity migration in
-[UPGRADING.md](UPGRADING.md) before running 2.0 workers or ingress.**
+[UPGRADING.md](UPGRADING.md) before running 2.0.1 workers or ingress.**
 
 ### Changed
 
@@ -807,8 +840,9 @@ complete HTTP operation.
 - Oban uniqueness covers runnable jobs and the durable route/tenant identity.
   Completed or discarded jobs do not strand recoverable rows; an unpersisted
   conflict is an admission error.
-- HubSpot's default dedup identity canonicalizes the complete batch, ignoring only
-  each outer event's `attemptNumber`. The optional provider `event_identity/1`
+- The former `AshHooks.Provider.HubSpotV3` module changed its default
+  deduplication identity to canonicalize the batch while excluding each outer
+  event's `attemptNumber`. The optional provider `event_identity/1`
   callback follows an explicit declaration extractor in precedence. Retained
   legacy rows are adopted explicitly, preserving payloads and an audit map.
 - Ash's supported floor is 3.34.3, including its security correction and the tenant
@@ -831,12 +865,12 @@ complete HTTP operation.
 - SSRF classification covers special-purpose address ranges; IPv6 Host values are
   bracketed. Bounded HTTP follows interim responses to the final response, stops
   at its body cap, and uses one deadline across resolution and transport.
-- HubSpot's finite event taxonomy includes generic object events.
+- The former `AshHooks.Provider.HubSpotV3.Event` mapping gained generic object events.
 
 ### Documentation and delivery
 
 - Current install/version pins, terminal inbound acknowledgments, generated DSL
-  references, migration instructions, and an executable 2.0.0 Livebook.
+  references, migration instructions, and an executable 2.0.1 Livebook.
 - Package archive inspection and notebook execution precede publication; the
   normal notebook then executes against the exact published version.
 - Documentation changes trigger Linux CI. The minimum-consumer leg pins Ash
@@ -894,11 +928,11 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   row (a base-filtered read that hides it classifies `:created`). Under
   a misclassification the storage upsert preserves one row.
   ~~A double send stays impossible through the `mark_sending` CAS and
-  inbound claim fence.~~ **Correction in 2.0.0:** the 1.3 outbound
+  inbound claim fence.~~ **Correction first shipped in 2.0.1:** the 1.3.0 outbound
   state transition did not fence every late result or expired owner.
-  Version 2.0 adds attempt tokens, leases, and separate enqueue claims;
+  Version 2.0.1 adds attempt tokens, leases, and separate enqueue claims;
   network sends remain at-least-once and require receiver deduplication.
-  In 1.3 the enqueue seam was the configured
+  In 1.3.0 the enqueue seam was the configured
   enqueuer's own fence: the default Oban enqueuer's
   endpoint_id+event_uuid job uniqueness, or the consumer's own dedup
   for a custom `enqueue:`. Public support policy note: the injected action accept
@@ -923,13 +957,13 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
 ### Changed
 
 - **CI is Linux-only; the macOS and Windows build legs are removed.**
-  Tri-OS stays a developer-portability requirement (clone, set up, and
-  test must work on every OS); it was never meant to be a CI topology,
-  and the README no longer claims dedicated per-OS legs. Also hygiene:
+  At this release, CI moved to Linux only. Current development supports
+  macOS, Linux, and Windows through WSL2. The README no longer claims
+  dedicated per-OS legs. Also hygiene:
   the workflow's pinned GitHub Actions (checkout, cache, upload-artifact)
   moved off the Node 20 runtime to their current releases. No library
   code changed.
-- **The DSL cheat-sheet drift gate is no longer vacuous.** The package
+- **The DSL documentation check now fails when generated reference files are stale.** The package
   leg's `mix spark.cheat_sheets --check` ran without an extension list
   and checked nothing; it now passes the five extensions explicitly, so
   a stale `documentation/dsls/` actually fails the build (the sheets in
@@ -983,7 +1017,7 @@ Tenancy release: ash_hooks aligns with
 Ash attribute multitenancy. An explicit tenant threads every data call,
 and the package fails closed with named errors before any data access
 when a multitenant resource is touched without one. Single-tenant
-adopters change nothing: the entire pre-1.2 suite passes unchanged over
+adopters change nothing: the entire suite from versions before 1.2.0 passes unchanged over
 tenant-less fixtures inside the now-610-test gate, because threading a
 tenant through resources with no multitenancy declaration is
 mechanically inert.
@@ -1023,9 +1057,10 @@ mechanically inert.
   overridable default delegating to `/1`); and `:tenant` in the
   `verify_signature/3` context map.
 - **Oban args carry the tenant**: the generated `enqueue/2` serializes
-  the row's tenant (string tenants are the supported shape; non-string
-  tenants must round-trip `parse_attribute` over JSON); uniqueness keys
-  stay `[:endpoint_id, :event_uuid]`, and a pre-tenancy tenant-less job
+  the row's tenant. Strings and integers survive JSON unchanged; atoms arrive
+  as strings. Pair a custom `parse_attribute` with `tenant_from_attribute`
+  so the stored attribute and job tenant round-trip. In 1.2.0, uniqueness keys
+  stayed `[:endpoint_id, :event_uuid]`, and a pre-tenancy tenant-less job
   still conflicts with the tenant-bearing job on the same pair (proven
   on the real Oban engine).
 - The dispatch result contract is now a public typespec
@@ -1046,9 +1081,9 @@ then regenerate identity indexes, then enable.
 
 ## 1.1.1 (September 16, 2026)
 
-Tri-OS proof release. No covered-surface change: the
-package now carries mechanical proof of macOS, Linux, and Windows
-support; a dedicated CI leg per OS runs the full 555-test suite on
+This release added portability tests for macOS, Linux, and Windows. It did
+not change the public API. The package added tests for platform support; a
+dedicated CI leg per OS runs the full 555-test suite on
 the dev-default toolchain, all nine legs green, and the README claims
 exactly the OSes the legs prove.
 
@@ -1139,15 +1174,15 @@ with `mix hex.audit` running in CI.
 
 ## 1.0.4 (September 16, 2026)
 
-Current-Ash compatibility release: the repo's own app surfaces carry Ash
-3.33's required `default_string_length_count`, and the byte-bound
+Current-Ash compatibility release: the repo's own app surfaces carry
+Ash 3.33.0's required `default_string_length_count`, and the byte-bound
 correction family that requirement exposed is fixed.
 
 ### Fixed
 
 - Fixed byte-length validation for event identifiers, response snippets, and error summaries:
   - `Event.new/1` and the dispatcher's event guards bound ids/types by
-    BYTES, not `String.length` (graphemes); under Ash 3.33 `:codepoints`,
+    BYTES, not `String.length` (graphemes); under Ash >= 3.33.0 `:codepoints`,
     a 128-grapheme combining-character type (512 bytes) passed validation
     and then failed every endpoint's `:dispatch` create. The inbound side
     already bounded bytes; outbound now matches, in either counting mode.
@@ -1160,7 +1195,7 @@ correction family that requirement exposed is fixed.
     redaction floor's `[binary]` placeholder instead of failing the
     `:mark_failed` write and leaving the delivery re-drivable.
 - Captured snippets and error summaries are now capped in BYTES instead of
-  grapheme-sliced. Under Ash 3.33's `:codepoints` counting the injected
+  grapheme-sliced. Under Ash >= 3.33.0 `:codepoints` counting the injected
   `max_length` constraints count codepoints, and a grapheme-sliced
   2048-character snippet of combining characters spans 4000+ codepoints;
   the post-send ledger write then violated its own constraint and crashed
@@ -1170,7 +1205,7 @@ correction family that requirement exposed is fixed.
   Ash. Covers the response-snippet capture path, the redaction floor, and
   the inbound `error_class` / dispatcher exit-string bounds. Regression tests cover combining-character inputs that exceeded stored
   value limits.
-- Current-Ash compatibility: Ash 3.33 requires every application that
+- Current-Ash compatibility: Ash >= 3.33.0 requires every application that
   compiles resources to set `config :ash, :default_string_length_count`
   (the app-level half of GHSA-cwjv-574p-59f6), which broke the CI floor
   and Livebook legs; both resolve Ash lock-free at latest and failed

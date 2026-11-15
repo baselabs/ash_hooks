@@ -1,10 +1,8 @@
 defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
   @moduledoc false
-  # Injects the durable circuit-breaker transition: `:disable` is the
-  # 410 rule's durable endpoint state (ADR-0005: an in-process fuse
-  # forgets; this does not). Consumers flip it through their own surfaces
-  # too; the delivery runtime drives it on 410. With `status_attribute`
-  # mapped (H4) the same transition writes the CONSUMER's switch.
+  # Injects the durable `:disable` transition. Applications can call it,
+  # and the delivery runtime calls it on HTTP 410. When `status_attribute`
+  # is mapped, the transition writes the application's own switch.
   use Spark.Dsl.Transformer
 
   import Ash.Expr, only: [arg: 1]

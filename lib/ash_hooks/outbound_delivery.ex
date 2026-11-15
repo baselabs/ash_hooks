@@ -36,7 +36,7 @@ defmodule AshHooks.OutboundDelivery do
 
   Storage-level uniqueness on `unique_delivery` is the idempotency
   primitive: the consumer's migration must carry the matching unique
-  index. Your migration must create the matching unique index.
+  index.
 
   `response_status`, `response_snippet` (the no-body summary by default:
   status + allowlisted content-type token, with the `[captured]`-marked,

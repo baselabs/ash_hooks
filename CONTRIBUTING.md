@@ -20,7 +20,7 @@ application uses:
 config :ash, default_string_length_count: :codepoints
 ```
 
-Install dependencies and run the fast suite:
+Install dependencies and run the default suite (SQLite):
 
 <!-- tested: contributing-setup; not-run: Maintainer checkout setup; installs dependencies and runs the full suite, which includes this gate. -->
 ```sh
@@ -141,8 +141,10 @@ refuses drift.
   verification, destination checks, secret resolution, transport, tenancy,
   and delivery ownership before changing those paths.
 - Use US English in code, documentation, tests, commit messages, and pull requests.
-- Add user-visible changes to `CHANGELOG.md` in the entry matching the version declared in `mix.exs`, and add migration
-  steps to `UPGRADING.md` when an adopter must change code, schema, or operations.
+- Add user-visible changes under `## Unreleased` in `CHANGELOG.md`. At the release
+  cut, set `mix.exs` to the release version and replace `Unreleased` with that
+  version and its publication date. Add migration steps to `UPGRADING.md` when
+  an adopter must change code, schema, or operations.
 
 ## Bugs and security reports
 

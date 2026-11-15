@@ -81,11 +81,11 @@ defmodule AshHooks.Catalog do
   end
 
   @doc """
-  Resolves the payload bytes a dispatch delivers to one endpoint: the
-  pinned variant's when the endpoint pinned a DECLARED version, the
-  event's own bytes otherwise. The dispatch payload is returned verbatim
-  for endpoints that never pinned, pinned the current version, or whose
-  resource carries no pinning column at all.
+  Returns `{:ok, bytes}` for the endpoint's declared pinned variant.
+  Endpoints with no pin, a pin to the current version, or no pinning column
+  receive the event's original bytes. An unknown pinned version returns
+  `{:error, :unknown_pinned_version}`; a failing or invalid variant builder
+  returns `{:error, :variant_failed}`.
   """
   @spec payload(Event.t(), AshHooks.Outbound.t(), struct()) ::
           {:ok, binary()} | {:error, :unknown_pinned_version | :variant_failed}

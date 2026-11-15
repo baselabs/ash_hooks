@@ -18,7 +18,11 @@ defmodule AshHooks.Worker do
   Consumers pass `enqueue: {MyApp.WebhookDeliveryWorker, :enqueue}` to
   `AshHooks.dispatch/4`; the generated `enqueue/2` is that seam.
 
-  On multitenant ledgers the job args carry the row's tenant under "tenant"; for the string, integer or atom tenants a job can carry, `Ash.ToTenant` is the identity, so its text equals what a repository's `on_transaction_begin/1` derives from the transaction's tenant, and a host can secure its job table on `args->>'tenant'`.
+  Multitenant jobs store the row's tenant in `args["tenant"]`. The tenant must
+  survive Oban's JSON encoding unchanged: strings (UUIDs and slugs) and integers
+  do; an atom arrives as a string. Pair a custom `parse_attribute` with
+  `tenant_from_attribute` so the stored attribute and job tenant round-trip.
+  Use `args->>'tenant'`, the tenant's text form, in the job table's policy.
 
   Enqueue inserts in a bounded phase after the delivery persists. Configure
   the Oban instance with the ledger's repo to share its tenant binding.
@@ -39,8 +43,8 @@ defmodule AshHooks.Worker do
     * `:secret_resolver` (optional, `{m, f}`): resolves an endpoint's
       secret reference: `f(ref) :: {:ok, secret_binary} | {:error, term}`.
       The returned value signs the Standard Webhooks envelope
-      (its `whsk_`/`whsec_` prefix only selects the key slot for
-      rotation); legacy envelopes, when the signing mode uses them, are
+      (`whsk_` selects Ed25519; `whsec_` selects HMAC-SHA256); legacy envelopes,
+      when the signing mode uses them, are
       signed from the endpoint's `legacy_secret_ref` /
       `legacy_previous_secret_ref` references through this same resolver.
       Custody slots use the endpoint resource's custodian and kind markers;
@@ -165,14 +169,11 @@ defmodule AshHooks.Worker do
   returns `{:error, :job_not_persisted}`. Before insertion it binds a deferred
   route once with a compare-and-set update; a different stored route returns
   `{:error, :dispatch_route_conflict}`.
-  On multitenant deliveries the enqueue also serializes the row's tenant
-  into job args (the attribute value inverted through the resource's
-  `tenant_from_attribute`, so `Delivery.run/2`'s forward
-  `parse_attribute` round-trips for non-identity parsers too); the
-  uniqueness identity includes the serialized tenant. The
-  tenant must round-trip Oban's JSON encoding; string tenants (uuids,
-  slugs) are the supported shape; adopters with a custom `parse_attribute`
-  pair it with `tenant_from_attribute` (the default inverse is identity).
+  Multitenant jobs store the row's tenant in `args["tenant"]`. The tenant must
+  survive Oban's JSON encoding unchanged: strings (UUIDs and slugs) and integers
+  do; an atom arrives as a string. Pair a custom `parse_attribute` with
+  `tenant_from_attribute` so the stored attribute and job tenant round-trip.
+  Use `args->>'tenant'`, the tenant's text form, in the job table's policy.
   """
 
   require Ash.Query
@@ -261,7 +262,7 @@ defmodule AshHooks.Worker do
 
   @doc """
   Resolves a worker's delivery config for one perform: when the worker
-  declared `:runtime_config: {module, function}`, the callback runs with
+  declared `runtime_config: {module, function}`, the callback runs with
   the job's args map (string keys, tenant included when the row carries
   one) and its overrides are merged over the compiled defaults. Then
   the compiled-budget misfit checks re-run as runtime validation.
@@ -717,9 +718,8 @@ defmodule AshHooks.Worker do
     quote do
       unless Code.ensure_loaded?(Oban) do
         raise ArgumentError,
-              "AshHooks.Worker requires Oban on the host; add {:oban, \"~> 2.20\"} " <>
-                "to the app's deps (ADR-0004: the package itself stays Oban-free; " <>
-                "this module compiles the Oban beam only where Oban exists)"
+              "AshHooks.Worker requires Oban. Add Oban to the application's dependencies; " <>
+                "it is optional in ash_hooks."
       end
 
       use Oban.Worker, unquote(oban_opts)

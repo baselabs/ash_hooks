@@ -42,17 +42,19 @@ compiles and generates these callbacks:
 Every generated callback can be overridden. Point an inbound declaration at the
 module:
 
-Declare this module as the required `provider` on the `:orders` inbound source.
+Declare this module as `provider` when the declaration supplies its own key
+sources. Alternatively, use `source_record` to select it from a source resource's allowlist.
 The complete ledger and secret-source declaration is in the
 [get-started application](get-started.md#declare-the-resources).
 
 The inbound name (`:orders`) is the source's identity in the ledger. It is not a
-module name and resolves nothing by convention: `provider` is required.
+module name and resolves nothing by convention.
 
 ### Receive with the plug
 
 Forward HTTP webhook routes to `AshHooks.Plug`, with `resource:` and either a
-fixed `source:` or a stored-endpoint `resolve:` MFA. Configure `AshHooks.BodyReader`
+fixed `source:` or a `resolve:` MFA for the application's inbound route.
+Configure `AshHooks.BodyReader`
 on any preceding `Plug.Parsers`. The plug supplies exact raw bytes, ordered
 request headers and the method. Set `request_uri:` to a configured public base
 URL or an MFA returning the full public URI when the signature covers it. See
@@ -168,8 +170,9 @@ timestamp.
 
 ### Results
 
-Verification returns `:ok` or one of three errors, never an exception and never
-key or signature bytes:
+Byte-key verification returns `:ok` or the atom errors below. Custody and pinned
+public keys may also return classified `KeyKindMismatch`, `UnknownKey`,
+`KeyUnavailable`, or `UnknownError` values. Results never include key or signature bytes:
 
 - `{:error, :invalid_signature}`: missing, malformed, or wrong signature, or a
   part of the signed input is missing;
@@ -177,8 +180,10 @@ key or signature bytes:
 - `{:error, :stale_timestamp}`: a valid signature outside the replay window.
 
 Ingress turns these into `AshHooks.Errors` values before it writes a delivery
-row. With `ingress_tracking :on`, a rejected request records only a digest row
-for `counts/2`. Answer `:invalid_signature` and `:stale_timestamp` with a 4xx
+row. With `ingress_tracking :on`, authentication refusals may record a
+digest-only rejection row. Paused sources, unavailable custody, and unrecognized
+callback failures do not create those rows or increase failed-verification
+counts. Answer `:invalid_signature` and `:stale_timestamp` with a 4xx
 response. Return 5xx for missing secrets, paused sources, and retryable handler
 failures. Acknowledge terminal permanent failures with 200 and expose them to
 operators.
@@ -644,8 +649,9 @@ sources. Remove the previous source when the overlap period ends.
 
 ## Classifying events and running your actions
 
-Configured providers classify every verified request as `:webhook` and keep the
-sender's event names in the payload. Override `parse_event_type/1` and
+Providers that keep the generated `parse_event_type` callback classify verified
+requests as `:webhook` and keep the sender's event names in the payload. Override
+`parse_event_type/1` and
 `handle_event/2` to map event names to your own atoms and run idempotent
 application actions. This example returns the classified event; the
 [get-started application](get-started.md#declare-the-resources) shows a database update:
@@ -683,10 +689,10 @@ forever. Write `handle_event/2` so that running it twice for the same event is
 harmless: the ledger deduplicates deliveries, but a crash after your side effect
 and before the ledger update re-runs the handler on redelivery.
 
-For a stable deduplication identity, return the sender's event id from the
-declaration's `event_id` option or the provider's `event_identity/1` callback.
-Without either, the SHA-256 of the raw body is the identity (for a JWS-body
-provider, the SHA-256 of its verified payload).
+An explicit `event_id` extractor takes precedence. Otherwise ingress uses
+`event_identity/2` when exported, then `event_identity/1`. With neither callback,
+it uses the raw-body digest. Configured JWS-body providers supply their generated
+identity from canonical JSON of the verified payload.
 
 ## When configuration is not enough
 

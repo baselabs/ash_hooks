@@ -128,10 +128,12 @@ defmodule AshHooks.Custody do
   are exact valid UTF-8, and ci_strings are downcased. Other types require
   the `:custody_tenant_key` MFA option described in the module contract.
 
-  Returns `{:error, :invalid_tenant}` for invalid inputs and hook results,
+  Returns `{:error, :invalid_tenant}` for rejected inputs and invalid hook results,
   or `{:error, :unsupported_tenant_type}` for uncovered tenant types or
   unsupported tenancy declarations. Non-multitenant resources return
-  `{:ok, nil}` without interpreting the supplied tenant.
+  `{:ok, nil}` without interpreting the supplied tenant. Exceptions raised by
+  application code in `Ash.ToTenant`, `parse_attribute`, or `custody_tenant_key`
+  propagate. Inside an Ash action, such an exception rolls the action back.
   """
   @spec canonical_tenant(term(), module(), keyword()) ::
           {:ok, tenant()} | {:error, :invalid_tenant | :unsupported_tenant_type}

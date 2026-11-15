@@ -42,7 +42,7 @@ Injected machine actions are `:roll_secret`, `:schedule_previous_retirement`,
 `:mark_current_secret_used`, `:mark_previous_secret_used`, `:set_custody_keys`
 and `:read_custody_owner`. Secret-bearing arguments are sensitive. Direct
 kind input is refused on host create and update actions. Direct reference
-input without a byte resolver is refused; use `create_source/3` to issue and attach
+input is always refused; use `create_source/3` to issue and attach
 references through the key registry.
 
 
@@ -61,7 +61,7 @@ An inbound source with custody keys and a durable provider allowlist.
 | [`ledger`](#inbound_source-ledger){: #inbound_source-ledger .spark-required} | `module` |  | The InboundDelivery resource this source feeds. |
 | [`providers`](#inbound_source-providers){: #inbound_source-providers .spark-required} | `keyword` |  | Provider alias to module allowlist. Rows store aliases. |
 | [`custodian`](#inbound_source-custodian){: #inbound_source-custodian .spark-required} | `module` |  | The AshHooks.Custody implementation. Sources have no byte resolver path. |
-| [`key_registry`](#inbound_source-key_registry){: #inbound_source-key_registry .spark-required} | `module` |  | KeyRegistry resource on the same transactional data layer, mutate repo and tenancy. |
+| [`key_registry`](#inbound_source-key_registry){: #inbound_source-key_registry .spark-required} | `module` |  | KeyRegistry resource with the same transactional data layer and repository for writes, and matching attribute tenancy. |
 | [`source_attribute`](#inbound_source-source_attribute){: #inbound_source-source_attribute } | `atom` | `:source` | Attribute holding the inbound declaration name. |
 | [`scope`](#inbound_source-scope){: #inbound_source-scope } | `list({atom, any, keyword})` | `[]` | Locally declared {name, type, constraints} scope attributes, matching the ledger's scope_identity. |
 | [`custody_tenant_key`](#inbound_source-custody_tenant_key){: #inbound_source-custody_tenant_key } | `mfa` |  | Canonical custody tenant hook for a tenant type without built-in canonicalization. |

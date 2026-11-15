@@ -5,7 +5,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
   # pattern: the dispatcher identifies rows by the same key shape).
   #
   # `status_attribute` maps the durable enable/disable onto the consumer's
-  # OWN attribute (H4): the injected `status` is then NOT injected; one
+  # own attribute: the injected `status` is then NOT injected; one
   # switch, so the consumer's off switch and the package's can never
   # silently disagree. The mapping fails closed at compile: the attribute
   # must exist and must not collide with another injected field.
@@ -184,15 +184,14 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
            module: resource,
            path: [:endpoint, :status_attribute],
            message:
-             "status_attribute #{inspect(status_attribute)} is not an attribute declared on this resource; declare it under your own `attributes` block (it is the durable enable/disable switch, H4)"
+             "status_attribute #{inspect(status_attribute)} is not an attribute declared on this resource; declare it under your own `attributes` block (it is the durable enable/disable switch)"
          )}
 
       Transformer.fetch_option(dsl_state, [:endpoint], :enabled_values) == :error or
           Transformer.fetch_option(dsl_state, [:endpoint], :disabled_value) == :error ->
         # both ends of the mapping must be spelled out: a defaulted
         # `[:enabled]`/`:disabled` against a boolean or custom-enum switch
-        # matches NOTHING: zero deliveries, no error (the H8 failure
-        # class, fail-closed at compile instead)
+        # matches nothing and delivers nothing; refuse it at compile time.
         {:error,
          DslError.exception(
            module: resource,
@@ -288,7 +287,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
 
   # a mapped switch means the injected :status attribute STAYS OUT; the
   # consumer's own attribute (any type: boolean, enum, ...) governs
-  # delivery, exactly one switch (H4)
+  # delivery, exactly one switch
   defp add_attributes(dsl_state, _mapped),
     do: inject(dsl_state, mapped_attributes_spec())
 

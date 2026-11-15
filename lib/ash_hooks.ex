@@ -55,9 +55,10 @@ defmodule AshHooks do
       provider: [
         type: :atom,
         doc: """
-        The required module implementing `AshHooks.Provider`, for example one
-        defined with `use AshHooks.Provider, verify: [...]`. The source name
-        does not select a module.
+        The module implementing `AshHooks.Provider`, for example one defined with
+        `use AshHooks.Provider, verify: [...]`. Required for declaration-based
+        keys; omit it when `source_record` selects the provider from its allowlist.
+        The source name does not select a module.
         """
       ],
       body_format: [
@@ -90,8 +91,9 @@ defmodule AshHooks do
         doc: """
         Extractor for the sender's event id from the decoded payload
         (`payload -> {:ok, id} | :error`). This explicit extractor takes precedence
-        over the provider's optional `event_identity/1`. Any result other than
-        `{:ok, id}` with a binary `id` uses the raw request-body digest, and an id
+        over the provider's optional `event_identity/2`, then `event_identity/1`.
+        Any result other than `{:ok, id}` with a binary `id` uses the raw
+        request-body digest, and an id
         longer than 255 bytes is stored as its SHA-256. Without an extractor or a
         provider callback, the raw request-body digest supplies the identity. A
         provider callback error fails closed rather than falling back to the digest.
@@ -114,8 +116,9 @@ defmodule AshHooks do
         0-arity fn, or tenant-aware 1-arity fn resolving to a boolean): while it resolves `true`,
         every request to this source is REFUSED with
         `{:error, :source_paused}` before verification or any write;
-        answer 5xx from your controller so the sender retries. Unpause
-        by resolving `false` again; nothing is lost while paused.
+        answer 5xx from your controller to request a sender retry. Paused requests
+        are not stored; recovery depends on the sender's retry policy. Unpause
+        by resolving `false` again.
         """
       ],
       replay_window_seconds: [
@@ -123,9 +126,10 @@ defmodule AshHooks do
         doc: """
         Replay-protection window for providers whose scheme carries a
         trustworthy timestamp. Providers without timestamps must leave this
-        unset: compilation fails when the provider declares no timestamp header
-        (`AshHooks.Provider.timestamp_header/1` returns nil). The window value
-        is passed to the provider's `verify_signature/3` in the context map
+        unset. A directly configured provider without a timestamp header fails
+        compilation (`AshHooks.Provider.timestamp_header/1` returns nil).
+        A provider selected dynamically is checked at ingestion instead. The
+        window value is passed to the provider's `verify_signature/3` in the context map
         for scheme-specific enforcement. For a configured provider, the window
         overrides `tolerance_seconds`.
         """
@@ -139,7 +143,7 @@ defmodule AshHooks do
     target: AshHooks.Outbound,
     describe: """
     Declares an outbound webhook event this resource emits to subscribed
-    endpoints. The event is signed (Standard Webhooks canon by default) and
+    endpoints. The event is signed with Standard Webhooks headers by default and
     delivered with retry/backoff/dead-letter semantics.
     """,
     schema: [
@@ -152,8 +156,9 @@ defmodule AshHooks do
         type: {:in, [:legacy, :dual, :standard]},
         default: :standard,
         doc: """
-        Signature envelope: `:standard` (SW canon), `:dual` (SW canon + legacy
-        envelope for migrating receivers), or `:legacy` (legacy signature only).
+        Signature headers: `:standard` sends `webhook-id`, `webhook-timestamp`,
+        and `webhook-signature`; `:dual` adds the legacy `x-webhook-signature` header;
+        `:legacy` sends only that legacy header.
         """
       ],
       subscriptions: [
@@ -285,11 +290,10 @@ defmodule AshHooks do
         }
 
   @doc """
-  Maps `AshHooks.Ingress.reap/2` over `tenants:` SEQUENTIALLY, with per-tenant
-  error isolation; a tenant-less global reap over a multitenant ledger is
-  impossible by construction (each tenant's call carries its own
-  pre-flight). Sequential by design: the shared repo pool is the one
-  cross-tenant starvation surface, so per-tenant sweeps do not contend.
+  Calls `AshHooks.Ingress.reap/2` once per entry in `tenants:`, in order.
+  Each call validates its tenant, and one tenant's failure does not stop the
+  others. Calls run sequentially so tenant sweeps do not compete for the
+  repository's shared connection pool.
 
   <!-- tested: module-ash-hooks-2; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
 
@@ -347,8 +351,8 @@ defmodule AshHooks do
     )
   end
 
-  # The sweep runs SEQUENTIALLY (D6: pool starvation favors sequential
-  # per-tenant sweeps) and never stops on a tenant's error: an {:error, _}
+  # Sequential per-tenant sweeps avoid exhausting the connection pool
+  # and never stop on a tenant's error: an {:error, _}
   # tuple OR a crash in one tenant's sweep is carried as that tenant's
   # result (the poison-row precedent: one bad tenant must never starve the
   # rows behind it). The swept calls are the package's own reap/prune;
@@ -412,7 +416,7 @@ defmodule AshHooks do
   def validate_secret_source(source) when is_binary(source),
     do:
       {:error,
-       "must be a secret SOURCE, not a literal binary: secrets live in compiled DSL data (ADR-0005); pass {m, f, a}, {:app_env, path}, or a 0-arity function"}
+       "must be a secret SOURCE, not a literal binary: secrets live in compiled DSL data; pass {m, f, a}, {:app_env, path}, or a 0-arity function"}
 
   def validate_secret_source(other),
     do:

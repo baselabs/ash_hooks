@@ -1,14 +1,13 @@
 # Row-level security
 
-AshHooks opens a bounded Ash transaction for each database phase, passing the
-operation's `tenant:` in the transaction reason. The host repository binds that
-tenant to its PostgreSQL policies. HTTP requests, inbound handlers, custody
+AshHooks opens a bounded Ash transaction for each database phase. It converts
+the supplied tenant through `Ash.ToTenant` for every resource in that phase and
+places the agreed key in the transaction reason. The host repository binds that
+key to its PostgreSQL policies. HTTP requests, inbound handlers, custody
 callbacks, and retry sleeps run outside the package's phases.
 
-Every row-secured package resource must declare Ash multitenancy, using an
-attribute or context strategy supported by its data layer and the entry point.
-The package's tenancy preflight currently admits compatible attribute tenancy;
-its existing context-strategy refusals still apply. A forced table
+Every row-secured package resource must declare compatible Ash attribute
+multitenancy. Package entry points refuse context tenancy. A forced table
 without Ash multitenancy is unsupported: the transaction's tenant is the only
 binding input. Policies that need more information must derive it from that
 tenant in the host binding. Application authorization remains the host's
@@ -85,8 +84,8 @@ Key issuance and registry sweeps also retain their transaction refusals.
 
 Generate the ordinary resource migrations first. Enable and force row-level
 security on every package table your application uses: endpoints,
-subscriptions, deliveries, attempts, event logs, inbound ledgers, and custody
-registries. The application role must neither own these tables nor have
+subscriptions, deliveries, attempts, event logs, inbound ledgers, inbound
+sources, and custody registries. The application role must neither own these tables nor have
 superuser or `BYPASSRLS` privileges.
 
 For a text tenant attribute named `tenant_id`, both the policy's `USING` and
@@ -96,7 +95,11 @@ operation the application role needs. Cast according to the actual tenant
 column type. Enable `FORCE ROW LEVEL SECURITY` as well as `ENABLE ROW LEVEL
 SECURITY`, and verify access through the application role with no binding.
 
-On multitenant ledgers the job args carry the row's tenant under "tenant"; for the string, integer or atom tenants a job can carry, `Ash.ToTenant` is the identity, so its text equals what a repository's `on_transaction_begin/1` derives from the transaction's tenant, and a host can secure its job table on `args->>'tenant'`.
+Multitenant jobs store the row's tenant in `args["tenant"]`. The tenant must
+survive Oban's JSON encoding unchanged: strings (UUIDs and slugs) and integers
+do; an atom arrives as a string. Pair a custom `parse_attribute` with
+`tenant_from_attribute` so the stored attribute and job tenant round-trip.
+Use `args->>'tenant'`, the tenant's text form, in the job table's policy.
 
 Use `args->>'tenant' = current_setting('my_app.tenant', true)` for the job
 table's policy. The generated worker inserts through the Oban instance named
@@ -114,7 +117,7 @@ binding for a multitenant ledger.
 ## Read routing and other data layers
 
 For AshPostgres and transactional AshSqlite resources, package reads inside a
-phase use the transaction's mutate repository through Ash's data-layer
+phase use the transaction's write repository through Ash's data-layer
 context. A function `repo` that normally routes reads to another repository
 therefore still sees the phase's tenant setting and uncommitted writes.
 

@@ -335,7 +335,9 @@ defmodule MyApp.Domain do
 end
 ```
 
-`provider` is required. The inbound name is part of the ledger identity and must
+This declaration uses an explicit `provider`. A `source_record` declaration
+selects its provider from the source resource's allowlist. The inbound name is
+part of the ledger identity and must
 stay stable. The explicit event ID extractor takes precedence; invalid results
 use the raw-body digest. Without it, a provider identity callback is used when
 implemented, and an invalid provider identity fails ingestion. With neither,
@@ -376,12 +378,14 @@ or throw is contained and recorded as `:failed_retryable` with error class
 For HTTP receipt, configure `AshHooks.BodyReader` before parsers consume the bytes,
 then mount `AshHooks.Plug`. The [README](../../README.md#mounting-the-plug)
 contains tested Phoenix mounting fragments. Scoped and multitenant routes need a
-stored-endpoint resolver returning the source, scope, connection, and tenant.
+resolver for the application's inbound route. It returns the source, scope,
+connection, and tenant.
 Never trust a path parameter as a module or tenant.
 
 The plug acknowledges terminal rows with 200, returns 500 for pending, claimed,
 or retryable outcomes, 400 for typed invalid-signature/stale-timestamp/malformed
-errors, and 503 for other ingestion errors. Default 503s include `retry-after`.
+errors, 404 for `UnknownSource`, 500 for `UnknownKey` or `KeyKindMismatch`,
+and 503 for other ingestion errors. Default 503s include `retry-after`.
 Permanent failures need an operator-visible record because redelivery cannot
 repair a terminal row. See `AshHooks.Plug` for custom response and refusal callbacks.
 

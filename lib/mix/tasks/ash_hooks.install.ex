@@ -1,6 +1,5 @@
 # Igniter is an optional dev/test dependency; the guard keeps the package
-# compiling where it is absent (ADR-0004: the ash-core pattern for optional
-# deps, as in ash's own `ash.extend` task).
+# compiling where it is absent.
 if Code.ensure_loaded?(Igniter.Mix.Task) do
   defmodule Mix.Tasks.AshHooks.Install do
     @shortdoc "Installs ash_hooks: formatter import_deps + endpoint body_reader"

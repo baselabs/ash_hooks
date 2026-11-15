@@ -104,7 +104,9 @@ the result. Configure it outside browser/session/CSRF pipelines. Default respons
 | Terminal row: processed, permanently failed, or superseded | 200 |
 | Pending, claimed elsewhere, or retryable row | 500 |
 | Invalid signature, stale timestamp, or malformed payload error | 400 |
-| Missing secret, paused source, or other ingest failure | 503 |
+| Unknown source record | 404 |
+| Unknown key or key-kind mismatch | 500 |
+| Missing secret, paused source, unavailable key, or other ingest failure | 503 |
 | Resolver not found or unavailable | 404 or 503 |
 | Disallowed method or oversized direct read | 405 or 413 |
 
@@ -113,9 +115,11 @@ POST is the default method. Direct reads allow 8,000,000 bytes by default; prece
 parsers have their own limits. Missing or repeated signature headers yield an
 unsigned-request error. With `ingress_tracking :on`, rejected requests may store
 one digest row per source, scope, and body, rather than one row per request.
+Paused sources, unavailable custody keys, and unrecognized callback failures
+do not create those rows or increase failed-verification counts.
 
 For a scoped or multitenant ledger, use `resolve: {module, function, args}` to
-look up a stored endpoint and return `source`, `tenant`, `scope`, and `connection`.
+resolve the application's inbound route and return `source`, `tenant`, `scope`, and `connection`.
 Never trust path strings as tenants or convert them into module names. The scope
 keys must match `scope_identity`; include them in the database unique index.
 
@@ -131,7 +135,8 @@ headers and body while preserving the status and required headers.
 
 ### Handling and identity
 
-Configured providers return a `:webhook` event. Override `parse_event_type/1`
+Providers that keep the generated `parse_event_type` callback return a `:webhook`
+event. Override `parse_event_type/1`
 and `handle_event/2` to run application actions. Use a fixed event-name table;
 never turn request data into new atoms. Return `{:ok, result}`,
 `{:error, :retry, reason}`, or `{:error, :permanent, reason}`. Exceptions, exits,
@@ -143,9 +148,10 @@ success can repeat the handler. Make the business effect idempotent, keyed on th
 logical event identity. Terminal rows are never processed again.
 
 An explicit `event_id` extractor takes precedence. Invalid extractor results use
-the raw-body digest. Otherwise `event_identity/1` is used when implemented; invalid
-provider identities fail ingestion. With neither callback, identity is the SHA-256
-of the raw body. JWS providers hash canonical JSON of the verified payload.
+the raw-body digest. Otherwise ingress uses `event_identity/2` when exported, then
+`event_identity/1`. Invalid provider identities fail ingestion. With neither
+callback, identity is the SHA-256 of the raw body. JWS providers hash canonical
+JSON of the verified payload.
 
 JSON is the default. `body_format :form` opts a route into flat URL-encoded form
 decoding. Verification always sees exact raw bytes first. `previous_secret` allows
@@ -207,7 +213,8 @@ once; receivers deduplicate using the stable `webhook-id`.
   `:standard`). `resend/2` re-arms terminal deliveries. Bulk replay counts a limited
   batch in dry run; repeated calls can select skipped rows again and return no cursor.
 - `:standard` signing uses `secret_ref`. `:legacy` and `:dual` also need
-  `legacy_secret_ref`. References resolve through your secret store.
+  `legacy_secret_ref`. Byte slots use a secret resolver. Slots with kind
+  markers sign through the endpoint resource's custodian.
 - With `key_lifecycle :on`, key rolling keeps both standard keys signing
   before `previous_secret_retired_at`; the previous key stops at that instant
   even if the sweep is delayed. Schedule `AshHooks.Endpoint.expire_previous_secrets/2`
@@ -278,7 +285,8 @@ resources must support transactions; for SQLite, enable `write_transactions?/0`
 on the repo. Add `inserted_at` and a matching migration. Deletion reopens deduplication
 identities, so retain rows beyond the sender's replay period.
 
-HMAC comparisons use constant time after a length check; public-key verification
+Byte-key HMAC comparisons use constant time after a length check; custodians
+must provide that guarantee for opaque keys. Byte-based public-key verification
 uses OTP cryptographic functions. Destination checks defend against server-side
 request forgery. Default adapters connect to validated addresses, and the bounded
 adapter limits reads and elapsed time. Built-in capture redaction recognizes specific
@@ -301,8 +309,9 @@ deprecations run at least two minor releases. Safety corrections can change defe
 behavior in patch releases and are described in the [CHANGELOG](CHANGELOG.md).
 Development supports macOS and Linux; use WSL2 on Windows.
 
-Upgrading from before 3.0.0 removes built-in vendor providers and requires explicit
-providers. [UPGRADING.md](UPGRADING.md) explains names, identities, schemas, and versions.
+Upgrading from before 3.0.0 removes built-in vendor providers. Declare an
+application provider, or use `source_record` to select one from a source resource's
+allowlist. [UPGRADING.md](UPGRADING.md) explains names, identities, schemas, and versions.
 See [CONTRIBUTING.md](CONTRIBUTING.md), the [DSL reference](documentation/dsls/DSL-AshHooks.md),
 and the [API reference](https://hexdocs.pm/ash_hooks) for more.
 

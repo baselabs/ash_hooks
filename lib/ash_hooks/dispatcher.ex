@@ -341,7 +341,7 @@ defmodule AshHooks.Dispatcher do
           dispatch_source: binding.source,
           dispatch_route: binding.route
         }
-        # the exact-bytes column's name is consumer-configurable (H1);
+        # the exact-bytes column's name is consumer-configurable;
         # the bytes are the endpoint's OWN: its pinned variant when it
         # pinned a declared payload version
         |> Map.put(AshHooks.Info.payload_attribute(deliv_mod), payload)
@@ -639,7 +639,7 @@ defmodule AshHooks.Dispatcher do
              )
            )
          end) do
-      # the ONE enabled-check (H4): the injected status attribute or the
+      # the single enabled check: the injected status attribute or the
       # consumer-mapped switch; exactly one attribute decides
       {:ok, endpoint} ->
         if AshHooks.Endpoint.enabled?(endpoint), do: {:match, endpoint}, else: :skip
@@ -868,7 +868,7 @@ defmodule AshHooks.Dispatcher do
         # A successful release PRESERVES the row's failure diagnostic by replaying
         # its current value; re-admission is a transport event, not a delivery
         # outcome; only the {:error, _} branch (a fresh enqueue failure) writes a
-        # new story. (The sirtify-routed last_error-wipe finding.)
+        # new failure diagnostic.
         release_reconcile_claim(deliv_mod, claimed, claimed.last_error, :reconciled, nil, tenant)
 
       {:error, reason} ->
@@ -1185,8 +1185,7 @@ defmodule AshHooks.Dispatcher do
   defp error_string(term), do: AshHooks.Telemetry.classify_token(term)
 
   # ────────────────────────── transient contention retry ──────────────────────────
-  # The inbound machine's bounded busy/locked retry (ADR-0003's sqlite
-  # probes), ported in substance: concurrent dispatchers on the best-effort
+  # As in inbound processing, concurrent dispatchers on the best-effort
   # sqlite leg contend for the single write lock, and the dispatcher's ops
   # are idempotent or CAS-gated, so a bounded wall-clock retry converts
   # transient contention into convergence instead of an :endpoint_error.

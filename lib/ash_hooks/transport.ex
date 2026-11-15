@@ -29,7 +29,8 @@ defmodule AshHooks.Transport do
   The callback contract is `AshHooks.Http`'s adapter contract verbatim:
   one `request/5` returning `{:ok, %{status, headers, body}}` or
   `{:error, reason}`; the runtime's classification table (2xx succeeds,
-  408/429/5xx retry honoring Retry-After, other 4xx dead-letter, redirects
+  408/429/5xx retry honoring Retry-After, 410 conditionally disables the
+  endpoint and dead-letters the delivery, other 4xx dead-letter, redirects
   refused, transport errors retry) applies unchanged. A destination
   policy allowing the forwarder's URL scheme keeps the send-time gate
   open for it (see `AshHooks.DestinationPolicy`).

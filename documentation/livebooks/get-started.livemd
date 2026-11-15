@@ -14,7 +14,7 @@
 * Send an outbound webhook to an existing WebHook Tester inbox and verify its captured bytes
 * Scope a multi-tenant deployment: one tenant's dispatch never reaches another's rows
 * Fit the extensions to a domain that reserves `payload`, owns an `active` switch, and uses atom-valued subscription types
-* Observe everything through telemetry
+* Observe verification and delivery through telemetry
 * Prune old rows with the retention hooks
 
 This notebook uses a real SQLite database and an existing WebHook Tester
@@ -234,8 +234,9 @@ defmodule Tour.Ledger do
     defaults([:read])
   end
 
-  # One declaration per source. `provider` is required; the name identifies
-  # the source in the ledger. Secrets are sources, never literals.
+  # This declaration names a provider directly; `source_record` can instead
+  # select one from an allowlist. The name identifies the source in the ledger.
+  # Secrets are sources, never literals.
   webhooks do
     inbound :orders do
       provider(Tour.Orders)
@@ -497,7 +498,7 @@ Tour.Repo.query!("CREATE TABLE IF NOT EXISTS tour_orders (id TEXT PRIMARY KEY)")
 
 <!-- livebook:{"break_marks":true} -->
 
-## Observe everything: telemetry
+## Observe verification and delivery through telemetry
 
 <!-- tested: livebook-get-started-8 -->
 ```elixir
@@ -640,8 +641,8 @@ fresh_ctx = %{
 
 {:ok, :created, payment} = AshHooks.Ingress.ingest(Tour.Ledger, :payments, charge, fresh_ctx)
 
-# Configured providers classify every verified request as :webhook and keep
-# the sender's event name in the payload.
+# Configured providers that keep the generated parse_event_type callback
+# classify verified requests as :webhook; the sender's event name stays in the payload.
 IO.inspect({payment.status, payment.external_event_type, payment.payload["type"]},
   label: "payment"
 )
@@ -773,9 +774,9 @@ IO.inspect(sms.payload, label: "stored form payload")
 | `ingest/4` result | Meaning | Answer |
 | --- | --- | --- |
 | `{:ok, _, %{status: s}}` with `s` in `[:processed, :failed_permanent, :superseded]` | terminal: done, or permanently failed (on your operator surface) | 2xx |
-| `{:ok, _, _row}` with another status | processing is pending, already running, or retryable; return 5xx to request redelivery | 5xx, so the sender retries |
+| `{:ok, _, _row}` with another status | processing is pending, already running, or retryable; return 5xx to request redelivery | 5xx requests a retry |
 | `{:error, %InvalidSignature{}}`, `%StaleTimestamp{}`, `%MalformedPayload{}` | not authentic, a replay, or not decodable | 4xx |
-| `{:error, %NoWebhookSecret{}}` or `{:error, :source_paused}` | your configuration or a deliberate pause | 5xx, so nothing is lost |
+| `{:error, %NoWebhookSecret{}}` or `{:error, :source_paused}` | your configuration or a deliberate pause | 5xx requests a retry; recovery depends on the sender's retry policy |
 
 ### Verify without a ledger
 

@@ -1,7 +1,8 @@
 defmodule AshHooks.Errors.Invalid.StaleTimestamp do
   @moduledoc """
   The timestamp carried by a windowed provider's signature falls outside the
-  allowed replay window.
+  allowed replay window, or a JWS expiration or not-before claim rejects
+  the current time.
   """
 
   use Splode.Error, fields: [:provider], class: :invalid

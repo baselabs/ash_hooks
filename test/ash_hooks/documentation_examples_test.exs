@@ -399,6 +399,20 @@ defmodule AshHooks.DocumentationContentTest do
     end
   end
 
+  test "contributor instructions can name the changelog's development heading" do
+    text = "Add changes under `## Unreleased`; replace `Unreleased` when publishing."
+    assert_public_text!("CONTRIBUTING.md", text)
+
+    for {path, text} <- [
+          {"guide.md", text},
+          {"CONTRIBUTING.md", "An Unreleased feature."},
+          {"CONTRIBUTING.md", text <> " ADR-0005"},
+          {"CONTRIBUTING.md", text <> " candidate"}
+        ] do
+      assert_raise ExUnit.AssertionError, fn -> assert_public_text!(path, text) end
+    end
+  end
+
   test "the shipped-text gate rejects internal labels and named vendor recipes" do
     for text <- [
           "ADR-0005",
@@ -944,6 +958,11 @@ defmodule AshHooks.DocumentationContentTest do
   # release tag build refuses it, and the current version always has a section.
   defp assert_public_text!("CHANGELOG.md", text),
     do: assert_changelog!(text, System.get_env("GITHUB_REF_TYPE") == "tag")
+
+  defp assert_public_text!("CONTRIBUTING.md", text) do
+    text = String.replace(text, ["`## Unreleased`", "`Unreleased`"], "")
+    assert_shipped_text!("CONTRIBUTING.md", text)
+  end
 
   defp assert_public_text!(path, text), do: assert_shipped_text!(path, text)
 

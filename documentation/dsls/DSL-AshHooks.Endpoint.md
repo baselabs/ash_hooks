@@ -80,7 +80,8 @@ retirement scheduling, or immediate retirement to them.
 
 With `custodian Module`, declare `key_registry Resource` and
 `key_lifecycle :on`. The registry uses `AshHooks.KeyRegistry`, the same
-transactional AshPostgres or AshSqlite data layer, mutate repo and tenancy.
+transactional AshPostgres or AshSqlite data layer and repository for writes,
+with matching attribute tenancy.
 Migrate nullable `:term` columns `secret_kind` and `previous_secret_kind`;
 with legacy lifecycle also migrate `legacy_secret_kind` and
 `legacy_previous_secret_kind`. Each kind marks only its adjacent reference
@@ -88,8 +89,8 @@ as custody-owned. A null kind leaves the slot under its host byte resolver.
 Host create and update actions refuse direct kind input. Direct reference
 writes require a byte resolver and never mark the slot as custody-owned.
 Signing reads the custodian from this resource and derives its canonical
-tenant inside the phase reading the owner. Current and previous kinds may
-differ. Declare `secret_resolver {module, function}` for unmarked byte slots;
+tenant inside the database transaction that reads the owner. Current and
+previous kinds may differ. Declare `secret_resolver {module, function}` for unmarked byte slots;
 delivery and worker resolvers are also supported. Without a resolver, an
 occupied unmarked slot fails permanently as `key_kind_mismatch`.
 Sender HMAC kinds are refused as `kind_not_allowed` before custody is called.
@@ -144,7 +145,7 @@ Configuration of this resource as the outbound webhook endpoint.
 | [`custodian`](#endpoint-custodian){: #endpoint-custodian } | `module` |  | Opaque-key custodian implementing AshHooks.Custody. Requires key_lifecycle :on and key_registry. Injects per-slot kind markers; migrate them before enabling. Create with create_with_key/3, roll with material: or generate:, recover disclosures with reissue_secret/2, and migrate byte slots with adopt_keys/2. Issuing operations refuse enclosing transactions. |
 | [`custody_tenant_key`](#endpoint-custody_tenant_key){: #endpoint-custody_tenant_key } | `mfa` |  | Canonical custody tenant for an otherwise unsupported tenant type: {module, function, args}, called with the cast tenant value followed by args. Must return equal UTF-8 binaries for tenants the database treats as equal. This equality contract belongs to the host. |
 | [`secret_resolver`](#endpoint-secret_resolver){: #endpoint-secret_resolver } | `{module, atom}` |  | Byte-reference resolver {module, function}. Unmarked slots use this resolver; custody slots use the custodian. Keep it during adopt_keys/2 migration. Without it, custody create actions refuse direct references and rolls require material: or generate:. Delivery and worker resolvers remain supported for byte signing. Refused with key_material: :custody_only. |
-| [`key_registry`](#endpoint-key_registry){: #endpoint-key_registry } | `module` |  | Host resource using AshHooks.KeyRegistry, on the same transactional AshPostgres or AshSqlite data layer, mutate repo and tenancy as this endpoint. |
+| [`key_registry`](#endpoint-key_registry){: #endpoint-key_registry } | `module` |  | Host resource using `AshHooks.KeyRegistry`, with the same transactional AshPostgres or AshSqlite data layer and repository for writes as this endpoint, and matching attribute tenancy. |
 | [`status_attribute`](#endpoint-status_attribute){: #endpoint-status_attribute } | `atom` |  | The consumer's enable/disable attribute the package maps onto (e.g. `active`). When set, `status` is not injected; the mapped attribute is the one durable switch: the dispatcher skips endpoints whose value is outside `enabled_values`, and the 410 auto-disable sets it to `disabled_value`. The attribute must be declared in the resource's own `attributes` block (not another extension's injection), and `enabled_values`/`disabled_value` must be spelled out explicitly, or compilation fails closed. |
 | [`version_pinning`](#endpoint-version_pinning){: #endpoint-version_pinning } | `:off \| :on` | `:off` | Whether the payload-version pinning column is injected (default `:off`, leaving existing schemas untouched). With `:on`, the extension injects `pinned_payload_version` (integer, nullable). Endpoints without a pin, or pinned to the declaration's current `version`, receive the dispatch payload. Other pins select the matching `payload_versions` builder; a pin on a version with no builder fails that endpoint closed at dispatch, before any row is written. Declaring `:on` requires a migration for the column. |
 | [`key_lifecycle`](#endpoint-key_lifecycle){: #endpoint-key_lifecycle } | `:off \| :on` | `:off` | Whether the signing-key lifecycle columns are injected (default `:off`, leaving existing schemas untouched). With `:on`, the extension injects `secret_created_at`, `secret_first_used_at`, `secret_retired_at`, `previous_secret_created_at`, `previous_secret_first_used_at`, and `previous_secret_retired_at` (the scheduled deadline while the previous reference remains, then the actual retirement time when the reference is removed). Signing omits the standard previous key at its deadline, before the sweep removes its reference. An undated previous key keeps signing and blocks rolling until `schedule_previous_retirement/3` or `expire_previous_secret/2` resolves it; the sweep skips it. An active overlap refuses another roll with `:overlap_active`; expire the previous key before rolling again immediately, or wait for the window to end. An ended window permits rolling before the sweep. `roll_secret/2`, `schedule_previous_retirement/3`, `expire_previous_secret/2` (one endpoint), and `expire_previous_secrets/2` (a resource) accept optional arguments. Declaring `:on` requires a migration for the six columns. Timestamps only, never secret material. |

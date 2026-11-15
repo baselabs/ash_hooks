@@ -63,7 +63,7 @@ defmodule AshHooks.Subscription do
   Whether a subscription row matches an event `type` (a canonical string):
   the bare `"*"` entry matches everything; any other entry matches exactly,
   with no glob interpretation. Works on any resource row carrying the
-  injected `event_types` attribute. The attribute-filter leg is separate:
+  injected `event_types` attribute. Attribute matching is separate:
   `matches_filters?/2`.
 
   Atom-valued event types are converted to strings before comparison.
@@ -81,7 +81,8 @@ defmodule AshHooks.Subscription do
   end
 
   @doc """
-  The FILTER leg of matching, on its own: every `event_filters` entry must
+  Checks attribute filters independently of event-type matching. Each
+  `event_filters` entry must
   name a declared `filter_attributes` attribute and equal the dispatching
   event's metadata value (list values match any-of). Rows without filters
   match.

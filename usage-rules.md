@@ -18,7 +18,8 @@ AshHooks 3.1.0.
 ## Receive webhooks through the ledger
 
 - Add `AshHooks` and `AshHooks.InboundDelivery` to the inbound ledger, set `provider` on
-  every inbound declaration, and forward HTTP webhook routes to `AshHooks.Plug`.
+  declarations using declaration-based keys, or `source_record` to select the
+  provider from a source resource's allowlist. Forward routes to `AshHooks.Plug`.
   Set `resource:` and exactly one of `source:` or `resolve: {module, function, args}`.
   `AshHooks.Ingress.ingest/4` remains the lower-level path for custom transports.
   Signature verification is over the exact raw bytes. There
@@ -55,7 +56,8 @@ AshHooks 3.1.0.
   plug options). Both policies receive
   the exact ingest outcome and never override a plug refusal. Defaults acknowledge
   terminal rows with 200, retry other ledger outcomes with 500, reject typed signature,
-  timestamp and malformed-payload errors with 400, and retry other failures with 503.
+  timestamp and malformed-payload errors with 400, return 404 for `UnknownSource`,
+  500 for `UnknownKey` or `KeyKindMismatch`, and 503 for other ingest failures.
 - Set `retry_after:` to a positive number of seconds (default 60) for the required
   `retry-after` header on default-mapping and resolver 503s. Provider and host
   ingest-response policies own their 503 headers.
@@ -88,8 +90,8 @@ AshHooks 3.1.0.
   generated unique index in the database. The ledger is the deduplication boundary; do
   not add a separate seen-events table.
 - An explicit `event_id` extractor takes precedence. Invalid extractor results
-use the raw-body digest. Without an extractor, ingress uses `event_identity/1`
-when implemented; an invalid provider identity fails ingestion.
+  use the raw-body digest. Without an extractor, ingress uses `event_identity/2`
+  when exported, then `event_identity/1`; an invalid provider identity fails ingestion.
 
 ## Dispatch and drive outbound deliveries
 
@@ -101,9 +103,9 @@ when implemented; an invalid provider identity fails ingestion.
 - `AshHooks.Delivery.run/2` is also a supported execution path. It drives an existing
   delivery row directly for queue-free hosts, custom schedulers, and one-row diagnostics.
   It does not create the row: dispatch first, then call `run/2` with the delivery identity
-  and a complete configuration for the delivery resource, endpoint resource, secret
-  resolver, retry limits, and backoff limits. Honor `{:snooze, seconds}` by scheduling the
-  row again after that delay.
+  and the delivery and endpoint resources, retry limits, backoff limits, and a
+  secret resolver for any byte slots. Custody slots use the endpoint's custodian.
+  Honor `{:snooze, seconds}` by scheduling the row again after that delay.
 - A direct runner must impose the same outer scheduling discipline as the worker. Keep
   the attempt deadline finite and allow the result-write finalization window to complete.
 - The row owns retries, attempt counts, send leases, and terminal state. Oban or a custom
@@ -176,9 +178,10 @@ when implemented; an invalid provider identity fails ingestion.
 
 ## Keep secrets, responses, and retention bounded
 
-- Secrets are resolvers, never literals: use `{module, function, args}`, `{:app_env,
-  path}`, a zero-arity function, or a tenant-aware one-arity function. Persist only secret
-  references.
+- Inbound secret DSL options take resolver sources, not literal secret bytes: use
+  `{module, function, args}`, `{:app_env, path}`, a zero-arity function, or a
+  tenant-aware one-arity function. Persist only secret references. Custody keys sign
+  or verify through their custodian without returning secret material.
 - The default HTTP adapter validates destinations at send time, pins the validated
   address, never follows redirects, rejects unsafe headers, and applies one finite deadline across
   DNS, connect, send, and reads. Keep these guarantees when supplying a custom adapter.

@@ -81,9 +81,10 @@ defmodule AshHooks.ConsumerFitDocsTest do
   end
 
   describe "M6: the 410 auto-disable implications" do
-    test "Delivery states the unattributed/silent-dark posture and the telemetry seam" do
+    test "Delivery states system-write attribution, tenant visibility, and telemetry" do
       doc = moduledoc(AshHooks.Delivery)
-      assert doc =~ "unattributed"
+      assert doc =~ "The write has no application actor."
+      assert doc =~ "must attribute this system change themselves."
       assert String.downcase(doc) =~ "silently"
       assert doc =~ "[:ash_hooks, :delivery, :disable]"
     end
