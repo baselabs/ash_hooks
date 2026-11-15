@@ -94,6 +94,9 @@ defmodule AshHooks.RecordsTest do
             {head <> released <> "\n## [Unreleased]\n", false},
             {head <> released <> "\n" <> released, false},
             {head <>
+               released <> "\n## [99.0.0] - 2026-11-16\n\n[99.0.0]: https://example.test/v99\n",
+             false},
+            {head <>
                String.replace(released, "\n[#{version}]: https://example.test/#{tag}\n", "\n"),
              false},
             {String.replace(head <> released, "# Changelog", "# Changes"), false}
@@ -256,8 +259,10 @@ defmodule AshHooks.RecordsTest do
     assert versions != [] and hd(versions) == version,
            "#{@changelog}: the newest release must be the project version #{version}"
 
+    assert Enum.uniq(versions) == versions, "#{@changelog}: a release appears twice"
+
     assert versions == Enum.sort(versions, &(Version.compare(&1, &2) == :gt)),
-           "#{@changelog}: releases must be unique and newest first"
+           "#{@changelog}: releases must be newest first"
 
     for released_version <- versions,
         do:
