@@ -931,7 +931,7 @@ defmodule AshHooks.DocumentationContentTest do
     end
     |> Code.compile_quoted()
 
-    assert {:ash_hooks, "~> 3.1"} in namespace.deps()
+    assert {:ash_hooks, "~> 3.2"} in namespace.deps()
     code = "import Config\n" <> Docs.block("get-started-config-in-application").code
 
     assert [ash: [default_string_length_count: :codepoints]] =

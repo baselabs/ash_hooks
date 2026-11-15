@@ -156,4 +156,4 @@ feature requests. Report vulnerabilities privately as described in
 ## Releases
 
 Releases are maintainer-only. The authoritative procedure is the
-[publishing runbook](https://github.com/baselabs/ash_hooks/blob/v3.1.0/docs/PUBLISHING.md).
+[publishing runbook](https://github.com/baselabs/ash_hooks/blob/v3.2.0/docs/PUBLISHING.md).

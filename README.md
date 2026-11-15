@@ -13,7 +13,7 @@ Inbound and outbound work independently. Inbound needs no queue. Outbound can
 use the generated Oban worker or your own scheduler calling `AshHooks.Delivery.run/2`.
 
 Requires Elixir `~> 1.20`, Erlang/OTP 28 or 29, and Ash
-`>= 3.37.2 and < 4.0.0-0`. Add `{:ash_hooks, "~> 3.1"}` to your dependencies.
+`>= 3.37.2 and < 4.0.0-0`. Add `{:ash_hooks, "~> 3.2"}` to your dependencies.
 Oban `~> 2.20` is optional and required for the generated worker. Plug `~> 1.16`
 is optional for HTTP receipt. Every supported Ash version requires your application
 to set `default_string_length_count`; see [UPGRADING.md](UPGRADING.md).

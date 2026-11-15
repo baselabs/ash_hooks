@@ -1007,7 +1007,7 @@ as the error class.
 
 ## Required `default_string_length_count` configuration
 
-Every Ash version supported by ash_hooks 3.1.0 requires this configuration
+Every Ash version supported by ash_hooks 3.2.0 requires this configuration
 before compiling resources. ash_hooks writes no `:ash` configuration for you. Set it
 in your application's `config/config.exs`:
 

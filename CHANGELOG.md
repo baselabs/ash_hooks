@@ -4,118 +4,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
-
-### Fixed
-
-- Add regression tests for parsed tenant values, key-kind mismatches, all
-  signing modes, and owners deleted during a custody-key refresh.
-
-- Verify that a history-deletion failure rolls back joined delivery pruning
-  on both supported databases.
-
-- Handle an enqueue refused inside a host transaction like that path's other
-  enqueue failures, with dispatch marking joining the host transaction.
-
-- Preserve declaration handshake and response policies on source-resolution
-  failures; only an absent source row gets the early 404 response.
-
-- Validate pinned public-key kinds before writes and pass typed public keys to
-  providers, preventing an HMAC alias from accepting public-key forgeries.
-
-- Recover stored row tenants through `tenant_from_attribute` before custody
-  canonicalization and every tenant option, including non-identity parsers.
-
-- Refresh displaced custody references once from their owner during signing
-  and verification, preserving immediate destruction without false dead letters.
-
-- Refuse direct custody-kind input on host actions while preserving byte-only
-  reference writes through a configured resolver.
-
-- Refuse retirement of an unattached custody reference and roll back the owner
-  write; byte slots remain outside the registry during partial adoption.
-
-- Keep an issuing failure's original classification when cleanup also fails.
-
-- Contain custodian callback faults as classified outages, retry outbound
-  attempts, and avoid recording outages as failed-verification rejections.
-
-- Refuse a ledger declaration whose source resource belongs to another ledger.
-
-- Preserve classified provider errors during key overlaps, including timestamp
-  and payload failures from either authenticating key.
-
-- During an inbound rotation overlap, when the current key fails with an
-  invalid signature and the previous key cannot be checked (its key is
-  unavailable, unknown or of the wrong kind, or its verification failed in an
-  unrecognized way), ingress now reports the previous key's failure instead of
-  `InvalidSignature`. A request signed with the previous key is answered as a
-  key or availability failure (500 or 503 from `AshHooks.Plug`), never as a
-  forged request. Request failures such as a stale timestamp still report the
-  current key's result.
-- Every verifier that tries several keys reports the same ranked result.
-  `AshHooks.Provider.Hmac.verify_signature/4` accepts custody keys, alone or
-  mixed with byte keys, and returns a custody failure ahead of a MAC mismatch
-  instead of reducing it to `:invalid_signature`. An `AshHooks.Custody.Key` in
-  an RSA, ECDSA or Ed25519 key list reports `KeyKindMismatch` unless another
-  key verifies, instead of `InvalidSignature`.
-- Package database phases pass `Ash.transact/3` the tenant key, converted with
-  `Ash.ToTenant` for every resource in the phase, because a transaction reason
-  names no resource. A phase whose resources convert the tenant differently
-  returns `{:error, :tenancy_mismatch}` before opening a transaction. The row
-  security guide's repository callback converts an action's tenant with the
-  resource named in its transaction reason.
-- Run every shipped documentation code block or state why it cannot run in
-  the documentation gate. Check consumer formatting for Elixir examples,
-  including module documentation, DSL references, and Livebook cells.
-- Replace the tenancy adoption backfill placeholders with executable SQL and
-  verify that every legacy row has a tenant on SQLite and PostgreSQL.
-- The formatter configuration exported to consumers lists every ash_hooks DSL
-  option, including `provider`, `subscriptions`, `deliveries`, `paused` and
-  `previous_secret`. A consumer importing `:ash_hooks` in `import_deps` no
-  longer has `mix format` add parentheses to the documented DSL. The list is
-  generated from the DSL and checked for drift.
-- Key registry refusals before any write leave an enclosing host transaction
-  usable. Sweeps refuse a native SQLite transaction even when Ash write
-  transactions are disabled.
-- `AshHooks.Delivery.run/2` and `test_send/2` refuse an enclosing transaction
-  with `{:error, :inside_transaction}` before starting work. Previously their
-  monitored child could block or miss uncommitted rows. Inline driver enqueue
-  refusal reports `:enqueue_failed` and leaves the delivery `:pending`.
-- Custody lifecycle retirement checks the persisted owner after each write and
-  retains references still held in any slot, including after a concurrent roll
-  or a host action that returns an outdated record.
-- Lifecycle refusals leave enclosing host transactions usable for custody and
-  byte slots. Failures after an owner write still roll back its retirement.
-- Custody owner reconciliation uses an injected `read_custody_owner` action
-  instead of the host primary read's filters, preparations or pagination.
-  The resource's `base_filter` still defines which rows count as existing.
-- A custodian that raises or exits, or an owner that no longer declares a
-  custodian, parks only that disposal obligation with a fixed classification
-  and telemetry. The sweep continues with subsequent references.
-- Unavailable disposal results match the retry attempt they read, preventing
-  delayed sweeps from overwriting newer retry counts or deadlines.
-- IPv6 destination checks now refuse reserved and unallocated address space,
-  including gaps within `2000::/3`, using the IANA allocation registry retrieved
-  November 13, 2026. Existing globally reachable special-purpose exceptions and
-  IPv4 classification are preserved.
-- Unrecognized callback reasons become contents-free `UnknownError` values
-  instead of raising or exposing backend terms.
-- A second key roll inside an active overlap silently dropped the older key
-  from signing. It now returns `{:error, :overlap_active}` without changing
-  the endpoint. An ended window permits rolling even before the sweep runs.
-- A transport resolver that raises, throws, exits, or returns an invalid value,
-  and a `transport` setting that is not a resolver, refuse the attempt as a
-  retryable `transport_resolution` failure instead of falling back to HTTP.
-  Error contents are neither stored nor emitted. Returning `nil` still selects
-  HTTP.
-- With `key_lifecycle :on`, outbound signing omits the standard previous key
-  at its retirement instant, even before the sweep removes its reference.
-  Retired references are never resolved. First-use timestamps are written
-  only for keys that signed, with atomic reference checks that prevent a
-  concurrent roll from stamping replacement keys. Undated previous keys keep
-  signing, are skipped by the sweep, and refuse rolling until explicitly
-  scheduled or expired.
+## 3.2.0 (November 14, 2026)
 
 ### Added
 
@@ -259,6 +148,117 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   attributes before verification, including declarations without `source_record`.
   Missing, nil, or invalid scope returns `MalformedPayload`; provider callbacks
   receive cast values.
+
+### Fixed
+
+- Add regression tests for parsed tenant values, key-kind mismatches, all
+  signing modes, and owners deleted during a custody-key refresh.
+
+- Verify that a history-deletion failure rolls back joined delivery pruning
+  on both supported databases.
+
+- Handle an enqueue refused inside a host transaction like that path's other
+  enqueue failures, with dispatch marking joining the host transaction.
+
+- Preserve declaration handshake and response policies on source-resolution
+  failures; only an absent source row gets the early 404 response.
+
+- Validate pinned public-key kinds before writes and pass typed public keys to
+  providers, preventing an HMAC alias from accepting public-key forgeries.
+
+- Recover stored row tenants through `tenant_from_attribute` before custody
+  canonicalization and every tenant option, including non-identity parsers.
+
+- Refresh displaced custody references once from their owner during signing
+  and verification, preserving immediate destruction without false dead letters.
+
+- Refuse direct custody-kind input on host actions while preserving byte-only
+  reference writes through a configured resolver.
+
+- Refuse retirement of an unattached custody reference and roll back the owner
+  write; byte slots remain outside the registry during partial adoption.
+
+- Keep an issuing failure's original classification when cleanup also fails.
+
+- Contain custodian callback faults as classified outages, retry outbound
+  attempts, and avoid recording outages as failed-verification rejections.
+
+- Refuse a ledger declaration whose source resource belongs to another ledger.
+
+- Preserve classified provider errors during key overlaps, including timestamp
+  and payload failures from either authenticating key.
+
+- During an inbound rotation overlap, when the current key fails with an
+  invalid signature and the previous key cannot be checked (its key is
+  unavailable, unknown or of the wrong kind, or its verification failed in an
+  unrecognized way), ingress now reports the previous key's failure instead of
+  `InvalidSignature`. A request signed with the previous key is answered as a
+  key or availability failure (500 or 503 from `AshHooks.Plug`), never as a
+  forged request. Request failures such as a stale timestamp still report the
+  current key's result.
+- Every verifier that tries several keys reports the same ranked result.
+  `AshHooks.Provider.Hmac.verify_signature/4` accepts custody keys, alone or
+  mixed with byte keys, and returns a custody failure ahead of a MAC mismatch
+  instead of reducing it to `:invalid_signature`. An `AshHooks.Custody.Key` in
+  an RSA, ECDSA or Ed25519 key list reports `KeyKindMismatch` unless another
+  key verifies, instead of `InvalidSignature`.
+- Package database phases pass `Ash.transact/3` the tenant key, converted with
+  `Ash.ToTenant` for every resource in the phase, because a transaction reason
+  names no resource. A phase whose resources convert the tenant differently
+  returns `{:error, :tenancy_mismatch}` before opening a transaction. The row
+  security guide's repository callback converts an action's tenant with the
+  resource named in its transaction reason.
+- Run every shipped documentation code block or state why it cannot run in
+  the documentation gate. Check consumer formatting for Elixir examples,
+  including module documentation, DSL references, and Livebook cells.
+- Replace the tenancy adoption backfill placeholders with executable SQL and
+  verify that every legacy row has a tenant on SQLite and PostgreSQL.
+- The formatter configuration exported to consumers lists every ash_hooks DSL
+  option, including `provider`, `subscriptions`, `deliveries`, `paused` and
+  `previous_secret`. A consumer importing `:ash_hooks` in `import_deps` no
+  longer has `mix format` add parentheses to the documented DSL. The list is
+  generated from the DSL and checked for drift.
+- Key registry refusals before any write leave an enclosing host transaction
+  usable. Sweeps refuse a native SQLite transaction even when Ash write
+  transactions are disabled.
+- `AshHooks.Delivery.run/2` and `test_send/2` refuse an enclosing transaction
+  with `{:error, :inside_transaction}` before starting work. Previously their
+  monitored child could block or miss uncommitted rows. Inline driver enqueue
+  refusal reports `:enqueue_failed` and leaves the delivery `:pending`.
+- Custody lifecycle retirement checks the persisted owner after each write and
+  retains references still held in any slot, including after a concurrent roll
+  or a host action that returns an outdated record.
+- Lifecycle refusals leave enclosing host transactions usable for custody and
+  byte slots. Failures after an owner write still roll back its retirement.
+- Custody owner reconciliation uses an injected `read_custody_owner` action
+  instead of the host primary read's filters, preparations or pagination.
+  The resource's `base_filter` still defines which rows count as existing.
+- A custodian that raises or exits, or an owner that no longer declares a
+  custodian, parks only that disposal obligation with a fixed classification
+  and telemetry. The sweep continues with subsequent references.
+- Unavailable disposal results match the retry attempt they read, preventing
+  delayed sweeps from overwriting newer retry counts or deadlines.
+- IPv6 destination checks now refuse reserved and unallocated address space,
+  including gaps within `2000::/3`, using the IANA allocation registry retrieved
+  November 13, 2026. Existing globally reachable special-purpose exceptions and
+  IPv4 classification are preserved.
+- Unrecognized callback reasons become contents-free `UnknownError` values
+  instead of raising or exposing backend terms.
+- A second key roll inside an active overlap silently dropped the older key
+  from signing. It now returns `{:error, :overlap_active}` without changing
+  the endpoint. An ended window permits rolling even before the sweep runs.
+- A transport resolver that raises, throws, exits, or returns an invalid value,
+  and a `transport` setting that is not a resolver, refuse the attempt as a
+  retryable `transport_resolution` failure instead of falling back to HTTP.
+  Error contents are neither stored nor emitted. Returning `nil` still selects
+  HTTP.
+- With `key_lifecycle :on`, outbound signing omits the standard previous key
+  at its retirement instant, even before the sweep removes its reference.
+  Retired references are never resolved. First-use timestamps are written
+  only for keys that signed, with atomic reference checks that prevent a
+  concurrent roll from stamping replacement keys. Undated previous keys keep
+  signing, are skipped by the sweep, and refuse rolling until explicitly
+  scheduled or expired.
 
 ## 3.1.0 (November 14, 2026)
 
