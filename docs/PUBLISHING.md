@@ -69,12 +69,10 @@ operator procedure.
 
 ## Publish and verify
 
-Use the project's gitignored `.env`; never print or copy the key value:
+Supply the maintainer's Hex key as `HEX_API_KEY` from the maintainer's secret store, scoped to
+this one command. Never keep it in a project file, and never print, log or copy the key value:
 
 ```sh
-set -a
-source .env
-set +a
 env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish --yes
 ```
 
