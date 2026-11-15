@@ -1,4 +1,4 @@
-# ADR-0002 — Standard Webhooks canon, with legacy dual-sign migration
+# 0002 — Standard Webhooks canon, with legacy dual-sign migration
 
 - **Status:** Accepted August 20, 2026; clarified August 21, 2026.
   `AshHooks.Legacy.verify/5` verifies the legacy envelope. A nullable subscription
@@ -19,7 +19,7 @@ secrets, and key rotation. Existing receivers may also use the timestamped
 Emit **Standard Webhooks** natively (see
 ADR-0006). During migration, a per-subscription `signing_mode` (`:legacy | :dual |
 `:standard`) additionally emits the legacy envelope **byte-identically**, signed with a
-**separate legacy secret** — independent keys and rotation
+**separate legacy secret**; independent keys and rotation
 lifecycles. Cutover is operator-driven per subscription: a 2xx response cannot report which
 header a receiver verified, so no auto-detection is attempted. An in-package
 `AshHooks.Legacy.verify/5` verifier checks the legacy envelope.

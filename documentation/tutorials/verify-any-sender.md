@@ -39,11 +39,9 @@ compiles and generates these callbacks:
 - `decode_payload/1` and `event_identity/1`, for senders that sign a JWS (JSON
   Web Signature) body.
 
-Every generated callback can be overridden. Point an inbound declaration at the
-module:
-
-Declare this module as `provider` when the declaration supplies its own key
-sources. Alternatively, use `source_record` to select it from a source resource's allowlist.
+Every generated callback can be overridden. Declare this module as `provider`
+when the declaration supplies its own key sources. Alternatively, use
+`source_record` to select it from a source resource's allowlist.
 The complete ledger and secret-source declaration is in the
 [get-started application](get-started.md#declare-the-resources).
 
@@ -151,6 +149,13 @@ revocation. An Ed25519 key can also be its 32 raw bytes, decoded with
 Keys come only from your configuration. ash_hooks never fetches a key from a URL,
 a header, or the token being verified.
 
+Custody sources supply an `AshHooks.Custody.Key`, alone or in a rotation list
+with byte keys. Encodings and prefixes apply to byte keys only; custody already
+holds decoded material and asserts its stored kind. Source records can instead
+supply an `AshHooks.Custody.PublicKey`, which pins the algorithm, digest, RSA
+padding, and ECDSA curve. An HMAC provider refuses that struct. See
+[key custody and lifecycle](key-custody.md) for the host custodian and registry.
+
 ### Timestamps and replay
 
 When `timestamp` is set, a request verifies only if the signature is valid and
@@ -171,8 +176,10 @@ timestamp.
 ### Results
 
 Byte-key verification returns `:ok` or the atom errors below. Custody and pinned
-public keys may also return classified `KeyKindMismatch`, `UnknownKey`,
-`KeyUnavailable`, or `UnknownError` values. Results never include key or signature bytes:
+public keys may also return classified `InvalidSignature`, `KeyKindMismatch`,
+`UnknownKey`, `KeyUnavailable`, or `UnknownError` values. Match those error
+structs on custody paths rather than expecting byte-path atom errors. Results
+never include key or signature bytes:
 
 - `{:error, :invalid_signature}`: missing, malformed, or wrong signature, or a
   part of the signed input is missing;
@@ -187,6 +194,54 @@ counts. Answer `:invalid_signature` and `:stale_timestamp` with a 4xx
 response. Return 5xx for missing secrets, paused sources, and retryable handler
 failures. Acknowledge terminal permanent failures with 200 and expose them to
 operators.
+
+## Request-scoped JSON policy
+
+Set ledger `inbound_delivery` option `json_decoder` to an MFA such as
+`{MyApp.JsonPolicy, :decode, []}`. It receives bytes followed by its arguments
+and returns `{:ok, map_or_list}` or `{:error, reason}`. The default is
+`{Jason, :decode, []}`. Ingress uses one decoder policy for JWS protected headers,
+claims, and delivery payloads. Scope is cast and constrained before verification,
+including routes without source records. Every required scope field must be
+present and nonnil; invalid scope is `MalformedPayload`.
+
+A provider with a host-defined `decode_payload/1` must implement `/2` before its
+ledger configures `json_decoder`, including when configuring the default MFA.
+This covers a declaration's `provider` and every module in its source resource's
+provider allowlist; the ledger refuses to compile otherwise.
+Use the supplied function for every JSON layer of an envelope. This provider
+keeps its direct-call behavior and honors request policy:
+
+<!-- tested: verify-json-policy-provider -->
+```elixir
+defmodule MyApp.Webhooks.JsonPolicy do
+  use AshHooks.Provider,
+    verify: [algorithm: :hmac_sha256, signature: {:header, "x-orders-signature"}]
+
+  @impl true
+  def decode_payload(bytes), do: Jason.decode(bytes)
+
+  @impl true
+  def decode_payload(bytes, json_decoder), do: json_decoder.(bytes)
+end
+```
+
+Generated JWS decoders honor the request policy without a host override; direct
+`decode_payload/1` calls use Jason. `AshHooks.Provider.Scheme.decode_payload/3`
+accepts the decoder as its third argument. Direct
+`AshHooks.Provider.Signature.jws/3` calls accept `json_decoder:` for protected
+headers and claims. Never decode a token in place of verifying it first.
+Explicit declaration `body_format` takes precedence over provider decoding,
+then provider `body_format/0`, then JSON. An explicit format on a JWS route
+decodes the token as that format rather than extracting claims.
+
+Run `AshHooks.Provider.Conformance` with `provider: YourProvider` in consumer
+ExUnit tests. It checks that `/2` uses the supplied decoder; envelope providers
+supply a matching `payload:`. ExUnit is not a runtime dependency. The
+[Livebook](../livebooks/get-started.livemd) runs both policy enforcement and
+provider conformance. Decoder errors, exceptions, and scalar results are
+malformed payloads. A refused JWS protected header cannot be verified and is an
+invalid signature; malformed claim types also remain invalid signatures.
 
 ## Recipes
 
@@ -634,9 +689,10 @@ protection.
 
 ## Key rotation
 
-Rotate a shared secret or a public key without dropping deliveries:
+For declaration-level key sources, rotate a shared secret or public key without
+dropping deliveries:
 
-- On an inbound declaration, add `previous_secret` with the outgoing key's
+- On an inbound declaration without `source_record`, add `previous_secret` with the outgoing key's
   source. Both keys verify until you remove it.
 - Structured headers can carry several signatures; any one that verifies is
   accepted.
@@ -645,7 +701,11 @@ Rotate a shared secret or a public key without dropping deliveries:
 
 Add `previous_secret` beside `secret` in the inbound declaration, using the
 same resolver shapes for the outgoing key. Both values can use tenant-aware
-sources. Remove the previous source when the overlap period ends.
+sources. Remove the previous source when the overlap period ends. For source records,
+`roll_secret/2` sets a dated previous custody key. The deadline excludes it even
+before the expiry sweep runs; schedule both source expiry and registry disposal.
+Public-key registration replaces the pinned key without an automatic overlap.
+See [the key guide](key-custody.md#own-inbound-source-keys).
 
 ## Classifying events and running your actions
 
@@ -816,6 +876,13 @@ an `AshHooks.Custody.PublicKey` struct that pins the algorithm, digest, padding,
 and curve. HMAC refuses this value with `KeyKindMismatch` (HTTP 500), so a
 provider alias cannot turn published public bytes into an HMAC secret.
 
+Direct callers can call `AshHooks.Ingress.resolve_source/3` with ledger, name,
+`tenant:`, and `scope:`. The returned `AshHooks.Inbound.ResolvedSource` contains
+cast scope, selected provider and alias, pause state, admitted custody keys, and
+a separate pinned public key. Pass it as `:resolved_source` in the ingest context
+for that same request. Resolve once per request, not across requests or rotations.
+The [Livebook](../livebooks/get-started.livemd#inbound-source-records) runs this path.
+
 Plug resolves the source before handshake, then uses its selected provider
 for verification and response policy. Missing source rows return 404. Other
 resolution failures retain the declaration's handshake and response path.
@@ -831,4 +898,7 @@ is zero. See [the upgrade procedure](../../UPGRADING.md) for cutover ordering.
 Providers may implement `parse_event_type/2`, `event_identity/2`, and
 `handle_event/3` to receive `AshHooks.Provider.DeliveryContext`. These arities are
 preferred; existing arities still work. The context documents which fields are
-available at parsing, identity, and handling, including recovery.
+available at parsing, identity, and handling, including recovery. Tenant, source,
+cast scope, and provider alias exist at every phase; persisted delivery and
+external event IDs exist only at handling. Headers are absent from this durable
+context. Recovery reconstructs it from the receipt.

@@ -141,10 +141,12 @@ refuses drift.
   verification, destination checks, secret resolution, transport, tenancy,
   and delivery ownership before changing those paths.
 - Use US English in code, documentation, tests, commit messages, and pull requests.
-- Add user-visible changes under `## Unreleased` in `CHANGELOG.md`. At the release
-  cut, set `mix.exs` to the release version and replace `Unreleased` with that
-  version and its publication date. Add migration steps to `UPGRADING.md` when
-  an adopter must change code, schema, or operations.
+- Add user-visible changes under `## [Unreleased]` in `CHANGELOG.md`, which
+  follows Keep a Changelog. At the release cut, set `mix.exs` to the release
+  version, rename that heading to the version and its publication date as
+  `## [X.Y.Z] - YYYY-MM-DD`, and add the version's comparison link at the end of
+  the file. Add migration steps to `UPGRADING.md` when an adopter must change
+  code, schema, or operations.
 
 ## Bugs and security reports
 

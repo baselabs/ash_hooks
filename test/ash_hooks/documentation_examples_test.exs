@@ -400,7 +400,7 @@ defmodule AshHooks.DocumentationContentTest do
   end
 
   test "contributor instructions can name the changelog's development heading" do
-    text = "Add changes under `## Unreleased`; replace `Unreleased` when publishing."
+    text = "Add changes under `## [Unreleased]`; rename that heading when publishing."
     assert_public_text!("CONTRIBUTING.md", text)
 
     for {path, text} <- [
@@ -434,21 +434,22 @@ defmodule AshHooks.DocumentationContentTest do
       assert_raise ExUnit.AssertionError, fn -> assert_public_text!("guide.md", text) end
     end
 
-    version = Mix.Project.config()[:version]
-    released = "## #{version} (November 13, 2026)\n\n- Removed AshHooks.Provider.Stripe.\n"
-    building = "# Changelog\n\n## Unreleased\n\n- A fix.\n\n" <> released
+    released = "## [3.2.0] - 2026-11-13\n\n- Removed AshHooks.Provider.Stripe.\n"
+
+    building =
+      "# Changelog\n\n## [Unreleased]\n\n- A fix.\n\n" <>
+        released <> "\n[Unreleased]: https://example.test/compare/v3.2.0...HEAD\n"
 
     assert_public_text!("CHANGELOG.md", released)
-    assert_changelog!(building, false)
+    assert_public_text!("CHANGELOG.md", building)
 
-    for {text, release_build?} <- [
-          {building, true},
-          {"## 0.0.1 (January 1, 2020)\n", false},
-          {released <> "\n## Unreleased\n", false},
-          {released <> "\n1.17\u20131.19\n", false},
-          {released <> "\nA fix \u2014 now.\n", false}
+    for text <- [
+          released <> "\nAn unreleased fix.\n",
+          released <> "\n1.17\u20131.19\n",
+          released <> "\nA fix \u2014 now.\n",
+          released <> "\nSee ADR-0005.\n"
         ] do
-      assert_raise ExUnit.AssertionError, fn -> assert_changelog!(text, release_build?) end
+      assert_raise ExUnit.AssertionError, fn -> assert_public_text!("CHANGELOG.md", text) end
     end
 
     assert_raise ExUnit.AssertionError, fn ->
@@ -571,15 +572,45 @@ defmodule AshHooks.DocumentationContentTest do
     end
   end
 
-  @tag documented_examples: ["upgrade-json-decoder-provider"]
-  test "the decoder migration example keeps direct calls and honors the request decoder" do
-    provider = Docs.compile("upgrade-json-decoder-provider")
-    body = ~s({"original":true})
-    assert {:ok, %{"original" => true}} = provider.decode_payload(body)
-    sentinel = %{"from_request_decoder" => true}
-    decoder = fn ^body -> {:ok, sentinel} end
+  @tag documented_examples: ["upgrade-json-decoder-provider", "verify-json-policy-provider"]
+  test "decoder examples keep direct calls and honor the request decoder" do
+    for name <- ["upgrade-json-decoder-provider", "verify-json-policy-provider"] do
+      provider = Docs.compile(name)
+      body = ~s({"original":true})
+      assert {:ok, %{"original" => true}} = provider.decode_payload(body)
+      sentinel = %{"from_request_decoder" => true}
+      decoder = fn ^body -> {:ok, sentinel} end
 
-    assert {:ok, ^sentinel} = AshHooks.Provider.decode_payload(provider, body, nil, decoder)
+      assert {:ok, ^sentinel} = AshHooks.Provider.decode_payload(provider, body, nil, decoder)
+    end
+  end
+
+  @tag documented_examples: ["key-custody-endpoint-lifecycle"]
+  test "the key guide issues, rolls, reissues and disposes through real custody" do
+    cases = AshHooks.Test.KeyIssuingCases
+    namespace = Docs.namespace("key-custody-endpoint-lifecycle")
+    ctx = cases.setup_all(namespace, AshSqlite.DataLayer, AshHooks.Test.RegistryRepo, "docs_keys")
+    cases.clean(ctx)
+
+    {_, binding} =
+      Docs.eval("key-custody-endpoint-lifecycle", namespace,
+        endpoint_resource: ctx.endpoint,
+        registry_resource: ctx.registry,
+        tenant: 17
+      )
+
+    endpoint = Ash.reload!(binding[:endpoint], tenant: 17, authorize?: false)
+    assert endpoint.previous_secret_ref == nil
+    assert endpoint.secret_kind == {:standard_webhooks, :v1}
+
+    assert {:ok, signature} =
+             ctx.custodian.sign(endpoint.secret_ref, "17", endpoint.secret_kind, "input")
+
+    "whsec_" <> encoded = binding[:replacement_disclosure]
+    assert signature == :crypto.mac(:hmac, :sha256, Base.decode64!(encoded), "input")
+
+    assert Enum.frequencies_by(Ash.read!(ctx.registry, tenant: 17, authorize?: false), & &1.state) ==
+             %{attached: 1, destroyed: 2}
   end
 
   @tag documented_examples: ["verify-form-provider"]
@@ -953,40 +984,20 @@ defmodule AshHooks.DocumentationContentTest do
     |> Enum.uniq()
   end
 
-  # The changelog carries one leading `## Unreleased` section while a release is
-  # being built; the release commit renames it to the version heading. A
-  # release tag build refuses it, and the current version always has a section.
-  defp assert_public_text!("CHANGELOG.md", text),
-    do: assert_changelog!(text, System.get_env("GITHUB_REF_TYPE") == "tag")
+  # The changelog's structure, including its development section, is checked in
+  # records_test.exs. Here only its vocabulary: the development heading and its
+  # comparison link are the one place the word Unreleased may appear.
+  defp assert_public_text!("CHANGELOG.md", text) do
+    text = Regex.replace(~r/^(?:## \[Unreleased\]|\[Unreleased\]: \S+)$/m, text, "")
+    assert_shipped_text!("CHANGELOG.md", text)
+  end
 
   defp assert_public_text!("CONTRIBUTING.md", text) do
-    text = String.replace(text, ["`## Unreleased`", "`Unreleased`"], "")
+    text = String.replace(text, "`## [Unreleased]`", "")
     assert_shipped_text!("CONTRIBUTING.md", text)
   end
 
   defp assert_public_text!(path, text), do: assert_shipped_text!(path, text)
-
-  defp assert_changelog!(text, release_build?) do
-    path = "CHANGELOG.md"
-    version = Mix.Project.config()[:version]
-
-    assert Regex.match?(~r/^## #{Regex.escape(version)} \(/m, text),
-           "#{path}: no section for the current version #{version}"
-
-    text =
-      case Regex.run(~r/^## (.+)$/m, text, capture: :all_but_first) do
-        ["Unreleased"] when release_build? ->
-          flunk("#{path}: an Unreleased section on a release tag build")
-
-        ["Unreleased"] ->
-          String.replace(text, "\n## Unreleased\n", "\n", global: false)
-
-        _ ->
-          text
-      end
-
-    assert_shipped_text!(path, text)
-  end
 
   defp assert_shipped_text!(path, text) do
     refute Regex.match?(@internal, text), "#{path}: internal vocabulary in shipped text"

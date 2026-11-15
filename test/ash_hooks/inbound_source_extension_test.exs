@@ -9,6 +9,23 @@ defmodule AshHooks.InboundSourceExtensionTest do
     def webhook_signing_secret(_), do: {:ok, "declaration-key"}
   end
 
+  defmodule LegacyDecodeProvider do
+    @behaviour AshHooks.Provider
+    def verify_signature(_body, _ctx, _secret), do: :ok
+    def parse_event_type(_payload), do: {:ok, :checked}
+    def handle_event(_type, _payload), do: {:error, :permanent, :unused}
+    def decode_payload(bytes), do: Jason.decode(bytes)
+  end
+
+  defmodule DecoderAwareProvider do
+    @behaviour AshHooks.Provider
+    def verify_signature(_body, _ctx, _secret), do: :ok
+    def parse_event_type(_payload), do: {:ok, :checked}
+    def handle_event(_type, _payload), do: {:error, :permanent, :unused}
+    def decode_payload(bytes), do: Jason.decode(bytes)
+    def decode_payload(bytes, decoder), do: decoder.(bytes)
+  end
+
   test "injects identity, fields, actions and default acceptance before Ash consumers" do
     assert AddSourceFields.before?(Ash.Resource.Transformers.AttributesByName)
 
@@ -200,6 +217,54 @@ defmodule AshHooks.InboundSourceExtensionTest do
 
     assert Info.attribute(ledger, :provider_alias).allow_nil?
     assert Info.action(ledger, :claim).accept == []
+  end
+
+  test "a ledger JSON decoder reaches every provider in a source allowlist" do
+    for {providers, refused} <- [
+          {[checked: LegacyDecodeProvider], LegacyDecodeProvider},
+          {[
+             checked: AshHooks.Test.CustodySchemeProvider,
+             aware: DecoderAwareProvider,
+             legacy: LegacyDecodeProvider
+           ], LegacyDecodeProvider}
+        ] do
+      source = compile_source(providers: providers)
+      ledger = Extension.get_opt(source, [:inbound_source], :ledger)
+      declaration = quote(do: inbound(:checked, source_record: unquote(source)))
+
+      errors =
+        Spark.Test.dsl_errors do
+          compile_inbound(
+            declaration,
+            quote do
+              record_provider_alias(:on)
+              json_decoder({Jason, :decode, []})
+            end,
+            ledger
+          )
+        end
+
+      assert [{_, [%Spark.Error.DslError{} = error]}] = errors
+      assert error.message =~ "decode_payload/2"
+      assert error.message =~ inspect(refused)
+      assert error.path == [:webhooks, :inbound, :checked]
+
+      assert compile_inbound(declaration, quote(do: record_provider_alias(:on)), ledger)
+    end
+
+    source =
+      compile_source(
+        providers: [checked: AshHooks.Test.CustodySchemeProvider, aware: DecoderAwareProvider]
+      )
+
+    assert compile_inbound(
+             quote(do: inbound(:checked, source_record: unquote(source))),
+             quote do
+               record_provider_alias(:on)
+               json_decoder({Jason, :decode, []})
+             end,
+             Extension.get_opt(source, [:inbound_source], :ledger)
+           )
   end
 
   test "a ledger refuses a source belonging to another ledger" do

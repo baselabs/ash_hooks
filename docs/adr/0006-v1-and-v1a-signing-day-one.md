@@ -1,4 +1,4 @@
-# ADR-0006 — SW v1 and v1a (ed25519) signing, day one
+# 0006 — SW v1 and v1a (ed25519) signing, day one
 
 - **Status:** Accepted August 20, 2026; rotation support clarified August 21, 2026.
   `Signing.headers/4` accepts `:previous_whsk` for overlapping Ed25519 keys.
@@ -15,7 +15,7 @@ the sender retains its private key, avoiding shared-secret distribution.
 
 The signer and verifier implement **both `v1` and `v1a` from day one**: `v1,<base64
 HMAC-SHA256>` and `v1a,<base64 ed25519>` in the space-delimited `webhook-signature` header,
-per-endpoint key material (`whsec_` symmetric 24–64 bytes; `whsk_`/`whpk_` asymmetric),
+per-endpoint key material (`whsec_` symmetric 24 to 64 bytes; `whsk_`/`whpk_` asymmetric),
 old+new rotation signing for both. Secrets are resolved via callbacks (ADR-0005).
 
 ## Consequences

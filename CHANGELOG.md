@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 3.2.0 (November 15, 2026)
+## [3.2.0] - 2026-11-15
 
 ### Added
 
@@ -185,6 +185,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Refuse a ledger declaration whose source resource belongs to another ledger.
 
+- Apply a ledger's configured `json_decoder` requirement to every provider in
+  a source declaration's allowlist, so a host-defined `decode_payload/1`
+  without `/2` cannot bypass the decoding policy through a source alias.
+
 - Preserve classified provider errors during key overlaps, including timestamp
   and payload failures from either authenticating key.
 
@@ -260,7 +264,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   signing, are skipped by the sweep, and refuse rolling until explicitly
   scheduled or expired.
 
-## 3.1.0 (November 14, 2026)
+### Documentation
+
+- Add the key custody and lifecycle guide, covering host custodians, registry
+  recovery, endpoint and inbound source keys, migration, and subscription pause.
+- Extend the Livebook with real custody conformance, key issuance, signed delivery,
+  rotation and disposal, inbound source resolution and pause, and JSON policy.
+- Add README sections for key custody and lifecycle, inbound sources, pausable
+  subscriptions, and PostgreSQL row security, with links through the tutorials.
+
+## [3.1.0] - 2026-11-14
 
 Inbound webhooks get an HTTP entry point: `AshHooks.Plug` takes a request from
 the router to the ledger and answers it, with no controller code. The minimum
@@ -344,7 +357,7 @@ change; see [UPGRADING.md](UPGRADING.md).
   matrix), Ash 3.37.4, Spark 2.7.10, AshSqlite 0.3.1 (test substrate),
   Dialyxir 1.4.9, Makeup 1.2.3. The PostgreSQL leg runs PostgreSQL 18.
 
-## 3.0.0 (November 11, 2026)
+## [3.0.0] - 2026-11-11
 
 Inbound verification becomes generic: describe any sender's signature scheme in
 configuration, or write one callback with public primitives. The package no
@@ -416,7 +429,7 @@ each removed module. No schema or dependency changes.
   nor a list of binary `{name, value}` pairs. A list reaches providers as a map in
   `ctx.headers` and in full in `ctx.header_list`.
 
-## 2.3.0 (November 11, 2026)
+## [2.3.0] - 2026-11-11
 
 ### Added
 
@@ -452,7 +465,7 @@ each removed module. No schema or dependency changes.
 
 No new dependencies or schema changes.
 
-## 2.2.1 (November 8, 2026)
+## [2.2.1] - 2026-11-08
 
 ### Fixed
 
@@ -469,7 +482,7 @@ No new dependencies or schema changes.
   the stamp. Recovery below the warning band clears the stamp, so a
   later degradation gets a fresh warning cycle.
 
-## 2.2.0 (November 8, 2026)
+## [2.2.0] - 2026-11-08
 
 A minor under the public support policy: everything new is additive opt-in surface; no
 existing column, action, default, or event changes shape. Adopt what you
@@ -664,7 +677,7 @@ need; each block names its DSL declaration and migration. Read
   fixed; a contained callback crash is `callback_failed`). The public
   resolver `AshHooks.Worker.resolve_config/2` backs the seam.
 
-## 2.1.0 (November 1, 2026)
+## [2.1.0] - 2026-11-01
 
 A minor under the public support policy, not a patch: `AshHooks.Ssrf.resolve_public/1`
 is covered surface and its documented DNS-failure vocabulary changed
@@ -743,7 +756,7 @@ compile time. No schema, DSL, or success-path change; read
   (with their transitive closure). `mix hex.audit` and
   `scripts/check-currency.sh` are clean against the new lock.
 
-## 2.0.4 (October 9, 2026)
+## [2.0.4] - 2026-10-09
 
 ### Fixed
 
@@ -759,7 +772,7 @@ compile time. No schema, DSL, or success-path change; read
 - Dependency updates: Ash 3.34.4 → 3.34.6 (resolves EEF-CVE-2026-101028 in the
   locked graph) and AshPostgres 2.14.3 → 2.14.5.
 
-## 2.0.3 (October 7, 2026)
+## [2.0.3] - 2026-10-07
 
 ### Fixed
 
@@ -791,7 +804,7 @@ compile time. No schema, DSL, or success-path change; read
 - Test: the 5xx backoff bound is asserted exactly (4..7); the legacy `<= 8` accepted an
   unreachable value.
 
-## 2.0.2 (October 7, 2026)
+## [2.0.2] - 2026-10-07
 
 ### Fixed
 
@@ -804,7 +817,7 @@ compile time. No schema, DSL, or success-path change; read
   `retry_after_cap_seconds`.
 - Test dependency updates: `ash_postgres` 2.14.2 → 2.14.3.
 
-## 2.0.1 (October 6, 2026)
+## [2.0.1] - 2026-10-06
 
 Version 2.0.1 includes the delivery ownership, recovery, and
 migration changes below. The guided tour keeps protocol implementations available
@@ -816,7 +829,7 @@ for resources defined during notebook evaluation.
   resources use their custom display without consolidation warnings.
 - Update the notebook and release tooling to 2.0.1.
 
-## 2.0.0 (October 6, 2026)
+## [2.0.0] - 2026-10-06
 
 The changes below first shipped in 2.0.1.
 
@@ -876,7 +889,7 @@ retries. The default transport bounds the complete HTTP operation.
 - Documentation changes trigger Linux CI. The minimum-consumer leg pins Ash
   3.34.3; package, PostgreSQL, coverage, and Livebook checks feed `all-checks-pass`.
 
-## 1.3.0 (October 5, 2026)
+## [1.3.0] - 2026-10-05
 
 Additive options for domain naming and lifecycle, a compile
 fix for generated (non-writable) primary keys, typed subscription
@@ -998,7 +1011,7 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   `[:ash_hooks, :delivery, :disable]` telemetry event or accepts the
   posture in writing.
 
-## 1.2.1 (September 24, 2026)
+## [1.2.1] - 2026-09-24
 
 ### Fixed
 
@@ -1011,7 +1024,7 @@ Linux CI leg exercising an AshPostgres `uuid_v7` consumer shape.
   the Livebook alongside those references. No library code changed; hexdocs
   and the package page README are unaffected.
 
-## 1.2.0 (September 24, 2026)
+## [1.2.0] - 2026-09-24
 
 Tenancy release: ash_hooks aligns with
 Ash attribute multitenancy. An explicit tenant threads every data call,
@@ -1079,7 +1092,7 @@ single→multi on populated tables: backfill the tenant attribute first
 (NULL-tenant rows form a shadow partition that strands effect-once),
 then regenerate identity indexes, then enable.
 
-## 1.1.1 (September 16, 2026)
+## [1.1.1] - 2026-09-16
 
 This release added portability tests for macOS, Linux, and Windows. It did
 not change the public API. The package added tests for platform support; a
@@ -1111,7 +1124,7 @@ exactly the OSes the legs prove.
     returned 500 on Windows; the fixtures now hand httpd
     forward-slash `server_root`/`document_root` (a no-op on unix).
 
-## 1.1.0 (September 16, 2026)
+## [1.1.0] - 2026-09-16
 
 Support-window release: the Elixir floor rises to 1.20 (a minor, not a
 major, by the public support policy, in the first exercise of that rule), the
@@ -1172,7 +1185,7 @@ with `mix hex.audit` running in CI.
   errored `hex.outdated` run (lock mismatch, resolver failure) also exits
   nonzero.
 
-## 1.0.4 (September 16, 2026)
+## [1.0.4] - 2026-09-16
 
 Current-Ash compatibility release: the repo's own app surfaces carry
 Ash 3.33.0's required `default_string_length_count`, and the byte-bound
@@ -1225,7 +1238,7 @@ correction family that requirement exposed is fixed.
   published advisories (ash_sqlite 0.2.19 / ash_sql 0.7.5, both test-only and
   never shipped in the package; `mix hex.audit` is now clean).
 
-## 1.0.3 (August 23, 2026)
+## [1.0.3] - 2026-08-23
 
 Docs-and-tests release (no functional changes; 1.0.2's gate and fixes
 unchanged):
@@ -1244,7 +1257,7 @@ unchanged):
 - The `:httpc` and `Bounded` moduledocs document the literal-IP posture
   and `:cacerts` trust-store configuration.
 
-## 1.0.2 (August 22, 2026)
+## [1.0.2] - 2026-08-22
 
 CI now requires 100% line coverage in the coverage surface declared in `mix.exs`.
 
@@ -1285,7 +1298,7 @@ CI now requires 100% line coverage in the coverage surface declared in `mix.exs`
   (commit d6f3788) rather than exempted; the shipped surface behaves
   identically.
 
-## 1.0.1 (August 22, 2026)
+## [1.0.1] - 2026-08-22
 
 Documentation and tests release with no functional changes. Added
 concurrent-ingest and HTTP-buffering regression tests:
@@ -1311,7 +1324,7 @@ concurrent-ingest and HTTP-buffering regression tests:
   "two rows, both `:created`" shape applies to degraded-upsert layers.
   The as-built floor is stronger than the docs claimed.
 
-## 1.0.0 (August 22, 2026)
+## [1.0.0] - 2026-08-22
 
 1.0.0 is the semantic-versioning baseline: no public API
 removals or renames from 0.2.0 through 0.2.2. Three behavior corrections follow;
@@ -1384,7 +1397,7 @@ see migration notes in [UPGRADING.md](UPGRADING.md).
   corrected, with the install-constraint check added to the release
   checklist.
 
-## 0.2.2 (August 22, 2026)
+## [0.2.2] - 2026-08-22
 
 ### Fixed
 
@@ -1392,7 +1405,7 @@ see migration notes in [UPGRADING.md](UPGRADING.md).
   convention reads it from the package) and renders on hexdocs. It was
   previously GitHub-only.
 
-## 0.2.1 (August 22, 2026)
+## [0.2.1] - 2026-08-22
 
 ### Added
 
@@ -1400,7 +1413,7 @@ see migration notes in [UPGRADING.md](UPGRADING.md).
   a live local delivery, telemetry, retention), verified headless in CI
   on every push. No functional changes.
 
-## 0.2.0 (August 22, 2026)
+## [0.2.0] - 2026-08-22
 
 ### Added
 
@@ -1412,14 +1425,14 @@ see migration notes in [UPGRADING.md](UPGRADING.md).
   preserved). Deleting a terminal row re-opens its dedup identity;
   set TTLs beyond replay/re-emission horizons.
 
-## 0.1.1 (August 22, 2026)
+## [0.1.1] - 2026-08-22
 
 ### Changed
 
 - README rewritten as a package front door (no functional changes):
   audience/register pass; internal build references removed.
 
-## 0.1.0 (August 22, 2026)
+## [0.1.0] - 2026-08-22
 
 ### Added
 
@@ -1459,3 +1472,31 @@ see migration notes in [UPGRADING.md](UPGRADING.md).
   fields, SSRF guard at registration and send, NO headers stored on
   either ledger at all, no response-body persistence by default,
   classified-only error strings.
+
+[3.2.0]: https://github.com/baselabs/ash_hooks/compare/v3.1.0...v3.2.0
+[3.1.0]: https://github.com/baselabs/ash_hooks/compare/v3.0.0...v3.1.0
+[3.0.0]: https://github.com/baselabs/ash_hooks/compare/v2.3.0...v3.0.0
+[2.3.0]: https://github.com/baselabs/ash_hooks/compare/v2.2.1...v2.3.0
+[2.2.1]: https://github.com/baselabs/ash_hooks/compare/v2.2.0...v2.2.1
+[2.2.0]: https://github.com/baselabs/ash_hooks/compare/v2.1.0...v2.2.0
+[2.1.0]: https://github.com/baselabs/ash_hooks/compare/v2.0.4...v2.1.0
+[2.0.4]: https://github.com/baselabs/ash_hooks/compare/v2.0.3...v2.0.4
+[2.0.3]: https://github.com/baselabs/ash_hooks/compare/v2.0.2...v2.0.3
+[2.0.2]: https://github.com/baselabs/ash_hooks/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/baselabs/ash_hooks/compare/v2.0.0...v2.0.1
+[2.0.0]: https://github.com/baselabs/ash_hooks/compare/v1.3.0...v2.0.0
+[1.3.0]: https://github.com/baselabs/ash_hooks/compare/v1.2.1...v1.3.0
+[1.2.1]: https://github.com/baselabs/ash_hooks/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/baselabs/ash_hooks/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/baselabs/ash_hooks/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/baselabs/ash_hooks/compare/v1.0.4...v1.1.0
+[1.0.4]: https://github.com/baselabs/ash_hooks/compare/v1.0.3...v1.0.4
+[1.0.3]: https://github.com/baselabs/ash_hooks/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/baselabs/ash_hooks/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/baselabs/ash_hooks/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/baselabs/ash_hooks/compare/v0.2.2...v1.0.0
+[0.2.2]: https://github.com/baselabs/ash_hooks/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/baselabs/ash_hooks/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/baselabs/ash_hooks/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/baselabs/ash_hooks/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/baselabs/ash_hooks/releases/tag/v0.1.0

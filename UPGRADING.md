@@ -2,6 +2,10 @@
 
 ## 3.1.0 → 3.2.0
 
+For a first implementation, read [key custody and lifecycle](documentation/tutorials/key-custody.md)
+and run the [Livebook](documentation/livebooks/get-started.livemd). This section
+covers the schema and operational changes for existing applications.
+
 To adopt the inbound lifecycle:
 
 1. Create an `AshHooks.InboundSource` resource with the ledger's tenancy,

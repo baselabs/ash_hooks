@@ -1,7 +1,6 @@
-# ADR-0005 — Security defaults and application boundaries
+# 0005 — Security defaults and application boundaries
 
-- **Status:** Accepted August 20, 2026; response capture and read-policy boundaries
-  amended August 22, 2026; reconciled for 2.0 on October 6, 2026.
+- **Status:** Accepted August 20, 2026; response capture and read-policy boundaries amended August 22, 2026; reconciled for 2.0 on October 6, 2026; amended November 15, 2026
 - **Deciders:** Maintainer; independent adversarial design review.
 
 ## Context
@@ -52,3 +51,21 @@ read policies and payload redaction remain part of application operation.
 Explicit adapter, destination-validation, and bound overrides replace the relevant
 built-in behavior. Applications using them must preserve the required security
 properties for their deployment.
+
+## Amendment (November 15, 2026)
+
+The blanket instruction to verify before decoding needs a precise boundary.
+[Signature.jws/3](../../lib/ash_hooks/provider/signature.ex) base64url-decodes the
+compact segments and JSON-decodes the protected header before authentication.
+It requires the header's algorithm to equal the host-pinned algorithm, rejects
+unsupported critical headers and unencoded payloads, ignores key-location
+headers, and verifies the exact encoded `header.payload` signing input with the
+supplied keys. The untrusted header does not choose a key or widen the algorithm
+allowlist. Only after authentication are time claims checked and payload bytes
+returned for delivered-payload decoding. Ingress gates event parsing, identity
+callbacks, and handlers behind successful verification.
+
+Version 3.2.0's ledger `json_decoder` policy supplies the decoder for protected
+headers, post-verification claims, and delivered JSON payloads. Explicit format
+selection and provider decoders follow ADR-0016. Header parsing required by the
+signature protocol is not permission to process an unauthenticated delivery.

@@ -1,6 +1,6 @@
-# ADR-0009 — Bounded HTTP transport and destination pinning
+# 0009 — Bounded HTTP transport and destination pinning
 
-- **Status:** Accepted August 22, 2026; amended October 6, 2026 for 2.0.
+- **Status:** Accepted August 22, 2026; amended October 6, 2026 for 2.0; amended November 15, 2026
 - **Deciders:** Maintainer, informed by independent transport and security review.
 
 ## Context
@@ -71,3 +71,20 @@ an 8 MiB chunk declaration, compared with 16.8 MiB before the buffering correcti
 A separate `:httpc` probe retained only its configured 16-byte prefix but measured
 about 4.65 MiB transient allocation for a 4 MiB error response. These are dated
 observations of those implementations and inputs, not capacity guarantees for 2.0.
+
+## Amendment (November 15, 2026)
+
+[AshHooks.Ssrf.resolve_host_public/2](../../lib/ash_hooks/ssrf.ex) is a public
+host-side resolver for DNS names and IPv4 or IPv6 literals. It validates the
+host syntax, refuses known metadata names and nonpublic addresses, resolves
+both address families under a two-second ceiling shortened by an optional
+absolute deadline, and returns a nonempty address list only when every answer
+is public. It has no destination-policy bypass. Hosts connect only to a returned
+address and retain the original name for TLS identity checks. Reconnects and
+other new connections require fresh resolution and pinning.
+
+The URL resolver `resolve_public/2` calls this host resolver. Unsafe answers
+remain distinct from `:nxdomain` and `:resolve_timeout`; the delivery driver
+retries resolution failures rather than treating them as a destination verdict.
+IPv6 public-address classification also excludes reserved and unallocated space,
+including unallocated gaps inside the global-unicast range.

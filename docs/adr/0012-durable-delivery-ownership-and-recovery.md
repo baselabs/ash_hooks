@@ -1,6 +1,6 @@
-# ADR-0012 — Durable delivery ownership and recovery
+# 0012 — Durable delivery ownership and recovery
 
-- **Status:** Accepted, October 6, 2026; effective in the published 2.0.1 release.
+- **Status:** Accepted, October 6, 2026; effective in the published 2.0.1 release; amended November 15, 2026
 - **Deciders:** Maintainer's corrective-release request; independent adversarial
   design review and independent judgment.
 
@@ -80,3 +80,26 @@ This decision supersedes ADR-0008's all-state queue uniqueness, counter-only sen
 admission, and worker-only timeout. It extends ADR-0003's default identity,
 ADR-0007's row-key classification, and ADR-0011's recovery admission. ADR-0009's
 transport uses one total deadline and stops reading at the body cap in 2.0.
+
+## Amendment (November 15, 2026)
+
+The vendor module used by the historical identity example and its migration
+consequence above was removed in 3.0.0. Its exclusion of outer retry metadata
+is not the generic identity mechanism now shipped. For configured JWS-body
+providers, [Scheme.payload_identity/1](../../lib/ash_hooks/provider/scheme.ex)
+hashes the full verified payload as canonical JSON, sorting object keys without
+dropping fields. Changes anywhere in that payload change its identity; alternate
+signatures or object-key orderings for the same payload do not.
+
+An explicit declaration event extractor retains precedence, followed by the
+provider's identity callback, then the signed-body digest when neither defines
+one. Callback errors fail closed. Applications preserving a former normalization
+must implement it explicitly in their own provider and audit any existing
+identity adoption; the package does not infer a removed implementation from a
+declaration name. ADR-0017 records the generic provider boundary.
+
+Persisted declaration and route ownership, complete primary keys, independent
+send and enqueue fences, runnable-job admission, and durable disable recovery
+remain current. The tenant transaction boundary in ADR-0015 and renewed resend
+allowance in ADR-0020 extend those mechanisms without replacing receiver-facing
+identity or permitting stale result ownership.

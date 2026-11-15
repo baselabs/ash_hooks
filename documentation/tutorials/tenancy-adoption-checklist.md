@@ -149,6 +149,38 @@ serializes the tenant from the row into job args and restores it on execution.
   `webhook_signing_secret(connection, tenant)` override for
   per-tenant signing-secret resolution.
 
+## Canonical custody tenants and row security
+
+For a stored row, call `AshHooks.Tenancy.from_row/1` before reusing its tenant in
+entry-point options. It applies the resource's `tenant_from_attribute` inverse;
+reading the raw attribute bypasses that inverse and may apply a nonidentity
+parser twice. Custody then calls `AshHooks.Custody.canonical_tenant/3` with the
+owner resource, following its create-path tenant conversion and constrained cast.
+UUID and UUIDv7 values normalize case, integers use decimal text, strings stay
+exact UTF-8, and ci_strings normalize case. Non-multitenant owners use `nil`.
+Invalid values return `:invalid_tenant`; unsupported types return
+`:unsupported_tenant_type`. `tenant_type_supported?/2` checks type coverage.
+
+Other attribute types require a `custody_tenant_key {module, function, args}`
+option on the endpoint or inbound source. Its cast-value callback must return
+equal UTF-8 binaries whenever the database treats two values as equal. The
+registry stores this canonical custody identity separately from its database
+tenant and uses it after owner deletion. See [the key guide](key-custody.md).
+
+Source records use `AshHooks.Ingress.resolve_source/3` with both tenant and scope.
+It validates matching source/ledger tenancy and casts all scope fields before a
+source read. Reuse its result through the same request's `:resolved_source`
+ingest context. Schedule endpoint/source expiry, registry sweeps, registry
+failure recovery, and alias adoption per tenant, as well as delivery retention.
+
+Package database work uses bounded tenant transactions, and reads inside each
+phase use the write repository on AshPostgres and transactional AshSqlite.
+PostgreSQL hosts bind transaction-local row-security settings in the repository's
+`on_transaction_begin/1`. Secure both package tables and Oban jobs, and bind
+an enclosing host transaction to the same tenant. The
+[row-security guide](row-security.md) provides repository and policy examples;
+SQLite tenant filtering does not exercise PostgreSQL row security.
+
 ## The isolation guarantees (what you may rely on)
 
 - A dispatch for tenant A cannot create a delivery row for tenant B's

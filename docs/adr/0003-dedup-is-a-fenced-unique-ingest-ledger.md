@@ -1,12 +1,12 @@
-# ADR-0003 — Dedup is a fenced unique-ingest ledger (not ash_onetime)
+# 0003 — Dedup is a fenced unique-ingest ledger (not ash_onetime)
 
-- **Status:** Accepted (2026-08-20)
+- **Status:** Accepted (2026-08-20); amended November 15, 2026
 - **Deciders:** maintainer, corrected against implementation evidence; independent design review
 
 ## Context
 
 Providers deliver at-least-once; receivers must dedup. Candidate primitive 1: the sibling
-`ash_onetime` extension — but it hard-depends `ash_postgres` + `postgrex`, which would force
+`ash_onetime` extension; but it hard-depends `ash_postgres` + `postgrex`, which would force
 Postgres on every consumer and defeat data-layer agnosticism. A unique delivery-audit
 table records arrival but does not by itself recover unfinished processing. A crash
 between ingest and finalization must leave a row that redelivery can claim again.
@@ -25,7 +25,7 @@ ids are not globally unique across accounts), deterministic content-hash identit
 providers without ids (never a fresh UUID), and a **fenced claim/lease state machine**
 (`received → claimed → processed | failed`; claim returns a monotonic fencing token;
 mark/renew conditional on token; a reaper re-drives expired leases). Data-layer-agnostic
-(unique-upsert via supported Ash data-layer mechanisms; ash_sqlite supports them natively —
+(unique-upsert via supported Ash data-layer mechanisms; ash_sqlite supports them natively,
 verified). `ash_onetime` remains an optional dep for consumers who want action-level
 idempotency elsewhere.
 
@@ -34,5 +34,14 @@ idempotency elsewhere.
 - A crash leaves unfinished processing recoverable. A crash after a handler's effect but
   before finalization can repeat that effect; handlers must be idempotent.
 - Uniqueness identity must include declared scope where configured (verifier enforces).
-- Byte-identical distinct deliveries from no-id providers dedupe to one event — documented
+- Byte-identical distinct deliveries from no-id providers dedupe to one event; documented
   at-least-once semantics (no identity exists to distinguish them).
+
+## Amendment (November 15, 2026)
+
+The statement that `ash_onetime` remains an optional dependency is historical
+and false for the current package. It is not a dependency in
+[mix.exs](../../mix.exs), including the optional and development dependency lists.
+The fenced `AshHooks.InboundDelivery` ledger remains the package's deduplication
+mechanism. An application may choose a separate action-idempotency extension,
+but that choice is outside this package's dependency contract.

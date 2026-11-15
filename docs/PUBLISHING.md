@@ -8,9 +8,10 @@ operator procedure.
 
 1. Choose the version under [ADR-0010](adr/0010-semver-and-support-policy.md).
    Update `mix.exs`, dated CHANGELOG, install constraints, supported floors,
-   upgrade guidance, and every notebook's exact package pin. Replace the
-   `Unreleased` heading with the version and its publication date; the released
-   CHANGELOG carries no `Unreleased` section. Review README and tutorials for a
+   upgrade guidance, and every notebook's exact package pin. Rename the
+   development heading to `## [X.Y.Z] - YYYY-MM-DD` with the publication date and
+   add the version's comparison link; the released CHANGELOG carries no
+   development section. Review README and tutorials for a
    new reader, then check their examples and contracts against the final
    implementation.
 2. Regenerate the formatter export and the DSL references:

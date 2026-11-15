@@ -1,4 +1,4 @@
-# ADR-0001 — Naming and package identity
+# 0001 — Naming and package identity
 
 - **Status:** Accepted (2026-08-20)
 - **Deciders:** maintainer, structured design pass
@@ -21,4 +21,4 @@ existing package before publication.
 ## Consequences
 
 - Canonical names remain available to the Ash team; discoverability rides keywords.
-- The name undersells scope slightly (inbound + outbound webhooks) — accepted.
+- The name undersells scope slightly (inbound + outbound webhooks); accepted.

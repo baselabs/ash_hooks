@@ -3,24 +3,30 @@ defmodule AshHooks.Verifiers.ProviderJsonDecoder do
   use Spark.Dsl.Verifier
 
   alias AshHooks.Provider
-  alias Spark.Dsl.Verifier
+  alias Spark.Dsl.{Extension, Verifier}
 
   def verify(dsl_state) do
     # Ingress supplies the default when the option is absent. Keeping absence
     # distinct from an explicit default makes opt-in independent of debug info.
     if Verifier.get_option(dsl_state, [:inbound_delivery], :json_decoder) do
-      dsl_state
-      |> Verifier.get_entities([:webhooks])
-      |> Enum.filter(&is_struct(&1, AshHooks.Inbound))
-      |> Enum.each(&verify_provider!(&1, dsl_state))
+      for %AshHooks.Inbound{} = inbound <- Verifier.get_entities(dsl_state, [:webhooks]),
+          provider <- providers(inbound),
+          do: verify_provider!(provider, inbound.name, dsl_state)
     end
 
     :ok
   end
 
-  defp verify_provider!(%{source_record: source}, _state) when not is_nil(source), do: :ok
+  # A source declaration decodes with whichever allowlisted provider a row's
+  # alias selects, so every module in the allowlist reaches this ledger.
+  defp providers(%{source_record: nil, provider: provider}), do: [provider]
 
-  defp verify_provider!(%{provider: provider, name: name}, dsl_state) do
+  defp providers(%{source_record: source}) do
+    Code.ensure_compiled!(source)
+    source |> Extension.get_opt([:inbound_source], :providers, []) |> Keyword.values()
+  end
+
+  defp verify_provider!(provider, name, dsl_state) do
     Code.ensure_compiled!(provider)
 
     if function_exported?(provider, :decode_payload, 1) and

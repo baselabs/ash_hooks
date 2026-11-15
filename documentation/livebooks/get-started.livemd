@@ -16,13 +16,20 @@
 * Fit the extensions to a domain that reserves `payload`, owns an `active` switch, and uses atom-valued subscription types
 * Observe verification and delivery through telemetry
 * Prune old rows with the retention hooks
+* Implement and check a host custodian with real cryptography and permanent tombstones
+* Issue, roll, reissue, deliver with, and retire endpoint keys through a key registry
+* Create inbound source records, resolve and verify their keys, and pause new requests
+* Apply request-scoped JSON policy and pause subscription fanout
 
 This notebook uses a real SQLite database and an existing WebHook Tester
 receiver, an open-source request-capture server. The notebook checks captured
 request bytes, headers, and signatures. The receiver must already answer at `http://127.0.0.1:52871`;
 set `LOCAL_WEBHOOK_TESTER_PORT` to use another existing receiver. See
 the [local receiver guide](https://github.com/baselabs/ash_hooks/blob/v3.2.0/ops/local/README.md).
-The notebook starts no server.
+The notebook starts no server. PostgreSQL row security requires PostgreSQL;
+this SQLite notebook cannot exercise its policies. Use the
+[row-security guide](https://github.com/baselabs/ash_hooks/blob/v3.2.0/documentation/tutorials/row-security.md)
+for repository binding, table policies, and per-tenant jobs.
 Uses ash_hooks **3.2.0**. The tour plays both sides of each webhook: it signs
 requests the way a sender would and verifies them the way your application does.
 Real senders, a production queue, and your HTTP endpoint come from your own
@@ -87,7 +94,11 @@ IO.puts(envelope_public_pem)
 defmodule Tour.Repo do
   use AshSqlite.Repo, otp_app: :ash_hooks
 
+  @impl true
+  def write_transactions?, do: true
+
   # The SQLite version bundled with the exqlite driver this notebook installs.
+  @impl true
   def min_sqlite_version, do: %Version{major: 3, minor: 54, patch: 1}
 end
 ```
@@ -208,8 +219,322 @@ defmodule Tour.Sms do
 end
 ```
 
+## JSON policy and durable provider context
+
+A ledger's `json_decoder` MFA receives bytes and returns a decoded map or list.
+This host policy refuses a field the application does not accept. Ingress uses it
+for JWS protected headers, claims, and delivered payloads. A host-defined
+`decode_payload/1` also implements `/2` using the supplied decoder; generated JWS
+decoders honor it directly. The callback conformance helper belongs in consumer tests.
+
+The optional provider callback arities receive `AshHooks.Provider.DeliveryContext`.
+Handling gets persisted IDs; parsing and identity get tenant, source, cast scope,
+and alias. Recovery rebuilds these from the receipt, without request headers.
+
+<!-- tested: livebook-json-policy -->
+```elixir
+defmodule Tour.JsonPolicy do
+  def decode(bytes) do
+    case Jason.decode(bytes) do
+      {:ok, %{"forbidden" => _}} -> {:error, :disallowed_field}
+      result -> result
+    end
+  end
+end
+
+defmodule Tour.ManagedOrders do
+  use AshHooks.Provider,
+    verify: [algorithm: :hmac_sha256, signature: {:header, "x-managed-signature"}]
+
+  @impl true
+  def decode_payload(bytes), do: Jason.decode(bytes)
+
+  @impl true
+  def decode_payload(bytes, json_decoder), do: json_decoder.(bytes)
+
+  @impl true
+  def parse_event_type(_payload, %AshHooks.Provider.DeliveryContext{source: :managed_orders}),
+    do: {:ok, :order_paid}
+
+  @impl true
+  def event_identity(%{"id" => id}, %AshHooks.Provider.DeliveryContext{}), do: {:ok, id}
+
+  def event_identity(_payload, %AshHooks.Provider.DeliveryContext{}),
+    do: {:error, :malformed_payload}
+
+  @impl true
+  def handle_event(type, payload, %AshHooks.Provider.DeliveryContext{} = context) do
+    true = context.provider_alias == :orders
+    true = context.scope.account_id == "acct-42"
+    true = not is_nil(context.delivery_id)
+    true = context.external_event_id == payload["id"]
+    {:ok, %AshHooks.Provider.Event{type: type, payload: payload}}
+  end
+end
+```
+
 <!-- tested: livebook-get-started-5 -->
 ```elixir
+# Educational SQLite custodian owned by this notebook's host application.
+# It uses real cryptography and durable SQL tombstones, not test support.
+# It stores material in a disposable local database. A deployed host must
+# secure and encrypt its key store and govern access to its callbacks.
+defmodule Tour.Custodian do
+  @behaviour AshHooks.Custody
+
+  def create_store! do
+    sql!("""
+    CREATE TABLE tour_custody_keys (
+      ref TEXT PRIMARY KEY, tenant TEXT, kind TEXT, material TEXT,
+      destroyed INTEGER NOT NULL CHECK (destroyed IN (0, 1)))
+    """)
+  end
+
+  @impl true
+  def store(ref, material, tenant, kind) do
+    transaction(fn ->
+      if valid?(material, kind) do
+        row = bind(ref, tenant, label(kind), Base.encode64(material), 0)
+
+        case row do
+          [_, _, _, 1] ->
+            {:error, :ref_destroyed}
+
+          [^tenant, stored_kind, stored, 0] ->
+            if stored_kind == label(kind) and stored == Base.encode64(material),
+              do: :ok,
+              else: {:error, :ref_exists}
+
+          _ ->
+            {:error, :ref_exists}
+        end
+      else
+        case sql!("SELECT destroyed FROM tour_custody_keys WHERE ref = ?", [ref]).rows do
+          [[1]] -> {:error, :ref_destroyed}
+          [[0]] -> {:error, :ref_exists}
+          _ -> {:error, :invalid_material}
+        end
+      end
+    end)
+  end
+
+  @impl true
+  def destroy(ref, tenant) do
+    transaction(fn ->
+      case bind(ref, tenant, nil, nil, 1) do
+        [^tenant, _, _, _] ->
+          sql!(
+            "UPDATE tour_custody_keys SET destroyed = 1, material = NULL, kind = NULL WHERE ref = ?",
+            [ref]
+          )
+
+          :ok
+
+        _ ->
+          {:error, :tenant_mismatch}
+      end
+    end)
+  end
+
+  @impl true
+  def sign(ref, tenant, kind, input) do
+    with {:ok, material} <- fetch(ref, tenant, kind) do
+      case kind do
+        {:sender_hmac, _} ->
+          {:error, :not_signable}
+
+        {:standard_webhooks, :v1a} ->
+          {:ok, :crypto.sign(:eddsa, :none, input, [material, :ed25519])}
+
+        {_, digest} ->
+          {:ok, :crypto.mac(:hmac, digest(digest), material, input)}
+      end
+    end
+  end
+
+  @impl true
+  def verify(ref, tenant, kind, input, signature) do
+    with {:ok, material} <- fetch(ref, tenant, kind) do
+      valid =
+        case kind do
+          {:standard_webhooks, :v1a} ->
+            {public, _} = :crypto.generate_key(:eddsa, :ed25519, material)
+
+            byte_size(signature) == 64 and
+              :crypto.verify(:eddsa, :none, input, signature, [public, :ed25519])
+
+          {_, digest} ->
+            expected = :crypto.mac(:hmac, digest(digest), material, input)
+
+            byte_size(signature) == byte_size(expected) and
+              :crypto.hash_equals(expected, signature)
+        end
+
+      if valid, do: :ok, else: {:error, :invalid_signature}
+    end
+  end
+
+  @impl true
+  def public_key(ref, tenant, kind) do
+    with {:ok, material} <- fetch(ref, tenant, kind) do
+      if kind == {:standard_webhooks, :v1a} do
+        {public, _} = :crypto.generate_key(:eddsa, :ed25519, material)
+        {:ok, public}
+      else
+        {:error, :no_public_half}
+      end
+    end
+  end
+
+  @impl true
+  def fingerprint(ref, tenant, kind) do
+    with {:ok, material} <- fetch(ref, tenant, kind) do
+      case kind do
+        {:standard_webhooks, version} ->
+          bytes =
+            if version == :v1a do
+              {public, _} = :crypto.generate_key(:eddsa, :ed25519, material)
+              public
+            else
+              material
+            end
+
+          digest =
+            :crypto.hash(
+              :sha256,
+              "ash_hooks key fingerprint v1\0standard_webhooks.#{version}\0" <> bytes
+            )
+
+          {:ok, binary_part(digest, 0, 16)}
+
+        _ ->
+          {:error, :no_fingerprint}
+      end
+    end
+  end
+
+  # The upsert locks the global reference through comparison and destruction.
+  # SQLite serializes concurrent writers on this real store.
+  defp bind(ref, tenant, kind, material, destroyed) do
+    sql!(
+      """
+      INSERT INTO tour_custody_keys (ref, tenant, kind, material, destroyed) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (ref) DO UPDATE SET ref = excluded.ref
+      RETURNING tenant, kind, material, destroyed
+      """,
+      [ref, tenant, kind, material, destroyed]
+    ).rows
+    |> hd()
+  end
+
+  defp fetch(ref, tenant, kind) do
+    case sql!(
+           "SELECT tenant, kind, material FROM tour_custody_keys WHERE ref = ? AND destroyed = 0",
+           [ref]
+         ).rows do
+      [[^tenant, stored_kind, material]] ->
+        if stored_kind == label(kind),
+          do: {:ok, Base.decode64!(material)},
+          else: {:error, :kind_mismatch}
+
+      _ ->
+        {:error, :unknown_ref}
+    end
+  end
+
+  defp valid?(material, {:standard_webhooks, :v1}),
+    do: is_binary(material) and byte_size(material) in 24..64
+
+  defp valid?(material, {:standard_webhooks, :v1a}),
+    do: is_binary(material) and byte_size(material) == 32
+
+  defp valid?(material, {:sender_hmac, digest}) when digest in [:sha1, :sha256, :sha384, :sha512],
+    do: is_binary(material) and byte_size(material) in 1..16_384
+
+  defp valid?(material, {:legacy_hmac, :sha256}),
+    do: is_binary(material) and byte_size(material) > 0
+
+  defp valid?(_, _), do: false
+  defp label({family, version}), do: "#{family}:#{version}"
+  defp digest(:v1), do: :sha256
+  defp digest(:sha1), do: :sha
+  defp digest(value), do: value
+  defp sql!(query, params \\ []), do: Tour.Repo.query!(query, params, log: false)
+
+  defp transaction(fun) do
+    {:ok, result} = Tour.Repo.transaction(fun, log: false)
+    result
+  end
+end
+
+defmodule Tour.KeyRegistry do
+  use Ash.Resource,
+    domain: Tour.Domain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks.KeyRegistry]
+
+  sqlite do
+    table("tour_key_registry")
+    repo(Tour.Repo)
+  end
+
+  key_registry do
+    issue_timeout(900)
+  end
+end
+
+defmodule Tour.CustodyEndpoint do
+  use Ash.Resource,
+    domain: Tour.Domain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks.Endpoint]
+
+  sqlite do
+    table("tour_custody_endpoints")
+    repo(Tour.Repo)
+  end
+
+  endpoint do
+    custodian(Tour.Custodian)
+    key_registry(Tour.KeyRegistry)
+    key_lifecycle(:on)
+    legacy_key_lifecycle(:on)
+    default_overlap_seconds(60)
+    max_overlap_seconds(3600)
+  end
+
+  actions do
+    defaults([:read, create: :*])
+  end
+end
+
+defmodule Tour.Source do
+  use Ash.Resource,
+    domain: Tour.Domain,
+    data_layer: AshSqlite.DataLayer,
+    extensions: [AshHooks.InboundSource]
+
+  sqlite do
+    table("tour_sources")
+    repo(Tour.Repo)
+  end
+
+  inbound_source do
+    ledger(Tour.Ledger)
+    source_attribute(:source)
+    scope([{:account_id, :string, []}])
+    providers(orders: Tour.ManagedOrders, partner: Tour.Partner)
+    custodian(Tour.Custodian)
+    key_registry(Tour.KeyRegistry)
+    default_overlap_seconds(60)
+    max_overlap_seconds(3600)
+  end
+
+  actions do
+    defaults([:read, create: :*])
+  end
+end
+
 defmodule Tour.Ledger do
   use Ash.Resource,
     domain: Tour.Domain,
@@ -223,6 +548,8 @@ defmodule Tour.Ledger do
 
   inbound_delivery do
     scope_identity([:account_id])
+    record_provider_alias(:on)
+    json_decoder({Tour.JsonPolicy, :decode, []})
   end
 
   attributes do
@@ -238,6 +565,10 @@ defmodule Tour.Ledger do
   # select one from an allowlist. The name identifies the source in the ledger.
   # Secrets are sources, never literals.
   webhooks do
+    inbound :managed_orders do
+      source_record(Tour.Source)
+    end
+
     inbound :orders do
       provider(Tour.Orders)
       secret fn -> {:ok, Application.fetch_env!(:ash_hooks, :tour_orders_secret)} end
@@ -313,12 +644,13 @@ defmodule Tour.Subscription do
   end
 
   actions do
-    defaults([:read, :create])
+    defaults([:read, :create, :update])
     default_accept(:*)
   end
 
   subscription do
     endpoint_resource(Tour.Endpoint)
+    pausable(:on)
   end
 end
 
@@ -398,6 +730,9 @@ defmodule Tour.Domain do
   use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
 
   resources do
+    resource(Tour.KeyRegistry)
+    resource(Tour.CustodyEndpoint)
+    resource(Tour.Source)
     resource(Tour.Ledger)
     resource(Tour.Endpoint)
     resource(Tour.Subscription)
@@ -416,8 +751,21 @@ end
 ```elixir
 Application.put_env(:ash_hooks, Tour.Repo,
   database: Path.join(System.tmp_dir!(), "ash_hooks_tour_#{Ash.UUID.generate()}.sqlite3"),
-  pool_size: 1
+  pool_size: 1,
+  log: false
 )
+
+database_path = Application.fetch_env!(:ash_hooks, Tour.Repo)[:database]
+
+System.at_exit(fn _status ->
+  try do
+    if pid = Process.whereis(Tour.Repo), do: Supervisor.stop(pid)
+  catch
+    :exit, _reason -> :ok
+  after
+    for suffix <- ["", "-shm", "-wal"], do: File.rm(database_path <> suffix)
+  end
+end)
 
 {:ok, _} = Tour.Repo.start_link()
 ```
@@ -428,7 +776,8 @@ Application.put_env(:ash_hooks, Tour.Repo,
 ```elixir
 Tour.Repo.query!("""
 CREATE TABLE tour_ledgers (
-  id TEXT PRIMARY KEY, provider TEXT NOT NULL, external_event_id TEXT NOT NULL,
+  id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_alias TEXT,
+  external_event_id TEXT NOT NULL,
   external_event_type TEXT, payload TEXT NOT NULL, payload_digest TEXT NOT NULL,
   status TEXT NOT NULL, fencing_token INTEGER NOT NULL DEFAULT 0,
   lease_expires_at TEXT, error_class TEXT, attempts INTEGER NOT NULL DEFAULT 0,
@@ -452,7 +801,8 @@ CREATE TABLE tour_endpoints (
 
 Tour.Repo.query!("""
 CREATE TABLE tour_subscriptions (
-  id TEXT PRIMARY KEY, event_types TEXT NOT NULL, endpoint_id TEXT NOT NULL, signing_mode TEXT)
+  id TEXT PRIMARY KEY, event_types TEXT NOT NULL, endpoint_id TEXT NOT NULL, signing_mode TEXT,
+  paused INTEGER NOT NULL DEFAULT 0)
 """)
 
 Tour.Repo.query!("""
@@ -497,6 +847,78 @@ Tour.Repo.query!("CREATE TABLE IF NOT EXISTS tour_orders (id TEXT PRIMARY KEY)")
 ```
 
 <!-- livebook:{"break_marks":true} -->
+
+## Custody: a host-owned key store
+
+The custodian above implements all six `AshHooks.Custody` callbacks over a real
+SQLite table. Kinds are checked before computing, tenants bind globally, and
+store/destroy ordering retains permanent tombstones. The conformance template
+checks the contract with real HMAC and Ed25519 signatures. Each test creates and
+drops a fresh store. The tour then creates its own store, whose tombstones live
+until this disposable database is removed.
+
+<!-- tested: livebook-custody-conformance -->
+```elixir
+ExUnit.start(autorun: false)
+
+defmodule Tour.CustodyContract do
+  use AshHooks.Custody.Conformance, custodian: Tour.Custodian
+
+  setup do
+    Tour.Custodian.create_store!()
+    on_exit(fn -> Tour.Repo.query!("DROP TABLE tour_custody_keys") end)
+    :ok
+  end
+end
+
+defmodule Tour.ProviderContract do
+  use AshHooks.Provider.Conformance, provider: Tour.ManagedOrders
+end
+
+%{failures: 0} = ExUnit.run()
+Tour.Custodian.create_store!()
+
+Tour.Repo.query!("""
+CREATE TABLE tour_key_registry (
+  ref TEXT PRIMARY KEY, kind BLOB NOT NULL, owner_resource TEXT NOT NULL,
+  owner_key TEXT, state TEXT NOT NULL DEFAULT 'issued', custody_tenant TEXT,
+  issued_at TEXT NOT NULL, destroy_after TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT, destroy_generation INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT, inserted_at TEXT NOT NULL, updated_at TEXT NOT NULL)
+""")
+
+Tour.Repo.query!("""
+CREATE TABLE tour_custody_endpoints (
+  id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
+  secret_ref TEXT NOT NULL, previous_secret_ref TEXT, legacy_secret_ref TEXT,
+  legacy_previous_secret_ref TEXT, secret_kind BLOB, previous_secret_kind BLOB,
+  legacy_secret_kind BLOB, legacy_previous_secret_kind BLOB,
+  secret_created_at TEXT, secret_first_used_at TEXT, secret_retired_at TEXT,
+  previous_secret_created_at TEXT, previous_secret_first_used_at TEXT,
+  previous_secret_retired_at TEXT,
+  legacy_secret_created_at TEXT, legacy_secret_first_used_at TEXT,
+  legacy_previous_secret_created_at TEXT, legacy_previous_secret_first_used_at TEXT,
+  legacy_previous_secret_retired_at TEXT)
+""")
+
+Tour.Repo.query!("""
+CREATE TABLE tour_sources (
+  id TEXT PRIMARY KEY, source TEXT NOT NULL, account_id TEXT NOT NULL, provider TEXT NOT NULL,
+  secret_ref TEXT, previous_secret_ref TEXT, secret_kind BLOB, previous_secret_kind BLOB,
+  public_key BLOB, public_key_kind BLOB, paused INTEGER NOT NULL DEFAULT 0,
+  secret_created_at TEXT, secret_first_used_at TEXT, previous_secret_created_at TEXT,
+  previous_secret_first_used_at TEXT, previous_secret_retired_at TEXT)
+""")
+
+Tour.Repo.query!("CREATE UNIQUE INDEX tour_sources_unique ON tour_sources (source, account_id)")
+:ok
+```
+
+The registry is an Ash resource on the owner's write repository with matching
+tenancy. It injects issue and transition actions; hosts authorize operators and
+schedule sweeps. `issue_timeout` must exceed the custodian's store timeout. The
+[key guide](https://github.com/baselabs/ash_hooks/blob/v3.2.0/documentation/tutorials/key-custody.md)
+explains outage retries, `destroy_failed` telemetry, `pending/2`, `rearm/3`, and pruning.
 
 ## Observe verification and delivery through telemetry
 
@@ -778,6 +1200,125 @@ IO.inspect(sms.payload, label: "stored form payload")
 | `{:error, %InvalidSignature{}}`, `%StaleTimestamp{}`, `%MalformedPayload{}` | not authentic, a replay, or not decodable | 4xx |
 | `{:error, %NoWebhookSecret{}}` or `{:error, :source_paused}` | your configuration or a deliberate pause | 5xx requests a retry; recovery depends on the sender's retry policy |
 
+## Inbound source records
+
+This source selects its provider from a code-defined alias allowlist. Issuance
+commits a registry issue before custody receives material, then attaches it with
+the owner in one transaction. Run these helpers outside enclosing transactions.
+The disclosure is returned once; this tour plays the sender using it without
+printing it. A deployed host delivers it securely to its sender.
+
+<!-- tested: livebook-inbound-source -->
+```elixir
+{:ok, source, source_disclosure} =
+  AshHooks.InboundSource.create_source(
+    Tour.Source,
+    %{source: :managed_orders, account_id: "acct-42", provider: :orders},
+    generate: {:standard_webhooks, :v1}
+  )
+
+managed_body = Jason.encode!(%{"id" => "managed-1", "type" => "order.paid"})
+
+managed_signature = fn "whsec_" <> encoded, bytes ->
+  :crypto.mac(:hmac, :sha256, Base.decode64!(encoded), bytes) |> Base.encode16(case: :lower)
+end
+
+{:ok, %{__struct__: AshHooks.Inbound.ResolvedSource} = resolved} =
+  AshHooks.Ingress.resolve_source(Tour.Ledger, :managed_orders, scope: scope)
+
+Tour.ManagedOrders = resolved.provider
+:orders = resolved.provider_alias
+false = resolved.paused?
+[key] = resolved.keys
+true = key.ref == source.secret_ref
+
+{:ok, :created, %{status: :processed, provider_alias: :orders}} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :managed_orders, managed_body, %{
+    scope: scope,
+    resolved_source: resolved,
+    headers: %{"x-managed-signature" => managed_signature.(source_disclosure, managed_body)}
+  })
+
+{:ok, source, next_source_disclosure} =
+  AshHooks.InboundSource.roll_secret(source,
+    generate: {:standard_webhooks, :v1},
+    overlap_seconds: 60
+  )
+
+# Resolve per request, never cache a resolution across requests or rotations.
+{:ok, overlap} = AshHooks.Ingress.resolve_source(Tour.Ledger, :managed_orders, scope: scope)
+2 = length(overlap.keys)
+
+for disclosure <- [source_disclosure, next_source_disclosure] do
+  :ok =
+    Tour.ManagedOrders.verify_signature(
+      managed_body,
+      %{headers: %{"x-managed-signature" => managed_signature.(disclosure, managed_body)}},
+      overlap.keys
+    )
+end
+
+{:ok, source} = AshHooks.InboundSource.pause(source)
+
+{:ok, %{paused?: true} = paused_source} =
+  AshHooks.Ingress.resolve_source(Tour.Ledger, :managed_orders, scope: scope)
+
+{:error, :source_paused} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :managed_orders, managed_body, %{
+    scope: scope,
+    resolved_source: paused_source,
+    headers: %{"x-managed-signature" => managed_signature.(next_source_disclosure, managed_body)}
+  })
+
+{:ok, source} = AshHooks.InboundSource.unpause(source)
+{:ok, source, recovered_disclosure} = AshHooks.InboundSource.reissue_secret(source)
+true = source.previous_secret_ref == key.ref
+{:ok, source} = AshHooks.InboundSource.expire_previous_secret(source)
+{:ok, %{destroyed: 2, destroy_failed: 0}} = AshHooks.KeyRegistry.sweep(Tour.KeyRegistry)
+
+{:ok, active_source} = AshHooks.Ingress.resolve_source(Tour.Ledger, :managed_orders, scope: scope)
+[active_key] = active_source.keys
+
+:ok =
+  Tour.ManagedOrders.verify_signature(
+    managed_body,
+    %{
+      headers: %{"x-managed-signature" => managed_signature.(recovered_disclosure, managed_body)}
+    },
+    active_key
+  )
+
+{:error, %{__struct__: AshHooks.Errors.Invalid.InvalidSignature}} =
+  Tour.ManagedOrders.verify_signature(
+    managed_body,
+    %{
+      headers: %{
+        "x-managed-signature" => managed_signature.(next_source_disclosure, managed_body)
+      }
+    },
+    active_key
+  )
+
+# The JSON policy refuses a correctly signed but disallowed payload.
+# With no decoded event identity, ingress refuses it before creating a receipt.
+forbidden_body = Jason.encode!(%{"id" => "managed-policy", "forbidden" => true})
+
+{:error, %{__struct__: AshHooks.Errors.Invalid.MalformedPayload}} =
+  AshHooks.Ingress.ingest(Tour.Ledger, :managed_orders, forbidden_body, %{
+    scope: scope,
+    headers: %{"x-managed-signature" => managed_signature.(recovered_disclosure, forbidden_body)}
+  })
+
+IO.puts("source resolved, rotated, paused, resumed, reissued, and verified under JSON policy")
+```
+
+Source receipts retain the authenticating alias for recovery, independently of
+later source pause, rotation, or deletion. Existing declarations can migrate with
+`adopt_provider_alias/4`; the key guide covers cutover ordering and bounded claims.
+Sender-issued HMAC imports use `material:` and `kind:`; only standard v1 is
+source-generated. Public senders keep their private keys and register typed public
+keys outside custody with `register_public_key/3`.
+
 ### Verify without a ledger
 
 <!-- tested: livebook-get-started-16 -->
@@ -887,9 +1428,10 @@ Tour.Repo.query!("UPDATE tour_endpoints SET url = ? WHERE id = ?", [
   endpoint.id
 ])
 
-Ash.create!(Tour.Subscription, %{endpoint_id: endpoint.id, event_types: ["order_paid"]},
-  authorize?: false
-)
+subscription =
+  Ash.create!(Tour.Subscription, %{endpoint_id: endpoint.id, event_types: ["order_paid"]},
+    authorize?: false
+  )
 
 {:ok, event} = AshHooks.Event.new(type: :order_paid, payload: Jason.encode!(%{"order" => 1}))
 
@@ -897,6 +1439,20 @@ Ash.create!(Tour.Subscription, %{endpoint_id: endpoint.id, event_types: ["order_
 # (the deferred pattern, where an Oban-backed app wires enqueue: here)
 {:ok, results} = AshHooks.dispatch(Tour.Order, :order_paid, event)
 IO.inspect(Enum.map(results, & &1.status), label: "dispatch results")
+```
+
+### Pause new subscription fanout
+
+`pausable :on` injects a nonnullable boolean, default `false`. Your authorized
+update action accepts `paused`. Pause suppresses new delivery rows, while the
+already persisted delivery from the preceding cell still runs below.
+
+<!-- tested: livebook-subscription-pause -->
+```elixir
+subscription = Ash.update!(subscription, %{paused: true}, authorize?: false)
+{:ok, suppressed_event} = AshHooks.Event.new(type: :order_paid, payload: "{}")
+{:ok, []} = AshHooks.dispatch(Tour.Order, :order_paid, suppressed_event)
+1 = Ash.count!(Tour.Delivery, authorize?: false)
 ```
 
 <!-- tested: livebook-get-started-19 -->
@@ -1020,6 +1576,15 @@ This run leaves the delivery row's snippet as a summary. A direct run with
 ```
 
 <!-- livebook:{"break_marks":true} -->
+
+<!-- tested: livebook-subscription-resume -->
+```elixir
+subscription = Ash.update!(subscription, %{paused: false}, authorize?: false)
+false = subscription.paused
+# Existing event identity still deduplicates; resume restores its fanout route.
+{:ok, [_result]} = AshHooks.dispatch(Tour.Order, :order_paid, event)
+1 = Ash.count!(Tour.Delivery, authorize?: false)
+```
 
 ## Resend and replay: the same event id, again
 
@@ -1524,6 +2089,139 @@ enable switch, and append-only retention policy.
 """)
 ```
 
+## Endpoint custody issuance, overlap, and disposal
+
+Create a key without a byte resolver. Endpoint references and kinds are stored,
+while the one-time disclosure stays with the recipient. v1 generates a shared
+`whsec_`; v1a discloses only its Ed25519 `whpk_` public half. This cell uses the
+same explicit loopback diagnostic permissions as the earlier receiver exercise.
+
+<!-- tested: livebook-endpoint-custody -->
+```elixir
+{:ok, custody_endpoint, first_disclosure} =
+  AshHooks.Endpoint.create_with_key(
+    Tour.CustodyEndpoint,
+    %{url: "https://partner.example.test/custody"},
+    generate: {:standard_webhooks, :v1}
+  )
+
+# Only for this disposable receiver, as in the earlier outbound cell.
+Tour.Repo.query!("UPDATE tour_custody_endpoints SET url = ? WHERE id = ?", [
+  receiver_base <> "/" <> receiver_session,
+  custody_endpoint.id
+])
+
+custody_endpoint = Ash.reload!(custody_endpoint, authorize?: false)
+
+send_custody = fn endpoint ->
+  AshHooks.Delivery.test_send(endpoint,
+    deliveries: Tour.Delivery,
+    type: :custody_tour,
+    payload: ~s({"custody":true}),
+    ssrf_check: fn url -> url == receiver_base <> "/" <> receiver_session end,
+    http_opts: [validate_destination: false]
+  )
+end
+
+{:ok, %{status: :succeeded}} = send_custody.(custody_endpoint)
+
+{:ok, custody_endpoint, public_disclosure} =
+  AshHooks.Endpoint.roll_secret(custody_endpoint,
+    generate: {:standard_webhooks, :v1a},
+    overlap_seconds: 60
+  )
+
+{:ok, %{status: :succeeded, delivery: overlap_delivery}} = send_custody.(custody_endpoint)
+:succeeded = overlap_delivery.status
+
+{:ok, %{status: 200, body: custody_captures}} =
+  AshHooks.Http.Bounded.request(
+    :get,
+    receiver_base <> "/api/session/" <> receiver_session <> "/requests",
+    %{},
+    "",
+    validate_destination: false,
+    max_body_bytes: 1_048_576
+  )
+
+[custody_capture] =
+  Enum.filter(Jason.decode!(custody_captures), fn request ->
+    Enum.any?(request["headers"], fn header ->
+      String.downcase(header["name"]) == "webhook-id" and
+        header["value"] == overlap_delivery.event_uuid
+    end)
+  end)
+
+custody_bytes = Base.decode64!(custody_capture["request_payload_base64"])
+^custody_bytes = overlap_delivery.payload
+custody_headers = Map.new(custody_capture["headers"], &{String.downcase(&1["name"]), &1["value"]})
+{:ok, _} = AshHooks.Signing.verify(custody_bytes, custody_headers, first_disclosure)
+{:ok, _} = AshHooks.Signing.verify(custody_bytes, custody_headers, public_disclosure)
+
+opaque =
+  struct!(AshHooks.Custody.Key,
+    custodian: Tour.Custodian,
+    ref: custody_endpoint.secret_ref,
+    tenant: nil,
+    kind: custody_endpoint.secret_kind
+  )
+
+{:ok, fingerprint} = AshHooks.Custody.display_fingerprint(opaque)
+{:ok, ^fingerprint} = AshHooks.Signing.display_fingerprint(public_disclosure)
+IO.puts("public and custody fingerprints agree: " <> fingerprint)
+
+# A second roll cannot discard an active previous key.
+{:error, :overlap_active} =
+  AshHooks.Endpoint.roll_secret(custody_endpoint, generate: {:standard_webhooks, :v1})
+
+{:error, {:overlap_exceeds_max, 3600}} =
+  AshHooks.Endpoint.schedule_previous_retirement(
+    custody_endpoint,
+    DateTime.add(DateTime.utc_now(), 7200)
+  )
+
+# Reissue immediately replaces current, preserving the separate previous window.
+previous_ref = custody_endpoint.previous_secret_ref
+{:ok, custody_endpoint, _replacement_public} = AshHooks.Endpoint.reissue_secret(custody_endpoint)
+^previous_ref = custody_endpoint.previous_secret_ref
+
+# Retire at an explicit instant, remove ended slots, then dispose outside transactions.
+retire_at = DateTime.utc_now()
+
+{:ok, custody_endpoint} =
+  AshHooks.Endpoint.schedule_previous_retirement(custody_endpoint, retire_at, now: retire_at)
+
+{:ok, 1} = AshHooks.Endpoint.expire_previous_secrets(Tour.CustodyEndpoint, now: retire_at)
+# Two replaced keys plus the abandoned issue from the refused roll.
+{:ok, %{destroyed: 3, destroy_failed: 0}} = AshHooks.KeyRegistry.sweep(Tour.KeyRegistry)
+
+{:error, :unknown_ref} =
+  Tour.Custodian.sign(previous_ref, nil, {:standard_webhooks, :v1}, "input")
+
+# The legacy slot has its own markers and timeline; standard remains unchanged.
+custody_endpoint = Ash.reload!(custody_endpoint, authorize?: false)
+standard_ref = custody_endpoint.secret_ref
+
+{:ok, custody_endpoint, _legacy_disclosure} =
+  AshHooks.Endpoint.roll_secret(custody_endpoint,
+    slot: :legacy,
+    generate: {:legacy_hmac, :sha256}
+  )
+
+^standard_ref = custody_endpoint.secret_ref
+nil = custody_endpoint.legacy_previous_secret_ref
+IO.puts("custody delivery, mixed-algorithm overlap, reissue, expiry, and destruction completed")
+```
+
+Schedule both owner expiry and registry sweeps per tenant. Expiry controls slot
+removal; the signing deadline already excludes an expired key. The registry also
+recovers timed-out issues and deleted owners. To migrate existing byte slots,
+keep `secret_resolver` while running `adopt_keys/2` for every row; remove the byte
+resolver only after all occupied slots carry custody kinds. Then the compile-time
+`key_material: :custody_only` setting can refuse new byte sources. The
+[key guide](https://github.com/baselabs/ash_hooks/blob/v3.2.0/documentation/tutorials/key-custody.md)
+explains imports, canonical tenant equality, fingerprints, and operational recovery.
+
 ## Clean up
 
 The tour created one disposable SQLite file. Close its repository and remove
@@ -1567,6 +2265,8 @@ IO.puts("Tour database and receiver session removed.")
 
 * [Get-started tutorial](https://github.com/baselabs/ash_hooks/blob/v3.2.0/documentation/tutorials/get-started.md): the full walkthrough with Oban
 * [Verify any sender](https://github.com/baselabs/ash_hooks/blob/v3.2.0/documentation/tutorials/verify-any-sender.md): signature recipes and the configuration reference
+* [Key custody and lifecycle](https://github.com/baselabs/ash_hooks/blob/v3.2.0/documentation/tutorials/key-custody.md): host custodians, registry recovery, endpoint and inbound source keys, migration, and subscription pause
+* [Row security](https://github.com/baselabs/ash_hooks/blob/v3.2.0/documentation/tutorials/row-security.md): PostgreSQL repository binding and policies
 * [Multi-tenant adoption checklist](https://github.com/baselabs/ash_hooks/blob/v3.2.0/documentation/tutorials/tenancy-adoption-checklist.md)
 * [DSL reference](https://github.com/baselabs/ash_hooks/tree/v3.2.0/documentation/dsls)
 * `AshHooks.Provider.Scheme`, `AshHooks.Provider.Signature`, `AshHooks.Telemetry`, `AshHooks.Delivery`, `AshHooks.Ingress` module docs

@@ -536,5 +536,16 @@ all optional-feature events. The fragment runs inside this application example.
 Forward measurements and identifiers to your metrics system. `attach_many` matches exact names; events omit bodies,
 payloads, and signing secrets.
 
-Next: the [verification guide](verify-any-sender.md), [tenancy checklist](tenancy-adoption-checklist.md),
-and [upgrade guide](../../UPGRADING.md).
+## Next steps
+
+Continue with [key custody and lifecycle](key-custody.md) to implement a custodian,
+issue endpoint keys through a registry, roll and retire both signing slots,
+migrate byte references, and own inbound keys with source records. It also covers
+pausable subscriptions and disposal failure recovery. Run these features in the
+[Livebook](../livebooks/get-started.livemd).
+
+The [verification guide](verify-any-sender.md) covers request-scoped JSON policy
+and provider delivery context. The [tenancy checklist](tenancy-adoption-checklist.md)
+explains canonical tenant handling; the [row-security guide](row-security.md)
+adds PostgreSQL transaction binding and policies. Use the
+[upgrade guide](../../UPGRADING.md) when adopting these features on existing tables.

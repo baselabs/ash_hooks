@@ -21,7 +21,8 @@ to set `default_string_length_count`; see [UPGRADING.md](UPGRADING.md).
 The [get-started tutorial](documentation/tutorials/get-started.md) includes
 migrations, resources, a provider, domain registration, and executable calls.
 The [Livebook](documentation/livebooks/get-started.livemd) walks through both
-directions with real SQLite and a real request-capture receiver.
+directions, custody issuance and retirement, inbound source records, JSON policy,
+and subscription pause with real SQLite and a real request-capture receiver.
 
 ## Receiving webhooks
 
@@ -193,6 +194,11 @@ once; receivers deduplicate using the stable `webhook-id`.
 
 ### Optional outbound features
 
+- `AshHooks.Ssrf.resolve_host_public/2` validates DNS names and IP literals,
+  resolves both address families under a bounded deadline, and returns only public
+  addresses. Custom connection code must resolve at every connect, reconnect,
+  redirect, and failover, connect to a returned address, and retain the hostname
+  for TLS verification. See the [resolver contract](https://hexdocs.pm/ash_hooks/AshHooks.Ssrf.html).
 - `retryable_statuses` replaces the ordinary retry set. Success, redirects, and
   the 410 rule stay fixed. `delivery_headers` adds checked metadata headers;
   signing, content type, and framing headers cannot be overridden.
@@ -259,6 +265,34 @@ composite keys. Paginated queries additionally require an `:id` attribute. Endpo
 and subscription references require a single UUID-compatible key, including UUIDv7.
 A full last page still carries a cursor; a shorter page carries nil.
 
+## Key custody and lifecycle
+
+Keep stored key bytes behind your own `AshHooks.Custody` implementation. A host
+`AshHooks.KeyRegistry` resource tracks issuance, attachment, retirement, and
+crash-safe disposal. Endpoints create keys with `create_with_key/3`, roll with a
+bounded overlap, recover lost disclosures with `reissue_secret/2`, and schedule
+or immediately expire previous keys. Standard and opt-in legacy slots have
+independent lifecycles; mixed byte and custody slots support migration.
+The [key guide](documentation/tutorials/key-custody.md) covers conformance,
+fingerprints, `adopt_keys/2`, disposal scheduling, and `key_material: :custody_only`.
+
+## Inbound sources
+
+`AshHooks.InboundSource` puts provider aliases, custody keys, pinned public keys,
+rotation deadlines, and pause on a host Ash resource. `resolve_source/3` resolves
+the provider, cast scope, and admitted keys once per request. Receipts retain the
+authenticating provider alias for recovery. The
+[key guide](documentation/tutorials/key-custody.md#own-inbound-source-keys) teaches
+creation, rotation, public-key registration, pause, resolution, and adoption.
+
+## Pausable subscriptions
+
+Opt in with subscription `pausable :on` and migrate its nonnullable `paused`
+boolean, default `false`. Ordinary authorized updates pause or resume new
+fanout; existing deliveries continue. See the
+[key guide](documentation/tutorials/key-custody.md#apply-json-policy-pause-subscriptions-and-bind-database-phases)
+and the executable Livebook for the complete lifecycle.
+
 ## Multi-tenancy
 
 Declare consistent attribute multitenancy on every enabled resource, including
@@ -273,6 +307,14 @@ secret resolvers receive both reference and tenant. When adopting tenancy on pop
 tables, backfill every tenant value, rebuild identities, and only then enable tenant
 traffic. The [checklist](documentation/tutorials/tenancy-adoption-checklist.md) gives
 the ordered transition for every tenant.
+
+## Row security
+
+PostgreSQL hosts can bind transaction-local tenant settings through the repository's
+`on_transaction_begin/1`. Package phases keep reads on the write repository and
+sweeps run per tenant. The [row-security guide](documentation/tutorials/row-security.md)
+covers table policies, Oban jobs, and repository binding. The SQLite Livebook
+teaches tenant isolation; PostgreSQL is required to exercise those policies.
 
 ## Retention and security
 
@@ -302,6 +344,7 @@ vulnerabilities privately through [SECURITY.md](SECURITY.md).
 `AshHooks.Telemetry` lists all event names and metadata. Attach exact names using
 `attach_many`; events omit payloads, bodies, and signing secrets. The tutorial's
 handler shows the basic lifecycle; the module reference includes optional events.
+Monitored delivery and finalization children inherit the configured caller tracer context.
 
 The public contract includes the DSL, public functions, injected attributes and
 actions, telemetry, and error classes. Breaking changes next ship in 4.0.0;

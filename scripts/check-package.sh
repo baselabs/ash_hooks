@@ -46,6 +46,7 @@ with tarfile.open(fileobj=io.BytesIO(content), mode='r:gz') as inner:
         'documentation/tutorials/get-started.md',
         'documentation/tutorials/tenancy-adoption-checklist.md',
         'documentation/tutorials/row-security.md',
+        'documentation/tutorials/key-custody.md',
         'documentation/livebooks/get-started.livemd',
         'documentation/dsls/DSL-AshHooks.md',
         'documentation/dsls/DSL-AshHooks.Endpoint.md',
