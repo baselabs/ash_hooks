@@ -178,7 +178,7 @@ defmodule AshHooks.InboundParityTest do
                scope: %{"account_id" => "acct-1"}
              })
 
-    # an empty window counts zeros; a read failure counts zeros (never a crash)
+    # an empty window successfully reports zeros
     assert {:ok, counts} =
              AshHooks.Ingress.counts(Ledger,
                from: DateTime.add(DateTime.utc_now(), 60, :second),
@@ -386,7 +386,7 @@ defmodule AshHooks.InboundParityTest do
     {:ok, :created, _} =
       AshHooks.Ingress.ingest(AshHooks.FnPausedLedger, :arity_paused, open_body, open_ctx)
 
-    # list with a to-bound alone composes; a failed window read counts zeros
+    # list with a to-bound alone composes; a failed counts read surfaces its error
     {:ok, %{records: [_]}} =
       AshHooks.Ingress.list(AshHooks.FnPausedLedger,
         source: :appenv_paused,
@@ -395,7 +395,7 @@ defmodule AshHooks.InboundParityTest do
 
     Repo.query!("DROP TABLE #{@ledger}")
 
-    assert {:ok, %{received: 0}} =
+    assert {:error, %Ash.Error.Unknown{}} =
              AshHooks.Ingress.counts(Ledger, from: DateTime.add(DateTime.utc_now(), -60, :second))
   after
     recreate_ledger!()

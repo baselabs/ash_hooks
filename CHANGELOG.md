@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Inbound observation counts return storage read errors instead of successful
+  zero counts. Endpoint health sweeps continue across failed history reads and
+  return an incomplete-sweep error with partial write counts and failed reads.
+
 - Standard Webhooks verification authenticates the signature before checking
   the timestamp window for both HMAC and Ed25519. A bad signature with a stale
   timestamp now returns `:invalid_signature`; an authentic stale request still

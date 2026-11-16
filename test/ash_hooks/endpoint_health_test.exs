@@ -386,11 +386,11 @@ defmodule AshHooks.EndpointHealthTest do
 
     assert error =~ ":endpoint_id"
 
-    # a history read failure never stops the sweep (counted as considered,
-    # neither disabled nor warned)
+    # All enabled endpoints are attempted and failed reads report incompleteness.
+    endpoint!()
     Repo.query!("DROP TABLE IF EXISTS #{@attempts}")
 
-    assert {:ok, %{disabled: 0, warned: 0}} =
+    assert {:error, {:incomplete_sweep, %{disabled: 0, warned: 0, failed: 2}}} =
              AshHooks.EndpointHealth.sweep(Endpoint, Attempt, now: DateTime.utc_now())
 
     # and stats surfaces the read error

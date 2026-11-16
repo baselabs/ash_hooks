@@ -236,6 +236,8 @@ defmodule AshHooks.Ingress do
   and the payload-less `:failed_verification` rejection rows); without
   them both report 0. Paused sources, unavailable custody keys, and
   unrecognized callback failures are excluded from rejection rows and their count.
+  A storage read failure returns `{:error, reason}`; zero counts mean the read
+  succeeded and found no matching observations.
   """
   @spec counts(module(), keyword()) ::
           {:ok,
@@ -251,8 +253,8 @@ defmodule AshHooks.Ingress do
     alias AshHooks.Tenancy
 
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
-         :ok <- require_timestamps(resource) do
-      rows = window_rows(resource, opts, tenant)
+         :ok <- require_timestamps(resource),
+         {:ok, rows} <- window_rows(resource, opts, tenant) do
       accepted = Enum.reject(rows, &(&1.status == :failed_verification))
 
       {:ok,
@@ -296,10 +298,6 @@ defmodule AshHooks.Ingress do
       tenant,
       &Ash.read(&1, authorize?: false, tenant: tenant)
     )
-    |> case do
-      {:ok, rows} -> rows
-      {:error, _reason} -> []
-    end
   end
 
   defp sum_duplicates(rows) do
