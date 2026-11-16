@@ -50,6 +50,15 @@ defmodule AshHooks.RowSecurityPostgresTest do
 
   test "real restricted roles and forced policies deny unbound access", context do
     Cases.unbound_access(context)
+    Cases.oban_role_access(context)
+  end
+
+  test "the runtime instance admits tenant jobs but cannot fetch or update them", context do
+    Cases.oban_runtime_isolation(context)
+  end
+
+  test "the unbound engine stages, rescues, and prunes both tenants' jobs", context do
+    Cases.oban_engine_maintenance(context)
   end
 
   for configuration <- [:primary, :split] do
@@ -124,6 +133,26 @@ defmodule AshHooks.RowSecurityPostgresTest do
       Cases.worker_phases(context)
     end
 
+    @tag :real_receiver
+    @tag configuration: configuration
+    test "the unbound engine completes both tenants' jobs with #{configuration} reads", context do
+      Cases.oban_engine_delivery(context)
+    end
+
+    @tag :real_receiver
+    @tag configuration: configuration
+    test "the engine schedules real HTTP retries with #{configuration} reads", context do
+      Cases.oban_engine_retry(context)
+    end
+
+    @tag :real_receiver
+    @tag capture_log: true
+    @tag configuration: configuration
+    test "the engine retries and discards finalization errors with #{configuration} reads",
+         context do
+      Cases.oban_engine_errors(context)
+    end
+
     for operation <- [
           :resend,
           :delivery_replay,
@@ -177,6 +206,28 @@ defmodule AshHooks.RowSecurityPostgresTest do
     test "the attempt deadline and finalizer retain tracer context with #{configuration} reads",
          context do
       Cases.tracer_deadline(context)
+    end
+  end
+end
+
+if Code.ensure_loaded?(Oban) do
+  for {shape, tenant} <- [integer: 17, atom: :tenant_atom, custom: "mixed"] do
+    defmodule Module.concat(AshHooks.RowSecurityTenantShapeTest, Macro.camelize(to_string(shape))) do
+      use ExUnit.Case, async: false
+      alias AshHooks.RowSecurityPostgresTest.{ReadRepo, Repo}
+      alias AshHooks.Test.RowSecurityCases, as: Cases
+      @moduletag :postgres
+      @moduletag :real_receiver
+      @shape shape
+      @tenant tenant
+
+      setup_all do
+        Cases.setup_postgres(__MODULE__, Repo, ReadRepo, @shape)
+      end
+
+      test "the queue round-trips the tenant through forced ledger and job policies", context do
+        Cases.oban_tenant_shape(context, @tenant)
+      end
     end
   end
 end

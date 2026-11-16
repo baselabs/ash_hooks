@@ -21,11 +21,17 @@ defmodule AshHooks.Worker do
   survive Oban's JSON encoding unchanged: strings (UUIDs and slugs) and integers
   do; an atom arrives as a string. Pair a custom `parse_attribute` with
   `tenant_from_attribute` so the stored attribute and job tenant round-trip.
-  Use `args->>'tenant'`, the tenant's text form, in the job table's policy.
+  Use `args->>'tenant'`, the tenant's text form, in the runtime role's job
+  policies. The queue engine needs separate policies over all job and peer rows.
 
   Enqueue inserts in a bounded phase after the delivery persists. Configure
-  the Oban instance with the ledger's repo to share its tenant binding.
-  See the [row-level security guide](row-security.md).
+  the Oban instance with the ledger's repo to share its tenant binding. When
+  PostgreSQL job tables use forced row security, configure the `oban:` instance
+  with queues, plugins, peer leadership, and staging disabled. Run
+  queues and maintenance through a second instance on an engine-role repo
+  with the same prefix and PostgreSQL notifier. `perform/1` binds its own
+  tenant phases through the ledger repo. See the
+  [row-level security guide](row-security.md) for SQL and supervision entries.
 
   Options:
 
@@ -172,7 +178,9 @@ defmodule AshHooks.Worker do
   survive Oban's JSON encoding unchanged: strings (UUIDs and slugs) and integers
   do; an atom arrives as a string. Pair a custom `parse_attribute` with
   `tenant_from_attribute` so the stored attribute and job tenant round-trip.
-  Use `args->>'tenant'`, the tenant's text form, in the job table's policy.
+  Use `args->>'tenant'`, the tenant's text form, in the runtime role's job
+  policies, alongside separate engine-role policies over all rows of
+  `oban_jobs` and `oban_peers`. A tenant-only policy cannot run the queue.
   """
 
   require Ash.Query

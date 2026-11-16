@@ -89,7 +89,7 @@ defmodule AshHooks.MixProject do
         []
       else
         [
-          {:oban, "~> 2.20", optional: true},
+          {:oban, "~> 2.24", optional: true},
           {:plug, "~> 1.16", optional: true},
           # A real HTTP server and a real Phoenix endpoint and router for the
           # plug's interoperability tests and the documentation's mounting

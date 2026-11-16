@@ -176,9 +176,12 @@ failure recovery, and alias adoption per tenant, as well as delivery retention.
 Package database work uses bounded tenant transactions, and reads inside each
 phase use the write repository on AshPostgres and transactional AshSqlite.
 PostgreSQL hosts bind transaction-local row-security settings in the repository's
-`on_transaction_begin/1`. Secure both package tables and Oban jobs, and bind
-an enclosing host transaction to the same tenant. The
-[row-security guide](row-security.md) provides repository and policy examples;
+`on_transaction_begin/1`. Secure package tables and both Oban tables, and bind
+an enclosing host transaction to the same tenant. Use an insert-only Oban
+instance on the runtime ledger repository and a separate engine-role instance
+for queues and maintenance, sharing the prefix and PostgreSQL notifier. The
+[row-security guide](row-security.md) provides exact role, grant, policy, and
+supervision examples;
 SQLite tenant filtering does not exercise PostgreSQL row security.
 
 ## The isolation guarantees (what you may rely on)
@@ -195,7 +198,12 @@ SQLite tenant filtering does not exercise PostgreSQL row security.
   survive Oban's JSON encoding unchanged: strings (UUIDs and slugs) and integers
   do; an atom arrives as a string. Pair a custom `parse_attribute` with
   `tenant_from_attribute` so the stored attribute and job tenant round-trip.
-  Use `args->>'tenant'`, the tenant's text form, in the job table's policy.
+  Use `args->>'tenant'`, the tenant's text form, in the runtime role's job
+  policies. The runtime role can select and insert only its tenant's jobs;
+  it cannot update jobs or access `oban_peers`. The separate engine role needs
+  policies over all rows of `oban_jobs` and `oban_peers`, with row security
+  enabled and forced on both tables. A tenant-only policy hides queued jobs
+  from Oban's unbound engine.
 - Recovery is fenced to the row's declaration, route, tenant, and enqueue token.
   A crash after queue admission can still invoke a custom enqueue callback again;
   make that callback idempotent. The generated Oban worker requires a persisted

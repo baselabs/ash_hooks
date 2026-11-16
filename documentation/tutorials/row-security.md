@@ -95,20 +95,145 @@ operation the application role needs. Cast according to the actual tenant
 column type. Enable `FORCE ROW LEVEL SECURITY` as well as `ENABLE ROW LEVEL
 SECURITY`, and verify access through the application role with no binding.
 
+The ledger column must store the bound tenant key, or its policy must compare
+against the parsed key. For example, if `parse_attribute` uppercases the tenant
+and `tenant_from_attribute` lowercases it, both ledger expressions use
+`tenant_id = upper(current_setting('my_app.tenant', true))`. Integer columns
+compare against `nullif(current_setting('my_app.tenant', true), '')::bigint`. Job policies
+still compare the unparsed text key because job args store the recovered tenant.
+
 Multitenant jobs store the row's tenant in `args["tenant"]`. The tenant must
 survive Oban's JSON encoding unchanged: strings (UUIDs and slugs) and integers
 do; an atom arrives as a string. Pair a custom `parse_attribute` with
 `tenant_from_attribute` so the stored attribute and job tenant round-trip.
-Use `args->>'tenant'`, the tenant's text form, in the job table's policy.
+Use `args->>'tenant'`, the tenant's text form, for application access to jobs.
 
-Use `args->>'tenant' = current_setting('my_app.tenant', true)` for the job
-table's policy. The generated worker inserts through the Oban instance named
-by its `oban:` option. Configure that instance with the ledger's repository so
-the job insert joins the tenant phase. The delivery persists before the enqueue
-phase begins; enqueue failure keeps the durable row available for recovery.
-The package writes one tenant key and never rewrites job args after insertion.
-Call the worker's real `perform/1` directly through Oban, without a tenant
-wrapper. The job tenant supplies each database phase's binding.
+### Separate insertion from queue execution
+
+Oban's engine fetches, stages, rescues, prunes, and transitions jobs without a
+tenant binding. Its database peer also reads and writes `oban_peers`, which has
+no tenant column. A tenant-only job policy hides runnable jobs from the engine.
+Use two database roles and two Oban instances sharing one database and prefix.
+
+Create login roles as a database administrator. Provision their credentials
+through the application's secret store. Neither role may own either table,
+inherit the table owner's privileges, be a superuser, or bypass row security.
+Keep migrations on a separate owner connection. If the runtime role already
+exists, apply these restrictions to it instead of creating it again.
+
+<!-- tested: row-security-oban-roles -->
+```sql
+CREATE ROLE my_app_runtime LOGIN NOSUPERUSER NOBYPASSRLS;
+CREATE ROLE my_app_oban_engine LOGIN NOSUPERUSER NOBYPASSRLS;
+```
+
+Run Oban's migrations in the `webhook_jobs` prefix using the owner connection,
+then apply the following SQL as that owner. This prefix is dedicated to AshHooks
+jobs; other host jobs use a separate prefix or instance. Replace the example prefix, role
+names, and setting name consistently. Remove any older policies and grants
+that would widen these permissions; permissive policies combine with OR.
+
+<!-- tested: row-security-oban-policies -->
+```sql
+REVOKE ALL ON webhook_jobs.oban_jobs, webhook_jobs.oban_peers FROM PUBLIC;
+GRANT USAGE ON SCHEMA webhook_jobs TO my_app_runtime, my_app_oban_engine;
+GRANT USAGE ON SEQUENCE webhook_jobs.oban_jobs_id_seq
+  TO my_app_runtime, my_app_oban_engine;
+GRANT SELECT, INSERT ON webhook_jobs.oban_jobs TO my_app_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON webhook_jobs.oban_jobs, webhook_jobs.oban_peers TO my_app_oban_engine;
+
+ALTER TABLE webhook_jobs.oban_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE webhook_jobs.oban_jobs FORCE ROW LEVEL SECURITY;
+ALTER TABLE webhook_jobs.oban_peers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE webhook_jobs.oban_peers FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY runtime_job_read ON webhook_jobs.oban_jobs
+  FOR SELECT TO my_app_runtime
+  USING (args->>'tenant' = current_setting('my_app.tenant', true));
+CREATE POLICY runtime_job_insert ON webhook_jobs.oban_jobs
+  FOR INSERT TO my_app_runtime
+  WITH CHECK (args->>'tenant' = current_setting('my_app.tenant', true));
+CREATE POLICY engine_jobs ON webhook_jobs.oban_jobs
+  FOR ALL TO my_app_oban_engine USING (true) WITH CHECK (true);
+CREATE POLICY engine_peers ON webhook_jobs.oban_peers
+  FOR ALL TO my_app_oban_engine USING (true) WITH CHECK (true);
+```
+
+The runtime role needs `SELECT` for Oban.Basic's unique-job lookup and
+`INSERT ... RETURNING`, `INSERT` for admission, and sequence `USAGE` for IDs.
+The unique path also takes a transaction-scoped advisory lock. The generated
+worker does not request conflict replacement, so insertion needs no `UPDATE`.
+Do not grant runtime `UPDATE`, `DELETE`, or access to `oban_peers`. A runtime
+connection can read and insert only its bound tenant's jobs and cannot run the
+queue engine. The engine role has policies over all job and peer rows; give it
+no access to the package's tenant ledgers.
+
+Configure `MyApp.Repo`, the ledger repository shown above, with runtime-role
+credentials. Configure a separate repository with engine-role credentials and
+the same database connection settings:
+
+<!-- tested: row-security-oban-engine-repo -->
+```elixir
+defmodule MyApp.ObanEngineRepo do
+  use Ecto.Repo,
+    otp_app: :my_app,
+    adapter: Ecto.Adapters.Postgres
+end
+```
+
+Supervise both repositories before these Oban children. This configuration
+uses Oban 2.24 or later. The application instance has no queues,
+plugins, database peer, or stager. `plugins: false` alone does not disable the
+stager. The engine instance owns queue execution and maintenance:
+
+<!-- tested: row-security-oban-instances -->
+```elixir
+[
+  {Oban,
+   name: MyApp.Oban,
+   repo: MyApp.Repo,
+   prefix: "webhook_jobs",
+   engine: Oban.Engines.Basic,
+   notifier: Oban.Notifiers.Postgres,
+   queues: false,
+   plugins: false,
+   peer: false,
+   stager: false},
+  {Oban,
+   name: MyApp.ObanEngine,
+   repo: MyApp.ObanEngineRepo,
+   prefix: "webhook_jobs",
+   engine: Oban.Engines.Basic,
+   notifier: Oban.Notifiers.Postgres,
+   queues: [webhooks: 10],
+   pruner: [max_age: 86_400],
+   lifeline: [rescue_after: 3_600_000]}
+]
+```
+
+Set the generated worker's `oban:` option to `MyApp.Oban`, the application
+instance, and use its `:webhooks` queue. Its insert joins the ledger repository's
+tenant transaction. The delivery persists before the enqueue phase begins;
+enqueue failure keeps the durable row available for recovery. The package
+writes one tenant key and never rewrites job args after insertion.
+
+Both instances use the PostgreSQL notifier and the same prefix. An available
+job's insert publishes on `webhook_jobs.oban_insert` through the inserting
+repository; PostgreSQL delivers the notification after commit. The engine
+instance listens on that prefix's channel regardless of its instance name.
+Its stager also polls for due scheduled and retryable jobs and notifies queues,
+so durable jobs remain discoverable after a missed notification. Do not use
+isolated notifiers for these separate instances.
+
+Oban calls the worker's real `perform/1` without an ambient tenant binding.
+The job tenant supplies each package database phase's binding through
+`MyApp.Repo`; the engine repository only manages queue metadata. Ordinary
+retryable delivery outcomes snooze the trigger into Oban's `scheduled` state.
+An execution error, including a failed database finalization, becomes
+`retryable`, or `discarded` when the job exhausts its Oban attempts. Terminal
+delivery outcomes can complete the trigger because the delivery row owns the
+delivery result and retry ceiling.
 
 Host-scheduled recovery, retention, health, key-lifecycle, and registry sweeps
 must run per tenant and pass `tenant:`. A global scan cannot supply a tenant

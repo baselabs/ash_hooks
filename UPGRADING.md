@@ -1,5 +1,21 @@
 # Upgrading
 
+## Oban with forced row security
+
+The optional Oban requirement is now `~> 2.24`. Upgrade Oban before using the
+service configuration below.
+
+If Oban currently runs queues through the ledger's runtime repository with
+only a tenant-keyed job policy, separate insertion from execution before
+resuming queues. Follow the [row-security guide](documentation/tutorials/row-security.md)
+to provision a restricted engine role and repository, force row security on
+both `oban_jobs` and `oban_peers`, and apply their role-specific grants and
+policies. Remove older policies and grants that widen access. Keep the worker's
+`oban:` option on the runtime repository's insert-only instance, with queues,
+plugins, peer leadership, and staging disabled. Run queues and maintenance on
+the engine instance with the same database, prefix, and PostgreSQL notifier.
+Existing job arguments and delivery rows need no conversion.
+
 ## 3.1.0 → 3.2.0
 
 For a first implementation, read [key custody and lifecycle](documentation/tutorials/key-custody.md)
@@ -171,9 +187,10 @@ Package database operations now open bounded tenant phases through
 `on_transaction_begin/1` to derive transaction-local settings from
 `reason[:tenant]` using `set_config(name, value, true)`. Row-secured package
 tables must use Ash multitenancy, and host-scheduled sweeps run per tenant
-with `tenant:`. Configure the worker's Oban instance to use the ledger repo;
-its job table can secure rows on `args->>'tenant'`. Bind an enclosing host
-transaction once, with the same tenant. See the
+with `tenant:`. Configure the worker's Oban instance for insertion on the ledger
+repo, with tenant-keyed runtime policies on `args->>'tenant'`. Run queues and
+maintenance on a separate engine-role repo with policies over all rows of both
+Oban tables. Bind an enclosing host transaction once, with the same tenant. See the
 [row-level security guide](documentation/tutorials/row-security.md).
 
 On AshPostgres and transactional AshSqlite resources, package reads now use

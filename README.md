@@ -14,7 +14,7 @@ use the generated Oban worker or your own scheduler calling `AshHooks.Delivery.r
 
 Requires Elixir `~> 1.20`, Erlang/OTP 28 or 29, and Ash
 `>= 3.37.2 and < 4.0.0-0`. Add `{:ash_hooks, "~> 3.2"}` to your dependencies.
-Oban `~> 2.20` is optional and required for the generated worker. Plug `~> 1.16`
+Oban `~> 2.24` is optional and required for the generated worker. Plug `~> 1.16`
 is optional for HTTP receipt. Every supported Ash version requires your application
 to set `default_string_length_count`; see [UPGRADING.md](UPGRADING.md).
 
@@ -312,8 +312,13 @@ the ordered transition for every tenant.
 
 PostgreSQL hosts can bind transaction-local tenant settings through the repository's
 `on_transaction_begin/1`. Package phases keep reads on the write repository and
-sweeps run per tenant. The [row-security guide](documentation/tutorials/row-security.md)
-covers table policies, Oban jobs, and repository binding. The SQLite Livebook
+sweeps run per tenant. With forced row security, enqueue through an insert-only
+Oban instance on the runtime ledger repository. Run queues and maintenance
+through a separate engine-role repository and instance with policies over all
+rows of both `oban_jobs` and `oban_peers`. Share the prefix and PostgreSQL
+notifier; the worker binds its own tenant phases. The
+[row-security guide](documentation/tutorials/row-security.md) provides the SQL
+and both instance configurations. The SQLite Livebook
 teaches tenant isolation; PostgreSQL is required to exercise those policies.
 
 ## Retention and security

@@ -31,6 +31,7 @@ Records are repository documentation and are not part of the Hex package.
 | [0019 - Delivery audit and observation](0019-delivery-audit-and-observation.md) | Delivery audit history and observation. |
 | [0020 - Resend, replay, and endpoint health](0020-resend-replay-and-endpoint-health.md) | Resend, replay and endpoint health. |
 | [0021 - Host trust boundaries and subscription selection](0021-host-trust-boundaries-and-subscription-selection.md) | Host trust boundaries and subscription selection. |
+| [0022 - Oban engine row security](0022-oban-engine-row-security.md) | Separate tenant-bound insertion from queue execution under forced row security. |
 | [0023 - Installer mutation scope](0023-installer-mutation-scope.md) | What the installer may edit in a host application. |
 | [0024 - SQLite contention retry](0024-sqlite-contention-retry.md) | Bounded retry of SQLite write contention. |
 | [0025 - Inbound handler results](0025-inbound-handler-results.md) | How ingress records every handler result. |

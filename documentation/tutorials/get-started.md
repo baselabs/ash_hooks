@@ -17,7 +17,7 @@ def deps do
     {:ash_hooks, "~> 3.2"},
     {:ash_postgres, "~> 2.0"},
     # Optional: required for the generated Oban worker.
-    {:oban, "~> 2.20"}
+    {:oban, "~> 2.24"}
   ]
 end
 ```

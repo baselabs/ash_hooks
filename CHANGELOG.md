@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- The optional Oban dependency now requires `~> 2.24`, whose service options
+  support the documented insert-only instance.
+
+### Fixed
+
+- Row-security documentation separates tenant-bound Oban insertion from queue
+  execution under a dedicated engine role, with forced policies on jobs and
+  peers, least-privilege grants, and both instance configurations. PostgreSQL
+  tests execute the guide's SQL and configurations as restricted login roles,
+  exercise real queue transitions and notifications, and check tenant isolation.
+
 ## [3.2.0] - 2026-11-15
 
 ### Added

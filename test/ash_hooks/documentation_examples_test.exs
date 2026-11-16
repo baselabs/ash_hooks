@@ -366,6 +366,36 @@ defmodule AshHooks.DocumentationContentTest do
              repo.query!("SELECT nullif(current_setting('my_app.tenant', true), '')")
   end
 
+  @tag :postgres
+  @tag :real_receiver
+  test "the Oban row-security examples execute as separate restricted login roles" do
+    namespace = AshHooks.Test.Documentation.ObanRowSecurity
+    # Compile the binding as printed too; only the deployment's setting name changes.
+    binding = Docs.block("row-security-repo-binding")
+
+    code =
+      String.replace(binding.code, "my_app.tenant", "ash_hooks_test.tenant")
+      |> Code.string_to_quoted!()
+
+    quote do
+      defmodule unquote(namespace) do
+        unquote(code)
+      end
+    end
+    |> Docs.lexical()
+    |> Code.compile_quoted()
+
+    repo = Module.concat([namespace, MyApp, Repo])
+    ctx = AshHooks.Test.RowSecurityCases.setup_postgres(namespace, repo, repo)
+    AshHooks.Test.RowSecurityCases.oban_runtime_isolation(ctx)
+
+    # Each proof owns its instances. Stop the insertion instance before starting
+    # the engine proof, which executes the same supervision entries afresh.
+    stop_supervised!(Module.concat(namespace, :Oban))
+    AshHooks.Test.RowSecurityCases.clean(ctx)
+    AshHooks.Test.RowSecurityCases.oban_engine_delivery(ctx)
+  end
+
   for name <- @providers do
     test "runs #{name} with actual cryptographic signatures" do
       name = unquote(name)
