@@ -16,6 +16,9 @@ defmodule AshHooks.Telemetry do
       :duplicate}`
     * `[:ash_hooks, :ingress, :claim]`: `%{source, outcome: :claimed |
       :lease_held}`
+    * `[:ash_hooks, :ingress, :failure]`: `%{count: 1}`; `%{source,
+      error_class: binary, permanent?: boolean}` after a failure is recorded;
+      stale fencing tokens emit nothing
     * `[:ash_hooks, :dispatch, :enqueue_failed]`: `%{endpoint_id,
       event_uuid, reason}` (classified, contents-free)
     * `[:ash_hooks, :delivery, :attempt]`: `%{endpoint_id, event_uuid,
@@ -72,6 +75,7 @@ defmodule AshHooks.Telemetry do
           [:ash_hooks, :ingress, :verify],
           [:ash_hooks, :ingress, :dedup],
           [:ash_hooks, :ingress, :claim],
+          [:ash_hooks, :ingress, :failure],
           [:ash_hooks, :dispatch, :enqueue_failed],
           [:ash_hooks, :delivery, :attempt],
           [:ash_hooks, :delivery, :result],

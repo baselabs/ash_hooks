@@ -46,7 +46,7 @@ defmodule AshHooks.CountingProvider do
     end
 
     case resolve_outcome(:persistent_term.get({__MODULE__, :outcome}, :ok)) do
-      :ok -> {:ok, %{type: event_type, payload: payload}}
+      :ok -> {:ok, %AshHooks.Event{type: event_type, payload: payload}}
       {:error, kind, term} when kind in [:retry, :permanent] -> {:error, kind, term}
       {:error, term} -> {:error, term}
     end

@@ -60,6 +60,10 @@ defmodule AshHooks.Ingress do
   Handler exceptions, exits, and throws are contained and recorded as
   `:failed_retryable` with error class `"handler_crashed"`, using the current
   claim's fencing token. Both synchronous ingestion and reaping use this path.
+  Any handler result outside `{:ok, struct}` or a retry/permanent error triple,
+  and any unexpected parser result, records `"invalid_handler_result"` as a
+  retryable failure. Each recorded failure emits the ingress failure event;
+  a stale owner reloads without recording or emitting a failure.
   """
 
   require Ash.Query
@@ -569,7 +573,20 @@ defmodule AshHooks.Ingress do
       %{source: env.name, outcome: if(created?, do: :created, else: :duplicate)}
     )
 
+    if created? and delivery.status == :failed_permanent, do: emit_failure(delivery)
     {:ok, created?, delivery}
+  end
+
+  defp emit_failure(row) do
+    :telemetry.execute(
+      [:ash_hooks, :ingress, :failure],
+      %{count: 1},
+      %{
+        source: row.provider,
+        error_class: row.error_class,
+        permanent?: row.status == :failed_permanent
+      }
+    )
   end
 
   @doc """
@@ -936,51 +953,40 @@ defmodule AshHooks.Ingress do
   defp handle_and_mark(resource, env, delivery_id, claimed) do
     tenant = env[:tenant]
 
-    with {:ok, type} <- env.parsed_type,
-         {:ok, _event} <- invoke_handler(env.provider, type, env.payload, env.context) do
-      gated_update(resource, delivery_id, claimed.fencing_token, :mark_processed, %{}, tenant)
-    else
-      {:error, :unknown_event_type} ->
+    outcome =
+      case env.parsed_type do
+        {:ok, type} when is_atom(type) ->
+          case invoke_handler(env.provider, type, env.payload, env.context) do
+            {:ok, event} when is_struct(event) ->
+              :processed
+
+            {:error, kind, term} when kind in [:retry, :permanent] ->
+              {:failed, error_class_string(term), kind == :permanent}
+
+            _ ->
+              {:failed, "invalid_handler_result", false}
+          end
+
+        {:error, reason} when reason in [:unknown_event_type, :malformed_payload] ->
+          {:failed, Atom.to_string(reason), true}
+
+        _ ->
+          {:failed, "invalid_handler_result", false}
+      end
+
+    case outcome do
+      :processed ->
+        gated_update(resource, delivery_id, claimed.fencing_token, :mark_processed, %{}, tenant)
+
+      {:failed, error_class, permanent?} ->
         gated_update(
           resource,
           delivery_id,
           claimed.fencing_token,
           :mark_failed,
-          %{
-            error_class: "unknown_event_type",
-            permanent?: true
-          },
+          %{error_class: error_class, permanent?: permanent?},
           tenant
         )
-
-      {:error, :malformed_payload} ->
-        gated_update(
-          resource,
-          delivery_id,
-          claimed.fencing_token,
-          :mark_failed,
-          %{
-            error_class: "malformed_payload",
-            permanent?: true
-          },
-          tenant
-        )
-
-      {:error, kind, term} when kind in [:retry, :permanent] ->
-        gated_update(
-          resource,
-          delivery_id,
-          claimed.fencing_token,
-          :mark_failed,
-          %{
-            error_class: error_class_string(term),
-            permanent?: kind == :permanent
-          },
-          tenant
-        )
-
-      {:error, error} ->
-        {:error, error}
     end
     |> case do
       :ok -> reload(resource, delivery_id, tenant)
@@ -1202,9 +1208,15 @@ defmodule AshHooks.Ingress do
         end)
 
       case result do
-        %Ash.BulkResult{status: :success, records: [_]} -> :ok
-        %Ash.BulkResult{status: :success, records: []} -> {:error, :stale_token}
-        %Ash.BulkResult{errors: [error | _]} -> {:error, error}
+        %Ash.BulkResult{status: :success, records: [row]} ->
+          if action == :mark_failed, do: emit_failure(row)
+          :ok
+
+        %Ash.BulkResult{status: :success, records: []} ->
+          {:error, :stale_token}
+
+        %Ash.BulkResult{errors: [error | _]} ->
+          {:error, error}
       end
     end
   end

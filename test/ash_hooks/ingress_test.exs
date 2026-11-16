@@ -23,7 +23,71 @@ defmodule AshHooks.IngressTest do
     def parse_event_type(%{"kind" => "exit"}), do: exit(:parse_failure)
     def parse_event_type(%{"kind" => "throw"}), do: throw(:parse_failure)
     @impl true
-    def handle_event(type, payload), do: {:ok, %{type: type, payload: payload}}
+    def handle_event(type, payload), do: {:ok, %AshHooks.Event{type: type, payload: payload}}
+  end
+
+  defmodule ResultProvider do
+    use AshHooks.Provider, verify: [algorithm: :hmac_sha256, signature: {:header, "x-signature"}]
+
+    @impl true
+    def parse_event_type(%{"parse" => result}) do
+      case result do
+        "unknown" -> {:error, :unknown_event_type}
+        "malformed" -> {:error, :malformed_payload}
+        "bare" -> :ok
+        "error" -> {:error, :unexpected}
+        "type" -> {:ok, "unexpected"}
+        "retry" -> {:error, :retry, :unexpected}
+        "nil" -> nil
+      end
+    end
+
+    def parse_event_type(_), do: {:ok, :webhook}
+
+    @impl true
+    def handle_event(type, %{"result" => result} = payload) do
+      case result do
+        "struct" ->
+          {:ok, %AshHooks.Provider.Event{type: type, payload: payload}}
+
+        "permanent" ->
+          {:error, :permanent, :rejected}
+
+        "retry" ->
+          {:error, :retry, :try_again}
+
+        "raise" ->
+          raise "handler failed"
+
+        "exit" ->
+          exit(:handler_failed)
+
+        "throw" ->
+          throw(:handler_failed)
+
+        "bare" ->
+          :ok
+
+        "error" ->
+          {:error, :rejected}
+
+        "map" ->
+          {:ok, %{type: type}}
+
+        "tuple" ->
+          {:unexpected, :result}
+
+        "nil" ->
+          nil
+
+        "stale" ->
+          AshHooks.Test.Repo.query!(
+            "UPDATE ingress_test_ledgers SET fencing_token = fencing_token + 1 WHERE provider = 'results'"
+          )
+
+          :ok
+      end
+    end
   end
 
   defmodule Ledger do
@@ -51,6 +115,11 @@ defmodule AshHooks.IngressTest do
     end
 
     webhooks do
+      inbound :results do
+        provider(AshHooks.IngressTest.ResultProvider)
+        secret {AshHooks.IngressTest, :secret, []}
+      end
+
       inbound :raising do
         provider(AshHooks.IngressTest.RaisingProvider)
         secret {AshHooks.IngressTest, :secret, []}
@@ -254,6 +323,120 @@ defmodule AshHooks.IngressTest do
       )
 
     row
+  end
+
+  describe "handler result contract" do
+    setup do
+      owner = self()
+      id = {__MODULE__, make_ref()}
+
+      :telemetry.attach(
+        id,
+        [:ash_hooks, :ingress, :failure],
+        fn _, measurements, metadata, _ ->
+          send(owner, {:ingress_failure, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(id) end)
+      :ok
+    end
+
+    for {result, status, error_class} <- [
+          {"struct", :processed, nil},
+          {"permanent", :failed_permanent, "rejected"},
+          {"retry", :failed_retryable, "try_again"},
+          {"raise", :failed_retryable, "handler_crashed"},
+          {"exit", :failed_retryable, "handler_crashed"},
+          {"throw", :failed_retryable, "handler_crashed"},
+          {"bare", :failed_retryable, "invalid_handler_result"},
+          {"error", :failed_retryable, "invalid_handler_result"},
+          {"map", :failed_retryable, "invalid_handler_result"},
+          {"tuple", :failed_retryable, "invalid_handler_result"},
+          {"nil", :failed_retryable, "invalid_handler_result"}
+        ] do
+      test "records #{result} under the claim fence" do
+        raw = Jason.encode!(%{"result" => unquote(result)})
+
+        assert {:ok, :created, row} =
+                 Ingress.ingest(
+                   Ledger,
+                   :results,
+                   raw,
+                   ctx(raw, headers: %{"x-signature" => sign(raw)})
+                 )
+
+        assert row.status == unquote(status)
+        assert row.error_class == unquote(error_class)
+        assert row.fencing_token == 1
+        assert row.attempts == 1
+        assert [stored] = rows(:results)
+        assert stored == row
+
+        if unquote(error_class) do
+          assert_receive {:ingress_failure, %{count: 1},
+                          %{
+                            source: :results,
+                            error_class: unquote(error_class),
+                            permanent?: unquote(status == :failed_permanent)
+                          }}
+        else
+          refute_received {:ingress_failure, _, _}
+        end
+      end
+    end
+
+    for {result, status, error_class} <- [
+          {"unknown", :failed_permanent, "unknown_event_type"},
+          {"malformed", :failed_permanent, "malformed_payload"},
+          {"bare", :failed_retryable, "invalid_handler_result"},
+          {"error", :failed_retryable, "invalid_handler_result"},
+          {"type", :failed_retryable, "invalid_handler_result"},
+          {"retry", :failed_retryable, "invalid_handler_result"},
+          {"nil", :failed_retryable, "invalid_handler_result"}
+        ] do
+      test "records the parser's #{result} result" do
+        raw = Jason.encode!(%{"parse" => unquote(result), "result" => "struct"})
+
+        assert {:ok, :created, row} =
+                 Ingress.ingest(
+                   Ledger,
+                   :results,
+                   raw,
+                   ctx(raw, headers: %{"x-signature" => sign(raw)})
+                 )
+
+        assert row.status == unquote(status)
+        assert row.error_class == unquote(error_class)
+        assert row.fencing_token == 1
+        assert [stored] = rows(:results)
+        assert stored == row
+
+        assert_receive {:ingress_failure, %{count: 1},
+                        %{
+                          error_class: unquote(error_class),
+                          permanent?: unquote(status == :failed_permanent)
+                        }}
+      end
+    end
+
+    test "a stale handler reloads without recording or emitting a failure" do
+      raw = Jason.encode!(%{"result" => "stale"})
+
+      assert {:ok, :created, row} =
+               Ingress.ingest(
+                 Ledger,
+                 :results,
+                 raw,
+                 ctx(raw, headers: %{"x-signature" => sign(raw)})
+               )
+
+      assert row.status == :claimed
+      assert row.fencing_token == 2
+      assert row.error_class == nil
+      refute_received {:ingress_failure, _, _}
+    end
   end
 
   describe "sync pipeline" do
@@ -868,13 +1051,14 @@ defmodule AshHooks.IngressTest do
       assert delivery.status == :claimed
     end
 
-    test "a plain {:error, term} from the handler surfaces without a mark" do
+    test "a plain {:error, term} from the handler records a retryable failure" do
       CountingProvider.put_outcome({:error, :boom})
       raw = body("evt_plainerr")
 
-      assert {:error, :boom} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
-
-      assert [%{status: :claimed}] = rows()
+      assert {:ok, :created, row} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
+      assert row.status == :failed_retryable
+      assert row.error_class == "invalid_handler_result"
+      assert [%{status: :failed_retryable}] = rows()
     end
 
     test "a crashing re-drive records a retryable failure" do
@@ -891,13 +1075,9 @@ defmodule AshHooks.IngressTest do
 
   describe "redact_payload fault shapes" do
     setup do
-      # hold a row :claimed via a plain-error outcome (no mark fires)
-      CountingProvider.put_outcome({:error, :boom})
-
-      raw = body("evt_redact")
-      {:error, :boom} = Ingress.ingest(Ledger, :counter, raw, ctx(raw))
-
-      %{row: hd(rows())}
+      row = stranded_received_row("evt_redact")
+      {:ok, _, claimed} = Ingress.claim_delivery(Ledger, row.id)
+      %{row: claimed}
     end
 
     test "a nil redactor result leaves the payload unchanged", %{row: row} do
