@@ -14,8 +14,8 @@ concurrency:
 
 jobs:
   # The matrix tests the supported Elixir window (~> 1.20 in mix.exs) on
-  # the OTP releases this project targets. The dev default is the latest
-  # stable Elixir on OTP 29, mirrored exactly from .tool-versions; OTP 28 is the other end of the supported window.
+  # OTP 28 and 29. The development pin is mirrored from .tool-versions.
+  # PostgreSQL support spans 16 through 18, tested below.
   # Default legs build with the full dev dep set; the no-optional leg proves the
   # package compiles/tests/runs with oban and plug entirely absent
   # (ADR-0004).
@@ -100,6 +100,19 @@ jobs:
   # Ordinary development uses SQLite.
   postgres:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # postgres:16-alpine
+          - postgres: "16"
+            image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
+          # postgres:17-alpine
+          - postgres: "17"
+            image: postgres:17-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7
+          # postgres:18-alpine
+          - postgres: "18"
+            image: postgres:18-alpine@sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
     env:
       MIX_ENV: test
       ASH_HOOKS_POSTGRES: "1"
@@ -111,7 +124,7 @@ jobs:
       ASH_HOOKS_REAL_RECEIVER_PORT: "52871"
     services:
       postgres:
-        image: postgres:18-alpine
+        image: ${{ matrix.image }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -154,7 +167,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: cover-html
+          name: cover-html-postgres-${{ matrix.postgres }}
           path: cover/
 
   # Type-check the public API and the consumer worker compiled from test/support.
