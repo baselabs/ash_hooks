@@ -1,4 +1,4 @@
-# Fenced unique-ingest ledger
+# 0003 - Fenced unique-ingest ledger
 
 ## Decision
 

@@ -1,4 +1,4 @@
-# Optional Oban and host-injected workers
+# 0004 - Optional Oban and host-injected workers
 
 ## Decision
 

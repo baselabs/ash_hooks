@@ -7,8 +7,10 @@ The package supplies generic primitives; hosts own sender configuration and busi
 
 ## Decision
 
-Every inbound declaration names its provider explicitly. A missing provider
-fails at compilation rather than resolving a module from the declaration name.
+Every inbound declaration names its provider explicitly, or names a source
+resource whose provider aliases select from a compile-time allowlist (ADR 0014).
+A declaration with neither fails at compilation rather than resolving a module
+from the declaration name.
 Names define durable ledger identity; replacing an implementation
 does not justify changing that name or silently changing existing identities.
 
