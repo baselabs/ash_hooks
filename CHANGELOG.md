@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+
+- Standard Webhooks verification authenticates the signature before checking
+  the timestamp window for both HMAC and Ed25519. A bad signature with a stale
+  timestamp now returns `:invalid_signature`; an authentic stale request still
+  returns `:timestamp_out_of_tolerance`.
+
 ## [3.2.0] - 2026-11-15
 
 ### Added

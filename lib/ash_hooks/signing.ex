@@ -203,6 +203,9 @@ defmodule AshHooks.Signing do
     * `:ignore_timestamp`: skip the tolerance check (dead-letter re-drives,
       offline verification); the timestamp must still parse.
 
+  Signature verification precedes the timestamp window check in both schemes.
+  A bad signature returns `:invalid_signature` even when the timestamp is stale.
+
   Returns `{:ok, %{id: id, timestamp: ts}}` or `{:error, reason}`. Never
   raises on hostile input.
   """
@@ -213,15 +216,14 @@ defmodule AshHooks.Signing do
   def verify(payload, headers, @pub_prefix <> _ = whpk, opts)
       when is_binary(payload) and is_map(headers) and is_binary(whpk) do
     with {:ok, public_key} <- normalize_public_key(whpk),
-         {:ok, id, ts, signature_header} <- required_headers(headers),
-         :ok <- check_timestamp(ts, opts) do
+         {:ok, id, ts, signature_header} <- required_headers(headers) do
       signed = to_sign(id, ts, payload)
 
       if Enum.any?(
            signature_entries(signature_header, "v1a"),
            &asymmetric_match?(public_key, signed, &1)
          ) do
-        {:ok, %{id: id, timestamp: ts}}
+        with :ok <- check_timestamp(ts, opts), do: {:ok, %{id: id, timestamp: ts}}
       else
         {:error, :invalid_signature}
       end
@@ -231,12 +233,11 @@ defmodule AshHooks.Signing do
   def verify(payload, headers, whsec, opts)
       when is_binary(payload) and is_map(headers) and is_binary(whsec) do
     with {:ok, id, ts, signature_header} <- required_headers(headers),
-         :ok <- check_timestamp(ts, opts),
          {:ok, secret} <- decode_verify_secret(whsec) do
       expected = :crypto.mac(:hmac, :sha256, secret, to_sign(id, ts, payload))
 
       if Enum.any?(signature_entries(signature_header, "v1"), &symmetric_match?(expected, &1)) do
-        {:ok, %{id: id, timestamp: ts}}
+        with :ok <- check_timestamp(ts, opts), do: {:ok, %{id: id, timestamp: ts}}
       else
         {:error, :invalid_signature}
       end
