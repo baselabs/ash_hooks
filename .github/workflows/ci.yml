@@ -88,12 +88,7 @@ jobs:
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
       - run: mix test
-      - run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix deps.get
-        working-directory: test/consumer
-      - run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix compile --warnings-as-errors
-        working-directory: test/consumer
-      - run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix run verify.exs
-        working-directory: test/consumer
+      - run: env ASH_HOOKS_MINIMUM_ASH=1 scripts/check-consumer.sh
 
   # Qualify real PostgreSQL consumers, persisted workers, and delivery.
   # ASH_HOOKS_POSTGRES=1 enables the PostgreSQL resources.
@@ -288,11 +283,8 @@ jobs:
         run: mix deps.get --check-locked
       - name: Retired packages
         run: mix hex.audit
-      - name: Resolve a consumer at the declared Ash floor
-        run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix deps.get
-        working-directory: test/consumer
-      - name: Advisories in the development lock, the floor consumer's lock and the hex-and-git fixture
-        run: scripts/check-advisories.sh mix.lock test/consumer/mix.lock scripts/fixtures/hex-and-git.mix.lock.fixture
+      - name: Advisories in the development, fresh floor consumer and hex-and-git fixture locks
+        run: env ASH_HOOKS_MINIMUM_ASH=1 scripts/check-consumer.sh --advisories mix.lock scripts/fixtures/hex-and-git.mix.lock.fixture
 
   # The single branch-protection check name: require `all-checks-pass`
   # on main and every leg (test matrix, floor, dialyzer, package,
