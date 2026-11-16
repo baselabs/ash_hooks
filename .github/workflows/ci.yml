@@ -13,29 +13,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The matrix tests the supported Elixir window (~> 1.20 in mix.exs) on
-  # the OTP releases this project targets. The dev default is the latest
-  # stable Elixir on OTP 29, mirrored exactly from .tool-versions; OTP 28 is the other end of the supported window.
-  # Default legs build with the full dev dep set; the no-optional leg proves the
-  # package compiles/tests/runs with oban and plug entirely absent
-  # (ADR-0004).
+  # Runtime versions live only in .tool-versions files. The root file
+  # supplies the development default and compatibility lanes; each
+  # ci/*/.tool-versions file supplies its own lane. config/config.exs
+  # derives its OTP allowlist from the same files.
+  toolchain:
+    name: Read runtime toolchains
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      elixir: ${{ steps.versions.outputs.elixir }}
+      otp: ${{ steps.versions.outputs.otp }}
+      beam_lanes: ${{ steps.versions.outputs.beam_lanes }}
+      test_matrix: ${{ steps.matrix.outputs.test_matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Test the version-file parser
+        run: sh scripts/toolchain.sh --self-test
+      - name: Read defaults and compatibility lanes
+        id: versions
+        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+      - name: Compose the default, no-optional and compatibility legs
+        id: matrix
+        env:
+          ELIXIR_VERSION: ${{ steps.versions.outputs.elixir }}
+          OTP_VERSION: ${{ steps.versions.outputs.otp }}
+          BEAM_LANES: ${{ steps.versions.outputs.beam_lanes }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          default = {"elixir": os.environ["ELIXIR_VERSION"], "otp": os.environ["OTP_VERSION"]}
+          lanes = [default, {**default, "no_optional": "1"}]
+          lanes.extend(json.loads(os.environ["BEAM_LANES"]))
+          print("test_matrix=" + json.dumps({"include": lanes}, separators=(",", ":")))
+          PY
+
+  # The default and compatibility lanes use the full development dependencies.
+  # The no-optional lane proves Oban and Plug are optional (ADR-0004).
   test:
+    needs: toolchain
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # Dev default — the version set, mirrors .tool-versions exactly.
-          - elixir: "1.20.5"
-            otp: "29.1.2"
-          # OTP 28 — the other end of the supported OTP range.
-          - elixir: "1.20.5"
-            otp: "28"
-          # ADR-0004 proof: oban/plug dropped from the dep list entirely —
-          # the package must compile, test, and run with neither loaded.
-          - elixir: "1.20.5"
-            otp: "29.1.2"
-            no_optional: "1"
+      matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}
     env:
       MIX_ENV: test
       ASH_HOOKS_NO_OPTIONAL: ${{ matrix.no_optional }}
@@ -74,16 +94,19 @@ jobs:
       MIX_ENV: test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Read the floor toolchain
+        id: versions
+        run: sh scripts/toolchain.sh ci/floor/.tool-versions >> "$GITHUB_OUTPUT"
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.20.0"
-          otp-version: "28"
+          elixir-version: ${{ steps.versions.outputs.elixir }}
+          otp-version: ${{ steps.versions.outputs.otp }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             deps
             _build
-          key: mix-floor-1.20-28-${{ hashFiles('mix.exs') }}
+          key: mix-floor-${{ steps.versions.outputs.elixir }}-${{ steps.versions.outputs.otp }}-${{ hashFiles('mix.exs') }}
       - run: rm mix.lock
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
@@ -99,6 +122,7 @@ jobs:
   # ASH_HOOKS_POSTGRES=1 enables the PostgreSQL resources.
   # Ordinary development uses SQLite.
   postgres:
+    needs: toolchain
     runs-on: ubuntu-24.04
     env:
       MIX_ENV: test
@@ -135,14 +159,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.20.5"
-          otp-version: "29.1.2"
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             deps
             _build
-          key: mix-pg-1.20.5-29.1.2-${{ hashFiles('mix.lock') }}
+          key: mix-pg-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - run: mix hex.audit
       - run: mix compile --warnings-as-errors
@@ -160,6 +184,7 @@ jobs:
   # Type-check the public API and the consumer worker compiled from test/support.
   # The PostgreSQL suite exercises that same generated worker at runtime.
   dialyzer:
+    needs: toolchain
     runs-on: ubuntu-24.04
     env:
       MIX_ENV: test
@@ -167,33 +192,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.20.5"
-          otp-version: "29.1.2"
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             deps
             _build
             ~/.mix
-          key: dialyzer-1.20.5-29.1.2-${{ hashFiles('mix.lock') }}
+          key: dialyzer-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - run: mix dialyzer
 
   # Verify the package archive and build HexDocs.
   package:
+    needs: toolchain
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.20.5"
-          otp-version: "29.1.2"
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             deps
             _build
-          key: package-1.20.5-29.1.2-${{ hashFiles('mix.lock') }}
+          key: package-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - name: Formatter export and DSL references match the DSL (generated files must not drift)
         run: mix spark.check
@@ -205,6 +231,7 @@ jobs:
   # cells are extracted in order and run outside any mix project
   # (Mix.install requires it) — the same evaluation Livebook performs.
   livebook:
+    needs: toolchain
     runs-on: ubuntu-24.04
     services:
       receiver:
@@ -219,14 +246,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.20.5"
-          otp-version: "29.1.2"
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/.mix
             ~/.cache
-          key: livebook-mix-1.20.5-29.1.2-${{ hashFiles('mix.lock') }}
+          key: livebook-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
       - run: ./scripts/check-package.sh
       - name: Wait for the real receiver
@@ -243,6 +270,7 @@ jobs:
   # Unread dependencies and advisories fail closed.
   # hex.audit rejects retired packages.
   security:
+    needs: toolchain
     runs-on: ubuntu-24.04
     env:
       OSV_SCANNER_VERSION: "2.7.1"
@@ -253,8 +281,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          elixir-version: "1.20.5"
-          otp-version: "29.1.2"
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
       - name: Install checksum-pinned osv-scanner
         run: |
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/osv-scanner" \
@@ -286,7 +314,7 @@ jobs:
   # postgres, livebook, security) gates through it — no per-job
   # check-name maintenance when the matrix grows.
   all-checks-pass:
-    needs: [test, floor, postgres, dialyzer, package, livebook, security]
+    needs: [toolchain, test, floor, postgres, dialyzer, package, livebook, security]
     if: always()
     runs-on: ubuntu-24.04
     steps:

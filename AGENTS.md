@@ -12,3 +12,5 @@ SQLite, PostgreSQL connection variables, and real receiver setup.
 - **Exceptions.** A change to the minimum supported Ash graph runs `scripts/check-ash-floor.exs`
   as CONTRIBUTING.md describes. A Livebook change runs against the candidate archive with
   `scripts/run-livebook.sh`.
+
+The development default and every CI lane are pinned only in `.tool-versions` files, read by `scripts/toolchain.sh`.

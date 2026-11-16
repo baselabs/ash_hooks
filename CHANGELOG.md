@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Development and CI runtime versions come from `.tool-versions` files. CI
+  tests the version-file parser before constructing its matrix.
+
 - The optional Oban dependency now requires `~> 2.24`, whose service options
   support the documented insert-only instance.
 

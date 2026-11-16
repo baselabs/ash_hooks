@@ -13,6 +13,7 @@ defmodule AshHooks.MixProject do
       version: @version,
       # Consumers use the supported Elixir floor, not the repository's exact pin.
       # .tool-versions pins development; config/config.exs checks supported OTP.
+      # CI versions also come from the root and ci/*/.tool-versions files.
       # Repository configuration is excluded from the package.
       # CI exercises the supported consumer graph.
       elixir: "~> 1.20",

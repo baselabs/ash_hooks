@@ -86,3 +86,5 @@ feature requests. Report vulnerabilities privately as described in
 
 Releases are maintainer-only. The authoritative procedure is the
 [publishing runbook](https://github.com/baselabs/ash_hooks/blob/v3.2.0/docs/PUBLISHING.md).
+
+The development default and every CI lane are pinned only in `.tool-versions` files, read by `scripts/toolchain.sh`.
