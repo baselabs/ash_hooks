@@ -263,6 +263,141 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
       on_exit(fn -> Repo.query!("DROP TABLE #{table}") end)
     end
 
+    @tag documented_examples: ["verify-sync-decision-plug"]
+    test "the synchronous decision plug answers in the response for every tenant without the ledger" do
+      namespace = Docs.namespace("verify-sync-decision-plug")
+      {signing, public} = AshHooks.Signing.generate_signing_keypair()
+      hmac = AshHooks.Signing.generate_secret()
+      keys = %{"tenant-a" => hmac, "tenant-b" => public}
+
+      quote do
+        defmodule unquote(namespace) do
+          defmodule MyApp.DecisionKeys do
+            def verification_key(tenant), do: Map.fetch(unquote(Macro.escape(keys)), tenant)
+          end
+
+          defmodule MyApp.Decisions do
+            def decide(tenant, webhook_id, request),
+              do: %{tenant: tenant, webhook_id: webhook_id, approve: request["amount"] <= 100}
+          end
+
+          unquote(Docs.ast("verify-sync-decision-plug"))
+
+          # The endpoint a Phoenix host runs: a parser whose body reader caches
+          # the exact bytes, tenant resolution, then the documented plug.
+          defmodule ParsedHost do
+            use Plug.Builder
+
+            plug(Plug.Parsers,
+              parsers: [:json],
+              pass: ["*/*"],
+              json_decoder: Jason,
+              body_reader: {AshHooks.BodyReader, :read_body, []}
+            )
+
+            plug(:tenant)
+            plug(MyAppWeb.DecisionPlug)
+
+            def tenant(conn, _options), do: assign(conn, :tenant, hd(conn.path_info))
+          end
+
+          # A host with no parser: the plug reads the body itself.
+          defmodule RawHost do
+            use Plug.Builder
+
+            plug(:tenant)
+            plug(MyAppWeb.DecisionPlug)
+
+            def tenant(conn, _options), do: assign(conn, :tenant, hd(conn.path_info))
+          end
+        end
+      end
+      |> lexical()
+      |> Code.compile_quoted()
+
+      now = System.system_time(:second)
+
+      signed = fn raw, options ->
+        id = AshHooks.Signing.generate_msg_id()
+        {id, Map.to_list(AshHooks.Signing.headers(id, options[:at] || now, raw, options))}
+      end
+
+      for host <- [Module.concat(namespace, ParsedHost), Module.concat(namespace, RawHost)] do
+        pid =
+          start_supervised!(
+            {Bandit, plug: host, ip: :loopback, port: 0, startup_log: false},
+            id: host
+          )
+
+        {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+        small = Jason.encode!(%{"amount" => 40})
+        large = Jason.encode!(%{"amount" => 400})
+
+        {id, headers} = signed.(small, whsec: hmac)
+        assert {200, type, body} = decide(port, "/tenant-a", small, headers)
+        assert type =~ "application/json"
+
+        assert Jason.decode!(body) ==
+                 %{"tenant" => "tenant-a", "webhook_id" => id, "approve" => true}
+
+        {id, headers} = signed.(large, whsk: signing)
+        assert {200, _, body} = decide(port, "/tenant-b", large, headers)
+
+        assert Jason.decode!(body) ==
+                 %{"tenant" => "tenant-b", "webhook_id" => id, "approve" => false}
+
+        {_id, headers} = signed.(small, whsec: hmac)
+        tampered = Jason.encode!(%{"amount" => 41})
+        assert {401, _, ""} = decide(port, "/tenant-a", tampered, headers)
+        assert {401, _, ""} = decide(port, "/tenant-b", small, headers)
+        assert {401, _, ""} = decide(port, "/tenant-c", small, headers)
+
+        for name <- ["webhook-id", "webhook-timestamp", "webhook-signature"] do
+          {{^name, value}, rest} = List.keytake(headers, name, 0)
+          assert {401, _, ""} = decide(port, "/tenant-a", small, rest)
+          repeated = [{name, value}, {name, value} | rest]
+          assert {401, _, ""} = decide(port, "/tenant-a", small, repeated)
+        end
+
+        {_id, stale} = signed.(small, whsec: hmac, at: now - 1_000)
+        assert {401, _, ""} = decide(port, "/tenant-a", small, stale)
+
+        {_id, headers} = signed.("not json", whsec: hmac)
+        # A parser refuses malformed JSON before the plug; without one, the
+        # plug answers 400 after verifying the signature.
+        assert {400, _, _} = decide(port, "/tenant-a", "not json", headers)
+
+        stop_supervised!(host)
+      end
+
+      raw_port = fn ->
+        host = Module.concat(namespace, RawHost)
+        pid = start_supervised!({Bandit, plug: host, ip: :loopback, port: 0, startup_log: false})
+        {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+        port
+      end
+
+      # One byte over the documented limit, so the refusal leaves almost no
+      # unread body behind it on the connection.
+      empty = byte_size(Jason.encode!(%{"amount" => 1, "note" => ""}))
+      note = String.duplicate("a", 64_001 - empty)
+      oversized = Jason.encode!(%{"amount" => 1, "note" => note})
+      assert byte_size(oversized) == 64_001
+      {_id, headers} = signed.(oversized, whsec: hmac)
+      assert {413, _, ""} = decide(raw_port.(), "/tenant-a", oversized, headers)
+    end
+
+    defp decide(port, path, raw, headers) do
+      headers = for {name, value} <- headers, do: {to_charlist(name), to_charlist(value)}
+      request = {~c"http://127.0.0.1:#{port}#{path}", headers, ~c"application/json", raw}
+
+      {:ok, {{_, status, _}, response_headers, body}} =
+        :httpc.request(:post, request, [], body_format: :binary)
+
+      type = for {~c"content-type", value} <- response_headers, do: to_string(value)
+      {status, Enum.join(type), body}
+    end
+
     # ── requests ──
 
     defp event(via), do: Jason.encode!(%{"id" => "event-" <> via, "via" => via})
