@@ -1,15 +1,9 @@
-# 0020 — Resend, replay, and endpoint health
-
-- **Status:** Accepted November 15, 2026
-- **Deciders:** maintainer
+# 0020 - Resend, replay, and endpoint health
 
 ## Context
 
-Operators need to repeat completed delivery work, send retained events to an
-endpoint, and stop sustained failures without silently changing receiver
-identity or erasing attempt history. Warning state must survive restarts and
-overlapping maintenance sweeps. These operations were introduced in 2.2.0 and
-refined through 3.2.0.
+Resend, replay, and sustained-failure disablement must preserve identity and history.
+Warnings must survive restarts and overlapping maintenance sweeps.
 
 ## Decision
 
@@ -49,22 +43,6 @@ to false. The declaration defaults to `:off`, with no added column. Pausing
 stops new delivery-row creation for that subscription; already-created
 deliveries continue. Hosts pause and resume through ordinary resource updates.
 This is distinct from endpoint disablement, which the runtime also checks.
-
-## Alternatives
-
-- Resetting lifetime attempts on resend would reuse audit identities and erase
-  accounting. A baseline renews allowance while preserving history.
-- Issuing a new event identity for every resend would defeat receiver
-  deduplication. Keeping the identity makes the repeat explicit and safe for
-  receivers honoring that contract.
-- Disabling on the first qualifying sweep was the earlier implementation,
-  corrected in 2.2.1 because it could skip warning. A transient warning alone
-  cannot survive restart; the later interval check also prevents overlapping
-  sweeps from collapsing the notification window.
-- Automatic re-enablement would resume traffic without host review of the
-  failure. The shipped contract requires an explicit action.
-- Treating subscription pause as cancellation would alter accepted work.
-  Preventing new rows preserves the existing delivery lifecycle.
 
 ## Consequences
 

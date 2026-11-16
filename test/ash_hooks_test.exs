@@ -68,8 +68,6 @@ defmodule AshHooksTest do
   end
 
   describe "replay-window-requires-timestamp verifier (fail-closed)" do
-    # Verifier errors surface through Spark's after_verify collector, not as
-    # raises at the defmodule site — assert via Spark.Test.dsl_errors.
     test "a replay window on a provider with no trustworthy timestamp is rejected" do
       errors =
         Spark.Test.dsl_errors do

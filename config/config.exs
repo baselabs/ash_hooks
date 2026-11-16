@@ -4,16 +4,9 @@
 # (locked by test/ash_hooks/ash_config_ownership_test.exs).
 import Config
 
-# Repo-local OTP guard (config/ is never shipped — consumers are
-# unaffected; the package's Elixir floor lives in mix.exs). System
-# .version/0 does NOT encode the OTP build: the same Elixir built on a
-# different OTP passes Mix's check while compiling incompatible BEAMs, so
-# the running OTP is asserted here, in code, before anything compiles.
-# The allowlist is exactly the set of OTP releases the CI matrix tests —
-# it grows only in the same commit that adds the CI leg. to_string/1 is
-# mandatory — :erlang.system_info(:otp_release) returns a charlist,
-# which can never equal a binary and would make the assert raise
-# unconditionally.
+# This repository requires a supported OTP release before compilation.
+# Elixir's version alone does not identify its OTP build.
+# This development configuration is excluded from the package.
 supported_otp_releases = ["28", "29"]
 running_otp = to_string(:erlang.system_info(:otp_release))
 

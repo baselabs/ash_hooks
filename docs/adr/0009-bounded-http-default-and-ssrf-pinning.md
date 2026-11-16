@@ -1,18 +1,9 @@
-# 0009 — Bounded HTTP transport and destination pinning
-
-- **Status:** Accepted August 22, 2026; amended October 6, 2026 for 2.0; amended November 15, 2026
-- **Deciders:** Maintainer, informed by independent transport and security review.
+# 0009 - Bounded HTTP transport and destination pinning
 
 ## Context
 
-Webhook receivers control response size, framing, and timing. A large response or
-one that never finishes can consume a delivery process indefinitely. Destination
-validation also has to survive DNS rebinding: validating a hostname and resolving
-it again when connecting can reach a different address.
-
-OTP's `:httpc` streams only 200 and 206 responses. It can assemble a complete
-non-2xx body before the package truncates it. The default adapter must enforce
-bounds while reading and connect to the address that passed validation.
+Untrusted receivers can exhaust memory or time; DNS rebinding can change targets.
+The default transport must bound reads and connect to the validated address.
 
 ## Decision
 
@@ -43,9 +34,9 @@ alternative name. Both adapters accept an explicit `:cacerts` bundle; otherwise
 they use OTP's trust store. Request methods and header bytes are validated before
 serialization.
 
-`AshHooks.Http.Httpc` remains an optional transport choice. It refuses literal-IP
+`AshHooks.Http.Httpc` is an optional transport choice. It refuses literal-IP
 HTTPS because it cannot enforce that certificate identity check. It never follows
-redirects and truncates retained responses, but its non-2xx buffering remains
+redirects and truncates retained responses, but its non-2xx buffering occurs
 inside OTP. Use Bounded when collection memory and time must remain bounded.
 
 [ADR-0012](0012-durable-delivery-ownership-and-recovery.md) defines the surrounding
@@ -64,27 +55,14 @@ send-time destination is terminal.
 - Custom adapters and explicit validation overrides replace the corresponding
   built-in boundary; hosts must assess those choices themselves.
 
-## Historical measurements
+## Host-side resolution
 
-The August 22, 2026 framing probe measured about 235 KiB peak collection against
-an 8 MiB chunk declaration, compared with 16.8 MiB before the buffering correction.
-A separate `:httpc` probe retained only its configured 16-byte prefix but measured
-about 4.65 MiB transient allocation for a 4 MiB error response. These are dated
-observations of those implementations and inputs, not capacity guarantees for 2.0.
-
-## Amendment (November 15, 2026)
-
-[AshHooks.Ssrf.resolve_host_public/2](../../lib/ash_hooks/ssrf.ex) is a public
-host-side resolver for DNS names and IPv4 or IPv6 literals. It validates the
-host syntax, refuses known metadata names and nonpublic addresses, resolves
-both address families under a two-second ceiling shortened by an optional
-absolute deadline, and returns a nonempty address list only when every answer
-is public. It has no destination-policy bypass. Hosts connect only to a returned
-address and retain the original name for TLS identity checks. Reconnects and
-other new connections require fresh resolution and pinning.
-
-The URL resolver `resolve_public/2` calls this host resolver. Unsafe answers
-remain distinct from `:nxdomain` and `:resolve_timeout`; the delivery driver
-retries resolution failures rather than treating them as a destination verdict.
-IPv6 public-address classification also excludes reserved and unallocated space,
-including unallocated gaps inside the global-unicast range.
+[Ssrf.resolve_host_public/2](../../lib/ash_hooks/ssrf.ex) accepts DNS names
+and IP literals, validates syntax, and rejects metadata names and nonpublic IPs.
+It resolves both families within two seconds, shortened by an absolute deadline,
+and returns addresses only when every answer is public. There is no policy bypass.
+Hosts pin connections to a returned address and retain the hostname for TLS;
+each new connection requires fresh resolution.
+`resolve_public/2` uses this resolver. Unsafe answers are terminal; `:nxdomain`
+and `:resolve_timeout` retry. IPv6 classification excludes reserved and unallocated
+space, including gaps within global unicast.

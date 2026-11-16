@@ -1,14 +1,9 @@
-# 0016 — Inbound JSON decoding policy
-
-- **Status:** Accepted November 15, 2026
-- **Deciders:** maintainer
+# 0016 - Inbound JSON decoding policy
 
 ## Context
 
-A host may require one JSON policy for ambiguous or unacceptable documents.
-Applying it only to delivered payloads leaves protected headers and claims on a
-different policy. A provider-owned decoder can also bypass the ledger's policy
-unless the callback receives that policy explicitly.
+One host JSON policy must cover protected headers, claims, and delivered payloads.
+Provider callbacks need that policy explicitly to prevent decoder bypass.
 
 ## Decision
 
@@ -50,16 +45,6 @@ supplies a consumer test proving that a hand-written `/2` returns data from the
 supplied decoder for the exercised input. It does not prove every envelope path;
 hosts must exercise their supported shapes. Only consumer tests require the
 test framework.
-
-## Alternatives
-
-No alternative was recorded at the time in the available release notes.
-Independent header and payload decoders would leave a policy gap. An implicit
-process-local decoder would make callback behavior depend on hidden state.
-Keeping an unrestricted host `/1` alongside configured policy could silently
-bypass that policy. Passing the decoder explicitly and rejecting that callback
-shape makes the obligation visible, while generated callbacks can satisfy it
-without changing their direct-call contract.
 
 ## Consequences
 

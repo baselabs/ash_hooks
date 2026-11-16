@@ -884,9 +884,8 @@ defmodule AshHooks.TenancyTest do
     :ok
   end
 
-  # The attacker's rows seed FIRST (the adversarial-ordering rule): a query
-  # that accidentally drops its tenant filter must SEE these rows for the
-  # isolation assertions to have teeth.
+  # Seed attacker rows first so a query missing its tenant filter sees them.
+  # Isolation must hold even when another tenant already owns matching rows.
   defp two_tenant_fixture!(event_types \\ ["*"]) do
     attack_endpoint =
       Ash.create!(Endpoint, %{url: "https://attacker.test/hook", secret_ref: "attacker-ref"},
@@ -1903,12 +1902,6 @@ defmodule AshHooks.TenancyTest do
   end
 
   def one_arity_secret(_ref), do: {:ok, "whsec_x"}
-
-  # ────────────────────────── verifier ──────────────────────────
-  # Verifier errors ride Spark's @after_verify hook — rescued and
-  # collected, not raised through the compile call — so these assert
-  # through Spark.Test's structured collector with inline defmodules
-  # (the documented shape: bare Code.compile_string is timing-dependent).
 
   test "a multitenant package resource with a bypass-marked action fails verification" do
     errors =

@@ -1,23 +1,10 @@
 defmodule AshHooks.Verifiers.MultitenancyNoBypass do
   @moduledoc false
-  # The single-resource half of the tenancy contract: a resource that
-  # declares multitenancy must not mark ANY action `multitenancy
-  # :bypass`/`:bypass_all`: a bypassed action reads or writes globally
-  # beside the tenant-scoped machine primitives, exactly the hole the
-  # per-call cross-resource consistency check closes BETWEEN resources.
-  #
-  # Scope note (probed 2026-09-24): the design text names the
-  # package-INJECTED actions, but a consumer cannot redeclare one; Ash's
-  # RequireUniqueActionNames rejects the duplicate before any verifier
-  # runs (OBSERVED: "Multiple actions (2) with the name `disable`"), and
-  # the transformers inject them without a multitenancy option. That exact
-  # case is unreachable, so the guard generalizes to every action on a
-  # multitenant package resource, which includes the injected set by
-  # definition, and catches the reachable shape: a consumer's OWN action
-  # flipping ledger rows across tenants. `:allow_global` rides the guard
-  # too: it is the per-action twin of the resource-level `global?: true`
-  # the package rejects outright (Ash's read path applies the tenant
-  # filter but skips the tenant requirement under it).
+  # Multitenant resources reject :bypass, :bypass_all, and :allow_global actions.
+  # This covers both injected and consumer-defined actions.
+  # Per-call preflight checks consistency across touched resources.
+  # Only attribute tenancy with global?: false passes that preflight.
+  # Tenant scoping does not replace application authorization.
   use Spark.Dsl.Verifier
 
   alias Spark.Dsl.Verifier

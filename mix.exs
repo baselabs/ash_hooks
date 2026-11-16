@@ -11,16 +11,10 @@ defmodule AshHooks.MixProject do
     [
       app: :ash_hooks,
       version: @version,
-      # CONSUMER-FACING SUPPORT WINDOW: a floor, never a pin; a library
-      # must not force every consumer onto one Elixir build. Floor is 1.20
-      # (owner decision 2026-09-16: nothing below 1.20 is supported); CI's
-      # floor leg proves the resolver stays coherent at it. The repo's
-      # OWN development runs on one pinned toolchain (.tool-versions,
-      # mirrored by a dedicated CI leg) and config/config.exs refuses any
-      # OTP release CI does not test; that repo-local enforcement never
-      # ships (config/ is excluded from the package). The window,
-      # .tool-versions, the OTP allowlist, and the CI matrix move
-      # together in ONE commit.
+      # Consumers use the supported Elixir floor, not the repository's exact pin.
+      # .tool-versions pins development; config/config.exs checks supported OTP.
+      # Repository configuration is excluded from the package.
+      # CI exercises the supported consumer graph.
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -52,13 +46,6 @@ defmodule AshHooks.MixProject do
       dialyzer: [
         plt_add_apps: [:mix, :ash_sqlite, :ash_postgres, :ecto_sql, :ex_unit, :earmark_parser]
       ],
-      # Require 100% in Mix's declared coverage surface. ignore_modules
-      # excludes entire modules, not individual lines: generated Spark
-      # entities, named test fixtures, three Ash types, and the installer.
-      # The types and installer have separate executed tests, but their
-      # runtime lines do not contribute to this percentage. Their exclusions
-      # avoid compile-window lines that run before :cover starts. Do not
-      # expand this list to hide an uncovered runtime branch.
       test_coverage: [
         summary: [threshold: 100],
         ignore_modules: [
@@ -115,11 +102,9 @@ defmodule AshHooks.MixProject do
 
     [
       # Runtime
-      # The floor admits no Ash release with a published advisory:
-      # 3.37.2 clears EEF-CVE-2026-94201 (3.34.3), -101028 (3.34.6),
-      # -114214 (3.37.1) and -96581 (3.37.2), and keeps the tenant inverse
-      # API the worker uses. CI's security job scans the lock a consumer
-      # resolves at this floor; a new advisory against it fails there.
+      # The Ash floor excludes releases affected by published advisories and
+      # supplies the tenant inverse API. The security job scans both the locked
+      # graph and the graph a consumer resolves at this floor.
       {:ash, ">= 3.37.2 and < 4.0.0-0"},
       {:splode, "~> 0.3"},
       {:spark, ">= 2.3.3 and < 3.0.0-0"},
@@ -134,17 +119,11 @@ defmodule AshHooks.MixProject do
         {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
         {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
         {:simple_sat, "~> 0.1", only: [:dev, :test], runtime: false},
-        # Test substrate for the fenced-ledger concurrency tests (ADR-0003
-        # names sqlite as the best-effort matrix leg). Dev/test-only: never
-        # ships in hex metadata, never constrains consumers. ETS was probed
-        # and cannot express storage-level uniqueness or conditional-update
-        # atomicity (read-then-write on both paths).
+        # SQLite supplies uniqueness and atomic conditional updates for tests.
+        # This development dependency is excluded from package requirements.
         {:ash_sqlite, "~> 0.3.1", only: [:dev, :test], runtime: false},
-        # The AshPostgres consumer leg (CI's postgres job): exercises the
-        # transformers against a uuid_v7-keyed, sole-store-payload consumer
-        # shape: the gaps sqlite alone could not surface. Dev/test-only;
-        # the :postgres-tagged suite is excluded unless
-        # ASH_HOOKS_POSTGRES=1 starts the repo.
+        # Real PostgreSQL consumer tests use ASH_HOOKS_POSTGRES=1.
+        # This development dependency is excluded from package requirements.
         {:ash_postgres, "~> 2.0", only: [:dev, :test], runtime: false}
       ]
   end
@@ -264,8 +243,6 @@ defmodule AshHooks.MixProject do
         "spark.formatter --extensions #{@spark_extensions} --check",
         "run --no-start scripts/generate-dsl-docs.exs #{@spark_extensions} --check"
       ],
-      # The landing loop (AGENTS.md, Build and test): every whole-tree gate,
-      # no test suite and no Dialyzer.
       precommit: [
         "format --check-formatted",
         "compile --warnings-as-errors",

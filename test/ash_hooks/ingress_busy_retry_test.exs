@@ -56,7 +56,6 @@ if Code.ensure_loaded?(AshSqlite) do
 
     @table "busy_retry_ledgers"
     @secret "busy-secret"
-    # pin the type atom — the Mock resolves types via String.to_existing_atom
     _ = :busy_test
     @raw Jason.encode!(%{"type" => "busy_test"})
 
@@ -116,10 +115,6 @@ if Code.ensure_loaded?(AshSqlite) do
 
       {:ok, _} = BusyRepo.start_link()
 
-      # do NOT stop the repo here — stopping an Ecto repo from on_exit races
-      # the suite supervisor's own shutdown (CI: "exited in :sys.terminate").
-      # The process dies with the test VM; removing an open file is fine on
-      # the CI hosts and a best-effort locally.
       on_exit(fn ->
         File.rm(db_path)
       end)

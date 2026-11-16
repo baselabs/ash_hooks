@@ -275,8 +275,6 @@ defmodule AshHooks.SigningTest do
       for ts <- [now - 301, now + 301] do
         sig = Signing.sign(@go_msg_id, ts, @go_payload, @go_key)
 
-        # Pin :now — verify reading its own clock after our sample would flake
-        # the +301 side whenever the wall clock ticks between the two reads.
         assert {:error, :timestamp_out_of_tolerance} =
                  Signing.verify(@go_payload, sw_headers(@go_msg_id, ts, sig), @go_key, now: now)
 

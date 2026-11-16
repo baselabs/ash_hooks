@@ -22,10 +22,8 @@ port =
 
 base = "http://127.0.0.1:#{port}"
 
-# Fresh receiver session per run (AUTO_CREATE_SESSIONS creates it on first POST);
-# no shared inbox state with any other repository's dedicated session. Version-4
-# and variant bits are forced at the byte level, keeping the 8-4-4-4-12 shape the
-# receiver validates.
+# Use a fresh receiver session for each run.
+# Never clear or reuse another run's recorded requests.
 import Bitwise
 
 <<g1::binary-size(4), b4, b5, g3::binary-size(2), b8, b9, g5::binary-size(6)>> =

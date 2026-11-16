@@ -1,14 +1,9 @@
-# 0014 — Inbound sources and recoverable receipts
-
-- **Status:** Accepted November 15, 2026
-- **Deciders:** maintainer
+# 0014 - Inbound sources and recoverable receipts
 
 ## Context
 
-An inbound declaration needs durable source configuration as well as verified
-receipts. Key rotation, provider selection, and pause state must apply to new
-requests without making previously authenticated work depend on the continued
-existence or current configuration of its source.
+Sources need durable configuration, rotation, provider selection, and pause state.
+Authenticated receipts must survive changes to or deletion of that source.
 
 ## Decision
 
@@ -52,21 +47,6 @@ It validates the declaration and provider, claims and stamps each receipt
 atomically in bounded tenant phases, and commits before running the handler.
 It refuses enclosing transactions. Terminal nil-alias receipts stay unchanged;
 live claims remain counted for a later bounded adoption call.
-
-## Alternatives
-
-- A callback-only lifecycle cannot atomically maintain source ownership,
-  attachment, and retirement with the registry. This record rejects that model
-  for managed sources; it remains the explicit configuration model for
-  declarations that do not use a source resource.
-- Resolving a source independently at every HTTP and ingress step can select
-  different provider or pause snapshots during one request. A reusable typed
-  resolution makes the request boundary explicit.
-- Looking up the current source during recovery can strand authenticated work
-  after deletion or reinterpret it after a provider change. Durable receipt
-  aliases preserve the provider that authenticated it.
-- Inferring modules from names or trusting request-supplied modules bypasses
-  the allowlist. Explicit aliases bind selection to host configuration.
 
 ## Consequences
 

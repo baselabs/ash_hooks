@@ -1,32 +1,19 @@
-# 0002 — Standard Webhooks canon, with legacy dual-sign migration
-
-- **Status:** Accepted August 20, 2026; clarified August 21, 2026.
-  `AshHooks.Legacy.verify/5` verifies the legacy envelope. A nullable subscription
-  `signing_mode` falls back to the outbound declaration, then to `:standard`.
-  The declaration names its `subscriptions` and `deliveries` resources.
-- **Deciders:** maintainer (directive: "compatible if not canon"); independent design review
-
-## Context
-
-Outbound consumers must be able to verify deliveries with ordinary webhook libraries. The
-Standard Webhooks spec defines `webhook-id` / `webhook-timestamp` / `webhook-signature`
-(space-delimited `v1,<base64>`), MAC over `msg_id.timestamp.payload`, `whsec_`-prefixed
-secrets, and key rotation. Existing receivers may also use the timestamped
-`t=<ts>,v1=<hex>` envelope supported by `AshHooks.Legacy`.
+# Standard Webhooks and legacy dual signing
 
 ## Decision
 
-Emit **Standard Webhooks** natively (see
-ADR-0006). During migration, a per-subscription `signing_mode` (`:legacy | :dual |
-`:standard`) additionally emits the legacy envelope **byte-identically**, signed with a
-**separate legacy secret**; independent keys and rotation
-lifecycles. Cutover is operator-driven per subscription: a 2xx response cannot report which
-header a receiver verified, so no auto-detection is attempted. An in-package
-`AshHooks.Legacy.verify/5` verifier checks the legacy envelope.
+Emit Standard Webhooks natively, using the schemes in
+[the signing decision](0006-v1-and-v1a-signing-day-one.md).
+A subscription's `signing_mode` selects `:legacy`, `:dual`, or `:standard`;
+a nil value falls back to the outbound declaration, then to `:standard`.
+Dual mode also emits the byte-identical legacy envelope with a separate legacy
+secret and independent rotation lifecycle. Cutover is operator-driven:
+a 2xx response cannot reveal which signature the receiver verified.
+`AshHooks.Legacy.verify/5` verifies the legacy envelope.
+The outbound declaration names its subscriptions and deliveries resources.
 
 ## Consequences
 
-- New consumers verify with any SW library; incumbent receivers keep verifying through cutover.
-- Dual-sign doubles signature headers during migration; bounded by explicit mode flip.
-- Native SW implementation owns spec-conformance testing (vectors cross-checked against
-  reference implementations).
+- Receivers can use Standard Webhooks libraries or retain legacy verification during cutover.
+- Dual mode adds signature headers until the operator changes the mode.
+- The package owns conformance of its native signing and verification.

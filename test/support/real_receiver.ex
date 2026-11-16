@@ -1,13 +1,9 @@
 defmodule AshHooks.Test.RealReceiver do
   @moduledoc false
-  # Client for the real HTTP receiver that `:real_receiver` tests deliver to
-  # (its port in ASH_HOOKS_REAL_RECEIVER_PORT). A session is one receiving URL
-  # that answers with a configured response and records what it received.
-  #
-  # Every call for a session uses the host the session was opened with, so
-  # control calls and deliveries reach the same listener. Endpoints created
-  # through package actions need `localhost` (registration refuses loopback
-  # literals); tests that set endpoint URLs directly may use `127.0.0.1`.
+  # Real receiver sessions use one host for both control calls and delivery.
+  # Package-created endpoints use localhost because registration refuses IP loopback.
+  # Directly configured endpoints may use 127.0.0.1 with explicit test options.
+  # Each session isolates its configured response and recorded requests.
 
   alias AshHooks.Http.Bounded
 

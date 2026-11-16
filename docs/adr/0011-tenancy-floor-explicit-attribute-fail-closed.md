@@ -1,121 +1,50 @@
-# 0011 — Tenancy floor: explicit, attribute-aligned, fail-closed, not authorization
-
-- **Status:** Accepted (2026-09-24); implements the tenancy design, which was independently adversarially reviewed before implementation; extends ADR-0005's floors doctrine; amended November 15, 2026
-- **Deciders:** maintainer; independent adversarial review of the design (blocking pass)
-
-## Context
-
-ash_hooks 1.1.1 had no tenant concept at any layer (census-verified: zero
-"tenant" occurrences across `lib/`, no public head accepting a tenant, all 18
-Ash data calls tenant-less). Under multi-tenant use, six operation shapes had
-global data access; most critically the subscription fanout read, which
-delivers an event's payload bytes to every subscription row matching its type
-string, regardless of which tenant's subscriptions they are. An RLS-only
-alternative carries the entire isolation burden with silent failure modes (an
-RLS-invisible endpoint row is indistinguishable from a gone one and is skipped
-by design).
+# Explicit attribute tenancy and transaction binding
 
 ## Decision
 
-**2.0 amendment:** [ADR-0012](0012-durable-delivery-ownership-and-recovery.md)
-extends all row fences to complete primary keys and persisted declaration/route
-ownership, and uses separate enqueue tokens/leases for recovery. Site counts and
-the `mark_enqueue_failed` recovery mechanism below describe September 24 source.
+The package uses Ash attribute multitenancy and threads the explicit tenant
+through every entry point and data operation. Single-tenant resources need no
+tenant. There is no ambient tenant fallback.
 
-The package aligns with **Ash attribute multitenancy** and threads an explicit
-tenant through every path. The floor, in four rules:
+Each entry family preflights the resources it touches before data access.
+A multitenant set without a tenant returns `:tenant_required`. Mixed tenancy,
+different attributes, a non-attribute strategy, `global?: true`, or inconsistent
+tenant conversion returns `:tenancy_mismatch`. Ash fail-closed reads and native
+tenant-scoped identities and upserts remain the storage backstop.
 
-1. **Explicit tenant everywhere; no ambient fallback.** Every public entry
-   point takes a `:tenant` (or `ctx[:tenant]` for ingest) and threads
-   `tenant:` to every Ash data call it makes; all 18 sites. Ash 3.33 has no
-   process-level tenant API; a package-local ambient tenant would be a second
-   source of truth. Threading is unconditional and therefore inert on
-   single-tenant resources (verified at both the action and data layers).
-2. **Named fail-closed errors before any data access.** Each entry family
-   resolves its touched-resource set first: multitenant set + no tenant →
-   `{:error, :tenant_required}` (the package's named error; the bang-path
-   heads would otherwise crash with Ash's TenantRequired); an inconsistent set
-   (some-but-not-all declared, differing attributes, non-`:attribute`
-   strategy, or `global?: true`) → `{:error, :tenancy_mismatch}`. Ash's own
-   fail-closed reads remain the backstop. `global?: true` is rejected because
-   it passes a same-attribute consistency check while silently permitting
-   tenant-less reads; it disables every fail-closed claim this floor makes.
-3. **Consumer-declared, package-verified.** Consumers declare
-   `multitenancy :attribute, attribute: <same attr>, global?: false` on the
-   four resources (subscription, endpoint, both ledgers); the package verifies
-   the contract per call on every entry family (dispatch, the ingest family,
-   the delivery runtime, both prunes, and reconciliation) and inherits Ash's
-   native guarantees (fail-closed reads, tenant-scoped identity indexes and
-   upsert conflict keys, tenant-scoped identity validation) rather than
-   reimplementing them. A compile-time verifier covers what one module can
-   know: a multitenant package resource must not mark actions
-   `multitenancy :bypass` (generalized from the design's "injected actions";
-   redeclaring an injected action name dies on Ash's RequireUniqueActionNames
-   first, probed; the reachable shape is the consumer's own action).
-4. **Tenancy is data-plane scoping, not authorization.** `authorize?: false`
-   stays on the system path (ADR-0005's posture): the dispatch call is the
-   trust boundary for writes; caller-side policy remains the consumer's layer.
+Hosts declare compatible attribute tenancy with `global?: false`. Compile-time
+verification rejects bypass actions on multitenant package resources, including
+host-defined actions. Runtime preflight checks cross-resource consistency.
+Tenancy scopes data; hosts own authorization. System operations use
+`authorize?: false` and require an application trust boundary.
 
-Supporting mechanics (the design's D5 to D9): the async path serializes the row's
-tenant into Oban job args (string tenants are the supported shape;
-non-string tenants must round-trip `parse_attribute` over JSON; documented);
-maintenance sweeps are per-tenant with `reap_all`/`prune_all` sequential sugar
-(the shared repo pool is the one cross-tenant starvation surface); secret
-resolution is tenant-aware on every resolving path (the worker's
-`:tenant_aware_secrets` 2-arity resolver contract, the inbound 1-arity secret
-fn, the provider's overridable `webhook_signing_secret/2`, and the
-`verify_signature` context's `:tenant`); and `AshHooks.reconcile_pending/3`
-reconciles orphan-pending rows through a real CAS flip on
-`:mark_enqueue_failed`; single-winner semantics under any enqueue seam.
+Tenant-scoped resources include endpoints, subscriptions, outbound deliveries,
+attempt history, event logs, inbound ledgers, inbound sources, and key registries.
+Complete primary keys, declaration/route ownership, and independent enqueue
+leases govern recovery as defined in
+[delivery ownership](0012-durable-delivery-ownership-and-recovery.md).
 
-## Rejected alternatives
+Worker jobs serialize the row's tenant in `args["tenant"]` and validate it on
+execution. Custom tenant conversion must round-trip through queue JSON and its
+inverse. Secret resolution receives the tenant. Maintenance runs per tenant;
+`*_all` helpers compose with host enumeration and do not discover tenants.
 
-- **Package-injected tenant column with manual filters**: reimplements what
-  Ash guarantees natively (indexes, upsert keys, fail-closed), doubles the
-  surface, forfeits the storage-level guarantees.
-- **Ambient process tenant**: unimplementable on Ash 3.33 (no API), and a
-  second source of truth even where possible.
-- **RLS-only**: the application path would depend on an RLS discipline the
-  package cannot verify, with silent skip semantics (see Context).
+Every database phase uses a tenant-bearing `Ash.transact` when supported and
+reads through the write repository on supported SQL layers. Tenant conversion
+must agree across all resources in that phase. Nontransactional layers supply
+no row-security transaction binding. See
+[transaction ownership](0015-tenant-transactions-and-spawned-work.md).
 
 ## Consequences and boundaries
 
-- Single-tenant adopters change nothing and observe nothing (byte-identical;
-  the full pre-existing suite passes unchanged over tenant-less fixtures).
-- Cutover with in-flight 1.1.x Oban jobs requires draining before serving
-  multitenant dispatch (pre-tenancy args fail closed; correct but noisy);
-  single→multi transitions on populated tables follow the ordered steps in
-  the adoption checklist (backfill → regenerate indexes → enable; NULL-tenant
-  rows form a shadow partition that can permit repeated processing).
-- `:context`/`:substring` strategies are out of scope: unavailable on the
-  package's sqlite test substrate; `:attribute` is the only portable strategy.
-- No RLS claim: the package proves Ash-layer isolation only; adopter-side RLS
-  remains defense-in-depth.
-- The package makes no tenant-registry, discovery, or scheduling claims
-  (`*_all` sugar composes with the adopter's tenant enumeration).
-
-## Amendment (November 15, 2026)
-
-The historical four-resource inventory and "No RLS claim" boundary are incomplete
-for 3.2.0. The tenant-scoped inventory now includes endpoints, subscriptions,
-outbound deliveries, attempt history, outbound event logs, inbound ledgers,
-inbound sources, and custody key registries. Generated multitenant queue jobs
-also carry the row's tenant in their `"tenant"` argument. Entry points preflight
-the resources each operation touches, including optional audit resources.
-
-Every package database phase uses a tenant-bearing `Ash.transact` when the data
-layer supports transactions. [Phase](../../lib/ash_hooks/phase.ex) converts the
-tenant for each resource and refuses inconsistent conversions; reads on the
-supported transactional SQL layers use the write repository. Layers without
-transaction support retain their existing behavior and offer no such row-security
-binding. ADR-0015 records transaction and spawned-work ownership.
-
-The [row-security guide](../../documentation/tutorials/row-security.md) defines
-the host's repository transaction hook: bind the transaction reason's tenant to
-transaction-local database policy state on the outermost transaction. A joined
-phase does not invoke that hook again. Hosts own table and queue policies,
-database-role privileges, and per-tenant maintenance scheduling. Compatible
-attribute multitenancy with `global?: false` remains required; database row
-security supplements that contract and does not replace it or application
-authorization. The package still performs system operations with
-`authorize?: false`.
+- Single-tenant resources retain their ordinary behavior.
+- Drain tenant-less queued work before multitenant dispatch. For populated tables,
+  backfill tenants and rebuild indexes before enabling tenancy, following the
+  [adoption checklist](../../documentation/tutorials/tenancy-adoption-checklist.md).
+  Null-tenant rows can form a separate partition and permit repeated processing.
+- Only attribute tenancy is supported; context and substring strategies are refused.
+- The [row-security guide](../../documentation/tutorials/row-security.md) defines
+  the repository transaction hook that binds the outermost transaction's tenant
+  to transaction-local policy state. Joined phases do not invoke it again.
+- Hosts own table and queue policies, database roles, and per-tenant scheduling.
+  Row security supplements required attribute tenancy and application authorization.

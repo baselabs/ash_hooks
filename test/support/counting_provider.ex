@@ -5,9 +5,6 @@ defmodule AshHooks.CountingProvider do
   # handler that reports every invocation to a registered sink process and
   # returns a configurable outcome.
   #
-  # Sink/outcome are passed via :persistent_term under {__MODULE__, key} —
-  # tests register in setup and MUST delete the keys on teardown (config
-  # restore rule: delete when unset).
 
   @behaviour AshHooks.Provider
   alias AshHooks.Provider

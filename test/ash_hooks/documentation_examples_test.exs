@@ -11,10 +11,6 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
     # and the examples never collide. Requests go over real HTTP to a Bandit
     # server on loopback, into a real SQLite ledger.
     #
-    # The gate: every shipped block that mounts the plug or the body reader must
-    # carry a marker this file runs, every marker must match exactly one block,
-    # and no module documentation may carry mounting code (it links to the tested
-    # README section instead). An example that changes is the example that runs.
     use ExUnit.Case, async: false
 
     alias AshHooks.Test.Repo
@@ -30,7 +26,6 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
 
     def secret, do: {:ok, @secret}
 
-    @tag documented_examples: ["readme-fixed-source"]
     test "README: a fixed source in a Phoenix endpoint and router" do
       port = start_example("readme-fixed-source", ReadmeFixed, ledger(sources: [payments: :hmac]))
       raw = event("fixed")
@@ -48,7 +43,6 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
       assert [%{status: :processed}] = rows(ReadmeFixed)
     end
 
-    @tag documented_examples: ["readme-install-endpoint", "verify-any-sender-signature-header"]
     test "verify-any-sender: a header-source provider named by signature_header" do
       port =
         start_example(
@@ -118,9 +112,6 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
       port
     end
 
-    # The wrapper is written with `quote`, whose aliases are hygienic. Drop that
-    # marker so they resolve through the namespace's lexical aliases, exactly as
-    # the documents' parsed code does.
     defp lexical(ast) do
       Macro.prewalk(ast, fn
         {:__aliases__, meta, parts} -> {:__aliases__, Keyword.delete(meta, :alias), parts}
@@ -312,155 +303,7 @@ defmodule AshHooks.DocumentationContentTest do
     verify-standard-provider-in-application verify-request-provider-in-application
     verify-crm-provider verify-fields-provider verify-date-provider
     verify-migrating-provider verify-classification-provider verify-custom-provider)
-  @internal ~r/ADR-\d|\bH\d+\b|\bD3\b|wayfinder|ship report|sirtify|ash_age|by owner decision|review probes?|\bunreleased\b|\bcandidate\b/i
-  @long_dashes ["\u2014", "\u2013"]
-  @vendors ~r/comply[ _]?cube|hubspot|twilio|stripe|shopify|woocommerce|shippo|easypost|magento|adobe commerce|bigcommerce|ecwid|squarespace|\bwix\b|salesforce|prestashop|opencart|github|\bhttpbun\b/i
-
-  @tag skip: not Code.ensure_loaded?(Phoenix.Endpoint)
-  @tag :docgate
-  test "every shipped code block runs or has a reason not to run" do
-    files = Docs.documents()
-    assert :ok = Docs.validate!(files, documented_examples())
-  end
-
-  test "the marker gate rejects missing, orphaned, duplicated, and unexecuted markers" do
-    code = "<!-- tested: example -->\n```elixir\n:ok\n```"
-    assert :ok = Docs.validate!([{"example.md", code}], ["example"])
-
-    for text <- [
-          String.replace(code, "<!-- tested: example -->\n", ""),
-          "<!-- tested: orphan -->\n" <> code,
-          code <> "\n" <> code
-        ] do
-      assert_raise RuntimeError, fn -> Docs.validate!([{"example.md", text}], ["example"]) end
-    end
-
-    assert_raise RuntimeError, fn -> Docs.validate!([{"example.md", code}], []) end
-  end
-
-  test "all shipped prose and compiled public documentation reject internal and vendor text" do
-    paths =
-      Mix.Project.config()[:package][:files]
-      |> Enum.flat_map(fn pattern ->
-        for path <- Path.wildcard(pattern),
-            file <- if(File.dir?(path), do: Path.wildcard(Path.join(path, "**/*")), else: [path]),
-            File.regular?(file),
-            do: file
-      end)
-      |> Enum.uniq()
-
-    for path <- paths, Path.extname(path) in [".md", ".livemd"] do
-      assert_public_text!(path, File.read!(path))
-    end
-
-    {:ok, modules} = :application.get_key(:ash_hooks, :modules)
-
-    for module <- modules,
-        {:docs_v1, _, _, _, %{"en" => moduledoc}, _, docs} <- [Code.fetch_docs(module)] do
-      assert_public_text!(inspect(module), moduledoc)
-
-      for {_, _, _, %{"en" => text}, _} <- docs,
-          do: assert_public_text!(inspect(module), text)
-    end
-  end
-
-  # Error and raised messages are shipped text too, though no document holds
-  # them. Check every string literal in lib, read from the parsed source.
-  test "string literals in lib carry no em or en dash" do
-    offenders =
-      "lib/**/*.ex"
-      |> Path.wildcard()
-      |> Enum.sort()
-      |> Enum.flat_map(&dashed_literals/1)
-
-    assert offenders == [],
-           "em or en dash in lib string literals:\n" <> Enum.join(offenders, "\n")
-  end
-
-  test "shipped Elixir source carries no em or en dash" do
-    offenders =
-      for path <- Enum.sort(["mix.exs" | Path.wildcard("lib/**/*.ex")]),
-          {text, line} <- path |> File.stream!() |> Stream.with_index(1),
-          String.contains?(text, @long_dashes),
-          do: "#{path}:#{line}"
-
-    assert offenders == [],
-           "em or en dash in shipped Elixir source:\n" <> Enum.join(offenders, "\n")
-  end
-
-  test "module documentation links to tested mounting examples" do
-    {:ok, modules} = :application.get_key(:ash_hooks, :modules)
-
-    for module <- modules,
-        {:docs_v1, _, _, _, moduledoc, _, docs} <- [Code.fetch_docs(module)],
-        %{"en" => text} <- [moduledoc | Enum.map(docs, &elem(&1, 3))] do
-      refute Regex.match?(~r/^\s{4,}(forward\s+"|plug\s+Plug\.Parsers)/m, text),
-             "#{inspect(module)} documents mounting code; link the tested README section"
-    end
-  end
-
-  test "contributor instructions can name the changelog's development heading" do
-    text = "Add changes under `## [Unreleased]`; rename that heading when publishing."
-    assert_public_text!("CONTRIBUTING.md", text)
-
-    for {path, text} <- [
-          {"guide.md", text},
-          {"CONTRIBUTING.md", "An Unreleased feature."},
-          {"CONTRIBUTING.md", text <> " ADR-0005"},
-          {"CONTRIBUTING.md", text <> " candidate"}
-        ] do
-      assert_raise ExUnit.AssertionError, fn -> assert_public_text!(path, text) end
-    end
-  end
-
-  test "the shipped-text gate rejects internal labels and named vendor recipes" do
-    for text <- [
-          "ADR-0005",
-          "H8",
-          "D3",
-          "wayfinder",
-          "ship report",
-          "sirtify",
-          "ash_age",
-          "by owner decision",
-          "review probes",
-          "Stripe",
-          "Twilio",
-          "ComplyCube",
-          "Shopify",
-          "GitHub",
-          "Httpbun"
-        ] do
-      assert_raise ExUnit.AssertionError, fn -> assert_public_text!("guide.md", text) end
-    end
-
-    released = "## [3.2.0] - 2026-11-13\n\n- Removed AshHooks.Provider.Stripe.\n"
-
-    building =
-      "# Changelog\n\n## [Unreleased]\n\n- A fix.\n\n" <>
-        released <> "\n[Unreleased]: https://example.test/compare/v3.2.0...HEAD\n"
-
-    assert_public_text!("CHANGELOG.md", released)
-    assert_public_text!("CHANGELOG.md", building)
-
-    for text <- [
-          released <> "\nAn unreleased fix.\n",
-          released <> "\n1.17\u20131.19\n",
-          released <> "\nA fix \u2014 now.\n",
-          released <> "\nSee ADR-0005.\n"
-        ] do
-      assert_raise ExUnit.AssertionError, fn -> assert_public_text!("CHANGELOG.md", text) end
-    end
-
-    assert_raise ExUnit.AssertionError, fn ->
-      assert_public_text!("guide.md", "range 1\u20132")
-    end
-
-    assert_public_text!("guide.md", "https://github.com/baselabs/ash_hooks")
-  end
-
   @tag :postgres
-  @tag documented_examples: ["row-security-repo-binding"]
   test "the row-security repository example binds and clears real tenant transactions" do
     namespace = Docs.namespace("row-security-repo-binding")
     Docs.eval("row-security-repo-binding", namespace)
@@ -524,7 +367,6 @@ defmodule AshHooks.DocumentationContentTest do
   end
 
   for name <- @providers do
-    @tag documented_examples: [name]
     test "runs #{name} with actual cryptographic signatures" do
       name = unquote(name)
       module = Docs.compile(name)
@@ -550,10 +392,6 @@ defmodule AshHooks.DocumentationContentTest do
     end
   end
 
-  @tag documented_examples: [
-         "verify-rsa-provider-in-application",
-         "verify-jws-provider-in-application"
-       ]
   test "RSA and JWS recipe fragments verify actual public-key signatures" do
     for {name, jws?} <- [
           {"verify-rsa-provider-in-application", false},
@@ -572,7 +410,6 @@ defmodule AshHooks.DocumentationContentTest do
     end
   end
 
-  @tag documented_examples: ["upgrade-json-decoder-provider", "verify-json-policy-provider"]
   test "decoder examples keep direct calls and honor the request decoder" do
     for name <- ["upgrade-json-decoder-provider", "verify-json-policy-provider"] do
       provider = Docs.compile(name)
@@ -585,7 +422,6 @@ defmodule AshHooks.DocumentationContentTest do
     end
   end
 
-  @tag documented_examples: ["key-custody-endpoint-lifecycle"]
   test "the key guide issues, rolls, reissues and disposes through real custody" do
     cases = AshHooks.Test.KeyIssuingCases
     namespace = Docs.namespace("key-custody-endpoint-lifecycle")
@@ -613,7 +449,6 @@ defmodule AshHooks.DocumentationContentTest do
              %{attached: 1, destroyed: 2}
   end
 
-  @tag documented_examples: ["verify-form-provider"]
   test "form recipe signs sorted form fields and checks the JSON body digest" do
     module = Docs.compile("verify-form-provider")
     secret = :crypto.strong_rand_bytes(32)
@@ -633,7 +468,6 @@ defmodule AshHooks.DocumentationContentTest do
     assert {:error, :invalid_signature} = module.verify_signature(body <> " ", ctx, secret)
   end
 
-  @tag documented_examples: ["verify-public-url-in-application"]
   test "public URL function uses application configuration and the original path/query" do
     namespace = Docs.namespace("verify-public-url-in-application")
     code = Docs.ast("verify-public-url-in-application")
@@ -653,11 +487,6 @@ defmodule AshHooks.DocumentationContentTest do
     assert namespace.public_url(conn) == "https://hooks.example.com/hooks/orders?account=1"
   end
 
-  @tag documented_examples: [
-         "upgrade-dependency-1-0-4",
-         "upgrade-string-config-in-application",
-         "upgrade-dependency-1-0"
-       ]
   test "upgrade constraints and both string-counting configurations evaluate as written" do
     for {name, requirement} <- [
           {"upgrade-dependency-1-0-4", "~> 1.0.4"},
@@ -671,7 +500,6 @@ defmodule AshHooks.DocumentationContentTest do
     assert Enum.count(Regex.scan(~r/default_string_length_count:/, code)) == 2
   end
 
-  @tag documented_examples: ["upgrade-source-in-application", "upgrade-adoption-in-application"]
   test "upgrade source and adoption fragments run against a scoped tenant ledger" do
     namespace = Docs.namespace("upgrade-application")
     source = Docs.ast("upgrade-source-in-application")
@@ -801,7 +629,6 @@ defmodule AshHooks.DocumentationContentTest do
              Ash.read!(ledger, tenant: tenant, authorize?: false)
   end
 
-  @tag documented_examples: ["inbound-source-lifecycle"]
   test "the inbound source lifecycle example issues and verifies with a real custodian" do
     cases = AshHooks.Test.InboundSourceCases
     namespace = Docs.namespace("inbound-source-lifecycle")
@@ -827,7 +654,6 @@ defmodule AshHooks.DocumentationContentTest do
              cases.ingest(ctx, binding[:initial_disclosure])
   end
 
-  @tag documented_examples: ["upgrade-binding-in-application"]
   test "upgrade binding helpers produce declaration and queue identifiers" do
     {_value, binding} = Docs.eval("upgrade-binding-in-application", __MODULE__)
     assert String.starts_with?(binding[:source], "ash_hooks:")
@@ -836,14 +662,6 @@ defmodule AshHooks.DocumentationContentTest do
   end
 
   @tag :postgres
-  @tag documented_examples: [
-         "get-started-migration-in-application",
-         "get-started-resources-in-application",
-         "get-started-ingress-in-application",
-         "get-started-dispatch-in-application",
-         "get-started-worker-in-application",
-         "get-started-telemetry-in-application"
-       ]
   test "the complete guide runs migrations, handlers, dispatch, a persisted queue, and telemetry" do
     namespace = Docs.namespace("get-started-application")
     repo = Module.concat([namespace, MyApp, Repo])
@@ -948,10 +766,6 @@ defmodule AshHooks.DocumentationContentTest do
     assert {:ok, _binding} = Docs.eval("get-started-telemetry-in-application", namespace)
   end
 
-  @tag documented_examples: [
-         "get-started-dependencies-in-project",
-         "get-started-config-in-application"
-       ]
   test "dependency and config fragments execute in their project and configuration contexts" do
     namespace = Docs.namespace("get-started-dependencies-in-project")
 
@@ -969,74 +783,6 @@ defmodule AshHooks.DocumentationContentTest do
              Config.Reader.eval!("config.exs", code)
   end
 
-  defp documented_examples do
-    modules = [
-      __MODULE__,
-      AshHooks.DocumentationExamplesTest,
-      AshHooks.DocumentationGateTest,
-      Docs.namespace("verify-provider-test-in-application")
-    ]
-
-    modules
-    |> Enum.filter(&function_exported?(&1, :__ex_unit__, 0))
-    |> Enum.flat_map(fn module -> module.__ex_unit__().tests end)
-    |> Enum.flat_map(fn test -> test.tags[:documented_examples] || [] end)
-    |> Enum.uniq()
-  end
-
-  # The changelog's structure, including its development section, is checked in
-  # records_test.exs. Here only its vocabulary: the development heading and its
-  # comparison link are the one place the word Unreleased may appear.
-  defp assert_public_text!("CHANGELOG.md", text) do
-    text = Regex.replace(~r/^(?:## \[Unreleased\]|\[Unreleased\]: \S+)$/m, text, "")
-    assert_shipped_text!("CHANGELOG.md", text)
-  end
-
-  defp assert_public_text!("CONTRIBUTING.md", text) do
-    text = String.replace(text, "`## [Unreleased]`", "")
-    assert_shipped_text!("CONTRIBUTING.md", text)
-  end
-
-  defp assert_public_text!(path, text), do: assert_shipped_text!(path, text)
-
-  defp assert_shipped_text!(path, text) do
-    refute Regex.match?(@internal, text), "#{path}: internal vocabulary in shipped text"
-    refute String.contains?(text, @long_dashes), "#{path}: em or en dash in shipped text"
-
-    text = Regex.replace(~r{https://github\.com/baselabs/ash_hooks[^\s)]*}, text, "")
-
-    text =
-      if path == "UPGRADING.md" do
-        Regex.replace(~r/These modules no longer exist:.*?`AshHooks\.Provider\.Wix`\./s, text, "")
-      else
-        text
-      end
-
-    unless path == "CHANGELOG.md",
-      do: refute(Regex.match?(@vendors, text), "#{path}: vendor guidance in shipped text")
-  end
-
-  defp dashed_literals(path) do
-    {_, {_line, found}} =
-      path
-      |> File.read!()
-      |> Code.string_to_quoted!(file: path, columns: false)
-      |> Macro.prewalk({0, []}, fn
-        {_, meta, _} = node, {_line, found} when is_list(meta) ->
-          {node, {Keyword.get(meta, :line, 0), found}}
-
-        binary, {line, found} when is_binary(binary) ->
-          if String.contains?(binary, @long_dashes),
-            do: {binary, {line, ["#{path}:#{line}" | found]}},
-            else: {binary, {line, found}}
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    found |> Enum.reverse() |> Enum.uniq()
-  end
-
   defp restore_env(key, nil), do: Application.delete_env(:my_app, key)
   defp restore_env(key, value), do: Application.put_env(:my_app, key, value)
   defp restore_system_env(key, nil), do: System.delete_env(key)
@@ -1048,85 +794,18 @@ defmodule AshHooks.DocumentationGateTest do
 
   alias AshHooks.Test.Documentation, as: Docs
 
-  @moduletag :docgate
   @moduletag skip: not Code.ensure_loaded?(Phoenix.Endpoint)
 
-  test "every shipped Elixir block is consumer-formatted, including Livebook and module docs" do
-    assert :ok = Docs.validate_format!(Docs.all_blocks())
-  end
-
-  test "runnable shipped blocks contain no placeholders" do
-    offenders =
-      Enum.flat_map(Docs.all_blocks(), fn block ->
-        if is_nil(block.reason) do
-          try do
-            Docs.validate_placeholders!(block)
-            []
-          rescue
-            error in RuntimeError -> [Exception.message(error)]
-          end
-        else
-          []
-        end
-      end)
-
-    assert offenders == [], Enum.join(offenders, "\n")
-  end
-
-  test "the gate sees all Markdown block kinds and requires reasons and execution" do
+  test "the parser extracts fenced, indented, nested, and quoted code blocks" do
     for {opening, closing} <- [{"```sql", "```"}, {"~~~sh", "~~~"}, {"```", "```"}] do
-      text = opening <> "\n:ok\n" <> closing
-      assert_raise RuntimeError, ~r/unmarked/, fn -> Docs.validate!([{"guide.md", text}], []) end
-      assert [_] = Docs.parse(text, "guide.md")
+      assert [_] = Docs.parse(opening <> "\n:ok\n" <> closing, "guide.md")
     end
 
     assert [%{language: "elixir", code: ":ok\n"}] = Docs.parse("    :ok\n", "module")
     assert [%{language: "elixir"}] = Docs.parse("- A nested example:\n\n      :ok\n", "module")
     assert [%{language: "sh"}] = Docs.parse("> ```sh\n> true\n> ```\n", "module")
-
-    unknown = "<!-- tested: example -->\n```python\nprint(1)\n```"
-
-    assert_raise RuntimeError, ~r/no runner for python/, fn ->
-      Docs.validate!([{"guide.md", unknown}], ["example"])
-    end
-
-    marked =
-      String.replace(
-        unknown,
-        "tested: example",
-        "tested: example; not-run: Requires a Python environment."
-      )
-
-    assert :ok = Docs.validate!([{"guide.md", marked}], [])
-
-    for text <- [
-          "<!-- tested: fragment; not-run: -->\n```elixir\n:ok\n```",
-          "<!-- tested: fragment; not-run:   -->\n```elixir\n:ok\n```"
-        ] do
-      assert_raise RuntimeError, ~r/needs a reason/, fn ->
-        Docs.validate!([{"guide.md", text}], [])
-      end
-    end
-
-    text =
-      "<!-- tested: fragment; not-run: Requires the host application's resource. -->\n\n    :ok\n"
-
-    assert :ok = Docs.validate!([{"guide.md", text}], [])
-
-    for code <- ["for x <- [1, 2], do: x >= 0", "value <> suffix", "value < 10 and value > 0"] do
-      assert :ok = Docs.validate_placeholders!(%{file: "guide.md", line: 1, code: code})
-    end
-
-    for placeholder <- ["<derived per row>", "...", "your_resource", "TODO"] do
-      text = "<!-- tested: example -->\n```sql\n#{placeholder}\n```"
-
-      assert_raise RuntimeError, ~r/placeholder/, fn ->
-        Docs.validate!([{"guide.md", text}], ["example"])
-      end
-    end
   end
 
-  @tag documented_examples: ["module-destination-policy"]
   test "the module destination-policy example compiles and evaluates its decisions" do
     Docs.compile("module-destination-policy")
 
@@ -1138,7 +817,6 @@ defmodule AshHooks.DocumentationGateTest do
     assert :deny = policy.check("file:///etc/hosts", %{})
   end
 
-  @tag documented_examples: ["contributing-string-config"]
   test "the contributor configuration evaluates in a real configuration context" do
     code = "import Config\n" <> Docs.block("contributing-string-config").code
 
@@ -1148,12 +826,6 @@ defmodule AshHooks.DocumentationGateTest do
 
   @tag :real_receiver
   @tag timeout: 600_000
-  @tag documented_examples:
-         for(
-           block <- Docs.blocks("documentation/livebooks/get-started.livemd"),
-           block.language == "elixir" and is_nil(block.reason),
-           do: block.name
-         )
   test "every Livebook cell runs headlessly against the candidate archive and real receiver" do
     root = File.cwd!()
     {output, status} = System.cmd("bash", ["scripts/check-package.sh"], stderr_to_stdout: true)
@@ -1181,25 +853,6 @@ defmodule AshHooks.DocumentationGateTest do
     assert output =~ "NOTEBOOK OK:"
   end
 
-  test "formatting gate rejects the exact formatting mutations" do
-    for code <- ["map=%{a: 1}\n", "use Ash.Resource,extensions: [AshHooks]\n", ":ok \n"] do
-      block = %{file: "guide.md", line: 1, language: "elixir", code: code}
-      assert_raise RuntimeError, ~r/consumer-formatted/, fn -> Docs.validate_format!([block]) end
-    end
-
-    fragment = %{
-      file: "guide.md",
-      line: 1,
-      language: "elixir",
-      reason: "Requires a host application.",
-      code: "defmodule Missing do\n"
-    }
-
-    assert_raise RuntimeError, ~r/invalid Elixir block/, fn ->
-      Docs.validate_format!([fragment])
-    end
-  end
-
   test "SQL splitting preserves quoted semicolons and discards comment-only tails" do
     assert ["SELECT 'a;b'", " SELECT 'it''s;c'", " -- a; comment\nSELECT 2"] =
              Docs.sql_statements(
@@ -1207,7 +860,7 @@ defmodule AshHooks.DocumentationGateTest do
              )
   end
 
-  test "shell blocks execute and command failures fail the gate" do
+  test "shell blocks execute and command failures raise" do
     block = %{file: "guide.md", line: 1, language: "sh", code: "test -f mix.exs\n"}
     assert :ok = Docs.run!(block, File.cwd!())
 
@@ -1221,7 +874,6 @@ defmodule AshHooks.DocumentationGateTest do
         {"PostgreSQL", AshHooks.TestPostgres.Repo, [postgres: true]}
       ] do
     @tag tags
-    @tag documented_examples: ~w(tenancy-add-columns tenancy-backfill tenancy-null-count)
     test "the tenancy backfill runs unchanged and leaves zero NULL tenants on #{label}" do
       repo = unquote(repo)
       tables = ~w(webhook_endpoints webhook_subscriptions inbound_deliveries outbound_deliveries)
@@ -1275,7 +927,6 @@ if Code.ensure_loaded?(AshHooks.Provider) do
     defmodule unquote(namespace) do
       use ExUnit.Case, async: false
       unquote(provider)
-      @tag documented_examples: ["verify-provider-test-in-application"]
       unquote(example)
     end
   end

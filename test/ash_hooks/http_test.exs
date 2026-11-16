@@ -28,8 +28,6 @@ defmodule AshHooks.HttpTest do
         {:port, 0},
         {:bind_address, ~c"127.0.0.1"},
         {:server_name, ~c"ash_hooks_test"},
-        # document_root must be a CHARLIST — a binary root serves only
-        # 500s.
         {:server_root, String.to_charlist(System.tmp_dir!())},
         {:document_root, String.to_charlist(root)},
         {:mime_types, [{~c"json", ~c"application/json"}]}

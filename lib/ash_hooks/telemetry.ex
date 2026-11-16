@@ -65,7 +65,6 @@ defmodule AshHooks.Telemetry do
   `:telemetry.execute/3` matches exact event names, so consume the
   whole surface with one `attach_many`:
 
-  <!-- tested: module-ash-hooks-telemetry-1; not-run: Telemetry fragment; the callback body belongs to the host application's metrics system. -->
 
       :telemetry.attach_many(
         "my-ash-hooks",

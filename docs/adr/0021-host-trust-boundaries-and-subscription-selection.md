@@ -1,14 +1,9 @@
-# 0021 — Host trust boundaries and subscription selection
-
-- **Status:** Accepted November 15, 2026
-- **Deciders:** maintainer
+# 0021 - Host trust boundaries and subscription selection
 
 ## Context
 
-Hosts need controlled transport, destination, timing, and payload policies
-without moving those choices into untrusted requests or subscription data.
-Extensions introduced from 2.1.0 through 3.2.0 preserve the concrete delivery
-machine while making its host-owned trust boundaries explicit.
+Hosts control transport, destination, timing, and payload policies.
+Untrusted requests and subscription data must not choose those trust boundaries.
 
 ## Decision
 
@@ -68,22 +63,6 @@ require a declared builder returning nonempty bytes. Unknown versions, failed
 builders, invalid results, and crashes fail that endpoint before row creation;
 fanout to other endpoints continues. The package never substitutes the current
 payload for a failed pinned version.
-
-## Alternatives
-
-- Silent transport fallback was an earlier behavior, corrected in 3.2.0: it
-  could send by HTTP when the host intended another route. A retryable refusal
-  preserves the host's destination choice.
-- Treating every destination failure as unsafe would terminalize resolver
-  outages; distinguishing resolution from a nonpublic answer preserves retries
-  without accepting an unsafe address.
-- Permitting arbitrary headers could replace authenticated identity or message
-  framing. Reserved names keep host additions outside those contracts.
-- Letting runtime budgets exceed the compiled job envelope could terminate
-  owned work before its driver can finalize. Validation preserves the envelope.
-- Open-ended filters or fallback payload versions could deliver to unintended
-  subscriptions or send the wrong schema. Closed selection fails before a
-  delivery row exists and isolates the affected endpoint.
 
 ## Consequences
 

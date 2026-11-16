@@ -1162,13 +1162,6 @@ if Code.ensure_loaded?(Oban) do
       Ash.get!(Endpoint, endpoint.id, authorize?: false)
     end
 
-    # Hold Oban.Basic's actual uniqueness lock and inserted row in an open
-    # PostgreSQL transaction. A second connection must get Oban's unsaved job.
-    # The windows are deadlock DETECTION, not part of the behavior under
-    # test — sized for the tunnel RTT of a maintainer-side ephemeral-area
-    # Postgres (~65ms/query, so the 21 contended attempts of the refusal
-    # test need several seconds) with CI's local service far inside them;
-    # a genuine deadlock still trips them.
     defp with_uncommitted_job(row, event, fun) do
       parent = self()
 
@@ -1280,8 +1273,6 @@ if Code.ensure_loaded?(Oban) do
           secret_resolver: {Runtime, :secret},
           http_opts: [validate_destination: false, timeout: 5_000],
           ssrf_check: fn url -> URI.parse(url).host == "127.0.0.1" end,
-          # Use the driver's normal budgets for real database and receiver work.
-          # Deadline tests override them explicitly.
           attempt_timeout: 25_000,
           finalization_allowance: 5_000,
           max_attempts: 3,

@@ -1,21 +1,15 @@
-# 0017 — Generic providers and signature primitives
-
-- **Status:** Accepted November 15, 2026
-- **Deciders:** maintainer
+# 0017 - Generic providers and signature primitives
 
 ## Context
 
-Different senders reuse signature mechanisms while varying headers, encodings,
-signed inputs, timestamps, and envelopes. Version 3.0.0 removed the shipped
-vendor-specific verifier modules and provider-name inference. The public
-mechanism must describe the actual signing contract and leave sender-specific
-configuration and business handling with the host.
+Senders share cryptographic mechanisms while varying their signing contracts.
+The package supplies generic primitives; hosts own sender configuration and business handling.
 
 ## Decision
 
 Every inbound declaration names its provider explicitly. A missing provider
 fails at compilation rather than resolving a module from the declaration name.
-Names continue to define durable ledger identity; replacing an implementation
+Names define durable ledger identity; replacing an implementation
 does not justify changing that name or silently changing existing identities.
 
 `use AshHooks.Provider, verify: [...]` generates callbacks from validated
@@ -42,23 +36,8 @@ a separate signature context value.
 Configured JWS providers decode the authenticated payload and derive their
 default identity from its full canonical JSON. Explicit declaration identity
 extractors retain precedence; provider identity errors fail closed. ADR-0012
-records the replacement of the historical vendor normalization. ADR-0016 owns
+records canonical payload identity. ADR-0016 owns
 the shared JSON policy and decoder precedence.
-
-## Alternatives
-
-- Keeping vendor modules was the pre-3.0.0 model. Each sender variation then
-  belonged to the package's public implementation and release contract. Generic
-  schemes express reusable verification mechanisms while hosts own sender policy.
-- Inferring a provider from its name hides implementation selection and makes
-  renaming configuration affect durable identity. Explicit selection separates
-  the two responsibilities.
-- Trusting an algorithm or key location supplied by the token would let
-  unauthenticated input choose verification policy. Host-pinned configuration
-  keeps that policy outside the request.
-- Requiring every provider to reimplement cryptography duplicates validation and
-  encoding rules. Public primitives support protocols that need custom input
-  construction without duplicating those mechanisms.
 
 ## Consequences
 

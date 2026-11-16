@@ -3,15 +3,7 @@
 #
 #   * FAILS (exit 1) whenever `mix hex.outdated` shows resolver-updatable
 #     drift — anything "Update possible" must be updated now, not parked.
-#   * PRINTS every package whose latest release the resolver will NOT take
-#     under the current mix.exs requirements, together with the declaring
-#     line from mix.exs — that line must carry an inline deliberate-pin
-#     reason (identity contract, major-version jump pending, resolver
-#     conflict). "We never bumped it" is not a reason.
 #
-# Run it after every dependency move and before releases. CI runs
-# `mix hex.audit` for CVEs; currency is enforced by this script (and
-# hex.audit must also be re-run by hand after any dependency move).
 set -uo pipefail
 
 echo "== mix hex.outdated =="
@@ -36,9 +28,7 @@ fi
 
 echo
 echo "CURRENCY: OK — no resolver-updatable package is out of date."
-echo
-echo "== Latest releases the resolver will NOT take (each mix.exs line below"
-echo "   must carry an inline deliberate-pin reason): =="
+echo "== Latest releases outside the declared requirements =="
 
 rejected="$(printf '%s\n' "$outdated_out" | awk '
   /^Dependency/ { intable = 1; next }

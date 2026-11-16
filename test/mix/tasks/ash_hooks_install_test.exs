@@ -40,8 +40,6 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
         |> Install.igniter()
 
       content = render(igniter, "lib/my_app_web/endpoint.ex")
-      # igniter normalizes `plug X` to `plug(X)` — match on the call, not the
-      # exact formatting
       assert content =~ "plug(Plug.RequestId)"
       assert content =~ "json_decoder: Phoenix.json_library()"
     end

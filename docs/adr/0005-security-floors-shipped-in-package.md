@@ -1,14 +1,9 @@
-# 0005 — Security defaults and application boundaries
-
-- **Status:** Accepted August 20, 2026; response capture and read-policy boundaries amended August 22, 2026; reconciled for 2.0 on October 6, 2026; amended November 15, 2026
-- **Deciders:** Maintainer; independent adversarial design review.
+# 0005 - Security defaults and application boundaries
 
 ## Context
 
-Webhook requests carry untrusted bytes across authentication, storage, and HTTP
-boundaries. The library can enforce signature checks, destination validation,
-transport bounds, and redaction. An application's actor model, secret custody,
-and business effects require application-owned policies and integrations.
+Webhook bytes cross untrusted authentication, storage, and HTTP boundaries.
+The library enforces its checks; hosts own policies, custody, and business effects.
 
 ## Decision
 
@@ -30,7 +25,7 @@ The supplied implementation uses restrictive defaults for the boundaries it owns
 - Validate endpoint URLs at registration without hostname DNS. Resolve and check
   destinations at send time, then connect to a validated address. Both supplied
   adapters preserve the original host for HTTP and TLS. See [ADR-0009](0009-bounded-http-default-and-ssrf-pinning.md).
-- Persist endpoint disablement following 410 responses. Version 2.0 first records
+- Persist endpoint disablement following 410 responses. The driver first records
   the obligation and endpoint snapshot; recovery finishes it without resending or
   disabling a replacement configuration. See [ADR-0012](0012-durable-delivery-ownership-and-recovery.md).
 
@@ -52,20 +47,14 @@ Explicit adapter, destination-validation, and bound overrides replace the releva
 built-in behavior. Applications using them must preserve the required security
 properties for their deployment.
 
-## Amendment (November 15, 2026)
+## Signature parsing boundary
 
-The blanket instruction to verify before decoding needs a precise boundary.
-[Signature.jws/3](../../lib/ash_hooks/provider/signature.ex) base64url-decodes the
-compact segments and JSON-decodes the protected header before authentication.
-It requires the header's algorithm to equal the host-pinned algorithm, rejects
-unsupported critical headers and unencoded payloads, ignores key-location
-headers, and verifies the exact encoded `header.payload` signing input with the
-supplied keys. The untrusted header does not choose a key or widen the algorithm
-allowlist. Only after authentication are time claims checked and payload bytes
-returned for delivered-payload decoding. Ingress gates event parsing, identity
-callbacks, and handlers behind successful verification.
-
-Version 3.2.0's ledger `json_decoder` policy supplies the decoder for protected
-headers, post-verification claims, and delivered JSON payloads. Explicit format
-selection and provider decoders follow ADR-0016. Header parsing required by the
-signature protocol is not permission to process an unauthenticated delivery.
+[Signature.jws/3](../../lib/ash_hooks/provider/signature.ex) parses compact
+segments and the protected header before authentication. The host pins the
+algorithm; unsupported critical headers and unencoded payloads are refused.
+Key-location headers supply no keys. Verification authenticates the exact
+encoded `header.payload` input before time claims and delivered payloads are used.
+The ledger's `json_decoder` supplies the protected-header, claim, and delivered
+JSON decoder. Explicit formats and provider decoders follow
+[the decoding decision](0016-inbound-json-decoding-policy.md).
+Ingress calls event parsing, identity callbacks, and handlers only after verification.

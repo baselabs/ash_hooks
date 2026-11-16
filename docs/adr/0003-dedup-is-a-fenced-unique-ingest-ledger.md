@@ -1,47 +1,23 @@
-# 0003 — Dedup is a fenced unique-ingest ledger (not ash_onetime)
-
-- **Status:** Accepted (2026-08-20); amended November 15, 2026
-- **Deciders:** maintainer, corrected against implementation evidence; independent design review
-
-## Context
-
-Providers deliver at-least-once; receivers must dedup. Candidate primitive 1: the sibling
-`ash_onetime` extension; but it hard-depends `ash_postgres` + `postgrex`, which would force
-Postgres on every consumer and defeat data-layer agnosticism. A unique delivery-audit
-table records arrival but does not by itself recover unfinished processing. A crash
-between ingest and finalization must leave a row that redelivery can claim again.
+# Fenced unique-ingest ledger
 
 ## Decision
 
-**2.0 amendment:** [ADR-0012](0012-durable-delivery-ownership-and-recovery.md)
-adds provider-defined identity precedence, explicit legacy adoption, and complete
-ledger primary-key handling. The content-digest fallback below applies only when
-neither the declaration nor its provider defines an identity.
-
-Dedup is `AshHooks.InboundDelivery`: decoded payload and signed-body digest persisted
-before handling, DB-unique
-identity `{provider, external_event_id}` extended by consumer-declared scope slots (provider
-ids are not globally unique across accounts), deterministic content-hash identity for
-providers without ids (never a fresh UUID), and a **fenced claim/lease state machine**
-(`received → claimed → processed | failed`; claim returns a monotonic fencing token;
-mark/renew conditional on token; a reaper re-drives expired leases). Data-layer-agnostic
-(unique-upsert via supported Ash data-layer mechanisms; ash_sqlite supports them natively,
-verified). `ash_onetime` remains an optional dep for consumers who want action-level
-idempotency elsewhere.
+`AshHooks.InboundDelivery` persists the decoded payload and signed-body digest
+before handling. Its unique identity combines provider, external event ID, and
+consumer-declared scope. Identity precedence is declaration extractor, provider
+callback, then deterministic signed-body digest; callback errors fail closed.
+A fenced claim and lease state machine moves receipts through
+`received -> claimed -> processed | failed`. Claim tokens fence mark and renew
+operations, and a reaper recovers expired leases. The data layer must supply
+unique upserts and atomic conditional updates.
+Complete primary keys and identity adoption follow
+[the ownership decision](0012-durable-delivery-ownership-and-recovery.md).
 
 ## Consequences
 
-- A crash leaves unfinished processing recoverable. A crash after a handler's effect but
-  before finalization can repeat that effect; handlers must be idempotent.
-- Uniqueness identity must include declared scope where configured (verifier enforces).
-- Byte-identical distinct deliveries from no-id providers dedupe to one event; documented
-  at-least-once semantics (no identity exists to distinguish them).
-
-## Amendment (November 15, 2026)
-
-The statement that `ash_onetime` remains an optional dependency is historical
-and false for the current package. It is not a dependency in
-[mix.exs](../../mix.exs), including the optional and development dependency lists.
-The fenced `AshHooks.InboundDelivery` ledger remains the package's deduplication
-mechanism. An application may choose a separate action-idempotency extension,
-but that choice is outside this package's dependency contract.
+- Crashes leave unfinished work recoverable. Handlers must be idempotent because
+  a crash after a business effect but before finalization can repeat the effect.
+- Uniqueness includes every declared scope attribute.
+- Byte-identical deliveries without a sender identity deduplicate to one event.
+- `ash_onetime` is not a dependency. Applications may independently choose an
+  action-idempotency extension outside this package's dependency contract.

@@ -6,7 +6,6 @@ defmodule AshHooks.Endpoint do
   Configures an Ash resource as an outbound webhook destination, including
   its enable/disable state and references to signing secrets.
 
-  <!-- tested: module-ash-hooks-endpoint-2; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
 
       use Ash.Resource,
         data_layer: AshSqlite.DataLayer,
@@ -185,7 +184,6 @@ defmodule AshHooks.Endpoint do
   `schedule_previous_retirement/3` or remove it with `expire_previous_secret/2`
   before rolling.
 
-  <!-- tested: module-ash-hooks-endpoint-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
 
       {:ok, rolled} =
         AshHooks.Endpoint.roll_secret(endpoint,

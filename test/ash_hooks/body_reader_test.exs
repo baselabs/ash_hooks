@@ -158,8 +158,6 @@ if Code.ensure_loaded?(Plug.Conn) do
 
       conn = Plug.Test.conn("POST", "/webhooks", raw)
 
-      # force the multi-chunk path: tiny read lengths make Plug.Conn.read_body
-      # return {:more, ...} until the body is exhausted
       conn =
         Enum.reduce_while(1..100, conn, fn _, conn ->
           case AshHooks.BodyReader.read_body(conn, length: 100_000, read_length: 64) do

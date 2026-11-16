@@ -1,24 +1,15 @@
-# 0001 — Naming and package identity
-
-- **Status:** Accepted (2026-08-20)
-- **Deciders:** maintainer, structured design pass
-
-## Context
-
-The baselabs `ash_*` family deliberately avoids canonical `ash_<concept>` names so official
-Ash-team extensions stay free to claim them. A package name must also be free on hex.pm
-(first-publish-first-owned).
+# Naming and package identity
 
 ## Decision
 
-The package is **`ash_hooks`** (Hex package `ash_hooks`, repository `baselabs/ash_hooks`,
-module root `AshHooks`), carrying
-"webhooks" in description/keywords. Never rename to `ash_webhooks`. No version or phase
-suffixes in durable names. Availability verified 2026-08-20 (`ash_hooks`, `ash_webhooks`,
-`ash_webhook` all free on Hex). Subsequent releases verify ownership of the
-existing package before publication.
+The package is `ash_hooks`, the repository is `baselabs/ash_hooks`, and the module
+root is `AshHooks`. The description and keywords include "webhooks".
+Canonical `ash_<concept>` names remain available to official Ash extensions;
+keep `ash_hooks` rather than renaming it to `ash_webhooks`.
+Durable names carry no version or phase suffixes. Verify ownership of the
+existing Hex package before publication.
 
 ## Consequences
 
-- Canonical names remain available to the Ash team; discoverability rides keywords.
-- The name undersells scope slightly (inbound + outbound webhooks); accepted.
+- Discoverability depends on the description and keywords.
+- The package name covers both inbound and outbound webhooks.

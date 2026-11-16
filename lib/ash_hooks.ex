@@ -5,7 +5,6 @@ defmodule AshHooks do
 
   Attach to a resource:
 
-  <!-- tested: module-ash-hooks-3; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
 
       use Ash.Resource,
         extensions: [AshHooks]
@@ -295,7 +294,6 @@ defmodule AshHooks do
   others. Calls run sequentially so tenant sweeps do not compete for the
   repository's shared connection pool.
 
-  <!-- tested: module-ash-hooks-2; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
 
       {:ok, %{results: %{"org_a" => {:ok, 3}, "org_b" => {:ok, 0}}, total: 3}} =
         AshHooks.reap_all(Ledger, tenants: ["org_a", "org_b"])
@@ -313,7 +311,6 @@ defmodule AshHooks do
   outbound deliveries through `AshHooks.Delivery.prune/2`), with the same
   per-tenant isolation and sequencing as `reap_all/2`.
 
-  <!-- tested: module-ash-hooks-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
 
       {:ok, %{results: %{"org_a" => {:ok, 2}}, total: 2}} =
         AshHooks.prune_all(Delivery, older_than: cutoff, tenants: ["org_a"])

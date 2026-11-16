@@ -1,15 +1,9 @@
-# 0018 — Optional HTTP ingress and exact body bytes
-
-- **Status:** Accepted November 15, 2026
-- **Deciders:** maintainer
+# 0018 - Optional HTTP ingress and exact body bytes
 
 ## Context
 
-Signature verification needs the exact received body, which parsed parameters
-cannot reconstruct. An HTTP entry point also needs source resolution,
-sender challenges, method checks, and acknowledgment rules without making the
-core ingress pipeline depend on an installed HTTP framework. Version 3.1.0
-adds the generic entry point and public body exchange.
+HTTP ingress needs exact bytes, source resolution, challenges, and acknowledgments.
+The core pipeline must also work without an HTTP framework.
 
 ## Decision
 
@@ -47,16 +41,6 @@ Pre-ingest refusals have separate fixed statuses for absence, unavailability,
 method, size, and consumed-body errors. A host refusal policy can shape headers
 and bodies but cannot change required status or headers. Custom ingest response
 policies own their headers. Every response is sent and the connection halted.
-
-## Alternatives
-
-No alternative was recorded at the time in the available release notes.
-Controller-specific integration remains possible through lower-level ingress,
-but would repeat common acknowledgment and body-handling rules. A required HTTP
-dependency would constrain non-HTTP consumers. Reconstructing raw bytes from
-parsed parameters breaks exact-byte verification. Sending an automatic 202 would
-require host-owned async orchestration, which ADR-0007 explicitly keeps outside
-this adapter's synchronous contract.
 
 ## Consequences
 

@@ -2,7 +2,6 @@ defmodule AshHooks.Event do
   @moduledoc """
   An outbound event: its identity, type, exact payload bytes, and optional context.
 
-  <!-- tested: module-ash-hooks-event-1; not-run: Application fragment; requires host-owned resources, repository, data, and configuration. See the complete get-started application. -->
 
       {:ok, event} =
         AshHooks.Event.new(

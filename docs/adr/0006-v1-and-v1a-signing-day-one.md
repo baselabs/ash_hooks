@@ -1,22 +1,17 @@
-# 0006 — SW v1 and v1a (ed25519) signing, day one
-
-- **Status:** Accepted August 20, 2026; rotation support clarified August 21, 2026.
-  `Signing.headers/4` accepts `:previous_whsk` for overlapping Ed25519 keys.
-- **Deciders:** Maintainer; independent design review.
+# 0006 - SW v1 and v1a (ed25519) signing, both schemes
 
 ## Context
 
-The Standard Webhooks spec defines two signature schemes: `v1` (HMAC-SHA256, symmetric) and
-`v1a` (ed25519, asymmetric). The runtime provides the necessary cryptographic
-operations. Asymmetric verification lets receivers use a public key while
-the sender retains its private key, avoiding shared-secret distribution.
+Standard Webhooks supports HMAC-SHA256 (`v1`) and Ed25519 (`v1a`).
+Asymmetric signing lets receivers verify with a public key without a shared secret.
 
 ## Decision
 
-The signer and verifier implement **both `v1` and `v1a` from day one**: `v1,<base64
+The signer and verifier implement **both `v1` and `v1a` natively**: `v1,<base64
 HMAC-SHA256>` and `v1a,<base64 ed25519>` in the space-delimited `webhook-signature` header,
 per-endpoint key material (`whsec_` symmetric 24 to 64 bytes; `whsk_`/`whpk_` asymmetric),
-old+new rotation signing for both. Secrets are resolved via callbacks (ADR-0005).
+old and new rotation signing for both. `Signing.headers/4` accepts `:previous_whsk`
+for overlapping Ed25519 keys. Secrets are resolved via callbacks (ADR-0005).
 
 ## Consequences
 

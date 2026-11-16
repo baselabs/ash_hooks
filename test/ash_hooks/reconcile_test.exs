@@ -949,7 +949,6 @@ defmodule AshHooks.ReconcileTest do
                older_than: cutoff()
              )
   after
-    # restore the fixture table for the file's other tests
     Repo.query!("""
     CREATE TABLE IF NOT EXISTS #{@deliveries} (
       id TEXT PRIMARY KEY,

@@ -1,15 +1,9 @@
-# 0019 — Delivery audit and observation
-
-- **Status:** Accepted November 15, 2026
-- **Deciders:** maintainer
+# 0019 - Delivery audit and observation
 
 ## Context
 
-Delivery state, attempt history, emitted-event history, and inbound rejection
-counts answer different operational questions. Optional observation must not
-change a send result or prevent fanout, and an observed counter must not claim
-to measure requests that never reached durable storage. Version 2.2.0 introduces
-the optional history resources and query surfaces.
+Delivery state, attempts, event history, and stored rejections answer different questions.
+Optional observation must preserve send results and fanout without overstating stored evidence.
 
 ## Decision
 
@@ -58,16 +52,6 @@ live endpoint, bypassing subscription lookup entirely. It uses the selected
 type and signing mode, defaults to standard signing and one attempt, and drives
 the normal runtime and optional history. Delivery test tracking is opt-in;
 history carries the test marker. ADR-0020 owns resend, replay, and health policy.
-
-## Alternatives
-
-No alternative was recorded at the time in the available release notes.
-Making optional audit writes mandatory could turn an observation outage into
-duplicate network delivery or blocked fanout. Telemetry alone cannot provide
-durable per-attempt queries or replayable event bytes. Counting refusal callbacks
-as stored failures would overstate durable history after rejected writes or
-paused traffic. Routing test sends through subscriptions could suppress the
-diagnostic request and would not test the chosen endpoint directly.
 
 ## Consequences
 

@@ -1,97 +1,76 @@
 # Publishing ash_hooks
 
 A release includes the Hex package, versioned API docs, executable Livebook,
-and matching GitHub source and release notes. This checklist is the canonical
-operator procedure.
+and matching GitHub source and release notes.
 
 ## Prepare the release
 
-1. Choose the version under [ADR-0010](adr/0010-semver-and-support-policy.md).
-   Update `mix.exs`, dated CHANGELOG, install constraints, supported floors,
-   upgrade guidance, and every notebook's exact package pin. Rename the
-   development heading to `## [X.Y.Z] - YYYY-MM-DD` with the publication date and
-   add the version's comparison link; the released CHANGELOG carries no
-   development section. Review README and tutorials for a
-   new reader, then check their examples and contracts against the final
-   implementation.
-2. Regenerate the formatter export and the DSL references:
+1. Choose the version under the [support policy](adr/0010-semver-and-support-policy.md).
+   Update `mix.exs`, install constraints, supported floors, upgrade guidance,
+   and each notebook's validated version and exact package pin. Date the
+   CHANGELOG release heading and add its comparison link.
+2. Regenerate the formatter export and DSL references:
 
    ```sh
    mix spark.generate
    ```
 
-3. Complete the independent review and resolve its confirmed product findings.
-   Run the declared checks on the final source: warnings-as-errors compilation,
-   formatting, strict Credo, tests, 100% of the declared Mix coverage surface, the no-optional
-   test leg, Dialyzer, dependency currency, and `mix hex.audit`. Run the real
-   PostgreSQL qualification and minimal production consumer, including Ash's
-   exact supported floor. CONTRIBUTING describes service setup and commands.
-   Run the 100% coverage command with PostgreSQL and the real receiver available.
-   The opt-in floor worker check uses Httpbun; it requires `ASH_HOOKS_HTTPBUN=1`.
-4. Build and inspect the candidate archive. This checks required documentation,
-   optional dependency metadata, safe paths, and byte equality with the checkout:
+3. Build and inspect the candidate archive and documentation:
 
    ```sh
    ./scripts/check-package.sh
    mix docs --warnings-as-errors
    ```
 
-   Resolve every ExDoc warning. Inspect rendered README, tutorial, upgrade guide,
-   API links, and generated DSL pages. Never ignore a broken reference as cosmetic.
-5. Execute each notebook against that candidate archive before publishing:
+   `usage-rules.md` and the tutorial, DSL, and Livebook trees must ship in the
+   archive and render on HexDocs. Every repository-relative document named by
+   shipped documentation must also ship. Inspect rendered README, guides, API
+   links, and generated DSL pages; resolve every warning and broken reference.
+4. Run each notebook against the candidate archive:
 
    ```sh
    ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive _build/release/ash_hooks-<version>.tar
    ```
 
-   The notebook runs exactly as written. The runner serves the candidate
-   archive and the hex.pm tarballs of its dependency graph from a throwaway
-   local Hex registry, so the notebook's own `Mix.install` cell resolves the
-   candidate as it will resolve the published package, checksum verified, and
-   the runner confirms the installed package is the candidate byte for byte.
-   After publishing, the same runner without `--archive` resolves everything
-   from hex.pm. Both runs are required. The existing real
-   receiver must answer on `LOCAL_WEBHOOK_TESTER_PORT` (default 52871); do not
-   start a second receiver to replace an unavailable service.
-6. Record the final source commit and archive digest. Commit the reviewed source,
-   push `v<version>` to run release-candidate CI, and verify every job plus
-   `all-checks-pass` on that exact commit. Required checks on `main` must enforce
-   that aggregate status. Push the same verified commit to `main`; confirm its
-   authoritative SHA and CI status before publishing.
-7. Dry-run the full publication with optional dependency metadata enabled:
+   The runner serves the candidate and dependency tarballs from a temporary
+   signed registry. The notebook's unmodified `Mix.install` verifies checksums,
+   and the runner checks the installed candidate byte for byte.
+   The existing real receiver must answer on `LOCAL_WEBHOOK_TESTER_PORT`
+   (default 52871). Reuse it rather than starting a second receiver.
+5. Dry-run publication with optional dependency metadata enabled:
 
    ```sh
    env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish --dry-run
    ```
 
-   Inspect its version, package name, file list, and `oban`/`plug` optional flags.
-   Confirm the current Hex package belongs to the maintainer account.
+   Inspect the version, package name, file list, and optional `oban`/`plug` flags.
+   Confirm that the Hex package belongs to the maintainer account.
 
 ## Publish and verify
 
-Supply the maintainer's Hex key as `HEX_API_KEY` from the maintainer's secret store, scoped to
-this one command. Never keep it in a project file, and never print, log or copy the key value:
+Supply `HEX_API_KEY` from the maintainer's secret store, scoped to this command.
+Never keep the key in a project file, print it, log it, or copy its value:
 
 ```sh
 env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish --yes
 ```
 
-A full publish updates both package and documentation. A docs-only publish cannot
-update the README baked into an immutable package archive.
+A full publish updates package and documentation together. The Hex package page
+renders the README and metadata from its immutable versioned archive. Changing
+those bytes requires a version bump and full publish. A docs-only publish can
+refresh HexDocs without a version bump but cannot update the package archive.
 
 After publication:
 
-1. Read the release through Hex's API and `mix hex.info ash_hooks`. Verify version,
-   requirements, checksums, documentation URL, and the downloaded package's source
-   and README bytes against the verified candidate.
-2. Inspect versioned HexDocs pages, links, and notebook download. Confirm the
-   package page renders the release README.
-3. Run the notebook against the exact published version:
-   `./scripts/run-livebook.sh documentation/livebooks/get-started.livemd`. Run the production consumer against the released archive as well.
-4. Create the GitHub release from the verified tag with notes from its CHANGELOG
-   section. Confirm tag, release, `main`, and Hex all identify the intended version.
-5. Complete operator records, record observed checks and any unobserved integration
-   boundaries, and remove only this run's disposable services and unused scratch.
-
-The release is complete when those observations are recorded. A successful publish
-command alone is not a verification receipt.
+1. Read the release through Hex's API and `mix hex.info ash_hooks`. Verify the
+   version, requirements, checksums, documentation URL, source, and README bytes
+   against the candidate.
+2. Inspect versioned HexDocs pages, links, and notebook download. Confirm that
+   the package page renders the release README.
+3. Run each notebook against its exact published version:
+   `./scripts/run-livebook.sh documentation/livebooks/get-started.livemd`.
+   Without `--archive`, the runner resolves packages from hex.pm. Run the
+   production consumer against the released archive as well.
+4. Create the GitHub release from `v<version>` with its CHANGELOG notes. Confirm
+   that the tag, release, `main`, and Hex identify the intended version. Prior
+   release notes may link forward; do not backfill them with omitted changes.

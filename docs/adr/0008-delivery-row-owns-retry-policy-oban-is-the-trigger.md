@@ -1,113 +1,38 @@
-# 0008 — The delivery row owns the retry policy; Oban is the trigger
-
-- **Status:** Accepted (2026-08-21); amended November 15, 2026
-- **Deciders:** operator (ratified), codex adversarial design pass (21 findings adjudicated)
-
-## Context
-
-The delivery runtime (#7) needs retries, Retry-After handling, jittered
-backoff, a dead-letter ceiling, and the same webhook-id on every attempt.
-Oban has its own retry machinery (job attempts, a backoff callback, job
-states); running BOTH systems means two schedules that can disagree, and
-the delivery ledger row is already the durable audit record of every
-attempt.
+# The delivery row owns retry policy
 
 ## Decision
 
-**Superseded mechanisms in 2.0:** [ADR-0012](0012-durable-delivery-ownership-and-recovery.md)
-replaces counter-only admission with UUID attempt fencing, adds a driver-owned
-deadline and durable `disable_pending`, and limits uniqueness to runnable jobs.
-The original August 21 mechanism is retained below as design history; the ledger
-still owns retry policy.
+The `OutboundDelivery` row owns retry policy; Oban supplies a durable trigger.
+Terminal rows return `:ok`. A retryable row before `next_attempt_at` snoozes
+without consuming its row-owned allowance. Atomic claims, attempt tokens, and
+send leases fence admission and results as defined in
+[delivery ownership](0012-durable-delivery-ownership-and-recovery.md).
+The driver owns its deadline. Worker timeouts and attempt limits must leave
+room for that budget and finalization. Network delivery is at-least-once;
+receivers deduplicate the stable `webhook-id`, derived from `event_uuid`.
 
-**ONE policy source: the `OutboundDelivery` row.** Oban is the durable
-TRIGGER only. `perform/1` loads the row and drives its state machine:
+Default classification is 2xx success; 408, 429, and 5xx retry; 410 durable endpoint
+disablement and dead-letter; other 4xx dead-letter; and redirects refused.
+Transport and secret-resolution failures retry with backoff. Unsafe destinations,
+disabled or missing endpoints, and certificate pin failures are terminal;
+DNS failures retry. Backoff is capped exponential delay with jitter and a
+one-second floor. Retryable HTTP responses honor integer or HTTP-date
+`Retry-After`, clamped to `retry_after_cap_seconds` rather than the backoff cap;
+missing or malformed headers use backoff.
 
-- terminal rows (`:succeeded` / `:dead_letter`) → `:ok`; the trigger is
-  idempotent. ~~The effect-once guarantee lives in the row.~~ Correction:
-  a row prevents terminal redrive, but network delivery remains at-least-once;
-  receivers must deduplicate the webhook ID.
-- a `:failed_retryable` row before `next_attempt_at` → `{:snooze, s}`;
-  snooze EXTENDS the job's `max_attempts` (verified in local oban 2.23.1,
-  the uniqueness engine source of that release), so waiting never exhausts the job and only the ROW's
-  `attempts >= ceiling` decides `:dead_letter`;
-- the attempt itself: WHERE-gated atomic `mark_sending` (status flip +
-  `attempts + 1` in ONE statement; the portable-fence pattern) BEFORE the
-  HTTP adapter fires; a crash mid-send leaves a re-drivable `:sending`
-  row (at-least-once; SW receivers dedup by `webhook-id`, which is the
-  row's `event_uuid`, constant across retries by construction).
+`retryable_statuses` replaces the ordinary HTTP failure set with statuses or
+ranges. Nil selects the defaults; an empty list retries no ordinary HTTP failure.
+Success, redirects, and 410 behavior stay fixed. Invalid sets fail before claim.
+See [host policies](0021-host-trust-boundaries-and-subscription-selection.md).
 
-The job's own `max_attempts` is advisory (snoozes inflate it); the job
-`timeout/1` (default 30s) is the stalled-peer bound.
-
-**Uniqueness** (the ADR-0007-verified mechanism): `fields: [:args],
-keys: [:endpoint_id, :event_uuid], period: :infinity, states: :all`;
-both defaults overridden (60s / `:successful` would re-admit a duplicate
-trigger after success or window expiry); a conflict is
-`{:ok, %Job{conflict?: true}}` mapped to `:ok` (dedup success).
-
-**Classification table** (single source, in `AshHooks.Delivery`): 2xx →
-succeeded; 408/429 → retryable honoring Retry-After (integer seconds or
-HTTP-date, clamped `[1, retry_after_cap]`); 410 → endpoint durably
-`:disable`d + dead-letter; other 4xx → dead-letter (client errors do not
-self-heal); 3xx → dead-letter (`redirect_refused`; never followed);
-5xx/transport/secret-resolution failure → retryable backoff; send-time
-SSRF refusal / disabled-or-gone endpoint → dead-letter.
-
-**Backoff**: `min(base·2^min(attempts,16), max_backoff)` plus
-`uniform(delay)` jitter, re-clamped, floor 1 second.
-
-## Alternatives rejected
-
-- Oban-driven backoff: two policy sources diverge on Retry-After, and the
-  audit row would stop being the record of the schedule.
-- Row-driven rescheduling without Oban (a reaper): loses the durable
-  trigger's crash-safety and queue backpressure that motivated optional
-  Oban in ADR-0004.
-- Freezing endpoint/secret config onto the row at dispatch: retries MUST
-  read fresh config; rotation applying to pending deliveries and the
-  durable endpoint disable are the spec's own mechanisms.
+With `resend_tracking :on`, the send-series ceiling counts
+`attempts - resend_baseline`. Resend preserves the row, receiver identity, and
+monotonic lifetime attempts while advancing the baseline to renew allowance.
+Exponential backoff uses lifetime attempts. See
+[resend and replay](0020-resend-replay-and-endpoint-health.md).
 
 ## Consequences
 
-- Retries are observable and auditable from the ledger alone.
-- The driver is Oban-free (directly testable with an HTTP double); the
-  host-injected worker macro (ADR-0004) is the only Oban-bearing code,
-  and it compiles only in hosts with Oban.
-- `:sending` re-drive is at-least-once (documented; receiver-side
-  webhook-id dedup is the SW contract).
-
-## Amendment; 2.0.2 (October 6, 2026)
-
-The response classification above is superseded in one respect: retryable **5xx**
-responses now honor `Retry-After` exactly as 408/429 do (shared parser and
-`retry_after_cap_seconds` clamp); the "retryable backoff" wording applies when the
-header is absent or malformed. Adopters who lowered `max_backoff_seconds` for an
-exhaust-fast posture and left the cap at its 86,400s default should note that a
-5xx carrying the header is now bounded by the CAP, not by `max_backoff_seconds`.
-Transport errors and secret-resolution failures are unchanged (backoff-only).
-
-## Amendment (November 15, 2026)
-
-The original classification table describes defaults, not an immutable retry
-set. [Worker](../../lib/ash_hooks/worker.ex) accepts `retryable_statuses`, a
-literal list of statuses or ranges; direct delivery accepts the same policy.
-`nil` keeps the ordinary 408/429/5xx behavior, and an empty list retries no
-ordinary HTTP failures. Success, redirect refusal, and 410 disablement remain
-fixed. Invalid sets are refused before a claim. Retryable HTTP responses share
-the bounded Retry-After parser; other retryable failures use backoff. Current
-destination handling distinguishes an unsafe answer from a DNS failure, which
-retries. Certificate pin failures are terminal. ADR-0021 owns these host override
-boundaries.
-
-The attempt ceiling applies to a send series. With `resend_tracking :on`,
-[Delivery](../../lib/ash_hooks/delivery.ex) compares
-`attempts - resend_baseline` with the configured ceiling. A resend preserves
-the row, receiver-facing identity, and monotonic lifetime attempts, and advances
-the baseline to renew its allowance. Exponential backoff still uses lifetime
-`attempts`, not the renewed series count. ADR-0020 records resend and replay.
-
-ADR-0012's attempt token, send lease, and runnable-job identity remain current.
-The original worker-only 30-second bound and all-state queue uniqueness above
-are historical; the driver owns its deadline, and the worker validates that its
-job timeout and attempt ceiling leave room for that driver and finalization.
+- The ledger exposes retry state independently of the queue.
+- The driver runs without Oban; the host defines its queue worker.
+- A send lease cannot retract a request a receiver already accepted.

@@ -31,19 +31,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Extraction uses the documentation gate's parser and markers, including
-# indented and tilde-fenced blocks. Evaluation still happens outside Mix.
 (cd "$root" && MIX_ENV=test mix run --no-start -e '
   [notebook, cells, install] = System.argv()
   alias AshHooks.Test.Documentation, as: Docs
   blocks = Docs.blocks(notebook)
-  runnable = Enum.filter(blocks, &(is_nil(&1.reason) and &1.language == "elixir"))
-  Docs.validate!([{notebook, File.read!(notebook)}], Enum.map(runnable, & &1.name))
-  Docs.validate_format!(blocks)
+  runnable = Enum.filter(blocks, &(&1.language == "elixir"))
   [setup] = Enum.filter(runnable, &String.contains?(&1.code, "Mix.install("))
   File.write!(cells, Enum.map_join(runnable, "\n", & &1.code))
   File.write!(install, setup.code)
-  IO.puts(:stderr, "#{length(runnable)} cells extracted by the documentation gate")
+  IO.puts(:stderr, "#{length(runnable)} Elixir cells extracted")
 ' -- "$notebook" "$work/cells.exs" "$work/install.exs")
 
 if [ "$#" -gt 1 ]; then

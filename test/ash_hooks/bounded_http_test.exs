@@ -351,10 +351,6 @@ defmodule AshHooks.BoundedHttpTest do
 
       spawn(fn ->
         {:ok, socket} = :gen_tcp.accept(listen, 10_000)
-        # Cap OUR receive window (defeats sysctl autotuning), read a
-        # prefix, then HOLD — the client's 512MB send fills the tiny
-        # window and blocks in the kernel — then RST. The send failure
-        # the driver cannot report surfaces at the read
         :inet.setopts(socket, rcvbuf: 1024)
         {:ok, _prefix} = :gen_tcp.recv(socket, 100, 5_000)
         :timer.sleep(100)
@@ -796,7 +792,6 @@ defmodule AshHooks.BoundedHttpTest do
           {:port, 0},
           {:bind_address, ~c"127.0.0.1"},
           {:server_name, ~c"ash_hooks_bounded"},
-          # server_root must be a REAL directory.
           {:server_root, String.to_charlist(System.tmp_dir!())},
           {:document_root, String.to_charlist(root)},
           {:mime_types, [{~c"json", ~c"application/json"}]}

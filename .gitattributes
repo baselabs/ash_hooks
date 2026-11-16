@@ -1,5 +1,2 @@
-# Identical bytes on every OS: force LF on checkout everywhere. A CRLF
-# checkout broke the install-task fixture assertions and would break
-# `mix format --check-formatted`; Elixir tooling and this repo's gates are
-# LF-native.
+# Check out text with LF on every platform.
 * text=auto eol=lf

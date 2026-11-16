@@ -1,11 +1,8 @@
 defmodule AshHooks.TelemetryTest do
-  @moduledoc """
-  The telemetry surface (#11): every spec-named event fires with the
-  ADR-0005 floor — ids, integers, fixed atoms, classified reasons only;
-  NEVER secrets, bodies, or payloads. Non-vacuity is mutation-proven
-  (per-event emit removal reds its assertion; the error_string floor's
-  removal reds the no-secret tripwire).
-  """
+  # Telemetry exposes identifiers, measurements, and classified outcomes.
+  # Bodies, payloads, and resolved signing secrets stay out of package events.
+  # Hook exceptions are classified before emission.
+  # The fingerprint helper is opt-in and does not add data to package events.
 
   defmodule Endpoint do
     @moduledoc false

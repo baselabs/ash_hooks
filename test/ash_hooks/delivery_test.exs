@@ -192,8 +192,6 @@ defmodule AshHooks.DeliveryTest do
     :ok
   end
 
-  # the drop-injection tests (reconcile failures) drop a table mid-run and
-  # must restore the schema before the next test's DELETE FROM
   defp create_tables! do
     Repo.query!("""
     CREATE TABLE IF NOT EXISTS #{@endpoints} (

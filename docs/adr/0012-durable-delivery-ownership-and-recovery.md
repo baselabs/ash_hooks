@@ -1,18 +1,9 @@
-# 0012 — Durable delivery ownership and recovery
-
-- **Status:** Accepted, October 6, 2026; effective in the published 2.0.1 release; amended November 15, 2026
-- **Deciders:** Maintainer's corrective-release request; independent adversarial
-  design review and independent judgment.
+# 0012 - Durable delivery ownership and recovery
 
 ## Context
 
-An outbound ledger may serve several declarations and workers. Endpoint/event
-uniqueness prevents parallel rows for one receiver-facing identity, but does not
-identify which declaration or queue route owns the surviving row. An attempt
-counter records accounting, but is writable by consumer actions and cannot fence
-late results. A completed queue job must not prevent recovery of an unfinished
-ledger row. Disabling an endpoint after a 410 also needs a durable obligation:
-the endpoint write and ledger write can use different stores.
+Shared ledgers need durable declaration and route ownership, fenced attempts,
+and recoverable queue admission and endpoint disablement across independent stores.
 
 ## Decision
 
@@ -49,57 +40,29 @@ columns remain UUID-compatible and therefore require single UUID-compatible keys
 where declarations join resources. Typed status mappings are cast and constrained
 before execution, reject overlapping states, and cannot map a primary-key attribute.
 
-HubSpot's default identity canonicalizes the full event batch, excluding only
-outer `attemptNumber` fields. Provider identity errors fail closed. Existing digest
-rows require a quiesced, audited adoption transaction; payloads and digests remain
-stored, and superseded siblings become terminal. Explicit host event extractors
-retain precedence.
-
-## Alternatives
-
-- Using `attempts` as a fence fails when a consumer resets that writable counter.
-- Adding declaration ownership to dedup identity would create separate rows with
-  the same receiver-facing webhook ID at one endpoint.
-- Holding queue uniqueness across terminal jobs strands unfinished ledger rows.
-- Terminalizing before the endpoint write leaves a crash gap; assuming one shared
-  transaction excludes supported resources in different stores.
-- A worker-only timeout leaves direct delivery and pre-HTTP work unbounded.
-- Guessing declaration ownership from current subscriptions loses historical routing.
-
 ## Consequences
 
-The required columns and states make this a 2.0 migration. Drain old jobs, backfill
-ownership and routes, adopt affected HubSpot partitions, and deploy matching workers
-together. The ordered procedure is in [UPGRADING](../../UPGRADING.md).
+Hosts migrate ownership columns and states, drain incompatible jobs, backfill
+ownership and routes, and deploy matching workers together. The ordered
+procedure is in [UPGRADING](../../UPGRADING.md).
 
 The ledger maintains one authoritative live attempt and fences its results.
 Network delivery remains at-least-once: a lease cannot retract a request already
 accepted by a receiver. Hosts schedule recovery and make handlers/receivers idempotent.
 
-This decision supersedes ADR-0008's all-state queue uniqueness, counter-only send
-admission, and worker-only timeout. It extends ADR-0003's default identity,
-ADR-0007's row-key classification, and ADR-0011's recovery admission. ADR-0009's
-transport uses one total deadline and stops reading at the body cap in 2.0.
+## Inbound identity
 
-## Amendment (November 15, 2026)
-
-The vendor module used by the historical identity example and its migration
-consequence above was removed in 3.0.0. Its exclusion of outer retry metadata
-is not the generic identity mechanism now shipped. For configured JWS-body
-providers, [Scheme.payload_identity/1](../../lib/ash_hooks/provider/scheme.ex)
-hashes the full verified payload as canonical JSON, sorting object keys without
-dropping fields. Changes anywhere in that payload change its identity; alternate
-signatures or object-key orderings for the same payload do not.
-
-An explicit declaration event extractor retains precedence, followed by the
-provider's identity callback, then the signed-body digest when neither defines
-one. Callback errors fail closed. Applications preserving a former normalization
-must implement it explicitly in their own provider and audit any existing
-identity adoption; the package does not infer a removed implementation from a
-declaration name. ADR-0017 records the generic provider boundary.
-
-Persisted declaration and route ownership, complete primary keys, independent
-send and enqueue fences, runnable-job admission, and durable disable recovery
-remain current. The tenant transaction boundary in ADR-0015 and renewed resend
-allowance in ADR-0020 extend those mechanisms without replacing receiver-facing
-identity or permitting stale result ownership.
+Configured JWS-body providers use
+[Scheme.payload_identity/1](../../lib/ash_hooks/provider/scheme.ex) to hash
+full canonical JSON with sorted object keys and no omitted fields. Payload
+changes change identity; alternate signatures and object-key order do not.
+A declaration event extractor takes precedence, then the provider identity
+callback, then the signed-body digest. Callback errors fail closed.
+Applications implement any custom normalization explicitly and audit identity
+adoption in a quiesced transaction, preserving payloads and digests and
+terminalizing superseded siblings. Declaration names never infer a provider. See
+[generic providers](0017-generic-providers-and-signature-primitives.md).
+Tenant transactions and renewed resend allowance follow
+[transaction ownership](0015-tenant-transactions-and-spawned-work.md) and
+[resend](0020-resend-replay-and-endpoint-health.md) while preserving identity
+and live result ownership.

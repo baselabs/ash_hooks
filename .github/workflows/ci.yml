@@ -2,8 +2,6 @@ name: CI
 
 on:
   push:
-    # kci/** is the short-lived landing branch: the full run there is what
-    # admits a commit to main.
     branches: [main, 'kci/**']
     tags: ['v*']
     paths-ignore: ['LICENSE*', '.github/ISSUE_TEMPLATE/**']
@@ -18,13 +16,11 @@ jobs:
   # The matrix tests the supported Elixir window (~> 1.20 in mix.exs) on
   # the OTP releases this project targets. The dev default is the latest
   # stable Elixir on OTP 29, mirrored exactly from .tool-versions; OTP 28 is the other end of the supported window.
-  # Lockstep: the window, .tool-versions, this matrix, and the OTP
-  # allowlist in config/config.exs move together in ONE commit. Default
-  # legs build with the full dev dep set; the no-optional leg proves the
+  # Default legs build with the full dev dep set; the no-optional leg proves the
   # package compiles/tests/runs with oban and plug entirely absent
   # (ADR-0004).
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -56,10 +52,9 @@ jobs:
             _build
           key: mix-${{ matrix.elixir }}-${{ matrix.otp }}-noopt-${{ matrix.no_optional }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
-      # CVE discipline: hex.audit runs in CI and after every dependency
-      # move (it can lag public advisories by hours — after a fresh
-      # disclosure also check OSV/GHSA ranges for directly-consumed
-      # packages in the affected family).
+      # Check dependency retirement and advisories.
+      # Fresh disclosures can precede registry updates; inspect the published
+      # ranges for directly affected dependencies.
       - run: mix hex.audit
       - run: mix compile --warnings-as-errors
       - run: mix format --check-formatted
@@ -74,7 +69,7 @@ jobs:
   # on Elixir 1.20. Dev/test and optional dependencies cannot mask OTP
   # startup requirements or unavailable APIs in this consumer graph.
   floor:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       MIX_ENV: test
     steps:
@@ -100,14 +95,11 @@ jobs:
       - run: env MIX_ENV=prod ASH_HOOKS_MINIMUM_ASH=1 mix run verify.exs
         working-directory: test/consumer
 
-  # The AshPostgres consumer leg: the transformers exercised against a
-  # uuid_v7-keyed, sole-store-payload consumer shape on real Postgres —
-  # the sqlite substrate could not surface the H1/H2 collisions upstream,
-  # and this leg is the mechanical guarantee they stay fixed. Linux-only
-  # (the CI topology rule); the suite is env-gated
-  # (ASH_HOOKS_POSTGRES=1) so ordinary dev runs need no Postgres.
+  # Qualify real PostgreSQL consumers, persisted workers, and delivery.
+  # ASH_HOOKS_POSTGRES=1 enables the PostgreSQL resources.
+  # Ordinary development uses SQLite.
   postgres:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       MIX_ENV: test
       ASH_HOOKS_POSTGRES: "1"
@@ -165,16 +157,10 @@ jobs:
           name: cover-html
           path: cover/
 
-  # CI is Linux-only (owner direction, 2026-09-25): developer
-  # portability — a developer on macOS or Linux (Windows developers use
-  # WSL2, the Linux path) can clone, set up, and test — is a
-  # code-and-toolchain requirement, not a CI topology. No macos/windows
-  # build legs; do not re-add them.
-
   # Type-check the public API and the consumer worker compiled from test/support.
   # The PostgreSQL suite exercises that same generated worker at runtime.
   dialyzer:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       MIX_ENV: test
     steps:
@@ -193,12 +179,9 @@ jobs:
       - run: mix deps.get
       - run: mix dialyzer
 
-  # What SHIPS is what was checked: the hex tarball must carry every
-  # publish surface (the 0.2.2 usage-rules.md miss was caught
-  # post-release; this leg is the mechanical form of that lesson), and
-  # hexdocs must build.
+  # Verify the package archive and build HexDocs.
   package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
@@ -222,7 +205,7 @@ jobs:
   # cells are extracted in order and run outside any mix project
   # (Mix.install requires it) — the same evaluation Livebook performs.
   livebook:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       receiver:
         image: ghcr.io/tarampampam/webhook-tester@sha256:85818267b450d3d386cad6510c561e09b974183ed2832c373bc83b125fc1b221
@@ -253,18 +236,14 @@ jobs:
           archive="_build/release/ash_hooks-$(grep -m1 '@version' mix.exs | sed -E 's/.*@version "([^"]+)".*/\1/').tar"
           ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive "$archive"
 
-  # Published advisories and retired packages, each failing closed. OSV's
-  # Hex database is downloaded first, given no lock file; the scan then runs
-  # --offline inside a network namespace with no interfaces, so nothing about
-  # a lock leaves the runner. scripts/check-advisories.sh also proves each
-  # lock is exactly what Mix writes and that the scanner read every :hex and
-  # :git entry Mix counts. It scans the development lock, the lock a consumer
-  # resolves at the declared Ash floor (a floor that admits an advised version
-  # fails here), and a fixture lock holding both entry kinds, which keeps the
-  # count check honest for git dependencies. `mix hex.audit` fails on a
-  # retired package.
+  # Scan the development, declared-floor consumer, and hex-and-git fixture locks.
+  # Download OSV's Hex database before scanning offline in a network namespace.
+  # No lock data leaves the runner.
+  # check-advisories.sh verifies Mix lock encoding and complete entry counts.
+  # Unread dependencies and advisories fail closed.
+  # hex.audit rejects retired packages.
   security:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       OSV_SCANNER_VERSION: "2.7.1"
       OSV_SCANNER_SHA256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
@@ -309,7 +288,7 @@ jobs:
   all-checks-pass:
     needs: [test, floor, postgres, dialyzer, package, livebook, security]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every needed job green
         run: |

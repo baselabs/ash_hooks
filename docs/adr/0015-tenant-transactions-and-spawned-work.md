@@ -1,15 +1,9 @@
-# 0015 — Tenant transactions and spawned work
-
-- **Status:** Accepted November 15, 2026
-- **Deciders:** maintainer
+# 0015 - Tenant transactions and spawned work
 
 ## Context
 
-Attribute filters alone cannot supply a database connection's row-security
-binding. Reads routed to a separate repository and work started in another
-process can lose the transaction that supplied that binding. Holding a host
-transaction open across delivery also hides uncommitted rows from the monitored
-driver and can block it.
+Row-security binding belongs to a database transaction and connection.
+Reads and spawned delivery work must retain tenant identity without holding external work inside it.
 
 ## Decision
 
@@ -20,7 +14,7 @@ caller tenant with `Ash.ToTenant` for every resource in the phase and refuses
 disagreement with `:tenancy_mismatch` before opening a transaction. Reads on the
 supported transactional SQL layers use the write repository through data-layer
 context, including when ordinary reads would route elsewhere. Nontransactional
-layers retain their prior behavior and supply no row-security transaction
+layers retain nontransactional behavior and supply no row-security transaction
 binding.
 
 The host repository's transaction-begin hook binds the reason's tenant to
@@ -54,19 +48,6 @@ inverse. Queue insertion occurs in a tenant phase after delivery persistence;
 the queue instance must share the ledger repository for that binding. An inline
 enqueue callback invoking the driver inside a host transaction is refused and
 reported as enqueue failure, leaving the pending row recoverable.
-
-## Alternatives
-
-- Inline transactional delivery makes external effects occur before commit and
-  conflicts with the monitored child's access to uncommitted state. Commit the
-  delivery, enqueue durably, and execute after commit instead.
-- Ambient process-context transfer of the tenant creates a second source of
-  truth and cannot establish a new connection's transaction binding. Tenant data
-  in arguments and transaction reasons supplies the binding explicitly.
-- Binding a session setting outside a transaction can leak across pooled
-  connections. Transaction-local state clears at commit or rollback.
-- Read-repository routing inside a phase can miss both the tenant setting and
-  uncommitted writes. The write repository is the phase's authoritative view.
 
 ## Consequences
 

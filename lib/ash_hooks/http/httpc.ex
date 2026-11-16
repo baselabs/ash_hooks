@@ -102,12 +102,8 @@ defmodule AshHooks.Http.Httpc do
   defp normalize_method(_method), do: {:error, :unsupported_method}
 
   defp pinned_request(method, target, headers, body, opts, deadline) do
-    # A literal-IP https destination FAILS CLOSED on this adapter: without
-    # a hostname there is no RFC 6125 check, and :httpc never hands us the
-    # socket so the iPAddress-SAN floor (cert_san.ex; Bounded enforces it)
-    # cannot run. Chain validation alone would let ANY cert chaining to
-    # the trust store authenticate the endpoint IP. Use Bounded (the
-    # default adapter) for literal-IP https endpoints.
+    # Literal-IP HTTPS fails closed because :httpc cannot enforce the IP SAN check.
+    # Use the default Bounded adapter for literal-IP HTTPS destinations.
     if target.uri.scheme == "https" and Target.ip_literal?(target.host) do
       {:error, :ip_literal_https_needs_bounded}
     else

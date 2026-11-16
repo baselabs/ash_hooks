@@ -1,16 +1,9 @@
-# 0013 — Key custody, issuance, and durable disposal
-
-- **Status:** Accepted November 15, 2026
-- **Deciders:** maintainer
+# 0013 - Key custody, issuance, and durable disposal
 
 ## Context
 
-Signing and verification need keys without requiring the delivery runtime to
-retrieve secret bytes. Creating, replacing, and deleting an owner can fail
-independently of an external key store. A crash after storage must leave a
-durable disposal obligation, including when the owner never committed or has
-since disappeared. Version 3.2.0 introduces custody and issuance for this class
-of key lifecycle.
+Keys must stay opaque while owner writes and external storage can fail separately.
+Every stored key needs a durable disposal obligation, including failed creation.
 
 ## Decision
 
@@ -77,20 +70,6 @@ custody endpoints require issuing APIs and refuse caller-chosen references.
 inbound byte-secret sources, and provider secret callbacks at compile time;
 direct byte-signing primitives remain supported. Custody callback faults are
 classified outages, never exposed backend terms or forged-signature verdicts.
-
-## Alternatives
-
-No alternative was recorded at the time in the available release notes. These
-alternatives are assessed against the shipped contracts:
-
-- Resolving bytes for every operation cannot provide the opaque custody boundary.
-- Deleting keys directly from owner callbacks loses crash recovery for failed
-  creation, bypassed deletion paths, and unavailable custody stores.
-- One transaction spanning owner writes and remote storage cannot atomically
-  commit the external store. Independently committed issuance plus atomic owner
-  attachment preserves a durable obligation across that gap.
-- Reusable references or expiring tombstones allow a delayed store to resurrect
-  retired material; permanent tombstones close that race.
 
 ## Consequences
 
