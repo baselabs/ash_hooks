@@ -731,34 +731,13 @@ defmodule AshHooks.HostExtensionSeamsTest do
     assert Ash.get!(Ledger, row.id, tenant: "tenant-a", authorize?: false).verified_facts == nil
   end
 
-  test "upstream proof is consumed once and the provider binds body, tenant and source key" do
+  test "the provider binds upstream proof to body, tenant and source key" do
     body = Jason.encode!(%{"id" => unique()})
-
-    proof = %{
-      accepted: true,
-      digest: :crypto.hash(:sha256, body),
-      tenant: "tenant-a",
-      policy: :events,
-      key_ref: "current-verification-key"
-    }
-
-    counter = :atomics.new(1, [])
-
-    conn =
-      Plug.Test.conn(:post, "/webhook", body)
-      |> AshHooks.BodyReader.put_raw_body(body)
-
-    options =
-      AshHooks.Plug.init(
-        resource: Ledger,
-        resolve: {__MODULE__, :upstream_resolver, [counter, proof]}
-      )
-
-    assert %{status: 200} = AshHooks.Plug.call(conn, options)
-    assert :atomics.get(counter, 1) == 1
+    proof = upstream_proof(body)
     ctx = context(body, "current-verification-key") |> Map.put(:host_context, proof)
-    assert {:ok, :duplicate, row} = Ingress.ingest(Ledger, :events, body, ctx)
+    assert {:ok, :created, row} = Ingress.ingest(Ledger, :events, body, ctx)
     assert row.verified_facts["upstream"]
+    assert {:ok, :duplicate, _} = Ingress.ingest(Ledger, :events, body, ctx)
 
     for invalid <- [
           %{proof | digest: <<0>>},
@@ -771,6 +750,31 @@ defmodule AshHooks.HostExtensionSeamsTest do
     end
 
     refute Map.has_key?(row, :host_context)
+  end
+
+  if Code.ensure_loaded?(Plug.Test) do
+    test "the Plug resolver consumes upstream proof once" do
+      body = Jason.encode!(%{"id" => unique()})
+      proof = upstream_proof(body)
+      counter = :atomics.new(1, [])
+
+      conn =
+        Plug.Test.conn(:post, "/webhook", body)
+        |> AshHooks.BodyReader.put_raw_body(body)
+
+      options =
+        AshHooks.Plug.init(
+          resource: Ledger,
+          resolve: {__MODULE__, :upstream_resolver, [counter, proof]}
+        )
+
+      assert %{status: 200} = AshHooks.Plug.call(conn, options)
+      assert :atomics.get(counter, 1) == 1
+      ctx = context(body, "current-verification-key") |> Map.put(:host_context, proof)
+      assert {:ok, :duplicate, row} = Ingress.ingest(Ledger, :events, body, ctx)
+      assert row.verified_facts["upstream"]
+      refute Map.has_key?(row, :host_context)
+    end
   end
 
   test "source current, overlap and refreshed keys preserve the winning facts" do
@@ -1418,8 +1422,8 @@ defmodule AshHooks.HostExtensionSeamsTest do
     end
   end
 
-  test "generated worker signs under the same deadline and tenant context" do
-    if Code.ensure_loaded?(Oban.Worker) do
+  if Code.ensure_loaded?(Oban.Worker) do
+    test "generated worker signs under the same deadline and tenant context" do
       {listener, url} = listener()
       endpoint = endpoint!(Endpoint, %{url: url})
       row = delivery!(endpoint)
@@ -1427,7 +1431,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
       route = AshHooks.OutboundBinding.named_route(worker, :enqueue)
       {:ok, bound} = AshHooks.Worker.bind_route(row, route, "tenant-a")
       receiver = receive_async(listener)
-      assert :ok = worker.perform(%Oban.Job{args: args(bound)})
+      assert :ok = worker.perform(struct(Oban.Job, args: args(bound)))
       Task.await(receiver)
 
       assert_receive {:signing, request, %{tenant: "tenant-a", event_id: event_id, attempt: 1},
@@ -1505,6 +1509,16 @@ defmodule AshHooks.HostExtensionSeamsTest do
   defp context(body, key) do
     signature = :crypto.mac(:hmac, :sha256, key, body) |> Base.encode16(case: :lower)
     %{tenant: "tenant-a", headers: [{"x-signature", signature}]}
+  end
+
+  defp upstream_proof(body) do
+    %{
+      accepted: true,
+      digest: :crypto.hash(:sha256, body),
+      tenant: "tenant-a",
+      policy: :events,
+      key_ref: "current-verification-key"
+    }
   end
 
   defp endpoint!(resource, attrs \\ %{}) do
