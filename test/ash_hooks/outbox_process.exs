@@ -125,6 +125,20 @@ defmodule AshHooks.OutboxProcess do
 
   defp bind(_repo), do: :ok
 
+  defp deploy_version_one(emitter) do
+    source = File.read!(Path.expand("test/ash_hooks/outbox_resources.exs"))
+    {:__block__, _, modules} = Code.string_to_quoted!(source)
+    definition = Enum.find(modules, fn
+      {:defmodule, _, [alias_ast, _]} -> Module.concat(elem(alias_ast, 2)) == emitter
+      _ -> false
+    end)
+    definition = Macro.prewalk(definition, fn
+      {:version, meta, [2]} -> {:version, meta, [1]}
+      node -> node
+    end)
+    Code.compile_quoted(definition)
+  end
+
   def execute(namespace, stage, event, path, marker) do
     Application.put_env(:ash_hooks, :outbox_checkpoint, {stage, path})
     if marker, do: Application.put_env(:ash_hooks, :outbox_admission_marker, marker)
@@ -155,6 +169,14 @@ defmodule AshHooks.OutboxProcess do
               :ok
             end)
 
+          checkpoint(stage)
+
+        version when version in [:version_one, :version_one_partial] ->
+          deploy_version_one(emitter)
+          {:ok, :accepted} = AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
+          if version == :version_one_partial do
+            {:pending, :unknown_pinned_version} = AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
+          end
           checkpoint(stage)
 
         :admission_failure ->

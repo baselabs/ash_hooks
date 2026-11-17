@@ -27,8 +27,9 @@ defmodule AshHooks.Telemetry do
       data in this class; it is not restricted to the package's fixed vocabulary
     * `[:ash_hooks, :outbox, :publish]`: `%{count: 1}`; `%{event_uuid,
       outcome: :attempt | :accepted | :duplicate | :refused, reason}`.
-      Acceptance and duplicate notifications follow commit; raw repository
-      transactions suppress notifications and rely on the sweep
+      The after-commit notifier or a successful fanout claim reports committed
+      acceptance. Raw repository transactions suppress notifications and rely
+      on the sweep
     * `[:ash_hooks, :outbox, :trigger]`: `%{count: 1}`; `%{event_uuid,
       outcome: :failed, reason: "trigger_failed"}`
     * `[:ash_hooks, :outbox, :claim]`: `%{count: 1}`; `%{event_uuid,

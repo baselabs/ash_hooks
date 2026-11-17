@@ -157,11 +157,15 @@ defmodule AshHooks.OutboxAcceptance do
 
           owner.query!(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA outbox_acceptance_oban TO #{role}",
-            [], log: false)
+            [],
+            log: false
+          )
 
           owner.query!(
             "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA outbox_acceptance_oban TO #{role}",
-            [], log: false)
+            [],
+            log: false
+          )
         end
 
         for table <- ["oban_jobs", "oban_peers"] do
@@ -198,6 +202,7 @@ defmodule AshHooks.OutboxAcceptance do
 
       {:ok, pid} = Oban.start_link(options)
       Process.unlink(pid)
+
       unless sqlite? do
         engine_options =
           Keyword.merge(options,
@@ -208,6 +213,7 @@ defmodule AshHooks.OutboxAcceptance do
         {:ok, engine} = Oban.start_link(engine_options)
         Process.unlink(engine)
       end
+
       options
     end
   end
@@ -215,6 +221,7 @@ defmodule AshHooks.OutboxAcceptance do
   defp setup_roles(resources, repo, owner) do
     suffix = Integer.to_string(System.unique_integer([:positive]))
     roles = %{runtime: "outbox_runtime_#{suffix}", engine: "outbox_engine_#{suffix}"}
+
     for {kind, role} <- roles do
       password = Base.encode16(:crypto.strong_rand_bytes(32))
 
@@ -253,6 +260,7 @@ defmodule AshHooks.OutboxAcceptance do
         "CREATE POLICY tenant_isolation ON #{relation} TO #{roles.runtime} USING (org_id = current_setting('outbox_acceptance.tenant', true)) WITH CHECK (org_id = current_setting('outbox_acceptance.tenant', true))"
       )
     end
+
     roles
   end
 
@@ -319,6 +327,7 @@ defmodule AshHooks.OutboxAcceptance do
   def crash(f, stage, event, marker \\ nil) do
     peer = start_peer(f)
     path = Path.join(System.tmp_dir!(), "outbox_checkpoint_#{Ash.UUID.generate()}")
+
     try do
       :ok =
         :peer.call(peer, AshHooks.OutboxProcess, :execute, [
@@ -467,6 +476,7 @@ defmodule AshHooks.OutboxAcceptance do
     types = Keyword.get(opts, :types, ["changed"])
     paused = Keyword.get(opts, :paused, false)
     json = if filters == :sql_null, do: nil, else: Jason.encode!(filters)
+
     if f.sqlite? do
       f.owner.query!(
         "INSERT INTO #{table(f.subscription)} (id, org_id, endpoint_id, event_types, event_filters, paused) VALUES (?, ?, ?, ?, ?, ?)",
@@ -478,12 +488,17 @@ defmodule AshHooks.OutboxAcceptance do
         [Ecto.UUID.dump!(id), "tenant-a", Ecto.UUID.dump!(endpoint.id), types, json, paused]
       )
     end
+
     id
   end
 
+  def entry(f, :raw, operation), do: transaction(f, operation)
+  def entry(f, kind, operation), do: apply(Ash, kind, [f.outbox, operation, [tenant: "tenant-a"]])
+
   def observed(acc) do
     receive do
-      {:observed, name, measurements, metadata} -> observed([{name, measurements, metadata} | acc])
+      {:observed, name, measurements, metadata} ->
+        observed([{name, measurements, metadata} | acc])
     after
       0 -> acc
     end
@@ -532,6 +547,7 @@ defmodule AshHooks.OutboxAcceptance do
       @moduletag timeout: 180_000
       @namespace unquote(namespace)
       if @namespace == AshHooks.OutboxFixtures.Postgres, do: @moduletag(:postgres)
+
       setup_all do
         {:ok, Cases.setup(@namespace)}
       end
@@ -582,16 +598,28 @@ defmodule AshHooks.OutboxAcceptance do
            f do
         for entry <- [:transact, :transaction] do
           event = Cases.event()
-          result = apply(Ash, entry, [f.outbox, fn ->
-            assert {{:ok, :accepted}, first} = Cases.count_queries(f, fn -> Cases.publish(f, event) end)
-            assert length(first) == 1
-            original = Cases.publication(f, event.id)
-            assert {{:ok, :duplicate}, duplicate} = Cases.count_queries(f, fn -> Cases.publish(f, event) end)
-            assert length(duplicate) == 1
-            assert Cases.publication(f, event.id).updated_at == original.updated_at
-            assert Cases.publication(f, event.id).inserted_at == original.inserted_at
-            :ok
-          end, [tenant: "tenant-a"]])
+
+          result =
+            apply(Ash, entry, [
+              f.outbox,
+              fn ->
+                assert {{:ok, :accepted}, first} =
+                         Cases.count_queries(f, fn -> Cases.publish(f, event) end)
+
+                assert length(first) == 1
+                original = Cases.publication(f, event.id)
+
+                assert {{:ok, :duplicate}, duplicate} =
+                         Cases.count_queries(f, fn -> Cases.publish(f, event) end)
+
+                assert length(duplicate) == 1
+                assert Cases.publication(f, event.id).updated_at == original.updated_at
+                assert Cases.publication(f, event.id).inserted_at == original.inserted_at
+                :ok
+              end,
+              [tenant: "tenant-a"]
+            ])
+
           assert result == {:ok, :ok}
         end
 
@@ -639,14 +667,46 @@ defmodule AshHooks.OutboxAcceptance do
                  Cases.transaction(f, fn -> Cases.fanout(f, event.id) end) |> elem(1)
       end
 
+      test "A2 every transaction entry point rolls back inner and outer action writes", f do
+        for entry <- [:raw, :transact, :transaction], rollback_at <- [:inner, :outer] do
+          event = Cases.event()
+          result = Cases.entry(f, entry, fn ->
+            Cases.entry(f, entry, fn ->
+              assert {:ok, :accepted} = Cases.publish(f, event)
+              Ash.create!(f.emitter, %{value: "nested"}, tenant: "tenant-a", authorize?: false)
+              if rollback_at == :inner, do: f.repo.rollback(:undo)
+              :ok
+            end)
+            f.repo.rollback(:undo)
+          end)
+          assert match?({:error, _}, result)
+          assert is_nil(Cases.publication(f, event.id))
+          assert Cases.rows(f, :emitter) == []
+        end
+        for entry <- [:raw, :transact, :transaction] do
+          event = Cases.event()
+          assert {:ok, :ok} = Cases.entry(f, entry, fn ->
+            assert {:ok, :ok} = Cases.entry(f, entry, fn ->
+              assert {:ok, :accepted} = Cases.publish(f, event)
+              Ash.create!(f.emitter, %{value: "nested"}, tenant: "tenant-a", authorize?: false)
+              :ok
+            end)
+            :ok
+          end)
+          assert Cases.publication(f, event.id).state == :pending
+        end
+      end
+
       test "A3 OS death before commit rolls back and death after commit needs no hint", f do
         before = Cases.event()
         Cases.crash(f, :before_commit, before)
         assert [] = Cases.rows(f, :outbox)
         committed = Cases.event()
         Cases.crash(f, :after_commit, committed)
+
         assert {:ok, %{done: 1, errors: []}} =
-          AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
+                 AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
+
         assert Cases.publication(f, committed.id).state == :done
       end
 
@@ -657,8 +717,10 @@ defmodule AshHooks.OutboxAcceptance do
         Cases.crash(f, :mid_fanout, event)
         assert [surviving] = Cases.rows(f, :delivery)
         Cases.expire(f, event)
+
         assert {:ok, %{done: 1, errors: []}} =
-          AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
+                 AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
+
         assert length(Cases.rows(f, :delivery)) == 2
         assert Enum.any?(Cases.rows(f, :delivery), &(&1.id == surviving.id))
       end
@@ -686,6 +748,7 @@ defmodule AshHooks.OutboxAcceptance do
             end
 
             Cases.expire(f, event)
+
             assert {:ok, %{done: 1, errors: []}} =
                      AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
 
@@ -693,6 +756,7 @@ defmodule AshHooks.OutboxAcceptance do
                      Enum.filter(Cases.rows(f, :delivery), &(&1.event_uuid == event.id))
 
             assert id == surviving.id
+
             if stage == :before_admission do
               assert %{success: 1} = Cases.drain(f)
               assert_receive {:http_received, _request}, 5_000
@@ -791,12 +855,14 @@ defmodule AshHooks.OutboxAcceptance do
           assert id == good.id
           endpoints = Cases.table(f.endpoint)
           f.owner.query!("REVOKE SELECT ON #{endpoints} FROM #{f.roles.runtime}", [], log: false)
+
           try do
             Cases.expire(f, event)
             assert {:pending, _error} = Cases.fanout(f, event.id)
           after
             f.owner.query!("GRANT SELECT ON #{endpoints} TO #{f.roles.runtime}", [], log: false)
           end
+
           Ash.update!(bad, %{pinned_payload_version: 2}, authorize?: false, tenant: "tenant-a")
           relation = Cases.table(f.delivery)
 
@@ -811,6 +877,7 @@ defmodule AshHooks.OutboxAcceptance do
           after
             f.owner.query!("ALTER TABLE #{relation} DROP CONSTRAINT reject_one_endpoint")
           end
+
           assert {:ok, _row} = AshHooks.rearm(f.outbox, event.id, tenant: "tenant-a")
           assert :done = Cases.fanout(f, event.id)
           assert length(Cases.rows(f, :delivery)) == 2
@@ -830,7 +897,9 @@ defmodule AshHooks.OutboxAcceptance do
                 if metadata.outcome == :claimed do
                   f.owner.query!(
                     "REVOKE UPDATE ON #{Cases.table(f.outbox)} FROM #{f.roles.runtime}",
-                    [], log: false)
+                    [],
+                    log: false
+                  )
                 end
               end,
               nil
@@ -876,6 +945,7 @@ defmodule AshHooks.OutboxAcceptance do
                 end
               end)
             end)
+
           assert_receive :locked
           Application.put_env(:ash_hooks, :outbox_observer, self())
           on_exit(fn -> Application.delete_env(:ash_hooks, :outbox_observer) end)
@@ -993,16 +1063,27 @@ defmodule AshHooks.OutboxAcceptance do
         assert {:ok, :accepted} = Cases.publish(f, done)
       end
 
-      test "A8 pins resolve against the stored publication version", f do
-        endpoints = for pin <- [nil, 1, 2], do: Cases.endpoint(f, pinned_payload_version: pin)
-        event = Cases.event()
-        assert {:ok, :accepted} = Cases.publish(f, event)
-        Cases.set(f, event.id, version: 1)
-        assert :done = Cases.fanout(f, event.id)
-        rows = Cases.rows(f, :delivery)
-
-        for {endpoint, expected} <- Enum.zip(endpoints, ["body", "body", "v2:body"]) do
-          assert Enum.find(rows, &(&1.endpoint_id == endpoint.id)).payload == expected
+      test "A8 version-one publications survive a version-two deployment, fresh and partial", f do
+        for stage <- [:version_one, :version_one_partial] do
+          event = Cases.event()
+          pins = if stage == :version_one, do: [nil, 1, 2], else: [nil, 1, 99]
+          endpoints = for pin <- pins, do: Cases.endpoint(f, pinned_payload_version: pin)
+          Cases.crash(f, stage, event)
+          assert Cases.publication(f, event.id).version == 1
+          assert AshHooks.Info.outbound(f.emitter, :changed).version == 2
+          surviving = Cases.rows(f, :delivery)
+          if stage == :version_one_partial do
+            assert length(surviving) == 2
+            Ash.update!(List.last(endpoints), %{pinned_payload_version: 2}, tenant: "tenant-a", authorize?: false)
+            Cases.expire(f, event)
+          end
+          assert :done = Cases.fanout(f, event.id)
+          rows = Cases.rows(f, :delivery)
+          for {endpoint, expected} <- Enum.zip(endpoints, ["body", "body", "v2:body"]) do
+            assert Enum.find(rows, &(&1.endpoint_id == endpoint.id)).payload == expected
+          end
+          assert Enum.all?(surviving, fn row -> Enum.any?(rows, &(&1.id == row.id)) end)
+          Cases.clean(f)
         end
       end
 
@@ -1189,12 +1270,21 @@ defmodule AshHooks.OutboxAcceptance do
       test "A13 every observable outbox outcome follows its real state transition", f do
         owner = self()
         handler = make_ref()
-        events = for event <- [:publish, :trigger, :claim, :result, :rearm, :sweep],
-          do: [:ash_hooks, :outbox, event]
-        :ok = :telemetry.attach_many(handler, events,
-          fn name, measurements, metadata, _ ->
-            send(owner, {:observed, List.last(name), measurements, metadata})
-          end, nil)
+
+        events =
+          for event <- [:publish, :trigger, :claim, :result, :rearm, :sweep],
+              do: [:ash_hooks, :outbox, event]
+
+        :ok =
+          :telemetry.attach_many(
+            handler,
+            events,
+            fn name, measurements, metadata, _ ->
+              send(owner, {:observed, List.last(name), measurements, metadata})
+            end,
+            nil
+          )
+
         on_exit(fn -> :telemetry.detach(handler) end)
         runtime = Module.concat(f.namespace, :Runtime)
         Application.put_env(:ash_hooks, runtime, :raise)
@@ -1202,11 +1292,17 @@ defmodule AshHooks.OutboxAcceptance do
         assert {:ok, :accepted} = Cases.publish(f, event)
         assert_receive {:observed, :publish, %{count: 1}, %{outcome: :attempt}}
         assert_receive {:observed, :publish, %{count: 1}, %{outcome: :accepted}}
-        assert_receive {:observed, :trigger, %{count: 1}, %{outcome: :failed, reason: "trigger_failed"}}
+
+        assert_receive {:observed, :trigger, %{count: 1},
+                        %{outcome: :failed, reason: "trigger_failed"}}
+
         assert {:ok, :duplicate} = Cases.publish(f, event)
         assert_receive {:observed, :publish, _, %{outcome: :duplicate}}
         assert {:error, :publication_conflict} = Cases.publish(f, %{event | payload: "conflict"})
-        assert_receive {:observed, :publish, _, %{outcome: :refused, reason: "publication_conflict"}}
+
+        assert_receive {:observed, :publish, _,
+                        %{outcome: :refused, reason: "publication_conflict"}}
+
         assert :done = Cases.fanout(f, event.id)
         assert_receive {:observed, :claim, _, %{outcome: :claimed}}
         assert_receive {:observed, :result, _, %{outcome: :done, reason: nil}}
@@ -1217,17 +1313,29 @@ defmodule AshHooks.OutboxAcceptance do
         assert_receive {:observed, :result, _, %{outcome: :pending, reason: "unresolved_route"}}
         assert :busy = Cases.fanout(f, pending.id)
         assert_receive {:observed, :claim, _, %{outcome: :busy}}
-        Cases.set(f, pending.id, format_version: 99, next_attempt_at: DateTime.add(DateTime.utc_now(), -1))
+
+        Cases.set(f, pending.id,
+          format_version: 99,
+          next_attempt_at: DateTime.add(DateTime.utc_now(), -1)
+        )
+
         assert :failed = Cases.fanout(f, pending.id)
-        assert_receive {:observed, :result, _, %{outcome: :failed, reason: "unsupported_publication_format"}}
+
+        assert_receive {:observed, :result, _,
+                        %{outcome: :failed, reason: "unsupported_publication_format"}}
+
         assert {:ok, _} = AshHooks.rearm(f.outbox, pending.id, tenant: "tenant-a")
         assert_receive {:observed, :rearm, _, %{outcome: :pending}}
         assert {:ok, _} = AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
         assert_receive {:observed, :sweep, _, %{outcome: :complete}}
-        assert {:error, :invalid_outbox_query} = AshHooks.fanout_pending(f.outbox, 0, tenant: "tenant-a")
+
+        assert {:error, :invalid_outbox_query} =
+                 AshHooks.fanout_pending(f.outbox, 0, tenant: "tenant-a")
+
         assert_receive {:observed, :sweep, _, %{outcome: :error, reason: "invalid_outbox_query"}}
         # The dedicated blocked-runner case asserts :stale and the absence of result telemetry.
         observed = Cases.observed([])
+
         for {_name, measurements, metadata} <- observed do
           assert measurements == %{count: 1}
           assert Enum.sort(Map.keys(metadata)) == [:event_uuid, :outcome, :reason]
