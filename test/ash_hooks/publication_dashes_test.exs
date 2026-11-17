@@ -77,6 +77,68 @@ defmodule AshHooks.PublicationDashesTest do
     end
   end
 
+  test "both ExDoc template forms use the build project and version" do
+    {root, docs, identity} = project_fixture()
+    page = Path.join(docs, "index.html")
+    dash = <<0x2014::utf8>>
+    metadata = ~s(<meta name="project" content="#{identity}">)
+
+    for html <- [
+          "#{metadata}\n<title>Guide #{dash} #{identity}</title>",
+          "<title>#{identity} #{dash} Documentation</title>"
+        ] do
+      File.write!(page, html)
+      assert {"", 0} = check_docs(root, docs)
+      assert File.read!(page) == html
+    end
+  end
+
+  test "template exceptions reject foreign identities and authored separators" do
+    {root, docs, identity} = project_fixture()
+    page = Path.join(docs, "index.html")
+    dash = <<0x2014::utf8>>
+
+    for foreign <- ["OtherProject v9.8.7", "Consumer Guide v0.0.0"],
+        title <- ["Guide #{dash} #{foreign}", "#{foreign} #{dash} Documentation"] do
+      File.write!(page, ~s(<meta name="project" content="#{foreign}">\n<title>#{title}</title>))
+      {output, status} = check_docs(root, docs)
+      assert status == 1
+      assert output =~ "#{page}:2"
+    end
+
+    for codepoint <- [0x2013, 0x2014],
+        title <- [
+          "Extra #{<<codepoint::utf8>>} title #{dash} #{identity}",
+          "#{identity} #{dash} Documentation #{<<codepoint::utf8>>} extra",
+          "Prefix #{dash} #{identity} #{dash} Documentation"
+        ] do
+      File.write!(page, "<title>#{title}</title>")
+      {output, status} = check_docs(root, docs)
+      assert status == 1
+      assert output =~ "#{page}:1"
+    end
+  end
+
+  defp project_fixture do
+    root = Path.join(System.tmp_dir!(), "publication_project_#{Ash.UUID.generate()}")
+    docs = Path.join(root, "doc")
+    File.mkdir_p!(docs)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    File.write!(Path.join(root, "mix.exs"), """
+    defmodule PublicationProject do
+      use Mix.Project
+      def project, do: [app: :publication_fixture, name: "Consumer Guide", version: "9.8.7"]
+    end
+    """)
+
+    {root, docs, "Consumer Guide v9.8.7"}
+  end
+
+  defp check_docs(root, docs) do
+    System.cmd("python3", [@script, "--docs", docs], cd: root, stderr_to_stdout: true)
+  end
+
   test "the HTML template exception does not exempt an EPUB member" do
     tree = Path.join(System.tmp_dir!(), "publication_epub_#{Ash.UUID.generate()}")
     File.mkdir_p!(tree)
