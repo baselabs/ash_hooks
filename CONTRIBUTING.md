@@ -95,7 +95,9 @@ generated HTML and EPUB docs using `PUBLIC_DOCS_DENYLIST` from the caller's
 environment. The live policy test is excluded when that variable is absent;
 the scanner itself refuses an empty policy. Synthetic scanner tests always run.
 `scripts/check-document-dashes.py` checks the archive and generated HTML and EPUB
-surfaces. Trusted push CI runs the confidentiality scan, required-document
+surfaces. `mix docs` uses an ASCII separator in ExDoc-generated HTML page titles;
+authored text remains subject to the independent dash check. Trusted push CI
+runs the confidentiality scan, required-document
 qualification, and publication dash checks, and requires them in the aggregate.
 Local optional-service runs remain focused unless their flags are enabled.
 

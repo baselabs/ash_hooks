@@ -38,12 +38,14 @@ defmodule AshHooks.Test.DocumentationFormatter do
   @moduledoc false
   use GenServer
 
+  alias AshHooks.Test.DocumentationRuns
+
   @impl true
   def init(_options), do: {:ok, nil}
 
   @impl true
   def handle_cast({:test_finished, test}, state) do
-    AshHooks.Test.DocumentationRuns.finished(test)
+    DocumentationRuns.finished(test)
     {:noreply, state}
   end
 

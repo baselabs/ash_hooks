@@ -82,6 +82,59 @@ defmodule AshHooks.ConfidentialityTest do
     refute output =~ "Unreleased"
   end
 
+  test "publication scanning reads HTML, unpacked package files and EPUB members, not container bytes", %{
+    tree: tree
+  } do
+    package = Path.join(tree, "package")
+    docs = Path.join(tree, "docs")
+    File.mkdir_p!(package)
+    File.mkdir_p!(docs)
+    html = Path.join(docs, "index.html")
+    token = "invented-publication-token"
+    File.write!(html, "plain HTML")
+    File.write!(Path.join(docs, "asset.js"), token)
+    File.write!(Path.join(docs, ".build.epub"), "reference.epub\n")
+
+    for surface <- ["container", "epub", "html", "package"] do
+      File.write!(html, if(surface == "html", do: "first\n#{token}", else: "plain HTML"))
+      File.write!(Path.join(package, "README.md"), if(surface == "package", do: token, else: "plain"))
+
+      {output, status} =
+        System.cmd("python3", ["-c", publication_fixture(), docs, surface, token],
+          stderr_to_stdout: true
+        )
+
+      assert status == 0, output
+
+      {output, status} =
+        System.cmd("bash", [@script, "--publication", package, docs],
+          env: [{"PUBLIC_DOCS_DENYLIST", token}],
+          stderr_to_stdout: true
+        )
+
+      if surface == "container" do
+        assert {output, status} == {"", 0}
+      else
+        assert status == 1
+        assert output =~ " rule-1"
+        refute output =~ token
+        if surface == "epub", do: assert(output =~ "chapter.xhtml:2 rule-1")
+        if surface == "html", do: assert(output =~ "index.html:2 rule-1")
+        if surface == "package", do: assert(output =~ "README.md:1 rule-1")
+      end
+    end
+  end
+
+  defp publication_fixture do
+    ~S"""
+    import pathlib, sys, zipfile
+    docs, surface, token = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+    with zipfile.ZipFile(docs / "reference.epub", "w") as book:
+        book.comment = token.encode()
+        book.writestr("EPUB/chapter.xhtml", "first\n" + (token if surface == "epub" else "plain"))
+    """
+  end
+
   @tag :confidentiality
   @tag timeout: 600_000
   test "the configured policy scans tracked source, the archive and generated documentation" do

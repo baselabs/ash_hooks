@@ -1,6 +1,7 @@
 defmodule AshHooks.Test.Documentation do
   @moduledoc false
 
+  alias AshHooks.Test.DocumentationRuns
   alias Ecto.Adapters.SQL
 
   @formatter_deps ~w(ash spark ecto ecto_sql plug oban ash_postgres ash_sqlite)a
@@ -208,14 +209,14 @@ defmodule AshHooks.Test.Documentation do
 
   def completed!(names) do
     if test = Process.get({__MODULE__, :test}) do
-      AshHooks.Test.DocumentationRuns.completed(test, Enum.reject(names, &is_nil/1))
+      DocumentationRuns.completed(test, Enum.reject(names, &is_nil/1))
     end
 
     :ok
   end
 
   def validate_run!(blocks) do
-    validate_execution!(blocks, AshHooks.Test.DocumentationRuns.completed_names())
+    validate_execution!(blocks, DocumentationRuns.completed_names())
   end
 
   def formatter_options do

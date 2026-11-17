@@ -47,14 +47,7 @@ defmodule AshHooks.MixProject do
       dialyzer: [
         plt_add_apps: [:mix, :ash_sqlite, :ash_postgres, :ecto_sql, :ex_unit, :earmark_parser]
       ],
-      test_coverage: [
-        summary: [threshold: 100],
-        ignore_modules: [
-          # Spark's generated Options modules contain types only, with no
-          # exported functions or executable code that a test can reach.
-          ~r/^AshHooks\.Webhooks\.(Inbound|Outbound)\.Options$/
-        ]
-      ]
+      test_coverage: [summary: [threshold: 100]]
     ]
   end
 
@@ -125,7 +118,7 @@ defmodule AshHooks.MixProject do
       # are named individually (not `documentation`) so untracked files at
       # its root (.DS_Store) can never ride a glob into the tarball.
       files:
-        ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules* SECURITY* CONTRIBUTING* UPGRADING* documentation/tutorials documentation/livebooks documentation/dsls),
+        ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules* SECURITY* CONTRIBUTING* UPGRADING* scripts/style-document-titles.py documentation/tutorials documentation/livebooks documentation/dsls),
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url}
     ]
@@ -230,9 +223,20 @@ defmodule AshHooks.MixProject do
     ]
   end
 
+  defp build_docs(args) do
+    Mix.Task.run("docs", args)
+    {options, _rest, _invalid} =
+      OptionParser.parse(args, switches: [output: :string], aliases: [o: :output])
+    output = Keyword.get(options, :output, "doc")
+
+    {_output, status} = System.cmd("python3", ["scripts/style-document-titles.py", output])
+    if status != 0, do: Mix.raise("generated documentation title styling failed")
+  end
+
   defp aliases do
     [
       credo: ["credo --strict"],
+      docs: [&build_docs/1],
       # Regenerates the exported `locals_without_parens` in .formatter.exs and
       # the DSL references in documentation/dsls.
       "spark.generate": [

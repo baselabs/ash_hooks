@@ -13,13 +13,13 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
     #
     use ExUnit.Case, async: false
 
-    setup context do
-      AshHooks.Test.Documentation.track_test(context)
-    end
-
     alias AshHooks.Test.Repo
 
     alias AshHooks.Test.Documentation, as: Docs
+
+    setup context do
+      Docs.track_test(context)
+    end
 
     @secret "documentation-example-secret"
     @examples %{
@@ -437,12 +437,12 @@ end
 defmodule AshHooks.DocumentationContentTest do
   use ExUnit.Case, async: false
 
-  setup context do
-    AshHooks.Test.Documentation.track_test(context)
-  end
-
   alias AshHooks.Test.Documentation, as: Docs
   alias AshHooks.Test.RowSecurityCases
+
+  setup context do
+    Docs.track_test(context)
+  end
 
   @providers ~w(module-provider-orders readme-payments-provider upgrade-shop-provider verify-orders-provider
     verify-shop-provider verify-prefixed-provider-in-application
@@ -1151,11 +1151,11 @@ end
 defmodule AshHooks.DocumentationGateTest do
   use ExUnit.Case, async: false
 
-  setup context do
-    AshHooks.Test.Documentation.track_test(context)
-  end
-
   alias AshHooks.Test.Documentation, as: Docs
+
+  setup context do
+    Docs.track_test(context)
+  end
 
   test "the parser extracts fenced, indented, nested, and quoted code blocks" do
     for {opening, closing} <- [{"```sql", "```"}, {"~~~sh", "~~~"}, {"```", "```"}] do
@@ -1287,18 +1287,7 @@ defmodule AshHooks.DocumentationGateTest do
     tables = ~w(webhook_endpoints webhook_subscriptions inbound_deliveries outbound_deliveries)
 
     repo.transaction(fn ->
-      for table <- tables do
-        if table in ~w(webhook_subscriptions outbound_deliveries) do
-          repo.query!("CREATE TEMP TABLE #{table} (id TEXT PRIMARY KEY, endpoint_id TEXT)")
-          repo.query!("INSERT INTO #{table} VALUES ('row-a', 'row-a'), ('row-b', 'row-b')")
-        else
-          repo.query!("CREATE TEMP TABLE #{table} (id TEXT PRIMARY KEY, account_id TEXT)")
-
-          repo.query!(
-            "INSERT INTO #{table} VALUES ('row-a', 'account-a'), ('row-b', 'account-b')"
-          )
-        end
-      end
+      for table <- tables, do: create_backfill_table!(repo, table)
 
       repo.query!(
         "CREATE TEMP TABLE account_tenants (account_id TEXT PRIMARY KEY, org_id TEXT NOT NULL)"
@@ -1324,15 +1313,28 @@ defmodule AshHooks.DocumentationGateTest do
       repo.rollback(:documentation_complete)
     end)
   end
+
+  defp create_backfill_table!(repo, table)
+       when table in ~w(webhook_subscriptions outbound_deliveries) do
+    repo.query!("CREATE TEMP TABLE #{table} (id TEXT PRIMARY KEY, endpoint_id TEXT)")
+    repo.query!("INSERT INTO #{table} VALUES ('row-a', 'row-a'), ('row-b', 'row-b')")
+  end
+
+  defp create_backfill_table!(repo, table) do
+    repo.query!("CREATE TEMP TABLE #{table} (id TEXT PRIMARY KEY, account_id TEXT)")
+    repo.query!("INSERT INTO #{table} VALUES ('row-a', 'account-a'), ('row-b', 'account-b')")
+  end
 end
 
 if Code.ensure_loaded?(AshHooks.Provider) do
-  namespace = AshHooks.Test.Documentation.namespace("verify-provider-test-in-application")
-  provider = AshHooks.Test.Documentation.ast("verify-orders-provider")
+  alias AshHooks.Test.Documentation, as: Docs
+
+  namespace = Docs.namespace("verify-provider-test-in-application")
+  provider = Docs.ast("verify-orders-provider")
 
   example =
     "verify-provider-test-in-application"
-    |> AshHooks.Test.Documentation.ast()
+    |> Docs.ast()
     |> Macro.postwalk(fn
       {:test, meta, [name, [do: body]]} ->
         {:test, meta,
@@ -1342,7 +1344,7 @@ if Code.ensure_loaded?(AshHooks.Provider) do
              do:
                quote do
                  unquote(body)
-                 AshHooks.Test.Documentation.completed!(["verify-provider-test-in-application"])
+                 Docs.completed!(["verify-provider-test-in-application"])
                end
            ]
          ]}
@@ -1355,14 +1357,16 @@ if Code.ensure_loaded?(AshHooks.Provider) do
     defmodule unquote(namespace) do
       use ExUnit.Case, async: false
 
+      alias AshHooks.Test.Documentation, as: Docs
+
       setup context do
-        AshHooks.Test.Documentation.track_test(context)
+        Docs.track_test(context)
       end
 
       unquote(provider)
       unquote(example)
     end
   end
-  |> AshHooks.Test.Documentation.lexical()
+  |> Docs.lexical()
   |> Code.compile_quoted()
 end

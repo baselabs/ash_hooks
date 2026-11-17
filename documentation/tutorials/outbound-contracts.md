@@ -93,7 +93,9 @@ for the resolver from get started. The URL must be safe for the chosen transport
       url: System.fetch_env!("PUBLIC_WEBHOOK_TEST_URL"),
       secret_ref: "outbound-main",
       pinned_payload_version: 1
-    }, authorize?: false)
+    },
+    authorize?: false
+  )
 
 {:ok, _subscription} =
   Ash.create(
@@ -102,7 +104,9 @@ for the resolver from get started. The URL must be safe for the chosen transport
       endpoint_id: endpoint.id,
       event_types: ["order_paid"],
       event_filters: %{"region" => ["us", "ca"]}
-    }, authorize?: false)
+    },
+    authorize?: false
+  )
 
 {:ok, event} =
   AshHooks.Event.new(

@@ -41,37 +41,52 @@ printf '%s\0' "$work/control" | scan > "$work/control-result" || control_status=
 [ "$control_status" -eq 1 ] || exit 2
 grep -Fxq "$work/control:1 rule-1" "$work/control-result" || exit 2
 
-if [ "$#" -gt 0 ]; then
+tracked=0
+if [ "${1:-}" = "--tree" ]; then
   # Exercise the real scanner on disposable trees without building a package.
-  [ "$1" = "--tree" ] && [ "$#" -ge 2 ] || exit 2
+  [ "$#" -ge 2 ] || exit 2
   shift
   find "$@" -type f -print0 | scan
+  exit "$?"
+elif [ "${1:-}" = "--publication" ]; then
+  # Already built surfaces let the same publication path run on real fixtures.
+  [ "$#" -eq 3 ] && [ -d "$2" ] && [ -d "$3" ] || exit 2
+  package="$2"
+  docs="$3"
 else
+  [ "$#" -eq 0 ] || exit 2
   root="$(cd "$(dirname "$0")/.." && pwd)"
   cd "$root"
-  mix hex.build --unpack --output "$work/package" > "$work/build-log" 2>&1 || exit 2
-  mix docs --warnings-as-errors --output "$work/docs" > "$work/docs-log" 2>&1 || exit 2
-  python3 - "$work/docs" <<'PYTHON'
+  package="$work/package"
+  docs="$work/docs"
+  mix hex.build --unpack --output "$package" > "$work/build-log" 2>&1 || exit 2
+  mix docs --warnings-as-errors --output "$docs" > "$work/docs-log" 2>&1 || exit 2
+  tracked=1
+fi
+
+# A compressed archive is a container, not searchable document bytes. ExDoc's
+# .build.epub is a text manifest, not an archive. Scan the extracted members.
+python3 - "$docs" "$work/epubs" <<'PYTHON'
 from pathlib import Path
 import sys
 import zipfile
-for path in list(Path(sys.argv[1]).rglob("*.epub")):
-    # ExDoc writes this text manifest beside the actual EPUB archive.
-    # It remains included in the ordinary file scan below.
+for number, path in enumerate(sorted(Path(sys.argv[1]).rglob("*.epub"))):
     if not path.is_file() or path.name == ".build.epub":
         continue
     if not zipfile.is_zipfile(path):
         raise SystemExit(f"{path}: invalid EPUB archive ({path.stat().st_size} bytes)")
     with zipfile.ZipFile(path) as book:
-        target = path.with_suffix(".epub-contents")
+        target = Path(sys.argv[2]) / str(number)
         for name in book.namelist():
             destination = target / name
             if not destination.resolve().is_relative_to(target.resolve()):
                 raise SystemExit(2)
         book.extractall(target)
 PYTHON
-  {
-    git ls-files -z
-    find "$work/package" "$work/docs" -type f -print0
-  } | scan
-fi
+mkdir -p "$work/epubs"
+{
+  if [ "$tracked" -eq 1 ]; then git ls-files -z; fi
+  find "$package" -type f -print0
+  find "$docs" -type f -name '*.html' -print0
+  find "$work/epubs" -type f -print0
+} | scan

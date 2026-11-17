@@ -2,6 +2,7 @@ defmodule AshHooks.DocumentationContractTest do
   use ExUnit.Case, async: false
 
   alias AshHooks.Test.Documentation, as: Docs
+  alias AshHooks.Test.DocumentationRuns
 
   test "every shipped block has a specific disposition and consumer formatting" do
     blocks = Docs.validate_manifest!(Docs.documents())
@@ -129,7 +130,7 @@ defmodule AshHooks.DocumentationContractTest do
 
     assert ["passed"] = GenServer.call(tracker, :completed_names)
 
-    completed = AshHooks.Test.DocumentationRuns.completed_names()
+    completed = DocumentationRuns.completed_names()
     blocks = for name <- completed, do: %{name: name, reason: nil}
     assert :ok = Docs.validate_run!(blocks)
   end
