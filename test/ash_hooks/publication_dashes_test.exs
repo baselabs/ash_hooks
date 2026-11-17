@@ -86,7 +86,11 @@ defmodule AshHooks.PublicationDashesTest do
     project = ~s(<meta name="project" content="AshHooks v3.2.0">)
     title = "<title>Guide #{dash} AshHooks v3.2.0</title>"
 
-    assert {:ok, _} = :zip.create(String.to_charlist(archive), [{~c"chapter.xhtml", "#{project}\n#{title}"}])
+    assert {:ok, _} =
+             :zip.create(String.to_charlist(archive), [
+               {~c"chapter.xhtml", "#{project}\n#{title}"}
+             ])
+
     {output, status} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
     assert status == 1
     assert output =~ "#{archive}/chapter.xhtml:2"

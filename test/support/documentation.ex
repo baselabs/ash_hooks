@@ -233,11 +233,13 @@ defmodule AshHooks.Test.Documentation do
       |> Enum.filter(&(&1.language == "elixir"))
       |> Enum.map(fn block ->
         dependencies = formatter_dependencies(block, exports)
+        mounting = Enum.filter(dependencies, &(&1 in [:plug, :phoenix]))
 
         %{
           block: block,
           missing: dependencies -- Map.keys(exports),
-          options: consumer_options(dependencies, exports)
+          options: consumer_options(dependencies, exports),
+          mounting_locals: consumer_options(mounting, exports)[:locals_without_parens]
         }
       end)
       |> Enum.split_with(&(&1.missing == []))
@@ -256,10 +258,11 @@ defmodule AshHooks.Test.Documentation do
   end
 
   defp formatter_dependencies(block, exports) do
-    ast = case Code.string_to_quoted(block.code) do
-      {:ok, ast} -> ast
-      {:error, _} -> nil
-    end
+    ast =
+      case Code.string_to_quoted(block.code) do
+        {:ok, ast} -> ast
+        {:error, _} -> nil
+      end
 
     {_, dependencies} =
       Macro.prewalk(ast, [:ash, :spark, :ash_hooks], fn
@@ -267,7 +270,11 @@ defmodule AshHooks.Test.Documentation do
           {node, module_formatter_dependencies(parts, exports) ++ dependencies}
 
         {name, _, arguments} = node, dependencies when is_atom(name) and is_list(arguments) ->
-          owners = for {dependency, locals} <- exports, {name, length(arguments)} in locals, do: dependency
+          owners =
+            for {dependency, locals} <- exports,
+                {name, length(arguments)} in locals,
+                do: dependency
+
           {node, owners ++ dependencies}
 
         node, dependencies ->
@@ -277,8 +284,9 @@ defmodule AshHooks.Test.Documentation do
     Enum.uniq(dependencies)
   end
 
-  defp module_formatter_dependencies([:AshHooks, module | _], _exports) when module in [:Plug, :BodyReader],
-    do: [:plug]
+  defp module_formatter_dependencies([:AshHooks, module | _], _exports)
+       when module in [:Plug, :BodyReader],
+       do: [:plug]
 
   defp module_formatter_dependencies([:AshHooks, :Worker | _], _exports), do: [:oban]
 
@@ -298,7 +306,9 @@ defmodule AshHooks.Test.Documentation do
     plan = formatting_plan(blocks, paths)
 
     for %{block: block, missing: missing} <- plan.skipped do
-      IO.puts("#{block.file}:#{block.line}: skipped consumer formatting; missing dependencies: #{Enum.join(missing, ", ")}")
+      IO.puts(
+        "#{block.file}:#{block.line}: skipped consumer formatting; missing dependencies: #{Enum.join(missing, ", ")}"
+      )
     end
 
     offenders = Enum.flat_map(plan.checked, &format_offenses/1)
@@ -306,9 +316,9 @@ defmodule AshHooks.Test.Documentation do
     :ok
   end
 
-  defp format_offenses(%{block: block, options: options}) do
+  defp format_offenses(%{block: block, options: options, mounting_locals: mounting_locals}) do
     try do
-      validate_exported_calls!(block, options)
+      validate_mounting_calls!(block, mounting_locals)
       formatted = block.code |> Code.format_string!(options) |> IO.iodata_to_binary()
 
       if formatted <> "\n" == block.code,
@@ -323,14 +333,14 @@ defmodule AshHooks.Test.Documentation do
     end
   end
 
-  defp validate_exported_calls!(block, options) do
+  defp validate_mounting_calls!(block, locals) do
     # Code.format_string! preserves explicit parentheses. The consumer's
-    # exported DSL convention still applies to those calls.
+    # mounting DSL convention comes from Plug and Phoenix themselves.
     ast = Code.string_to_quoted!(block.code, token_metadata: true)
 
     Macro.prewalk(ast, fn
       {name, metadata, [_ | _] = arguments} = node when is_atom(name) ->
-        if metadata[:closing] && {name, length(arguments)} in options[:locals_without_parens],
+        if metadata[:closing] && {name, length(arguments)} in locals,
           do: fail!(block, "exported consumer DSL call #{name} must omit parentheses")
 
         node

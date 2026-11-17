@@ -17,7 +17,11 @@ defmodule AshHooks.DocumentationContractTest do
 
     if System.get_env("ASH_HOOKS_NO_OPTIONAL") == "1" do
       assert plan.skipped != []
-      assert Enum.all?(plan.skipped, &Enum.all?(&1.missing, fn dep -> dep in [:plug, :phoenix, :oban] end))
+
+      assert Enum.all?(
+               plan.skipped,
+               &Enum.all?(&1.missing, fn dep -> dep in [:plug, :phoenix, :oban] end)
+             )
     else
       assert plan.skipped == [], inspect(plan.skipped)
       assert Enum.map(plan.checked, & &1.block) == elixir
@@ -32,9 +36,10 @@ defmodule AshHooks.DocumentationContractTest do
     assert [%{block: ^plain}] = plan.checked
     assert [%{block: ^endpoint, missing: [:plug]}] = plan.skipped
 
-    output = ExUnit.CaptureIO.capture_io(fn ->
-      assert :ok = Docs.validate_format!([plain, endpoint], paths)
-    end)
+    output =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert :ok = Docs.validate_format!([plain, endpoint], paths)
+      end)
 
     assert output =~ "guide:1: skipped consumer formatting; missing dependencies: plug"
   end
@@ -201,14 +206,27 @@ defmodule AshHooks.DocumentationContractTest do
     {phoenix, _} = Code.eval_file(Path.join(path, ".formatter.exs"))
     exports = phoenix[:export][:locals_without_parens]
     assert exports != []
-    assert exports -- Docs.formatter_options()[:locals_without_parens] == []
+    assert Enum.all?(exports, &(&1 in Docs.formatter_options()[:locals_without_parens]))
+  end
+
+  test "mounting conventions preserve unrelated parenthesized calls" do
+    for code <- [
+          "scope_identity([:account_id])\n",
+          "defmodule Example do\n  def transaction(fun), do: fun.()\nend\n"
+        ] do
+      assert :ok = Docs.validate_format!([block("elixir", code)])
+    end
   end
 
   @tag skip: System.get_env("ASH_HOOKS_NO_OPTIONAL") == "1"
   test "consumer DSL calls reject parentheses as well as spacing mutations" do
     assert :ok = Docs.validate_format!([block("elixir", "plug Plug.Parsers, parsers: [:json]\n")])
 
-    for code <- ["plug(Plug.Parsers, parsers: [:json])\n", "value=:ok\n"] do
+    for code <- [
+          "plug(Plug.Parsers, parsers: [:json])\n",
+          ~s(forward("/webhooks/events", AshHooks.Plug, [])\n),
+          "value=:ok\n"
+        ] do
       assert_raise RuntimeError, fn -> Docs.validate_format!([block("elixir", code)]) end
     end
   end
