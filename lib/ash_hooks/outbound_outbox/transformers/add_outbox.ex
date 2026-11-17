@@ -103,7 +103,10 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
         :claim,
         [claim_token: :uuid, lease_expires_at: :utc_datetime_usec],
         [increment(:attempts)],
-        Ash.Expr.expr(state == :pending)
+        Ash.Expr.expr(
+          state == :pending and (is_nil(next_attempt_at) or next_attempt_at <= now()) and
+            (is_nil(lease_expires_at) or lease_expires_at <= now())
+        )
       ),
       update(
         :finish,

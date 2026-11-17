@@ -20,7 +20,7 @@ defmodule AshHooks.OutboundOutbox.Metadata do
 
   defp valid?(value, _depth) when is_float(value) do
     <<sign::1, exponent::11, mantissa::52>> = <<value::float>>
-    exponent != 2047 and not (sign == 1 and exponent == 0 and mantissa == 0)
+    not (sign == 1 and exponent == 0 and mantissa == 0)
   end
 
   defp valid?(value, _depth) when is_binary(value), do: string?(value)
@@ -37,10 +37,5 @@ defmodule AshHooks.OutboundOutbox.Metadata do
 
   defp string?(_value), do: false
 
-  defp encoded_size?(metadata) do
-    case Jason.encode(metadata) do
-      {:ok, encoded} -> byte_size(encoded) <= @max_bytes
-      {:error, _error} -> false
-    end
-  end
+  defp encoded_size?(metadata), do: byte_size(Jason.encode!(metadata)) <= @max_bytes
 end

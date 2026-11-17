@@ -144,7 +144,7 @@ defmodule AshHooks.Outbox do
     row
     |> owned_query()
     |> Ash.Query.filter(
-      state == :pending and next_attempt_at <= ^time and
+      state == :pending and (is_nil(next_attempt_at) or next_attempt_at <= ^time) and
         (is_nil(lease_expires_at) or lease_expires_at <= ^time)
     )
     |> update(:claim, %{claim_token: token, lease_expires_at: lease}, tenant)
