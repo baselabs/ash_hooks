@@ -382,9 +382,12 @@ defmodule AshHooks.Provider do
   @callback parse_event_type(payload :: map() | list()) ::
               {:ok, atom()} | {:error, parse_error()}
 
-  @doc "Converts a verified, parsed payload into the provider's typed event."
+  @doc """
+  Handles a verified, parsed payload. Any `{:ok, value}` marks the receipt
+  processed; the value may be a struct or any other term.
+  """
   @callback handle_event(event_type :: atom(), payload :: map() | list()) ::
-              {:ok, typed_event :: struct()}
+              {:ok, result :: term()}
               | {:error, :retry | :permanent, term()}
 
   @doc """
@@ -408,7 +411,7 @@ defmodule AshHooks.Provider do
               {:ok, String.t()} | {:error, :malformed_payload}
   @doc "Handles a receipt with durable context, at ingest and recovery. Preferred over handle_event/2 when exported."
   @callback handle_event(atom(), map() | list(), AshHooks.Provider.DeliveryContext.t()) ::
-              {:ok, struct()} | {:error, :retry | :permanent, term()}
+              {:ok, term()} | {:error, :retry | :permanent, term()}
   @optional_callbacks parse_event_type: 2, event_identity: 2, handle_event: 3
 
   @doc false

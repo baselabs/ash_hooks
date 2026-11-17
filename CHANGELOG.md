@@ -9,7 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Ingress and dispatch share one bounded SQLite contention policy for fenced
-  or idempotent writes. Mixed error sets and reads are never retried.
+  or idempotent writes and the idempotent reads around them. Mixed error sets
+  are never retried.
 
 - Development and CI runtime versions come from `.tool-versions` files. CI
   tests the version-file parser before constructing its matrix.
@@ -25,7 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Ingress records out-of-contract handler and parser results as retryable
   `invalid_handler_result` failures under the claim fence. Every recorded
-  failure emits ingress telemetry; stale owners only reload the receipt.
+  failure emits ingress telemetry; stale owners only reload the receipt. Every
+  `{:ok, value}` remains a processed success, including non-struct values.
 
 - Row-security documentation separates tenant-bound Oban insertion from queue
   execution under a dedicated engine role, with forced policies on jobs and

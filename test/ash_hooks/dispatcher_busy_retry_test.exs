@@ -124,7 +124,7 @@ if Code.ensure_loaded?(AshSqlite) do
       Application.put_env(:ash_hooks, BusyRepo,
         database: db_path,
         pool_size: 1,
-        journal_mode: :wal,
+        journal_mode: :delete,
         busy_timeout: 5_000
       )
 
@@ -178,7 +178,7 @@ if Code.ensure_loaded?(AshSqlite) do
       Application.put_env(:ash_hooks, BusyRepo,
         database: db_path,
         pool_size: 3,
-        journal_mode: :wal,
+        journal_mode: :delete,
         busy_timeout: 50
       )
 
@@ -211,6 +211,53 @@ if Code.ensure_loaded?(AshSqlite) do
       )
 
       ep
+    end
+
+    defp with_exclusive_lock(operation) do
+      owner = self()
+
+      holder =
+        Task.async(fn ->
+          BusyRepo.checkout(fn ->
+            BusyRepo.query!("BEGIN EXCLUSIVE")
+
+            try do
+              send(owner, :exclusive_lock)
+
+              receive do
+                :release -> :ok
+              after
+                900 -> :ok
+              end
+            after
+              BusyRepo.query!("ROLLBACK")
+            end
+          end)
+        end)
+
+      assert_receive :exclusive_lock, 5_000
+
+      try do
+        assert {:error, %Exqlite.Error{message: message}} =
+                 BusyRepo.query("SELECT * FROM #{@subscriptions}")
+
+        assert String.downcase(message) in ["database busy", "database is locked"]
+        operation.()
+      after
+        send(holder.pid, :release)
+        Task.await(holder, 5_000)
+      end
+    end
+
+    test "dispatch retries subscription reads blocked by an exclusive writer" do
+      fixture!()
+      {:ok, event} = Event.new(type: :order_paid, payload: @payload)
+
+      with_exclusive_lock(fn ->
+        assert {:ok, [%{status: :deferred}]} = Dispatcher.dispatch(Emitter, :order_paid, event)
+      end)
+
+      assert [%{status: :pending}] = Ash.read!(Delivery, authorize?: false)
     end
 
     test "an upsert that hits write contention retries and converges" do

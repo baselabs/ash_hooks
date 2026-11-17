@@ -60,7 +60,7 @@ defmodule AshHooks.Ingress do
   Handler exceptions, exits, and throws are contained and recorded as
   `:failed_retryable` with error class `"handler_crashed"`, using the current
   claim's fencing token. Both synchronous ingestion and reaping use this path.
-  Any handler result outside `{:ok, struct}` or a retry/permanent error triple,
+  Any handler result outside `{:ok, value}` or a retry/permanent error triple,
   and any unexpected parser result, records `"invalid_handler_result"` as a
   retryable failure. Each recorded failure emits the ingress failure event;
   a stale owner reloads without recording or emitting a failure.
@@ -535,15 +535,17 @@ defmodule AshHooks.Ingress do
   # repeat across accounts/connections
   defp fetch_ingested(resource, env, tenant) do
     result =
-      AshHooks.Phase.run(
-        resource
-        |> Ash.Query.do_filter(
-          [provider: env.name, external_event_id: env.external_event_id] ++
-            Map.to_list(env.scope)
-        ),
-        tenant,
-        &Ash.read_one(&1, authorize?: false, tenant: tenant)
-      )
+      AshHooks.Contention.run(fn ->
+        AshHooks.Phase.run(
+          resource
+          |> Ash.Query.do_filter(
+            [provider: env.name, external_event_id: env.external_event_id] ++
+              Map.to_list(env.scope)
+          ),
+          tenant,
+          &Ash.read_one(&1, authorize?: false, tenant: tenant)
+        )
+      end)
 
     case result do
       {:ok, nil} -> :missing
@@ -874,13 +876,19 @@ defmodule AshHooks.Ingress do
       now = now()
 
       expired =
-        AshHooks.Phase.run(
-          resource
-          |> claim_alias_filter(nil)
-          |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now),
-          tenant,
-          &Ash.read!(&1, authorize?: false, tenant: tenant)
-        )
+        AshHooks.Contention.run(fn ->
+          AshHooks.Phase.run(
+            resource
+            |> claim_alias_filter(nil)
+            |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now),
+            tenant,
+            &Ash.read(&1, authorize?: false, tenant: tenant)
+          )
+        end)
+        |> case do
+          {:ok, rows} -> rows
+          {:error, error} -> raise error
+        end
 
       re_driven =
         expired
@@ -962,7 +970,7 @@ defmodule AshHooks.Ingress do
 
   defp handling_outcome({:ok, type}, env) when is_atom(type) do
     case invoke_handler(env.provider, type, env.payload, env.context) do
-      {:ok, event} when is_struct(event) -> :processed
+      {:ok, _value} -> :processed
       {:error, :retry, term} -> {:failed, error_class_string(term), false}
       {:error, :permanent, term} -> {:failed, error_class_string(term), true}
       _ -> {:failed, "invalid_handler_result", false}
@@ -1163,7 +1171,7 @@ defmodule AshHooks.Ingress do
     # the reload after a successful mark must not crash the caller for a
     # delivered-and-processed event under read contention (consumer journal
     # modes can block readers on writers)
-    read_by_key(resource, delivery_id, tenant)
+    AshHooks.Contention.run(fn -> read_by_key(resource, delivery_id, tenant) end)
   end
 
   defp gated_update(resource, delivery_id, token, action, input, tenant) do

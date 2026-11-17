@@ -14,7 +14,7 @@ token:
 
 | Handler result | Recorded state | Error class |
 |---|---|---|
-| `{:ok, struct}` | processed | none |
+| `{:ok, value}` for any value | processed | none |
 | `{:error, :permanent, term}` | failed, permanent | from `term` |
 | `{:error, :retry, term}` | failed, retryable | from `term` |
 | an event type the provider does not know | failed, permanent | `unknown_event_type` |
@@ -22,9 +22,11 @@ token:
 | the handler raises, exits or throws | failed, retryable | `handler_crashed` |
 | any other value | failed, retryable | `invalid_handler_result` |
 
-An out-of-contract value is a host programming error. It is recorded as a
-retryable failure, like a crash, rather than being left claimed until its lease
-expires or crashing the request. Every recorded failure emits the ingress
+Every `{:ok, value}` remains a success, including maps, scalars and nil, as
+required by the 3.x compatibility contract (ADR 0010). A bare `:ok`, a two-element
+`{:error, term}` or any other unrecognized result is a host programming error. It
+is recorded as a retryable failure, like a crash, rather than being left claimed
+until its lease expires or crashing the request. Every recorded failure emits the ingress
 telemetry for its class.
 
 A failed fenced write (`:stale_token`) means another owner holds the receipt. In

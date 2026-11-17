@@ -58,6 +58,7 @@ defmodule AshHooks.IngressTest do
     def handle_event(_, %{"result" => "bare"}), do: :ok
     def handle_event(_, %{"result" => "error"}), do: {:error, :rejected}
     def handle_event(type, %{"result" => "map"}), do: {:ok, %{type: type}}
+    def handle_event(_, %{"result" => "ok_nil"}), do: {:ok, nil}
     def handle_event(_, %{"result" => "tuple"}), do: {:unexpected, :result}
     def handle_event(_, %{"result" => "nil"}), do: nil
 
@@ -332,7 +333,8 @@ defmodule AshHooks.IngressTest do
           {"throw", :failed_retryable, "handler_crashed"},
           {"bare", :failed_retryable, "invalid_handler_result"},
           {"error", :failed_retryable, "invalid_handler_result"},
-          {"map", :failed_retryable, "invalid_handler_result"},
+          {"map", :processed, nil},
+          {"ok_nil", :processed, nil},
           {"tuple", :failed_retryable, "invalid_handler_result"},
           {"nil", :failed_retryable, "invalid_handler_result"}
         ] do

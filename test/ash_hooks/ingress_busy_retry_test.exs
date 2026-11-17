@@ -68,7 +68,7 @@ if Code.ensure_loaded?(AshSqlite) do
       Application.put_env(:ash_hooks, BusyRepo,
         database: db_path,
         pool_size: 1,
-        journal_mode: :wal,
+        journal_mode: :delete,
         busy_timeout: 5_000
       )
 
@@ -109,7 +109,7 @@ if Code.ensure_loaded?(AshSqlite) do
       Application.put_env(:ash_hooks, BusyRepo,
         database: db_path,
         pool_size: 3,
-        journal_mode: :wal,
+        journal_mode: :delete,
         busy_timeout: 50
       )
 
@@ -134,6 +134,46 @@ if Code.ensure_loaded?(AshSqlite) do
         signature: :crypto.mac(:hmac, :sha256, @secret, @raw) |> Base.encode16(case: :lower),
         headers: %{}
       }
+    end
+
+    defp with_exclusive_lock(operation) do
+      owner = self()
+
+      holder =
+        Task.async(fn ->
+          BusyRepo.checkout(fn ->
+            BusyRepo.query!("BEGIN EXCLUSIVE")
+
+            try do
+              send(owner, :exclusive_lock)
+
+              receive do
+                :release -> :ok
+              after
+                900 -> :ok
+              end
+            after
+              BusyRepo.query!("ROLLBACK")
+            end
+          end)
+        end)
+
+      assert_receive :exclusive_lock, 5_000
+
+      try do
+        assert {:error, %Exqlite.Error{message: message}} =
+                 BusyRepo.query("SELECT * FROM #{@table}")
+
+        assert String.downcase(message) in ["database busy", "database is locked"]
+        operation.()
+      after
+        send(holder.pid, :release)
+        Task.await(holder, 5_000)
+      end
+    end
+
+    test "reaping retries an idempotent read blocked by an exclusive writer" do
+      with_exclusive_lock(fn -> assert {:ok, 0} = Ingress.reap(Ledger) end)
     end
 
     test "an ingest that hits write contention retries and converges to duplicate" do

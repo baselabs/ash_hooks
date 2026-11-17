@@ -402,12 +402,14 @@ defmodule AshHooks.Dispatcher do
 
   defp fetch_delivery(deliv_mod, endpoint_id, event_uuid, tenant) do
     result =
-      AshHooks.Phase.run(
-        deliv_mod
-        |> Ash.Query.filter(endpoint_id == ^endpoint_id and event_uuid == ^event_uuid),
-        tenant,
-        &Ash.read_one(&1, authorize?: false, tenant: tenant)
-      )
+      AshHooks.Contention.run(fn ->
+        AshHooks.Phase.run(
+          deliv_mod
+          |> Ash.Query.filter(endpoint_id == ^endpoint_id and event_uuid == ^event_uuid),
+          tenant,
+          &Ash.read_one(&1, authorize?: false, tenant: tenant)
+        )
+      end)
 
     case result do
       {:ok, nil} -> :missing
@@ -512,12 +514,14 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp reload(deliv_mod, row, tenant) do
-    case AshHooks.Phase.run(
-           deliv_mod
-           |> Ash.Query.do_filter(PrimaryKey.filter(row)),
-           tenant,
-           &Ash.read_one(&1, authorize?: false, tenant: tenant)
-         ) do
+    case AshHooks.Contention.run(fn ->
+           AshHooks.Phase.run(
+             deliv_mod
+             |> Ash.Query.do_filter(PrimaryKey.filter(row)),
+             tenant,
+             &Ash.read_one(&1, authorize?: false, tenant: tenant)
+           )
+         end) do
       {:ok, row} when not is_nil(row) -> row
       _missing_or_error -> nil
     end
@@ -573,7 +577,9 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp read_subscriptions(subs_mod, tenant) do
-    case AshHooks.Phase.run(subs_mod, tenant, &Ash.read(&1, authorize?: false, tenant: tenant)) do
+    case AshHooks.Contention.run(fn ->
+           AshHooks.Phase.run(subs_mod, tenant, &Ash.read(&1, authorize?: false, tenant: tenant))
+         end) do
       {:ok, subscriptions} -> collect_pages(subscriptions, [], subs_mod, tenant)
       {:error, error} -> {:error, error}
     end
@@ -581,7 +587,9 @@ defmodule AshHooks.Dispatcher do
 
   defp collect_pages(%{results: results, more?: true} = page, acc, resource, tenant) do
     result =
-      AshHooks.Phase.run(resource, tenant, fn -> Ash.page(page, :next) end)
+      AshHooks.Contention.run(fn ->
+        AshHooks.Phase.run(resource, tenant, fn -> Ash.page(page, :next) end)
+      end)
 
     with {:ok, next} <- result do
       collect_pages(next, [results | acc], resource, tenant)
@@ -618,15 +626,17 @@ defmodule AshHooks.Dispatcher do
   # misconfiguration skip a gone endpoint gets: tenant-enforced, no new
   # outcome shape.
   defp resolve_endpoint(subscription, endpoint_mod, tenant) do
-    case AshHooks.Phase.run(
-           endpoint_mod,
-           tenant,
-           &Ash.get(&1.resource, subscription.endpoint_id,
-             authorize?: false,
-             tenant: tenant,
-             context: AshHooks.Phase.context(endpoint_mod)
+    case AshHooks.Contention.run(fn ->
+           AshHooks.Phase.run(
+             endpoint_mod,
+             tenant,
+             &Ash.get(&1.resource, subscription.endpoint_id,
+               authorize?: false,
+               tenant: tenant,
+               context: AshHooks.Phase.context(endpoint_mod)
+             )
            )
-         ) do
+         end) do
       # the single enabled check: the injected status attribute or the
       # consumer-mapped switch; exactly one attribute decides
       {:ok, endpoint} ->
@@ -773,13 +783,15 @@ defmodule AshHooks.Dispatcher do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     result =
-      AshHooks.Phase.run(
-        deliv_mod
-        |> Ash.Query.filter(dispatch_source == ^source)
-        |> recovery_candidate_filter(cutoff, now),
-        tenant,
-        &Ash.read(&1, authorize?: false, tenant: tenant)
-      )
+      AshHooks.Contention.run(fn ->
+        AshHooks.Phase.run(
+          deliv_mod
+          |> Ash.Query.filter(dispatch_source == ^source)
+          |> recovery_candidate_filter(cutoff, now),
+          tenant,
+          &Ash.read(&1, authorize?: false, tenant: tenant)
+        )
+      end)
 
     case result do
       {:ok, rows} -> collect_pages(rows, [], deliv_mod, tenant)
