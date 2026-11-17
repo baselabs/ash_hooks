@@ -85,7 +85,10 @@ defmodule LockBytes do
 
   defp temporary(fun) do
     work =
-      Path.join(System.tmp_dir!(), "mix-lock-bytes-#{System.pid()}-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "mix-lock-bytes-#{System.pid()}-#{System.unique_integer([:positive])}"
+      )
 
     File.mkdir!(work)
 
