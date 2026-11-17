@@ -93,7 +93,7 @@ defmodule AshHooks.Catalog do
   def payload(%Event{} = event, outbound, endpoint) do
     pinned = Map.get(endpoint, :pinned_payload_version)
     versions = outbound.payload_versions || %{}
-    current = outbound.version || 1
+    current = event.version || outbound.version || 1
 
     cond do
       is_nil(pinned) or pinned == current ->

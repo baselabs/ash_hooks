@@ -151,7 +151,12 @@ defmodule AshHooks.Telemetry do
     secret_resolution signing_failed signer_failed adapter_cannot_send_prepared unsigned invalid_prepared_request source_conflict stale_row timeout
     tls_alert truncated_body unsafe_destination unresolved_host
     unresolved_route worker_route_mismatch unknown_source key_kind_mismatch
-    unknown_key key_unavailable invalid_signature unknown_error kind_not_allowed)
+    unknown_key key_unavailable invalid_signature unknown_error kind_not_allowed
+    invalid_publication_metadata publication_conflict nontransactional_outbox
+    publication_repository_mismatch unknown_declaration invalid_publication_content
+    unsupported_publication_format fanout_crashed fanout_timeout fanout_incomplete
+    publication_transition_failed publication_missing publication_not_failed
+    invalid_outbox_query trigger_failed enqueue_contended unknown_pinned_version variant_failed)
 
   def classify_token(term) when is_atom(term), do: classify_token(Atom.to_string(term))
 

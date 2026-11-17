@@ -34,12 +34,13 @@ defmodule AshHooks.Event do
     * `metadata` is a map of unsigned application context, defaulting to `%{}`.
   """
 
-  defstruct [:id, :type, :payload, metadata: %{}]
+  defstruct [:id, :type, :payload, :version, metadata: %{}]
 
   @type t :: %__MODULE__{
           id: String.t(),
           type: String.t(),
           payload: binary(),
+          version: pos_integer() | nil,
           metadata: map()
         }
 

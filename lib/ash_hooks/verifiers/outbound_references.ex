@@ -13,7 +13,36 @@ defmodule AshHooks.Verifiers.OutboundReferences do
   def verify(dsl_state) do
     verify_subscription(dsl_state)
     verify_outbound_declarations(dsl_state)
+    verify_publish_changes(dsl_state)
     :ok
+  end
+
+  defp verify_publish_changes(state) do
+    owner = Verifier.get_persisted(state, :module)
+    layer = Verifier.get_persisted(state, :data_layer)
+
+    for action <- Verifier.get_entities(state, [:actions]),
+        %{change: {AshHooks.Changes.Publish, opts}} <- Map.get(action, :changes, []) do
+      outbox = Keyword.fetch!(opts, :outbox)
+      Code.ensure_compiled!(outbox)
+      outbox_layer = Ash.DataLayer.data_layer(outbox)
+      info = Module.concat(layer, :Info)
+
+      owner_repo =
+        case layer do
+          AshPostgres.DataLayer -> Extension.get_opt(state, [:postgres], :repo)
+          AshSqlite.DataLayer -> Extension.get_opt(state, [:sqlite], :repo)
+          _other -> nil
+        end
+
+      if layer != outbox_layer or is_nil(owner_repo) or
+           (is_atom(owner_repo) and owner_repo != AshHooks.Phase.repo(outbox)) do
+        raise DslError, module: owner, path: [:actions, action.name],
+          message: "Publish requires the same transactional data layer and write repository as its outbox"
+      end
+
+      _ = info
+    end
   end
 
   defp verify_subscription(dsl_state) do

@@ -723,6 +723,7 @@ defmodule AshHooks.Worker do
       |> Macro.escape()
 
     oban_instance = maybe_expand(Keyword.get(opts, :oban, Oban), expand)
+    outbox = maybe_expand(Keyword.get(opts, :outbox), expand)
 
     quote do
       unless Code.ensure_loaded?(Oban) do
@@ -740,12 +741,33 @@ defmodule AshHooks.Worker do
 
       @ash_hooks_delivery_config unquote(delivery_config)
       @ash_hooks_oban unquote(oban_instance)
+      @ash_hooks_outbox unquote(outbox)
 
       @impl Oban.Worker
+      def perform(%Oban.Job{args: %{"kind" => "fanout"} = args}) do
+        AshHooks.Worker.perform_fanout(@ash_hooks_outbox, args)
+      end
+
       def perform(%Oban.Job{args: args}) do
         case AshHooks.Worker.resolve_config(@ash_hooks_delivery_config, args) do
           {:ok, config} -> AshHooks.Delivery.run(args, config)
           {:error, reason} -> {:error, reason}
+        end
+      end
+
+      @doc "Schedules one committed publication's fanout using the configured Oban instance."
+      def enqueue_fanout(publication, tenant) do
+        if publication.__struct__ == @ash_hooks_outbox do
+          args = %{"kind" => "fanout", "outbox_resource" => Atom.to_string(publication.__struct__),
+            "event_uuid" => publication.event_uuid, "tenant" => tenant,
+            "dispatch_source" => publication.dispatch_source, "dispatch_route" => publication.dispatch_route}
+            |> Enum.reject(fn {_key, value} -> is_nil(value) end) |> Map.new()
+
+          changeset = __MODULE__.new(args, unique: [fields: [:args], period: :infinity,
+            states: [:available, :scheduled, :executing, :retryable]])
+          insert_durably(changeset, args, 20)
+        else
+          {:error, :unknown_source}
         end
       end
 
@@ -839,6 +861,21 @@ defmodule AshHooks.Worker do
       end
     end
   end
+
+  @doc false
+  def perform_fanout(nil, _args), do: {:error, :unknown_source}
+  def perform_fanout(outbox, %{"outbox_resource" => resource, "event_uuid" => id} = args) do
+    if Atom.to_string(outbox) == resource do
+      case AshHooks.fanout(outbox, id, tenant: args["tenant"]) do
+        result when result in [:done, :failed, :busy, :stale, :missing] -> :ok
+        {:pending, _reason} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :unknown_source}
+    end
+  end
+  def perform_fanout(_outbox, _args), do: {:error, :invalid_event}
 
   defp retryable_statuses!(statuses) do
     resolved =

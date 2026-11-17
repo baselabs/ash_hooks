@@ -271,6 +271,43 @@ defmodule AshHooks do
   defdelegate dispatch(resource, name, event, opts \\ []), to: AshHooks.Dispatcher
 
   @doc """
+  Accepts an event with one outbox upsert. `declaration` is `{resource, name}`;
+  `:route` names a configured delivery route. Inside a transaction acceptance
+  is conditional on commit. Supply `:caller_resource` and `:dynamic_repo` when
+  publishing from a transaction on another resource to check atomicity before
+  writing. The same connection, write repository, and instance must be used.
+
+  Metadata must be a JSON map with string keys, at most 32 levels deep and
+  1 MiB encoded. Values may be nil, booleans, signed 64-bit integers, finite
+  floats except negative zero, UTF-8 strings without NUL, lists, or maps.
+  Immediate dispatch retains its wider metadata domain.
+  """
+  @spec publish(module(), {module(), atom()}, AshHooks.Event.t(), keyword()) ::
+          {:ok, :accepted | :duplicate} | {:error, term()}
+  defdelegate publish(outbox, declaration, event, opts \\ []), to: AshHooks.Outbox
+
+  @doc """
+  Claims and fans out one committed publication for `:tenant`. Refuses an
+  enclosing transaction. Every attempt re-observes subscriptions and endpoints;
+  existing delivery rows survive. Pending results carry a persisted retry time.
+  """
+  @spec fanout(module(), String.t(), keyword()) :: AshHooks.Outbox.fanout_result()
+  defdelegate fanout(outbox, event_id, opts \\ []), to: AshHooks.Outbox
+
+  @doc """
+  Sweeps a bounded batch of due publications for one tenant. Schedule this for
+  every tenant even when a trigger is configured. Candidate-read errors are
+  returned, and each publication's failure is isolated in the summary.
+  """
+  @spec fanout_pending(module(), pos_integer(), keyword()) ::
+          {:ok, AshHooks.Outbox.sweep_summary()} | {:error, term()}
+  defdelegate fanout_pending(outbox, batch_size, opts \\ []), to: AshHooks.Outbox
+
+  @doc "Rearms one failed publication for its tenant and stored ownership, resetting its attempts."
+  @spec rearm(module(), String.t(), keyword()) :: {:ok, struct()} | {:error, term()}
+  defdelegate rearm(outbox, event_id, opts \\ []), to: AshHooks.Outbox
+
+  @doc """
   Recovers eligible outbound rows for a declaration and tenant, including
   interrupted enqueue, due retries, and expired send leases. Schedule this
   periodically for each outbound declaration and tenant; it preserves retry

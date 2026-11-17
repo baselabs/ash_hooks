@@ -39,10 +39,11 @@ defmodule AshHooks.Subscription do
   entries match the same event names. The bare `"*"` or `:"*"` entry matches
   all event names.
 
-  Matching is exact strings plus the bare wildcard entry, evaluated IN
-  MEMORY by the dispatcher after reading through the consumer's primary
-  read action. There is no array-containment SQL, so the semantics are identical
-  on every data layer.
+  Matching uses exact names plus the bare wildcard. The dispatcher selects
+  candidates in SQL through the consumer's primary read action, then applies
+  the Elixir predicate as its final guard. Unrecognized storage shapes widen
+  the query and preserve that guard. A PostgreSQL GIN index on `event_types`
+  speeds type selection. Malformed filter containers never match.
 
   The package injects NO read action and NO read policies: read surfaces
   are the consumer's to open through their own domain policies; internal
@@ -95,17 +96,15 @@ defmodule AshHooks.Subscription do
       |> Extension.get_opt([:subscription], :filter_attributes, [])
       |> MapSet.new(&to_string/1)
 
-    subscription
-    |> Map.get(:event_filters)
-    |> case do
-      nil -> %{}
-      filters when is_map(filters) -> filters
-      _not_a_map -> %{__invalid__: true}
+    case Map.get(subscription, :event_filters) do
+      nil -> true
+      filters when is_map(filters) ->
+        Enum.all?(filters, fn {key, expected} ->
+          Map.has_key?(metadata, to_string(key)) and to_string(key) in declared and
+            value_matches?(Map.fetch!(metadata, to_string(key)), expected)
+        end)
+      _not_a_map -> false
     end
-    |> Enum.all?(fn {key, expected} ->
-      Map.has_key?(metadata, to_string(key)) and to_string(key) in declared and
-        value_matches?(Map.fetch!(metadata, to_string(key)), expected)
-    end)
   end
 
   defp value_matches?(actual, expected) when is_list(expected),

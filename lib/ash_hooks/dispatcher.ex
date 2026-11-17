@@ -273,6 +273,14 @@ defmodule AshHooks.Dispatcher do
   # or reload failed → :endpoint_error, never a mislabeled :duplicate that
   # would hide a state change without an enqueue.
   defp repair(deliv_mod, event, subscription, endpoint, row, opts, tenant) do
+    if opts[:outbox_admission?] do
+      merge_result(endpoint, subscription, readmit(deliv_mod, row, event, opts, tenant))
+    else
+      repair_dispatch(deliv_mod, event, subscription, endpoint, row, opts, tenant)
+    end
+  end
+
+  defp repair_dispatch(deliv_mod, event, subscription, endpoint, row, opts, tenant) do
     if row.status != :enqueue_failed do
       result(endpoint, subscription, :duplicate)
     else
@@ -421,6 +429,14 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp enqueue(deliv_mod, row, event, opts, tenant) do
+    if opts[:outbox_admission?] and opts[:enqueue] do
+      readmit(deliv_mod, row, event, opts, tenant)
+    else
+      enqueue_dispatch(deliv_mod, row, event, opts, tenant)
+    end
+  end
+
+  defp enqueue_dispatch(deliv_mod, row, event, opts, tenant) do
     case enqueue_result(opts[:enqueue], row, event) do
       :ok ->
         %{status: :created, error: nil}
@@ -441,6 +457,30 @@ defmodule AshHooks.Dispatcher do
 
           {:error, mark_error} ->
             %{status: :mark_failed, error: {:enqueue, reason, :mark, mark_error}}
+        end
+    end
+  end
+
+  defp readmit(deliv_mod, row, event, opts, tenant) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    cond do
+      is_nil(opts[:enqueue]) -> %{status: :duplicate, error: nil}
+      row.status in [:succeeded, :dead_letter] -> %{status: :duplicate, error: nil}
+      is_nil(row.enqueue_token) and row.enqueue_lease_expires_at &&
+          DateTime.compare(row.enqueue_lease_expires_at, now) == :gt ->
+        %{status: :duplicate, error: nil}
+      row.status == :sending and row.send_lease_expires_at &&
+          DateTime.compare(row.send_lease_expires_at, now) == :gt ->
+        %{status: :duplicate, error: nil}
+      true ->
+        cutoff = DateTime.add(now, 1, :second)
+        case claim_enqueue(deliv_mod, row, cutoff, tenant) do
+          {:ok, claimed} ->
+            result = reconcile_enqueue_result(deliv_mod, claimed,
+              enqueue_result(opts[:enqueue], claimed, event), tenant)
+            Map.take(result, [:status, :error])
+          {:error, reason} -> %{status: :endpoint_error, error: reason}
         end
     end
   end
