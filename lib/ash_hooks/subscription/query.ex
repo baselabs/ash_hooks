@@ -64,7 +64,7 @@ defmodule AshHooks.Subscription.Query do
     attribute = Info.attribute(resource, :paused)
 
     if Extension.get_opt(resource, [:subscription], :pausable, :off) == :on and
-         match?(%{type: Ash.Type.Boolean}, attribute) and
+         match?(%{type: Ash.Type.Boolean, allow_nil?: false}, attribute) and
          storage(resource, attribute, layer) in [:boolean, :bool, :integer] do
       expr(not paused)
     else
@@ -73,12 +73,14 @@ defmodule AshHooks.Subscription.Query do
   end
 
   defp filters(resource, metadata, layer) do
-    attribute = Info.attribute(resource, :event_filters)
-    map? = match?(%{type: Ash.Type.Map}, attribute)
-    storage = if map?, do: storage(resource, attribute, layer)
+    shape =
+      case Info.attribute(resource, :event_filters) do
+        %{type: Ash.Type.Map} = attribute -> {layer, storage(resource, attribute, layer)}
+        _unknown -> :unknown
+      end
 
-    cond do
-      map? and layer in [Ash.DataLayer.Ets, Ash.DataLayer.Simple] ->
+    case shape do
+      {layer, _storage} when layer in [Ash.DataLayer.Ets, Ash.DataLayer.Simple] ->
         matcher = fn filters ->
           AshHooks.Subscription.matches_filters?(
             struct(resource, event_filters: filters),
@@ -89,13 +91,13 @@ defmodule AshHooks.Subscription.Query do
         fragment = %Ash.Query.Call{name: :fragment, args: [matcher, expr(event_filters)]}
         expr(is_nil(event_filters) or ^fragment)
 
-      map? and layer == AshPostgres.DataLayer and storage in [:map, :jsonb] ->
+      {AshPostgres.DataLayer, storage} when storage in [:map, :jsonb] ->
         sql_filters(resource, metadata, :postgres)
 
-      map? and layer == AshSqlite.DataLayer and storage in [:map, :text, :string] ->
+      {AshSqlite.DataLayer, storage} when storage in [:map, :text, :string] ->
         sql_filters(resource, metadata, :sqlite)
 
-      true ->
+      _unknown ->
         true
     end
   end

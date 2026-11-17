@@ -594,6 +594,7 @@ for {module, namespace} <- [
   defmodule module do
     use ExUnit.Case, async: false
     require Ash.Query
+    alias AshHooks.OutboundOutbox.Notifier, as: OutboxNotifier
     alias AshHooks.OutboxAcceptance, as: Cases
     alias AshHooks.Test.HttpReceiver
     @moduletag timeout: 180_000
@@ -1461,7 +1462,7 @@ for {module, namespace} <- [
       Application.put_env(:ash_hooks, :outbox_host_observer, self())
       on_exit(fn -> Application.delete_env(:ash_hooks, :outbox_host_observer) end)
 
-      assert :ok = AshHooks.OutboundOutbox.Notifier.notify(%Ash.Notifier.Notification{})
+      assert :ok = OutboxNotifier.notify(%Ash.Notifier.Notification{})
 
       for mode <- [:ignore, :warn, :raise] do
         previous = Application.get_env(:ash, :missed_notifications)

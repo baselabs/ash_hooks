@@ -13,9 +13,10 @@ defmodule AshHooks.OutboxFixtures.HostNotifications do
   use Ash.Resource.Change
 
   def change(changeset, _opts, _context) do
-    Ash.Changeset.after_action(changeset, fn _changeset, row ->
+    Ash.Changeset.after_action(changeset, fn changeset, row ->
       notification = %Ash.Notifier.Notification{
-        resource: nil,
+        resource: row.__struct__,
+        action: changeset.action,
         for: [AshHooks.OutboxFixtures.HostNotifier],
         data: row,
         metadata: %{host: true}

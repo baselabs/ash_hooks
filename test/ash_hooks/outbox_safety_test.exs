@@ -79,8 +79,10 @@ end
 defmodule AshHooks.OutboxSafetyTest do
   use ExUnit.Case, async: false
   alias AshHooks.OutboxAcceptance, as: Cases
+  alias AshHooks.OutboxFixtures.Postgres.Emitter, as: PostgresEmitter
   alias AshHooks.OutboxSafety.{Caller, OtherRepo}
   alias AshHooks.Verifiers.OutboundReferences
+  alias Spark.Dsl.Transformer
 
   setup_all do
     f = Cases.setup(AshHooks.OutboxFixtures.SQLite)
@@ -153,12 +155,11 @@ defmodule AshHooks.OutboxSafetyTest do
 
   test "A15 static verification refuses absent repositories and defers dynamic repo callbacks",
        f do
-    alias Spark.Dsl.Transformer
     state = f.emitter.spark_dsl_config()
 
     for invalid <- [
           Transformer.persist(state, :data_layer, Ash.DataLayer.Ets),
-          AshHooks.OutboxFixtures.Postgres.Emitter.spark_dsl_config()
+          PostgresEmitter.spark_dsl_config()
           |> Transformer.set_option([:postgres], :repo, nil)
         ] do
       assert_raise Spark.Error.DslError, ~r/same transactional data layer/, fn ->

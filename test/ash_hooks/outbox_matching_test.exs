@@ -42,7 +42,9 @@ for {name, layer, shape} <- [
       {:EtsCustom, Ash.DataLayer.Ets, :custom},
       {:SimpleCustom, Ash.DataLayer.Simple, :custom},
       {:EtsEmptyAtoms, Ash.DataLayer.Ets, :empty_atoms},
-      {:SimpleEmptyAtoms, Ash.DataLayer.Simple, :empty_atoms}
+      {:SimpleEmptyAtoms, Ash.DataLayer.Simple, :empty_atoms},
+      {:EtsNullablePause, Ash.DataLayer.Ets, :nullable_pause},
+      {:SimpleNullablePause, Ash.DataLayer.Simple, :nullable_pause}
     ] do
   subscription = Module.concat([AshHooks.OutboxMatching, name, Subscription])
   emitter = Module.concat([AshHooks.OutboxMatching, name, Emitter])
@@ -92,6 +94,9 @@ for {name, layer, shape} <- [
 
             :strings ->
               :ok
+
+            :nullable_pause ->
+              attribute :paused, :boolean, public?: true
           end
         end
 
@@ -142,6 +147,72 @@ for {name, layer, shape} <- [
   )
 end
 
+for {namespace, layer, repo, table} <- [
+      {AshHooks.OutboxFixtures.SQLite, AshSqlite.DataLayer, AshHooks.OutboxFixtures.SQLiteRepo,
+       "outbox_sqlite_subscriptions"},
+      {AshHooks.OutboxFixtures.Postgres, AshPostgres.DataLayer, AshHooks.OutboxFixtures.Postgres.Repo,
+       "outbox_postgres_subscriptions"}
+    ] do
+  subscription = Module.concat(namespace, :NullableSubscription)
+  emitter = Module.concat(namespace, :NullableEmitter)
+  endpoint = Module.concat(namespace, :Endpoint)
+  delivery = Module.concat(namespace, :Delivery)
+  path = if layer == AshSqlite.DataLayer, do: :sqlite, else: :postgres
+
+  Code.eval_quoted(
+    quote do
+      defmodule unquote(subscription) do
+        use Ash.Resource,
+          domain: AshHooks.OutboxMatching.Domain,
+          data_layer: unquote(layer),
+          extensions: [AshHooks.Subscription]
+
+        unquote(path) do
+          table(unquote(table))
+          repo(unquote(repo))
+        end
+
+        attributes do
+          attribute :org_id, :string, allow_nil?: false
+          attribute :paused, :boolean, public?: true
+        end
+
+        multitenancy do
+          strategy :attribute
+          attribute :org_id
+        end
+
+        actions do
+          defaults [:read]
+        end
+
+        subscription do
+          endpoint_resource unquote(endpoint)
+          filter_attributes [:region]
+          pausable :on
+        end
+      end
+
+      defmodule unquote(emitter) do
+        use Ash.Resource,
+          domain: AshHooks.OutboxMatching.Domain,
+          extensions: [AshHooks]
+
+        attributes do
+          uuid_primary_key :id
+        end
+
+        webhooks do
+          outbound :changed do
+            subscriptions unquote(subscription)
+            deliveries unquote(delivery)
+          end
+        end
+      end
+    end
+  )
+end
+
 defmodule AshHooks.OutboxMatching.Outbox do
   use Ash.Resource,
     domain: AshHooks.OutboxMatching.Domain,
@@ -177,7 +248,11 @@ defmodule AshHooks.OutboxMatching.Outbox do
       {AshHooks.OutboxMatching.EtsCustom.Emitter, :changed},
       {AshHooks.OutboxMatching.SimpleCustom.Emitter, :changed},
       {AshHooks.OutboxMatching.EtsEmptyAtoms.Emitter, :changed},
-      {AshHooks.OutboxMatching.SimpleEmptyAtoms.Emitter, :changed}
+      {AshHooks.OutboxMatching.SimpleEmptyAtoms.Emitter, :changed},
+      {AshHooks.OutboxMatching.EtsNullablePause.Emitter, :changed},
+      {AshHooks.OutboxMatching.SimpleNullablePause.Emitter, :changed},
+      {AshHooks.OutboxFixtures.SQLite.NullableEmitter, :changed},
+      {AshHooks.OutboxFixtures.Postgres.NullableEmitter, :changed}
     ]
 
     delivery_routes default: nil
@@ -209,6 +284,14 @@ defmodule AshHooks.OutboxMatching.Domain do
     resource AshHooks.OutboxMatching.EtsEmptyAtoms.Emitter
     resource AshHooks.OutboxMatching.SimpleEmptyAtoms.Subscription
     resource AshHooks.OutboxMatching.SimpleEmptyAtoms.Emitter
+    resource AshHooks.OutboxMatching.EtsNullablePause.Subscription
+    resource AshHooks.OutboxMatching.EtsNullablePause.Emitter
+    resource AshHooks.OutboxMatching.SimpleNullablePause.Subscription
+    resource AshHooks.OutboxMatching.SimpleNullablePause.Emitter
+    resource AshHooks.OutboxFixtures.SQLite.NullableSubscription
+    resource AshHooks.OutboxFixtures.SQLite.NullableEmitter
+    resource AshHooks.OutboxFixtures.Postgres.NullableSubscription
+    resource AshHooks.OutboxFixtures.Postgres.NullableEmitter
     resource AshHooks.OutboxMatching.Outbox
   end
 end
@@ -236,7 +319,9 @@ defmodule AshHooks.OutboxMatchingTest do
         :EtsCustom,
         :SimpleCustom,
         :EtsEmptyAtoms,
-        :SimpleEmptyAtoms
+        :SimpleEmptyAtoms,
+        :EtsNullablePause,
+        :SimpleNullablePause
       ] do
     @tag name: name
     test "A12 production reads retain pagination and exact in-memory matching for #{name}", f do
@@ -247,6 +332,8 @@ defmodule AshHooks.OutboxMatchingTest do
       atoms? = empty? or name in [:EtsAtoms, :SimpleAtoms, :EtsOpenAtoms, :SimpleOpenAtoms]
       types = if empty?, do: [:other], else: if(atoms?, do: [:changed], else: ["changed"])
       widened? = name in [:EtsOpenAtoms, :SimpleOpenAtoms, :EtsCustom, :SimpleCustom]
+      nullable_pause? = name in [:EtsNullablePause, :SimpleNullablePause]
+      widened? = widened? or nullable_pause?
       ets? = Ash.DataLayer.data_layer(subscription) == Ets
       endpoint = Cases.endpoint(f)
 
@@ -270,7 +357,7 @@ defmodule AshHooks.OutboxMatchingTest do
             id: Ash.UUID.generate(),
             org_id: "tenant-a",
             event_types: types,
-            paused: false,
+            paused: if(nullable_pause?, do: nil, else: false),
             endpoint_id: endpoint.id,
             event_filters: filters
           )
@@ -365,6 +452,41 @@ defmodule AshHooks.OutboxMatchingTest do
       {:selected, ^resource, ids} -> selected(resource, acc ++ ids)
     after
       0 -> Enum.sort(acc)
+    end
+  end
+end
+
+for {test_module, namespace} <- [
+      {AshHooks.OutboxNullableSQLiteTest, AshHooks.OutboxFixtures.SQLite},
+      {AshHooks.OutboxNullablePostgresTest, AshHooks.OutboxFixtures.Postgres}
+    ] do
+  defmodule test_module do
+    use ExUnit.Case, async: false
+    alias AshHooks.OutboxAcceptance, as: Cases
+    @namespace namespace
+    if @namespace == AshHooks.OutboxFixtures.Postgres, do: @moduletag(:postgres)
+
+    setup_all do
+      if @namespace == AshHooks.OutboxFixtures.Postgres,
+        do: Cases.setup(AshHooks.OutboxFixtures.SQLite)
+
+      {:ok, Cases.setup(@namespace)}
+    end
+
+    test "A12 nullable host pause fields preserve the Elixir nil behavior in both paths", f do
+      Cases.endpoint(f)
+      f.owner.query!("UPDATE #{Cases.table(f.subscription)} SET paused = NULL")
+      emitter = Module.concat(@namespace, :NullableEmitter)
+      event = Cases.event()
+
+      assert {:ok, [%{status: :deferred}]} =
+               AshHooks.dispatch(emitter, :changed, event, tenant: "tenant-a")
+
+      outbox = AshHooks.OutboxMatching.Outbox
+      assert {:ok, :accepted} =
+               AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
+      assert :done = AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
+      assert length(Cases.rows(f, :delivery)) == 1
     end
   end
 end

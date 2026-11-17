@@ -3,6 +3,7 @@ Code.require_file("outbox_resources.exs", __DIR__)
 
 defmodule AshHooks.OutboxConfigurationTest do
   use ExUnit.Case, async: false
+  alias Ash.Resource.Info
   alias AshHooks.OutboundOutbox.Transformers.AddOutbox
   alias AshHooks.OutboundOutbox.Verifier
   alias AshHooks.OutboxFixtures.Postgres.Outbox, as: PostgresOutbox
@@ -25,11 +26,11 @@ defmodule AshHooks.OutboxConfigurationTest do
     end
 
     refute AddOutbox.before?(__MODULE__)
-    assert :event_uuid in Ash.Resource.Info.action_inputs(@resource, :publish)
-    assert "acceptance_token" in Ash.Resource.Info.action_inputs(@resource, :publish)
-    assert %{name: :claim_token} = Ash.Resource.Info.attribute(@resource, :claim_token)
+    assert :event_uuid in Info.action_inputs(@resource, :publish)
+    assert "acceptance_token" in Info.action_inputs(@resource, :publish)
+    assert %{name: :claim_token} = Info.attribute(@resource, :claim_token)
 
-    assert Enum.any?(Ash.Resource.Info.unique_keys(@resource), fn key ->
+    assert Enum.any?(Info.unique_keys(@resource), fn key ->
              Enum.sort(key.keys) == [:event_uuid, :org_id]
            end)
   end
