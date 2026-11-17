@@ -1,6 +1,6 @@
 [extensions | flags] = System.argv()
 
-stale =
+checked =
   for name <- String.split(extensions, ",") do
     extension = Module.concat([name])
     Code.ensure_compiled!(extension)
@@ -73,16 +73,24 @@ stale =
 
     path = "documentation/dsls/DSL-#{name}.md"
 
-    if "--check" in flags do
-      unless File.read!(path) == text do
+    cond do
+      "--check" not in flags ->
+        File.write!(path, text)
+
+      File.read(path) == {:ok, text} ->
+        :current
+
+      true ->
+        # Print the expected reference so CI drift can be applied without a local build.
         IO.puts("BEGIN GENERATED #{path}\n" <> text <> "\nEND GENERATED #{path}")
-        path
-      end
-    else
-      File.write!(path, text)
+        {:stale, path}
     end
   end
 
-if "--check" in flags and Enum.any?(stale) do
-  Mix.raise("DSL references are stale; run mix spark.generate")
+stale = for {:stale, path} <- checked, do: path
+
+if stale != [] do
+  Mix.raise(
+    "stale (expected text printed above): #{Enum.join(stale, ", ")}; run mix spark.generate"
+  )
 end

@@ -9,16 +9,22 @@ defmodule AshHooks.Test.HostExtensionResource do
     table = Keyword.fetch!(opts, :table)
     extensions = Keyword.fetch!(opts, :extensions)
 
+    data_layer_body =
+      quote do
+        table unquote(table)
+        repo unquote(repo)
+      end
+
+    # `sqlite do ... end` or `postgres do ... end`, chosen at expansion.
+    data_layer_section = {storage, [], [[do: data_layer_body]]}
+
     quote do
       use Ash.Resource,
         domain: AshHooks.HostExtensionSeamsTest.Domain,
         data_layer: unquote(layer),
         extensions: unquote(extensions)
 
-      unquote(storage) do
-        table unquote(table)
-        repo unquote(repo)
-      end
+      unquote(data_layer_section)
 
       multitenancy do
         strategy :attribute

@@ -1733,9 +1733,6 @@ defmodule AshHooks.Ingress do
 
           {:error, reason} ->
             verify_with_previous(provider, raw_body, verify_ctx, inbound, reason, name)
-
-          _unknown ->
-            {:error, Errors.from_reason(:unknown_error, provider: name)}
         end
 
       :error ->
