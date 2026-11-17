@@ -58,7 +58,9 @@ defmodule AshHooks.OutboxAcceptance do
       table = table(resource)
 
       fields =
-        Enum.map_join(Ash.Resource.Info.attributes(resource), ", ",
+        Enum.map_join(
+          Ash.Resource.Info.attributes(resource),
+          ", ",
           &column(&1, resource == resources.outbox, sqlite?)
         )
 
@@ -1255,6 +1257,25 @@ for {module, namespace} <- [
       assert Cases.publication(f, event.id).metadata == metadata
       assert {:ok, :duplicate} = Cases.publish(f, event)
       assert :done = Cases.fanout(f, event.id)
+    end
+
+    test "A9 exact JSON size and depth limits preserve submitted metadata", f do
+      overhead = byte_size(Jason.encode!(%{"text" => ""}))
+      largest = %{"text" => String.duplicate("x", 1_048_576 - overhead)}
+      deepest = %{"value" => Enum.reduce(1..31, true, fn _, acc -> [acc] end)}
+      previous = Logger.level()
+      Logger.configure(level: :warning)
+
+      try do
+        for metadata <- [largest, deepest, %{"smallest" => 5.0e-324}] do
+          event = Cases.event(Ash.UUID.generate(), metadata)
+          assert {:ok, :accepted} = Cases.publish(f, event)
+          assert Cases.publication(f, event.id).metadata === metadata
+          assert :done = Cases.fanout(f, event.id)
+        end
+      after
+        Logger.configure(level: previous)
+      end
     end
 
     test "A11 notifications are after commit and trigger failures cannot fail publish", f do
