@@ -126,10 +126,10 @@ jobs:
     name: Read back
     needs: publish
     runs-on: ubuntu-24.04
-    # Twice the slowest green (170s on rehearsal run 44179917802) plus the
+    # Twice the slowest green (236s on rehearsal run 44187801263) plus the
     # bounded propagation retries below: up to 2.5 minutes for the archive,
     # 5 for HexDocs and 5 for the registry.
-    timeout-minutes: 19
+    timeout-minutes: 21
     services:
       receiver:
         image: ghcr.io/tarampampam/webhook-tester@sha256:85818267b450d3d386cad6510c561e09b974183ed2832c373bc83b125fc1b221
