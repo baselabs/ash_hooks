@@ -4,6 +4,8 @@ defmodule AshHooks.CoverageSurfaceTest do
   alias AshHooks.Endpoint.{SecretRef, Url}
   alias AshHooks.InboundDelivery.Payload
 
+  require Spark.Test
+
   test "public storage types cast, load and dump their complete supported shapes" do
     assert Url.storage_type([]) == :text
     assert SecretRef.storage_type([]) == :text
@@ -44,25 +46,34 @@ defmodule AshHooks.CoverageSurfaceTest do
   end
 
   test "a declaration without an option block reaches native DSL validation" do
-    assert_raise Spark.Error.DslError, ~r/has no provider/, fn ->
-      Code.compile_string("""
-      defmodule AshHooks.CoverageSurfaceTest.BareInbound do
-        use Ash.Resource, data_layer: Ash.DataLayer.Ets, extensions: [AshHooks]
-        webhooks do
-          inbound :incoming
+    errors =
+      Spark.Test.dsl_errors do
+        Code.compile_string("""
+        defmodule AshHooks.CoverageSurfaceTest.BareInbound do
+          use Ash.Resource, data_layer: Ash.DataLayer.Ets, extensions: [AshHooks]
+          webhooks do
+            inbound :incoming
+          end
         end
+        """)
       end
-      """)
-    end
 
-    Code.compile_string("""
-    defmodule AshHooks.CoverageSurfaceTest.BareOutbound do
-      use Ash.Resource, data_layer: Ash.DataLayer.Ets, extensions: [AshHooks]
-      webhooks do
-        outbound :outgoing
+    assert [{AshHooks.CoverageSurfaceTest.BareInbound, errors}] = errors
+    assert Enum.any?(errors, &(Exception.message(&1) =~ "has no provider"))
+
+    errors =
+      Spark.Test.dsl_errors do
+        Code.compile_string("""
+        defmodule AshHooks.CoverageSurfaceTest.BareOutbound do
+          use Ash.Resource, data_layer: Ash.DataLayer.Ets, extensions: [AshHooks]
+          webhooks do
+            outbound :outgoing
+          end
+        end
+        """)
       end
-    end
-    """)
+
+    assert errors == []
 
     assert [%AshHooks.Outbound{name: :outgoing}] =
              AshHooks.Info.webhooks(AshHooks.CoverageSurfaceTest.BareOutbound)
