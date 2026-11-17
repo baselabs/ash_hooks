@@ -81,6 +81,7 @@ defmodule AshHooks.Test.RowSecurityCases do
   alias AshHooks.KeyRegistry.Transitions
   alias AshHooks.Test.Documentation, as: Docs
   alias AshHooks.Test.RealReceiver
+  alias Oban.Engines.Basic
   alias Spark.Dsl.Transformer
 
   def setup_postgres(namespace, repo, read_repo, shape \\ :string) do
@@ -117,21 +118,7 @@ defmodule AshHooks.Test.RowSecurityCases do
       password = Base.encode16(:crypto.strong_rand_bytes(32))
       owner.query!("ALTER ROLE #{login} PASSWORD '#{password}'", [], log: false)
 
-      for module <- Enum.uniq(modules) do
-        config =
-          owner.config()
-          |> Keyword.merge(username: login, password: password, pool_size: 1, log: false)
-
-        otp_app = Keyword.fetch!(module.config(), :otp_app)
-        Application.put_env(otp_app, module, config)
-        {:ok, pid} = module.start_link()
-        Process.unlink(pid)
-
-        on_exit(fn ->
-          Supervisor.stop(pid)
-          Application.delete_env(otp_app, module)
-        end)
-      end
+      Enum.each(Enum.uniq(modules), &start_repo(&1, owner, login, password))
     end
 
     ctx = fixtures(namespace, AshPostgres.DataLayer, owner, repo, read_repo, shape)
@@ -170,6 +157,22 @@ defmodule AshHooks.Test.RowSecurityCases do
     Docs.run!(oban_example("row-security-oban-policies", names), owner)
 
     Map.merge(ctx, %{role: role, engine_role: engine_role, engine_repo: engine_repo})
+  end
+
+  defp start_repo(module, owner, login, password) do
+    config =
+      owner.config()
+      |> Keyword.merge(username: login, password: password, pool_size: 1, log: false)
+
+    otp_app = Keyword.fetch!(module.config(), :otp_app)
+    Application.put_env(otp_app, module, config)
+    {:ok, pid} = module.start_link()
+    Process.unlink(pid)
+
+    on_exit(fn ->
+      Supervisor.stop(pid)
+      Application.delete_env(otp_app, module)
+    end)
   end
 
   defp oban_example(name, names) do
@@ -1334,7 +1337,7 @@ defmodule AshHooks.Test.RowSecurityCases do
     SET state = 'scheduled', scheduled_at = now() - interval '1 day'
     """)
 
-    assert {:ok, staged} = Oban.Engines.Basic.stage_jobs(config, Oban.Job, limit: 10)
+    assert {:ok, staged} = Basic.stage_jobs(config, Oban.Job, limit: 10)
     assert length(staged) == 2
 
     ctx.owner.query!("""
@@ -1344,7 +1347,7 @@ defmodule AshHooks.Test.RowSecurityCases do
     """)
 
     assert {:ok, rescued} =
-             Oban.Engines.Basic.rescue_jobs(config, Oban.Job, rescue_after: 60_000)
+             Basic.rescue_jobs(config, Oban.Job, rescue_after: 60_000)
 
     assert Enum.sort(Enum.map(rescued, & &1.state)) == ["available", "discarded"]
 
@@ -1364,7 +1367,7 @@ defmodule AshHooks.Test.RowSecurityCases do
     """)
 
     assert {:ok, pruned} =
-             Oban.Engines.Basic.prune_jobs(config, Oban.Job, max_age: 60, limit: 10)
+             Basic.prune_jobs(config, Oban.Job, max_age: 60, limit: 10)
 
     assert length(pruned) == 2
     assert oban_rows(ctx) == []

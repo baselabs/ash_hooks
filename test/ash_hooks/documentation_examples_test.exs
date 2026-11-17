@@ -296,6 +296,7 @@ defmodule AshHooks.DocumentationContentTest do
   use ExUnit.Case, async: false
 
   alias AshHooks.Test.Documentation, as: Docs
+  alias AshHooks.Test.RowSecurityCases
 
   @providers ~w(module-provider-orders readme-payments-provider upgrade-shop-provider verify-orders-provider
     verify-shop-provider verify-prefixed-provider-in-application
@@ -386,14 +387,14 @@ defmodule AshHooks.DocumentationContentTest do
     |> Code.compile_quoted()
 
     repo = Module.concat([namespace, MyApp, Repo])
-    ctx = AshHooks.Test.RowSecurityCases.setup_postgres(namespace, repo, repo)
-    AshHooks.Test.RowSecurityCases.oban_runtime_isolation(ctx)
+    ctx = RowSecurityCases.setup_postgres(namespace, repo, repo)
+    RowSecurityCases.oban_runtime_isolation(ctx)
 
     # Each proof owns its instances. Stop the insertion instance before starting
     # the engine proof, which executes the same supervision entries afresh.
     stop_supervised!(Module.concat(namespace, :Oban))
-    AshHooks.Test.RowSecurityCases.clean(ctx)
-    AshHooks.Test.RowSecurityCases.oban_engine_delivery(ctx)
+    RowSecurityCases.clean(ctx)
+    RowSecurityCases.oban_engine_delivery(ctx)
   end
 
   for name <- @providers do
