@@ -1,4 +1,6 @@
-# 0018 - Optional HTTP ingress and exact body bytes
+# 0018: Optional HTTP ingress and exact body bytes
+
+Status: Accepted November 15, 2026.
 
 ## Context
 

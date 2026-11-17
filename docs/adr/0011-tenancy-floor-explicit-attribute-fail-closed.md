@@ -1,4 +1,6 @@
-# 0011 - Explicit attribute tenancy and transaction binding
+# 0011: Explicit attribute tenancy and transaction binding
+
+Status: Accepted September 24, 2026; amended November 15, 2026.
 
 ## Decision
 

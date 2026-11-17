@@ -1,4 +1,6 @@
-# 0021 - Host trust boundaries and subscription selection
+# 0021: Host trust boundaries and subscription selection
+
+Status: Accepted November 15, 2026.
 
 ## Context
 

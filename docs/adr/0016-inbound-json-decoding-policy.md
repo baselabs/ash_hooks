@@ -1,4 +1,6 @@
-# 0016 - Inbound JSON decoding policy
+# 0016: Inbound JSON decoding policy
+
+Status: Accepted November 15, 2026.
 
 ## Context
 

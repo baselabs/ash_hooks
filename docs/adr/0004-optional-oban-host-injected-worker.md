@@ -1,4 +1,6 @@
-# 0004 - Optional Oban and host-injected workers
+# 0004: Optional Oban and host-injected workers
+
+Status: Accepted August 20, 2026; amended November 15, 2026.
 
 ## Decision
 

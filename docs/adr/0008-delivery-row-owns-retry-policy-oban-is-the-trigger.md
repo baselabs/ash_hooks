@@ -1,4 +1,6 @@
-# 0008 - The delivery row owns retry policy
+# 0008: The delivery row owns retry policy
+
+Status: Accepted August 21, 2026; amended November 15, 2026.
 
 ## Decision
 

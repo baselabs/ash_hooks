@@ -1,4 +1,6 @@
-# 0012 - Durable delivery ownership and recovery
+# 0012: Durable delivery ownership and recovery
+
+Status: Accepted October 6, 2026; amended November 15, 2026.
 
 ## Context
 

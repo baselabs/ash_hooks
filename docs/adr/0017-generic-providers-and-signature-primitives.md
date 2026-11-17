@@ -1,4 +1,6 @@
-# 0017 - Generic providers and signature primitives
+# 0017: Generic providers and signature primitives
+
+Status: Accepted November 15, 2026; amended November 16, 2026.
 
 ## Context
 

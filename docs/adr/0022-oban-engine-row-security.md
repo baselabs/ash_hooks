@@ -1,4 +1,6 @@
-# 0022 - Oban engine row security
+# 0022: Oban engine row security
+
+Status: Accepted November 16, 2026.
 
 ## Context
 

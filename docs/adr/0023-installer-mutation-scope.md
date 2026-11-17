@@ -1,4 +1,6 @@
-# 0023 - Installer mutation scope
+# 0023: Installer mutation scope
+
+Status: Accepted November 16, 2026.
 
 ## Context
 

@@ -1,4 +1,6 @@
-# 0027 - Observation read failures
+# 0027: Observation read failures
+
+Status: Accepted November 16, 2026.
 
 ## Context
 

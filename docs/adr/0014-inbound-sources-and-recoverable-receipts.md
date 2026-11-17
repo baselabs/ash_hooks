@@ -1,4 +1,6 @@
-# 0014 - Inbound sources and recoverable receipts
+# 0014: Inbound sources and recoverable receipts
+
+Status: Accepted November 15, 2026.
 
 ## Context
 

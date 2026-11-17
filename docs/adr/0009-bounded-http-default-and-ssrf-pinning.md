@@ -1,4 +1,6 @@
-# 0009 - Bounded HTTP transport and destination pinning
+# 0009: Bounded HTTP transport and destination pinning
+
+Status: Accepted August 22, 2026; amended November 15, 2026.
 
 ## Context
 

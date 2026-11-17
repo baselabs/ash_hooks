@@ -1,4 +1,6 @@
-# 0007 - Synchronous inbound processing and ledger keys
+# 0007: Synchronous inbound processing and ledger keys
+
+Status: Accepted August 21, 2026; amended November 15, 2026.
 
 ## Decision
 

@@ -1,4 +1,6 @@
-# 0010 - Semantic versioning and support
+# 0010: Semantic versioning and support
+
+Status: Accepted August 22, 2026; amended November 15, 2026.
 
 ## Context
 

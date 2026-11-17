@@ -1,4 +1,6 @@
-# 0005 - Security defaults and application boundaries
+# 0005: Security defaults and application boundaries
+
+Status: Accepted August 20, 2026; amended November 15, 2026.
 
 ## Context
 

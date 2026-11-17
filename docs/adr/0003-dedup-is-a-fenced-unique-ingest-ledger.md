@@ -1,4 +1,6 @@
-# 0003 - Fenced unique-ingest ledger
+# 0003: Fenced unique-ingest ledger
+
+Status: Accepted August 20, 2026; amended November 15, 2026.
 
 ## Decision
 

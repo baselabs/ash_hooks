@@ -1,4 +1,6 @@
-# 0002 - Standard Webhooks and legacy dual signing
+# 0002: Standard Webhooks and legacy dual signing
+
+Status: Accepted August 20, 2026; amended August 21, 2026.
 
 ## Decision
 

@@ -1,4 +1,6 @@
-# 0024 - SQLite contention retry
+# 0024: SQLite contention retry
+
+Status: Accepted November 16, 2026.
 
 ## Context
 

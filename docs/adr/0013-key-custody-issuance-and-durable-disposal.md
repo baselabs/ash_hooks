@@ -1,4 +1,6 @@
-# 0013 - Key custody, issuance, and durable disposal
+# 0013: Key custody, issuance, and durable disposal
+
+Status: Accepted November 15, 2026.
 
 ## Context
 

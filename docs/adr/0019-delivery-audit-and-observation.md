@@ -1,4 +1,6 @@
-# 0019 - Delivery audit and observation
+# 0019: Delivery audit and observation
+
+Status: Accepted November 15, 2026.
 
 ## Context
 

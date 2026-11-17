@@ -1,4 +1,6 @@
-# 0001 - Naming and package identity
+# 0001: Naming and package identity
+
+Status: Accepted August 20, 2026; amended November 16, 2026.
 
 ## Decision
 

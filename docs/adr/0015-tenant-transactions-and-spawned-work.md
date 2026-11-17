@@ -1,4 +1,6 @@
-# 0015 - Tenant transactions and spawned work
+# 0015: Tenant transactions and spawned work
+
+Status: Accepted November 15, 2026.
 
 ## Context
 

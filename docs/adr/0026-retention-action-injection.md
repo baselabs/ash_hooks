@@ -1,4 +1,6 @@
-# 0026 - Retention action injection
+# 0026: Retention action injection
+
+Status: Accepted November 16, 2026.
 
 ## Context
 

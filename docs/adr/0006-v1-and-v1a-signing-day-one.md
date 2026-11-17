@@ -1,4 +1,6 @@
-# 0006 - SW v1 and v1a (ed25519) signing, both schemes
+# 0006: SW v1 and v1a (ed25519) signing, both schemes
+
+Status: Accepted August 20, 2026; amended August 21, 2026.
 
 ## Context
 

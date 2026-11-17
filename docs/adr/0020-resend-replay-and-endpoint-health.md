@@ -1,4 +1,6 @@
-# 0020 - Resend, replay, and endpoint health
+# 0020: Resend, replay, and endpoint health
+
+Status: Accepted November 15, 2026.
 
 ## Context
 

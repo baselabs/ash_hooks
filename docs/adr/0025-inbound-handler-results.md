@@ -1,4 +1,6 @@
-# 0025 - Inbound handler results
+# 0025: Inbound handler results
+
+Status: Accepted November 16, 2026.
 
 ## Context
 
