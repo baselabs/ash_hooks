@@ -151,7 +151,8 @@ defmodule AshHooks.OutboxSafetyTest do
     assert Cases.rows(f, :outbox) == []
   end
 
-  test "A15 static verification refuses absent repositories and defers dynamic repo callbacks", f do
+  test "A15 static verification refuses absent repositories and defers dynamic repo callbacks",
+       f do
     alias Spark.Dsl.Transformer
     state = f.emitter.spark_dsl_config()
 

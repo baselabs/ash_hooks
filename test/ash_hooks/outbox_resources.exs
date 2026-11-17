@@ -216,15 +216,12 @@ defmodule AshHooks.OutboxFixtures.SQLite.Outbox do
   use Ash.Resource,
     domain: AshHooks.OutboxFixtures.SQLite.Domain,
     data_layer: AshSqlite.DataLayer,
-    extensions: [AshHooks.OutboundOutbox]
+    extensions: [AshHooks.OutboundOutbox],
+    notifiers: [AshHooks.OutboxFixtures.HostNotifier]
 
   sqlite do
     table "outbox_sqlite_publications"
     repo(AshHooks.OutboxFixtures.SQLiteRepo)
-  end
-
-  resource do
-    notifiers [AshHooks.OutboxFixtures.HostNotifier]
   end
 
   changes do
@@ -249,6 +246,7 @@ defmodule AshHooks.OutboxFixtures.SQLite.Outbox do
       {AshHooks.OutboxFixtures.SQLite.Emitter, :removed},
       {AshHooks.OutboxFixtures.SQLite.Emitter, :changed}
     ]
+
     delivery_routes default: nil, queued: {AshHooks.OutboxFixtures.SQLite.Runtime, :enqueue}
     # Worker routes are exercised where Oban is installed.
     trigger {AshHooks.OutboxFixtures.SQLite.Runtime, :trigger}
@@ -500,15 +498,12 @@ defmodule AshHooks.OutboxFixtures.Postgres.Outbox do
   use Ash.Resource,
     domain: AshHooks.OutboxFixtures.Postgres.Domain,
     data_layer: AshPostgres.DataLayer,
-    extensions: [AshHooks.OutboundOutbox]
+    extensions: [AshHooks.OutboundOutbox],
+    notifiers: [AshHooks.OutboxFixtures.HostNotifier]
 
   postgres do
     table "outbox_postgres_publications"
     repo(AshHooks.OutboxFixtures.Postgres.Repo)
-  end
-
-  resource do
-    notifiers [AshHooks.OutboxFixtures.HostNotifier]
   end
 
   changes do
@@ -533,6 +528,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Outbox do
       {AshHooks.OutboxFixtures.Postgres.Emitter, :removed},
       {AshHooks.OutboxFixtures.Postgres.Emitter, :changed}
     ]
+
     delivery_routes default: nil, queued: {AshHooks.OutboxFixtures.Postgres.Runtime, :enqueue}
     # Worker routes are exercised where Oban is installed.
     trigger {AshHooks.OutboxFixtures.Postgres.Runtime, :trigger}

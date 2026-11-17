@@ -1264,12 +1264,15 @@ for {module, namespace} <- [
 
         sql =
           if f.sqlite?,
-            do: "UPDATE #{Cases.table(f.delivery)} SET status = 'sending', enqueue_lease_expires_at = NULL, send_lease_expires_at = ? WHERE event_uuid = ?",
-            else: "UPDATE #{Cases.table(f.delivery)} SET status = 'sending', enqueue_lease_expires_at = NULL, send_lease_expires_at = $1 WHERE event_uuid = $2"
+            do:
+              "UPDATE #{Cases.table(f.delivery)} SET status = 'sending', enqueue_lease_expires_at = NULL, send_lease_expires_at = ? WHERE event_uuid = ?",
+            else:
+              "UPDATE #{Cases.table(f.delivery)} SET status = 'sending', enqueue_lease_expires_at = NULL, send_lease_expires_at = $1 WHERE event_uuid = $2"
 
         f.owner.query!(sql, [sql_lease, event.id])
         Cases.set(f, event.id, state: "pending", completed_at: nil)
         assert :done = Cases.fanout(f, event.id)
+
         assert [%{id: id, status: :sending, send_lease_expires_at: ^lease}] =
                  Cases.rows(f, :delivery)
 
