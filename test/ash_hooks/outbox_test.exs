@@ -63,9 +63,9 @@ defmodule AshHooks.OutboxAcceptance do
     ExUnit.Callbacks.on_exit(fn ->
       if oban_options do
         name = Keyword.fetch!(oban_options, :name)
-        if pid = GenServer.whereis(name), do: Supervisor.stop(pid)
+        if pid = Oban.whereis(name), do: Supervisor.stop(pid)
 
-        if engine = GenServer.whereis(Module.concat(namespace, :EngineOban)),
+        if engine = Oban.whereis(Module.concat(namespace, :EngineOban)),
           do: Supervisor.stop(engine)
 
         if sqlite?,
@@ -670,29 +670,44 @@ defmodule AshHooks.OutboxAcceptance do
       test "A2 every transaction entry point rolls back inner and outer action writes", f do
         for entry <- [:raw, :transact, :transaction], rollback_at <- [:inner, :outer] do
           event = Cases.event()
-          result = Cases.entry(f, entry, fn ->
+
+          result =
             Cases.entry(f, entry, fn ->
-              assert {:ok, :accepted} = Cases.publish(f, event)
-              Ash.create!(f.emitter, %{value: "nested"}, tenant: "tenant-a", authorize?: false)
-              if rollback_at == :inner, do: f.repo.rollback(:undo)
-              :ok
+              Cases.entry(f, entry, fn ->
+                assert {:ok, :accepted} = Cases.publish(f, event)
+                Ash.create!(f.emitter, %{value: "nested"}, tenant: "tenant-a", authorize?: false)
+                if rollback_at == :inner, do: f.repo.rollback(:undo)
+                :ok
+              end)
+
+              f.repo.rollback(:undo)
             end)
-            f.repo.rollback(:undo)
-          end)
+
           assert match?({:error, _}, result)
           assert is_nil(Cases.publication(f, event.id))
           assert Cases.rows(f, :emitter) == []
         end
+
         for entry <- [:raw, :transact, :transaction] do
           event = Cases.event()
-          assert {:ok, :ok} = Cases.entry(f, entry, fn ->
-            assert {:ok, :ok} = Cases.entry(f, entry, fn ->
-              assert {:ok, :accepted} = Cases.publish(f, event)
-              Ash.create!(f.emitter, %{value: "nested"}, tenant: "tenant-a", authorize?: false)
-              :ok
-            end)
-            :ok
-          end)
+
+          assert {:ok, :ok} =
+                   Cases.entry(f, entry, fn ->
+                     assert {:ok, :ok} =
+                              Cases.entry(f, entry, fn ->
+                                assert {:ok, :accepted} = Cases.publish(f, event)
+
+                                Ash.create!(f.emitter, %{value: "nested"},
+                                  tenant: "tenant-a",
+                                  authorize?: false
+                                )
+
+                                :ok
+                              end)
+
+                     :ok
+                   end)
+
           assert Cases.publication(f, event.id).state == :pending
         end
       end
@@ -928,7 +943,40 @@ defmodule AshHooks.OutboxAcceptance do
           end
         end
 
+        test "A5 losing the fanout owner kills its blocked SQL runner", f do
+          Cases.endpoint(f, pinned_payload_version: 1)
+          event = Cases.event()
+          assert {:ok, :accepted} = Cases.publish(f, event)
+          parent = self()
+          locked = Task.async(fn ->
+            f.owner.transaction(fn ->
+              f.owner.query!("LOCK TABLE #{Cases.table(f.delivery)} IN ACCESS EXCLUSIVE MODE")
+              send(parent, :locked)
+              receive do
+                :release -> :ok
+              end
+            end)
+          end)
+          assert_receive :locked
+          Application.put_env(:ash_hooks, :outbox_observer, self())
+          on_exit(fn -> Application.delete_env(:ash_hooks, :outbox_observer) end)
+          try do
+            owner = spawn(fn -> Cases.fanout(f, event.id) end)
+            assert_receive {:outbox_builder, runner}, 5_000
+            monitor = Process.monitor(runner)
+            Process.exit(owner, :kill)
+            assert_receive {:DOWN, ^monitor, :process, ^runner, :killed}, 5_000
+            assert Cases.publication(f, event.id).state == :pending
+          after
+            send(locked.pid, :release)
+            Task.await(locked, 5_000)
+          end
+          Cases.expire(f, event)
+          assert :done = Cases.fanout(f, event.id)
+        end
+
         test "A5 a blocked SQL runner dies and stale ownership emits no result", f do
+          refute AshHooks.Info.writable_id?(f.delivery)
           Cases.endpoint(f, pinned_payload_version: 1)
           event = Cases.event()
           assert {:ok, :accepted} = Cases.publish(f, event)
@@ -1072,16 +1120,25 @@ defmodule AshHooks.OutboxAcceptance do
           assert Cases.publication(f, event.id).version == 1
           assert AshHooks.Info.outbound(f.emitter, :changed).version == 2
           surviving = Cases.rows(f, :delivery)
+
           if stage == :version_one_partial do
             assert length(surviving) == 2
-            Ash.update!(List.last(endpoints), %{pinned_payload_version: 2}, tenant: "tenant-a", authorize?: false)
+
+            Ash.update!(List.last(endpoints), %{pinned_payload_version: 2},
+              tenant: "tenant-a",
+              authorize?: false
+            )
+
             Cases.expire(f, event)
           end
+
           assert :done = Cases.fanout(f, event.id)
           rows = Cases.rows(f, :delivery)
+
           for {endpoint, expected} <- Enum.zip(endpoints, ["body", "body", "v2:body"]) do
             assert Enum.find(rows, &(&1.endpoint_id == endpoint.id)).payload == expected
           end
+
           assert Enum.all?(surviving, fn row -> Enum.any?(rows, &(&1.id == row.id)) end)
           Cases.clean(f)
         end

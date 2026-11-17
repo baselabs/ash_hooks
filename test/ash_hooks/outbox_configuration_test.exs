@@ -15,7 +15,7 @@ defmodule AshHooks.OutboxConfigurationTest do
 
     for changes <- [[all_tenants?: true], [keys: [:event_uuid]], [where: [state: :pending]]] do
       changed = struct(identity, changes)
-      invalid = Transformer.replace_entity(state, [:identities], changed)
+      invalid = Transformer.replace_entity(state, [:identities], changed, &(&1.name == :unique_publication))
       assert {:error, %Spark.Error.DslError{message: message}} = Verifier.verify(invalid)
       assert message =~ "unique_publication"
     end
@@ -26,7 +26,7 @@ defmodule AshHooks.OutboxConfigurationTest do
     metadata = Enum.find(Transformer.get_entities(state, [:attributes]), &(&1.name == :metadata))
 
     for changes <- [[type: Ash.Type.String], [constraints: [fields: []]]] do
-      invalid = Transformer.replace_entity(state, [:attributes], struct(metadata, changes))
+      invalid = Transformer.replace_entity(state, [:attributes], struct(metadata, changes), &(&1.name == :metadata))
       assert {:error, %Spark.Error.DslError{message: message}} = Verifier.verify(invalid)
       assert message =~ "unmodified :map"
     end

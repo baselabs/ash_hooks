@@ -392,6 +392,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Delivery do
 
   attributes do
     attribute :org_id, :string, allow_nil?: false
+    uuid_v7_primary_key :id
     timestamps()
   end
 

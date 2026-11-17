@@ -270,6 +270,13 @@ defmodule AshHooks.OutboxMatchingTest do
                  tenant: "tenant-a"
                )
 
+      other = if name == :EtsStrings, do: :EtsAtoms, else: :EtsStrings
+      other_emitter = Module.concat([AshHooks.OutboxMatching, other, Emitter])
+      assert {:error, :publication_conflict} =
+               AshHooks.publish(AshHooks.OutboxMatching.Outbox, {other_emitter, :changed}, event,
+                 tenant: "tenant-a"
+               )
+
       assert :done = AshHooks.fanout(AshHooks.OutboxMatching.Outbox, event.id, tenant: "tenant-a")
       assert selected(subscription, []) == expected
       assert length(Cases.rows(f, :delivery)) == 1

@@ -169,15 +169,18 @@ defmodule AshHooks.Outbox do
 
     {pid, monitor} =
       spawn_monitor(fn ->
+        runner = self()
+        spawn(fn -> guard(owner, runner, ref) end)
+        receive do
+          {^ref, :guarded} -> :ok
+        end
         Enum.each(repositories, fn {repo, instance} -> repo.put_dynamic_repo(instance) end)
         send(owner, {ref, safely(fn -> dispatch(row, tenant) end)})
       end)
 
     timeout = option(row.__struct__, :fanout_timeout)
-    # The guardian also kills the runner if the caller dies. No child can keep
-    # writing after its owning invocation or its deadline has gone away.
-    guardian = spawn(fn -> guard(owner, pid) end)
-
+    # The child installs its guardian before doing storage work, so owner death
+    # cannot fall between starting the runner and establishing its ownership.
     result =
       receive do
         {^ref, result} ->
@@ -197,13 +200,13 @@ defmodule AshHooks.Outbox do
           {:error, :fanout_timeout}
       end
 
-    Process.exit(guardian, :kill)
     complete(row, tenant, result)
   end
 
-  defp guard(owner, runner) do
+  defp guard(owner, runner, ref) do
     owner_ref = Process.monitor(owner)
     runner_ref = Process.monitor(runner)
+    send(runner, {ref, :guarded})
 
     receive do
       {:DOWN, ^owner_ref, :process, ^owner, _reason} -> Process.exit(runner, :kill)
