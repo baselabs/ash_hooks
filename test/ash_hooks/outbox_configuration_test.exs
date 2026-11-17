@@ -9,14 +9,24 @@ defmodule AshHooks.OutboxConfigurationTest do
 
   test "A17 migration configuration includes tenant-leading recovery indexes" do
     for {resource, path} <- [
-      {@resource, [:sqlite, :custom_indexes]},
-      {AshHooks.OutboxFixtures.Postgres.Outbox, [:postgres, :custom_indexes]}
-    ] do
-      {:ok, transformed} = AshHooks.OutboundOutbox.Transformers.AddOutbox.transform(resource.spark_dsl_config())
+          {@resource, [:sqlite, :custom_indexes]},
+          {AshHooks.OutboxFixtures.Postgres.Outbox, [:postgres, :custom_indexes]}
+        ] do
+      {:ok, transformed} =
+        AshHooks.OutboundOutbox.Transformers.AddOutbox.transform(resource.spark_dsl_config())
+
       indexes = Transformer.get_entities(transformed, path)
       assert length(indexes) == 2
-      assert Enum.any?(indexes, &(&1.fields == [:org_id, :next_attempt_at] and &1.where == "\"state\" = 'pending'"))
-      assert Enum.any?(indexes, &(&1.fields == [:org_id, :failed_at] and &1.where == "\"state\" = 'failed'"))
+
+      assert Enum.any?(
+               indexes,
+               &(&1.fields == [:org_id, :next_attempt_at] and &1.where == "\"state\" = 'pending'")
+             )
+
+      assert Enum.any?(
+               indexes,
+               &(&1.fields == [:org_id, :failed_at] and &1.where == "\"state\" = 'failed'")
+             )
     end
   end
 

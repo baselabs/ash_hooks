@@ -107,7 +107,9 @@ defmodule AshHooks.OutboxSafetyTest do
                AshHooks.publish(
                  AshHooks.OutboxSafety.Nontransactional,
                  {f.emitter, :changed},
-                 event, tenant: "tenant-a")
+                 event,
+                 tenant: "tenant-a"
+               )
              end)
 
     assert {{:error, :publication_repository_mismatch}, []} =
@@ -141,8 +143,11 @@ defmodule AshHooks.OutboxSafetyTest do
 
   test "A15 the extension rejects a statically mismatched publishing repository", f do
     assert_raise Spark.Error.DslError, ~r/same transactional data layer/, fn ->
-      AshHooks.Verifiers.OutboundReferences.verify(AshHooks.OutboxSafety.Caller.spark_dsl_config())
+      AshHooks.Verifiers.OutboundReferences.verify(
+        AshHooks.OutboxSafety.Caller.spark_dsl_config()
+      )
     end
+
     assert Cases.rows(f, :outbox) == []
   end
 

@@ -25,6 +25,7 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
     with {:ok, state} <- fields(state),
          {:ok, state} <- identity(state) do
       state = indexes(state)
+
       Enum.reduce_while(actions(state), {:ok, state}, fn {type, name, opts}, {:ok, state} ->
         case Builder.build_action(type, name, opts) do
           {:ok, action} -> {:cont, {:ok, Transformer.add_entity(state, [:actions], action)}}
@@ -97,26 +98,33 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
 
   defp indexes(state) do
     layer = Transformer.get_persisted(state, :data_layer)
-    path = case layer do
-      AshPostgres.DataLayer -> [:postgres, :custom_indexes]
-      AshSqlite.DataLayer -> [:sqlite, :custom_indexes]
-      _other -> []
-    end
+
+    path =
+      case layer do
+        AshPostgres.DataLayer -> [:postgres, :custom_indexes]
+        AshSqlite.DataLayer -> [:sqlite, :custom_indexes]
+        _other -> []
+      end
 
     if path == [] do
       state
     else
       tenant = Transformer.get_option(state, [:multitenancy], :attribute)
       attributes = Transformer.get_entities(state, [:attributes])
+
       source = fn name ->
         attribute = Enum.find(attributes, &(&1.name == name))
         attribute.source || attribute.name
       end
+
       state_column = source.(:state) |> to_string() |> String.replace("\"", "\"\"")
-      Enum.reduce([next_attempt_at: :pending, failed_at: :failed], state, fn {field, status}, state ->
+
+      Enum.reduce([next_attempt_at: :pending, failed_at: :failed], state, fn {field, status},
+                                                                             state ->
         fields = [tenant, field] |> Enum.reject(&is_nil/1) |> Enum.map(source)
         where = "\"#{state_column}\" = '#{status}'"
         existing = Transformer.get_entities(state, path)
+
         if Enum.any?(existing, &(&1.fields == fields and &1.where == where)) do
           state
         else

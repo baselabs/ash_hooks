@@ -58,10 +58,17 @@ defmodule AshHooks.OutboxAcceptance do
     )
 
     info = if sqlite?, do: AshSqlite.DataLayer.Info, else: AshPostgres.DataLayer.Info
+
     for index <- info.custom_indexes(resources.outbox) do
-      name = table(resources.outbox) <> "_" <> Enum.map_join(index.fields, "_", &to_string/1) <> "_index"
+      name =
+        table(resources.outbox) <>
+          "_" <> Enum.map_join(index.fields, "_", &to_string/1) <> "_index"
+
       fields = Enum.map_join(index.fields, ", ", &("\"" <> to_string(&1) <> "\""))
-      owner.query!("CREATE INDEX #{name} ON #{table(resources.outbox)} (#{fields}) WHERE #{index.where}")
+
+      owner.query!(
+        "CREATE INDEX #{name} ON #{table(resources.outbox)} (#{fields}) WHERE #{index.where}"
+      )
     end
 
     roles = if sqlite?, do: nil, else: setup_roles(resources, repo, owner)
