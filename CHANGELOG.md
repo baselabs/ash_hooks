@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Legacy verification authenticates the signature before checking the replay
+  window. A tampered stale request returns `:invalid_signature`; an authentic
+  stale request still returns `:stale_timestamp`.
+
 - Inbound observation counts use data-layer count and sum aggregates without
   loading ledger rows. Storage read failures return errors instead of successful
   zero counts. Endpoint health sweeps report unread histories in `unread` and
