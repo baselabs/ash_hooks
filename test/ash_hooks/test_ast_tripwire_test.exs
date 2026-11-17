@@ -44,6 +44,29 @@ defmodule AshHooks.TestAstTripwireTest do
     refute module_compares_material_with_bare_equality?(source_ast_of_clean(), [:signature])
   end
 
+  test "function detectors inspect guarded clauses and distinguish bare operands from wrappers" do
+    ast = Code.string_to_quoted!("""
+    defmodule Clauses do
+      def verify(a, b) when is_binary(a), do: :crypto.hash_equals(a, b)
+      def verify(a, b), do: byte_size(a) == byte_size(b)
+      def other(a, b), do: a != b
+    end
+    """)
+
+    [constant_time, wrapped] = function_bodies(ast, :verify)
+    assert calls_constant_time_compare?(constant_time)
+    refute calls_constant_time_compare?(wrapped)
+    refute compares_with_bare_equality?(constant_time, [:a, :b])
+    refute compares_with_bare_equality?(wrapped, [:a, :b])
+    assert function_bodies(ast, :missing) == []
+
+    for operator <- ["==", "!=", "===", "!=="], operands <- ["a #{operator} b", "1 #{operator} b"] do
+      mutated = Code.string_to_quoted!(operands)
+      assert compares_with_bare_equality?(mutated, [:a, :b])
+      assert module_compares_material_with_bare_equality?(mutated, [:a, :b])
+    end
+  end
+
   defp source_ast_of_clean do
     {:ok, ast} = Code.string_to_quoted(@source)
     ast

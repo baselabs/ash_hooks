@@ -47,9 +47,9 @@ and matching GitHub source and release notes.
    Confirm that the Hex package belongs to the maintainer account.
 
 6. Select the commit on `main` whose complete CI run passed, including the
-   `all-checks-pass` aggregate job. The opt-in documentation and confidentiality
-   scripts are available, with CI wiring pending in the infrastructure session;
-   the aggregate does not yet qualify those opt-in checks. Tag that same commit as `v<version>`.
+   `all-checks-pass` aggregate job, which includes required documentation,
+   confidentiality, and publication dash checks on trusted push events.
+   Tag that same commit as `v<version>`.
    Record its full source SHA and the archive SHA-256 printed by
    `check-package.sh` together in the GitHub Release notes.
 7. Use a clean checkout of that same SHA for publication. Verify that its

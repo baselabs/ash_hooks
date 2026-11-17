@@ -4,7 +4,6 @@ on:
   push:
     branches: [main, 'kci/**']
     tags: ['v*']
-    paths-ignore: ['LICENSE*', '.github/ISSUE_TEMPLATE/**']
   workflow_dispatch:
   pull_request:
 
@@ -180,6 +179,10 @@ jobs:
       - run: mix compile --warnings-as-errors
       - name: Wait for the real receiver
         run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version
+      - name: Required documentation execution
+        run: env ASH_HOOKS_DOCS_REQUIRED=1 ASH_HOOKS_HTTPBUN=1 mix test test/ash_hooks/documentation_examples_test.exs test/ash_hooks/documentation_contract_test.exs test/ash_hooks/confidentiality_test.exs
+      - name: Contributor qualification
+        run: mix precommit
       - name: Coverage gate (100% of the declared Mix surface)
         run: mix test --cover
       - name: Upload coverage HTML on a gate miss
@@ -229,11 +232,28 @@ jobs:
             _build
           key: package-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
-      - name: Formatter export and DSL references match the DSL (generated files must not drift)
-        run: mix spark.check
+      - name: Regenerate formatter and DSL references
+        run: |
+          mix format
+          mix spark.generate
+          git diff --exit-code -- .formatter.exs mix.exs lib test scripts/generate-dsl-docs.exs documentation/dsls
+      - name: Upload generated references and formatting on drift
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: generated-references-and-formatting
+          path: |
+            .formatter.exs
+            mix.exs
+            lib
+            test
+            scripts/generate-dsl-docs.exs
+            documentation/dsls
+      - run: mix spark.check
       - name: Tarball carries every publish surface
         run: ./scripts/check-package.sh
       - run: mix docs --warnings-as-errors
+      - run: python3 scripts/check-document-dashes.py --docs doc
 
   # The get-started Livebook, verified headless on one leg: the elixir
   # cells are extracted in order and run outside any mix project
@@ -314,12 +334,34 @@ jobs:
       - name: Advisories in the development, fresh floor consumer and hex-and-git fixture locks
         run: env ASH_HOOKS_MINIMUM_ASH=1 scripts/check-consumer.sh --advisories mix.lock scripts/fixtures/hex-and-git.mix.lock.fixture
 
+  # The private policy is available only to trusted push qualification.
+  confidentiality:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/kci/') || startsWith(github.ref, 'refs/tags/v'))
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    env:
+      PUBLIC_DOCS_DENYLIST: ${{ secrets.PUBLIC_DOCS_DENYLIST }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            deps
+            _build
+          key: confidentiality-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      - run: ./scripts/check-confidentiality.sh
+
   # The single branch-protection check name: require `all-checks-pass`
   # on main and every leg (test matrix, floor, dialyzer, package,
   # postgres, livebook, security) gates through it — no per-job
   # check-name maintenance when the matrix grows.
   all-checks-pass:
-    needs: [toolchain, test, floor, postgres, dialyzer, package, livebook, security]
+    needs: [toolchain, test, floor, postgres, dialyzer, package, livebook, security, confidentiality]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -329,7 +371,12 @@ jobs:
           failed=$(printf '%s' "$results" | python3 -c '
           import json, sys
           results = json.load(sys.stdin)
-          failed = [name for name, job in results.items() if job["result"] != "success"]
+          event = "${{ github.event_name }}"
+          ref = "${{ github.ref }}"
+          policy_required = event == "push" and (ref == "refs/heads/main" or ref.startswith("refs/heads/kci/") or ref.startswith("refs/tags/v"))
+          failed = [name for name, job in results.items()
+                    if job["result"] != "success"
+                    and not (name == "confidentiality" and not policy_required and job["result"] == "skipped")]
           print(",".join(failed))
           ')
           if [ -n "$failed" ]; then

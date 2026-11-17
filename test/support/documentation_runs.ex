@@ -5,6 +5,7 @@ defmodule AshHooks.Test.DocumentationRuns do
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
   def completed(test, names), do: GenServer.call(__MODULE__, {:completed, test, names})
+  def finished(test), do: GenServer.call(__MODULE__, {:finished, test})
   def completed_names, do: GenServer.call(__MODULE__, :completed_names)
 
   @impl true
@@ -26,9 +27,24 @@ defmodule AshHooks.Test.DocumentationRuns do
     {:reply, names, state}
   end
 
+  def handle_call({:finished, %{state: nil, module: module, name: name}}, _from, state) do
+    {:reply, :ok, %{state | passed: MapSet.put(state.passed, {module, name})}}
+  end
+
+  def handle_call({:finished, _test}, _from, state), do: {:reply, :ok, state}
+end
+
+defmodule AshHooks.Test.DocumentationFormatter do
+  @moduledoc false
+  use GenServer
+
   @impl true
-  def handle_cast({:test_finished, %{state: nil, module: module, name: name}}, state) do
-    {:noreply, %{state | passed: MapSet.put(state.passed, {module, name})}}
+  def init(_options), do: {:ok, nil}
+
+  @impl true
+  def handle_cast({:test_finished, test}, state) do
+    AshHooks.Test.DocumentationRuns.finished(test)
+    {:noreply, state}
   end
 
   def handle_cast(_event, state), do: {:noreply, state}

@@ -82,7 +82,7 @@ on exit. Ash requires Spark 2.7.6 or later; older Spark versions cannot resolve
 with the supported Ash floor. Opt-in
 public HTTPS checks are excluded from ordinary tests and CI.
 
-## Opt-in documentation checks
+## Documentation and confidentiality checks
 
 The required documentation run is enabled with `ASH_HOOKS_DOCS_REQUIRED=1`.
 It needs PostgreSQL, the real receiver, and `ASH_HOOKS_HTTPBUN=1` for the public
@@ -95,9 +95,9 @@ generated HTML and EPUB docs using `PUBLIC_DOCS_DENYLIST` from the caller's
 environment. The live policy test is excluded when that variable is absent;
 the scanner itself refuses an empty policy. Synthetic scanner tests always run.
 `scripts/check-document-dashes.py` checks the archive and generated HTML and EPUB
-surfaces. CI wiring for these opt-in checks is pending in the infrastructure
-session. No complete live policy or required-document run is implied by the
-ordinary CI aggregate.
+surfaces. Trusted push CI runs the confidentiality scan, required-document
+qualification, and publication dash checks, and requires them in the aggregate.
+Local optional-service runs remain focused unless their flags are enabled.
 
 ## Code and documentation
 

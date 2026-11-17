@@ -76,10 +76,10 @@ defmodule AshHooks.ConfidentialityTest do
 
   test "a synthetic policy finds tracked source without echoing its token" do
     paths = System.cmd("git", ["ls-files", "-z"]) |> elem(0) |> String.split(<<0>>, trim: true)
-    {output, status} = run_paths(paths, "AshHooks")
+    {output, status} = run_paths(paths, "Unreleased")
     assert status == 1
     assert output =~ " rule-1"
-    refute output =~ "AshHooks"
+    refute output =~ "Unreleased"
   end
 
   @tag :confidentiality

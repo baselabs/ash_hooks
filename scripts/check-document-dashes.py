@@ -26,6 +26,8 @@ def check(package=None, docs=None):
                     offenses.extend(lines(member.name, inner.extractfile(member).read()))
     if docs:
         for path in sorted(Path(docs).rglob("*")):
+            if not path.is_file():
+                continue
             if path.suffix == ".html":
                 offenses.extend(lines(path, path.read_bytes()))
             elif path.suffix == ".epub":

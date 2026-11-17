@@ -31,12 +31,15 @@ defmodule AshHooks.DocumentationContractTest do
 
     assert [%{reason: "Requires the host project configuration."}] =
              Docs.validate_manifest!([
-               {"guide", "<!-- not-run: Requires the host project configuration. -->\n```sh\ntrue\n```"}
+               {"guide",
+                "<!-- not-run: Requires the host project configuration. -->\n```sh\ntrue\n```"}
              ])
   end
 
   test "execution accounting requires the current run and rejects extra claims" do
-    blocks = Docs.validate_manifest!([{"guide", "<!-- tested: required -->\n```elixir\n:ok\n```"}])
+    blocks =
+      Docs.validate_manifest!([{"guide", "<!-- tested: required -->\n```elixir\n:ok\n```"}])
+
     assert :ok = Docs.validate_execution!(blocks, ["required"])
 
     for completed <- [[], ["other"], ["required", "orphan"]] do
@@ -55,6 +58,7 @@ defmodule AshHooks.DocumentationContractTest do
     for mode <- [:passed, :skipped, :excluded, :failed, :unexecuted] do
       script = Path.join(tree, "#{mode}.exs")
       File.write!(script, qualification_script(mode))
+
       {output, status} =
         System.cmd("elixir", Enum.flat_map(paths, &["-pa", &1]) ++ [script],
           stderr_to_stdout: true
@@ -82,7 +86,8 @@ defmodule AshHooks.DocumentationContractTest do
     failure = if(mode == :failed, do: ~s|flunk("executed but failed")|, else: ":ok")
 
     """
-    ExUnit.start(autorun: false, exclude: #{exclusions}, formatters: [ExUnit.CLIFormatter, AshHooks.Test.DocumentationRuns])
+    {:ok, _tracker} = AshHooks.Test.DocumentationRuns.start_link([])
+    ExUnit.start(autorun: false, exclude: #{exclusions}, formatters: [ExUnit.CLIFormatter, AshHooks.Test.DocumentationFormatter])
     ExUnit.after_suite(fn _ ->
       AshHooks.Test.Documentation.validate_run!([%{name: "required", reason: nil}])
     end)
@@ -110,15 +115,18 @@ defmodule AshHooks.DocumentationContractTest do
       assert :ok = GenServer.call(tracker, {:completed, {__MODULE__, name}, [to_string(name)]})
     end
 
-    GenServer.cast(tracker, {:test_finished, %{state: nil, module: __MODULE__, name: :passed}})
-    GenServer.cast(
+    GenServer.call(tracker, {:finished, %{state: nil, module: __MODULE__, name: :passed}})
+
+    GenServer.call(
       tracker,
-      {:test_finished, %{state: {:failed, []}, module: __MODULE__, name: :failed}}
+      {:finished, %{state: {:failed, []}, module: __MODULE__, name: :failed}}
     )
-    GenServer.cast(
+
+    GenServer.call(
       tracker,
-      {:test_finished, %{state: {:skipped, "reason"}, module: __MODULE__, name: :skipped}}
+      {:finished, %{state: {:skipped, "reason"}, module: __MODULE__, name: :skipped}}
     )
+
     assert ["passed"] = GenServer.call(tracker, :completed_names)
 
     completed = AshHooks.Test.DocumentationRuns.completed_names()
@@ -163,13 +171,16 @@ defmodule AshHooks.DocumentationContractTest do
 
     for codepoint <- [0x2013, 0x2014] do
       dash = <<codepoint::utf8>>
+
       assert_raise RuntimeError, "README.md:2", fn ->
         Docs.validate_dashes!([{"README.md", "first\nshipped #{dash} text"}])
       end
 
       # The source list comes from the package, not from every tracked file.
       files = [{"README.md", "plain"}, {"test/repository_only.exs", dash}]
-      assert :ok = Docs.validate_dashes!(Enum.filter(files, &(elem(&1, 0) in Docs.package_files())))
+
+      assert :ok =
+               Docs.validate_dashes!(Enum.filter(files, &(elem(&1, 0) in Docs.package_files())))
     end
   end
 

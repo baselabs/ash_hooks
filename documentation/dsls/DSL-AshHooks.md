@@ -10,6 +10,7 @@ Attach to a resource:
 
 
 <!-- not-run: This resource fragment requires host provider modules and configured secret storage. -->
+
     use Ash.Resource,
       extensions: [AshHooks]
 

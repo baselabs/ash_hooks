@@ -25,7 +25,9 @@ defmodule AshHooks.PublicationDashesTest do
             Path.join(tree, "package.tar"),
             "--docs",
             Path.join(tree, "docs")
-          ], stderr_to_stdout: true)
+          ],
+          stderr_to_stdout: true
+        )
 
       if surface == "repository" do
         assert {output, status} == {"", 0}

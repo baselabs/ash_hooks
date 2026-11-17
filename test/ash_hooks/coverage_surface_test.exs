@@ -43,6 +43,31 @@ defmodule AshHooks.CoverageSurfaceTest do
     assert Payload.apply_constraints(%{}, []) == {:ok, %{}}
   end
 
+  test "a declaration without an option block reaches native DSL validation" do
+    assert_raise Spark.Error.DslError, ~r/has no provider/, fn ->
+      Code.compile_string("""
+      defmodule AshHooks.CoverageSurfaceTest.BareInbound do
+        use Ash.Resource, data_layer: Ash.DataLayer.Ets, extensions: [AshHooks]
+        webhooks do
+          inbound :incoming
+        end
+      end
+      """)
+    end
+
+    Code.compile_string("""
+    defmodule AshHooks.CoverageSurfaceTest.BareOutbound do
+      use Ash.Resource, data_layer: Ash.DataLayer.Ets, extensions: [AshHooks]
+      webhooks do
+        outbound :outgoing
+      end
+    end
+    """)
+
+    assert [%AshHooks.Outbound{name: :outgoing}] =
+             AshHooks.Info.webhooks(AshHooks.CoverageSurfaceTest.BareOutbound)
+  end
+
   test "test repositories declare the real adapter version floor" do
     for repo <- [AshHooks.Test.Repo, AshHooks.Test.BusyRepo] do
       assert Version.compare(repo.min_sqlite_version(), "3.54.1") == :eq

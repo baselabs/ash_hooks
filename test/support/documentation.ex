@@ -220,15 +220,11 @@ defmodule AshHooks.Test.Documentation do
 
   def formatter_options do
     locals =
-      Enum.flat_map(@formatter_deps, fn dep ->
-        case Mix.Project.deps_paths()[dep] do
-          nil ->
-            []
-
-          path ->
-            {options, _} = Code.eval_file(Path.join(path, ".formatter.exs"))
-            options[:export][:locals_without_parens] || []
-        end
+      Mix.Project.deps_paths()
+      |> Map.take(@formatter_deps)
+      |> Enum.flat_map(fn {_dep, path} ->
+        {options, _} = Code.eval_file(Path.join(path, ".formatter.exs"))
+        options[:export][:locals_without_parens] || []
       end)
 
     {own, _} = Code.eval_file(".formatter.exs")
@@ -251,7 +247,10 @@ defmodule AshHooks.Test.Documentation do
 
           if formatted <> "\n" == block.code,
             do: [],
-            else: ["#{block.file}:#{block.line}: Elixir block is not consumer-formatted"]
+            else: [
+              "#{block.file}:#{block.line}: Elixir block is not consumer-formatted\n" <>
+                "BEGIN FORMATTED BLOCK\n#{formatted}\nEND FORMATTED BLOCK"
+            ]
         rescue
           error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
             ["#{block.file}:#{block.line}: invalid Elixir block: #{Exception.message(error)}"]

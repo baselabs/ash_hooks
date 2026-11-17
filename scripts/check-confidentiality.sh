@@ -55,7 +55,11 @@ else
 from pathlib import Path
 import sys
 import zipfile
-for path in Path(sys.argv[1]).rglob("*.epub"):
+for path in list(Path(sys.argv[1]).rglob("*.epub")):
+    if not path.is_file():
+        continue
+    if not zipfile.is_zipfile(path):
+        raise SystemExit(f"{path}: invalid EPUB archive ({path.stat().st_size} bytes)")
     with zipfile.ZipFile(path) as book:
         target = path.with_suffix(".epub-contents")
         for name in book.namelist():
