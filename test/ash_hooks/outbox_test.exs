@@ -1512,6 +1512,7 @@ for {module, namespace} <- [
 
       assert_receive {:triggered, id, "tenant-a"}
       assert id == event.id
+
       assert {:ok, :accepted, notifications} =
                Cases.publish(f, Cases.event(), return_notifications?: true)
 

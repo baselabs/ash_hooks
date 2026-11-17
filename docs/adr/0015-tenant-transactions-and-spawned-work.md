@@ -65,10 +65,11 @@ may join the host transaction; invoking the driver inside that transaction is re
   in arguments and transaction reasons supplies the binding explicitly.
 
 Transactional publish adds one outbox upsert to the producer's bound
-connection. Its notifier runs only after physical commit and hints a separately
-declared trigger route. Raw repository transactions suppress Ash notifications
-and rely on a per-tenant sweep or an explicit fanout after commit. Trigger failures
-are contained. The trigger never replaces the sweep's correctness obligation.
+connection. Its notifier hints a separately declared trigger route only after
+physical commit. Raw repository transactions give no package hint and rely on
+a per-tenant sweep or an explicit fanout after commit. Host notifications keep
+Ash's ordinary semantics. Requested returned notifications are sent by their
+caller after commit. Trigger failures are contained. The trigger never replaces the sweep's correctness obligation.
 
 Fanout refuses an enclosing transaction. Claim, subscription and endpoint
 reads, event-log recording, delivery writes, admission fences and final outbox

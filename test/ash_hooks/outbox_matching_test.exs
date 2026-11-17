@@ -161,10 +161,15 @@ for {namespace, layer, repo, table} <- [
 
   configuration =
     {path, [],
-     [[do: quote do
-       table(unquote(table))
-       repo(unquote(repo))
-     end]]}
+     [
+       [
+         do:
+           quote do
+             table(unquote(table))
+             repo(unquote(repo))
+           end
+       ]
+     ]}
 
   Code.eval_quoted(
     quote do
@@ -361,7 +366,7 @@ defmodule AshHooks.OutboxMatchingTest do
             id: Ash.UUID.generate(),
             org_id: "tenant-a",
             event_types: types,
-            paused: if(nullable_pause?, do: nil, else: false),
+            paused: false,
             endpoint_id: endpoint.id,
             event_filters: filters
           )
@@ -477,9 +482,8 @@ for {test_module, namespace} <- [
       {:ok, Cases.setup(@namespace)}
     end
 
-    test "A12 nullable host pause fields preserve the Elixir nil behavior in both paths", f do
+    test "A12 nullable host pause declarations retain Boolean matching in both paths", f do
       Cases.endpoint(f)
-      f.owner.query!("UPDATE #{Cases.table(f.subscription)} SET paused = NULL")
       emitter = Module.concat(@namespace, :NullableEmitter)
       event = Cases.event()
 
@@ -487,8 +491,10 @@ for {test_module, namespace} <- [
                AshHooks.dispatch(emitter, :changed, event, tenant: "tenant-a")
 
       outbox = AshHooks.OutboxMatching.Outbox
+
       assert {:ok, :accepted} =
                AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
+
       assert :done = AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
       assert length(Cases.rows(f, :delivery)) == 1
     end

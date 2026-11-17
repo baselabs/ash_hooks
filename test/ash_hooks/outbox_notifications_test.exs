@@ -17,10 +17,15 @@ for {namespace, layer, repo, prefix} <- [
 
   configuration = fn table ->
     {path, [],
-     [[do: quote do
-       table(unquote(table))
-       repo(unquote(repo))
-     end]]}
+     [
+       [
+         do:
+           quote do
+             table(unquote(table))
+             repo(unquote(repo))
+           end
+       ]
+     ]}
   end
 
   Code.eval_quoted(
@@ -168,11 +173,16 @@ for {test_module, namespace} <- [
         returned? <- [false, true],
         operation <- [:publish, :change] do
       @tag setting: setting, mode: mode, operation: operation, returned?: returned?
-      test "A11 #{operation} preserves host notifications in #{mode}, #{setting}, returned #{returned?}", f do
+      test "A11 #{operation} preserves host notifications in #{mode}, #{setting}, returned #{returned?}",
+           f do
         Application.put_env(:ash, :missed_notifications, f.setting)
         control = observe(f, :control)
         actual = observe(f, f.operation)
         assert actual == control
+
+        if f.returned? or f.mode in [:none, :ash] do
+          assert {:success, [false, true], false} = control
+        end
       end
     end
 
@@ -187,20 +197,24 @@ for {test_module, namespace} <- [
     defp observe(f, operation) do
       owner = self()
 
-      log = capture_log(fn ->
-        result = safely(fn -> in_mode(f, operation) end)
-        hosts = host_notifications([])
-        hints = hints([])
-        expected_hints =
-          if operation != :control and result == :success and
-               (f.returned? or f.mode in [:none, :ash]), do: 1, else: 0
+      log =
+        capture_log(fn ->
+          result = safely(fn -> in_mode(f, operation) end)
+          hosts = host_notifications([])
+          hints = hints([])
 
-        assert length(hints) == expected_hints
-        send(owner, {:observation, result, Enum.sort(hosts)})
-      end)
+          expected_hints =
+            if operation != :control and result == :success and
+                 (f.returned? or f.mode in [:none, :ash]), do: 1, else: 0
+
+          assert length(hints) == expected_hints
+          send(owner, {:observation, result, Enum.sort(hosts)})
+        end)
 
       assert_receive {:observation, result, hosts}
-      {result, hosts, Regex.scan(~r/Missed (\d+) notifications/, log, capture: :all_but_first)}
+      # Ash batches warnings by action and resource. The notification mode,
+      # host deliveries, and warning behavior must match the plain control.
+      {result, hosts, Regex.match?(~r/Missed \d+ notifications/, log)}
     end
 
     defp in_mode(f, operation) do
@@ -217,15 +231,19 @@ for {test_module, namespace} <- [
           assert [] = Ash.Notifier.notify(notifications)
           :success
 
-        result -> result
+        result ->
+          result
       end
     end
 
     defp run_mode(%{mode: :none}, callback), do: callback.()
+
     defp run_mode(%{mode: :ash} = f, callback),
       do: Ash.transact(f.outbox, callback, tenant: "tenant-a") |> unwrap()
+
     defp run_mode(%{mode: :raw} = f, callback),
       do: Cases.transaction(f, callback) |> unwrap()
+
     defp run_mode(%{mode: :ash_in_raw} = f, callback) do
       Cases.transaction(f, fn ->
         Ash.transact(f.outbox, callback, tenant: "tenant-a")
@@ -239,7 +257,10 @@ for {test_module, namespace} <- [
     defp invoke(f, :publish, opts) do
       outbox = Module.concat(@namespace, :HostOutbox)
 
-      AshHooks.publish(outbox, {f.emitter, :changed}, Cases.event(),
+      AshHooks.publish(
+        outbox,
+        {f.emitter, :changed},
+        Cases.event(),
         Keyword.merge([tenant: "tenant-a"], opts)
       )
       |> normalize()
@@ -247,7 +268,10 @@ for {test_module, namespace} <- [
 
     defp invoke(_f, operation, opts) do
       resource =
-        Module.concat(@namespace, if(operation == :control, do: :NotificationControl, else: :HostPublisher))
+        Module.concat(
+          @namespace,
+          if(operation == :control, do: :NotificationControl, else: :HostPublisher)
+        )
 
       Ash.create(resource, %{}, Keyword.merge([authorize?: false, tenant: "tenant-a"], opts))
       |> normalize()

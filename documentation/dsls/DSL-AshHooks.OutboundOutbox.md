@@ -35,8 +35,12 @@ security policies. Host hooks, notifiers, and database triggers may issue
 additional statements beyond publish's single package statement.
 
 Schedule `AshHooks.fanout_pending/3` separately for every tenant. The trigger
-only reduces latency. Raw repository transactions, returned or suppressed
-notifications, and writes outside the publish action rely on that sweep.
+only reduces latency. Raw repository transactions, returned notifications the
+caller never sends, bulk suppression, and writes outside the publish action
+rely on that sweep. With `return_notifications?: true`, `AshHooks.publish/4`
+returns `{:ok, disposition, notifications}` for the caller to send after
+commit. Host notifiers and host hook notifications follow Ash's ordinary
+rules, including missed-notification warnings and errors.
 Inspection uses `list/2`; `prune/2` deletes only completed rows older than
 the configured deduplication horizon. Reusing an ID after pruning is a new
 publication. Failed rows remain inspectable and can be rearmed.
