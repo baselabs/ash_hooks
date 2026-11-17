@@ -34,7 +34,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
                "body_reader: {AshHooks.BodyReader, :read_body, []}"
     end
 
-    test "replaces a host body reader and imports formatter configuration idempotently" do
+    test "preserves a host body reader and imports formatter configuration idempotently" do
       source =
         String.replace(
           @endpoint_source,
@@ -53,11 +53,49 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
         |> Install.igniter()
 
       endpoint = render(igniter, "lib/my_app_web/endpoint.ex")
-      assert endpoint =~ "body_reader: {AshHooks.BodyReader, :read_body, []}"
-      refute endpoint =~ "MyApp.Reader"
+      assert endpoint =~ "body_reader: {MyApp.Reader, :read_body, []}"
+      refute endpoint =~ "body_reader: {AshHooks.BodyReader"
+      assert length(igniter.notices) == 1
+      assert hd(igniter.notices) =~ "AshHooks.BodyReader.put_raw_body/2"
+      assert hd(igniter.notices) =~ "complete body"
       {formatter, _} = Code.eval_string(render(igniter, ".formatter.exs"))
       assert Enum.count(formatter[:import_deps], &(&1 == :ash_hooks)) == 1
       assert :ash in formatter[:import_deps]
+    end
+
+    test "keeps existing AshHooks readers under every module spelling without a notice" do
+      for {declaration, reader} <- [
+            {"", "AshHooks.BodyReader"},
+            {"", "Elixir.AshHooks.BodyReader"},
+            {"alias AshHooks.BodyReader", "BodyReader"},
+            {"alias AshHooks.BodyReader, as: Reader", "Reader"},
+            {"alias AshHooks, as: Hooks", "Hooks.BodyReader"},
+            {"alias AshHooks.{BodyReader, Signing}", "BodyReader"},
+            {"", ~s(:"Elixir.AshHooks.BodyReader")}
+          ] do
+        source =
+          @endpoint_source
+          |> String.replace("  plug Plug.RequestId", "  #{declaration}\n  plug Plug.RequestId")
+          |> String.replace(
+            "parsers: [:urlencoded",
+            "body_reader: {#{reader}, :read_body, []},\n    parsers: [:urlencoded"
+          )
+
+        original =
+          Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
+          |> Igniter.format("lib/my_app_web/endpoint.ex")
+
+        once = Install.igniter(original)
+        twice = Install.igniter(once)
+
+        assert render(once, "lib/my_app_web/endpoint.ex") ==
+                 render(original, "lib/my_app_web/endpoint.ex")
+
+        assert render(twice, "lib/my_app_web/endpoint.ex") ==
+                 render(once, "lib/my_app_web/endpoint.ex")
+
+        assert twice.notices == [], reader
+      end
     end
 
     test "does not touch a second plug's options" do
@@ -97,6 +135,49 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
       # formatting may normalize, but the codemod must not introduce the
       # body_reader anywhere
       refute render(igniter, "lib/my_app_web/endpoint.ex") =~ "body_reader"
+      assert hd(igniter.notices) =~ "body_reader: {AshHooks.BodyReader, :read_body, []}"
+    end
+
+    test "a project without an endpoint receives the manual step" do
+      igniter = Test.test_project() |> Install.igniter()
+      assert hd(igniter.notices) =~ "body_reader: {AshHooks.BodyReader, :read_body, []}"
+    end
+
+    test "dynamic options and non-keyword lists are left unchanged with a notice" do
+      for options <- ["parser_options()", "[:json]"] do
+        source = "defmodule MyAppWeb.Endpoint do\n  plug Plug.Parsers, #{options}\nend"
+
+        original =
+          Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
+          |> Igniter.format("lib/my_app_web/endpoint.ex")
+
+        igniter = Install.igniter(original)
+
+        assert render(igniter, "lib/my_app_web/endpoint.ex") ==
+                 render(original, "lib/my_app_web/endpoint.ex")
+
+        assert hd(igniter.notices) =~ "body_reader: {AshHooks.BodyReader, :read_body, []}"
+      end
+    end
+
+    test "a reader supplied by a host expression is preserved with a notice" do
+      source =
+        String.replace(
+          @endpoint_source,
+          "parsers: [:urlencoded",
+          "body_reader: configured_reader(), parsers: [:urlencoded"
+        )
+
+      original =
+        Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
+        |> Igniter.format("lib/my_app_web/endpoint.ex")
+
+      igniter = Install.igniter(original)
+
+      assert render(igniter, "lib/my_app_web/endpoint.ex") ==
+               render(original, "lib/my_app_web/endpoint.ex")
+
+      assert hd(igniter.notices) =~ "AshHooks.BodyReader.put_raw_body/2"
     end
 
     defp render(igniter, path) do
@@ -162,6 +243,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
         rendered = render(igniter, "lib/my_app_web/endpoint.ex")
         assert rendered =~ "Plug.Parsers"
         refute rendered =~ "body_reader"
+        assert hd(igniter.notices) =~ "body_reader: {AshHooks.BodyReader, :read_body, []}"
       end
 
       test "a Plug.Parsers with no options is left alone (the manual step)" do
@@ -182,6 +264,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
         rendered = render(igniter, "lib/my_app_web/endpoint.ex")
         assert rendered =~ "Plug.Parsers"
         refute rendered =~ "body_reader"
+        assert hd(igniter.notices) =~ "body_reader: {AshHooks.BodyReader, :read_body, []}"
       end
     end
   end
