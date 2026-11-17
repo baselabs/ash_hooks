@@ -53,6 +53,18 @@ defmodule AshHooks.HostExtensionSeamsTest do
             {:error, :invalid_signature}
           end
 
+        {:provider_failure, :raise} ->
+          raise "provider-private-value"
+
+        {:provider_failure, :throw} ->
+          throw("provider-private-value")
+
+        {:provider_failure, :exit} ->
+          exit("provider-private-value")
+
+        {:provider_failure, :malformed} ->
+          :invalid_result
+
         nil ->
           case super(body, context, keys) do
             :ok ->
@@ -148,6 +160,9 @@ defmodule AshHooks.HostExtensionSeamsTest do
         :empty_refs ->
           {:ok, [{"signature", "x"}], %{key_refs: []}}
 
+        :non_list_refs ->
+          {:ok, [{"signature", "x"}], %{key_refs: nil}}
+
         :bad_refs ->
           {:ok, [{"signature", "x"}], %{key_refs: [String.duplicate("x", 256)]}}
 
@@ -203,7 +218,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
     end
 
     actions do
-      defaults create: :*, update: :*
+      defaults [:read, create: :*, update: :*]
     end
   end
 
@@ -657,6 +672,32 @@ defmodule AshHooks.HostExtensionSeamsTest do
              Ingress.ingest(LedgerOff, :invalid, body, context(body, "current-verification-key"))
   end
 
+  test "provider exceptions and malformed verdicts fail closed before persisting any receipt" do
+    assert {:ok, _} =
+             AshHooks.InboundSource.create_source(Source, %{source: :source, provider: :facts},
+               material: "source-key",
+               kind: {:sender_hmac, :sha256},
+               tenant: "tenant-a"
+             )
+
+    for source <- [:events, :source], behavior <- [:raise, :throw, :exit, :malformed] do
+      body = Jason.encode!(%{"id" => unique()})
+
+      ctx =
+        body
+        |> context("current-verification-key")
+        |> Map.put(:host_context, {:provider_failure, behavior})
+
+      assert {:error, %AshHooks.Errors.Unknown.UnknownError{} = error} =
+               Ingress.ingest(Ledger, source, body, ctx)
+
+      refute inspect(error) =~ "provider-private-value"
+    end
+
+    assert [] = Ash.read!(Ledger, tenant: "tenant-a", authorize?: false)
+    refute_receive {:handled, _}
+  end
+
   test "an authenticated malformed receipt retains facts without claiming or handling" do
     body = "{malformed"
 
@@ -823,7 +864,9 @@ defmodule AshHooks.HostExtensionSeamsTest do
 
   test "native mode transitions refuse required resources, missing custody and stale owners" do
     required =
-      Ash.create!(PlainEndpoint, %{url: "http://127.0.0.1:9", secret_ref: "standard-current"},
+      Ash.create!(
+        PlainEndpoint,
+        %{url: "https://hooks.example.test/hook", secret_ref: "standard-current"},
         tenant: "tenant-a",
         authorize?: false
       )
@@ -857,6 +900,31 @@ defmodule AshHooks.HostExtensionSeamsTest do
              native.secret_ref
 
     assert [%{state: :attached}] = Ash.read!(Registry, tenant: "tenant-a", authorize?: false)
+  end
+
+  test "disabling native signing rolls back the owner when its registry key cannot retire" do
+    endpoint = endpoint!(CustodyEndpoint)
+
+    assert {:ok, native, _} =
+             EndpointAPI.enable_native_signing(endpoint,
+               generate: {:standard_webhooks, :v1},
+               tenant: "tenant-a"
+             )
+
+    assert :ok =
+             AshHooks.KeyRegistry.Transitions.retire(
+               CustodyEndpoint,
+               native.secret_ref,
+               DateTime.utc_now(),
+               tenant: "tenant-a"
+             )
+
+    assert {:error, :key_not_attached} =
+             EndpointAPI.disable_native_signing(native, tenant: "tenant-a")
+
+    stored = Ash.get!(CustodyEndpoint, native.id, tenant: "tenant-a", authorize?: false)
+    assert stored.secret_ref == native.secret_ref
+    assert stored.secret_kind == native.secret_kind
   end
 
   test "host signing sees the complete request and tenant outside database phases" do
@@ -945,6 +1013,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
           :empty_headers,
           :empty_refs,
           :bad_refs,
+          :non_list_refs,
           :many_refs,
           :collision,
           :reserved_te,
@@ -1020,12 +1089,20 @@ defmodule AshHooks.HostExtensionSeamsTest do
     assert Ash.get!(Delivery, row.id, tenant: "tenant-a", authorize?: false).status ==
              :dead_letter
 
-    slow = endpoint!(Endpoint, %{signer_behavior: :slow})
+    {listener, url} = listener()
+    slow = endpoint!(Endpoint, %{url: url, signer_behavior: :slow})
     slow_row = delivery!(slow)
+    started = System.monotonic_time(:millisecond)
 
-    assert {:error, :attempt_timeout} =
-             Runtime.run(args(slow_row), config() |> Keyword.put(:attempt_timeout, 100))
+    assert {:snooze, _} =
+             Runtime.run(args(slow_row), config() |> Keyword.put(:attempt_timeout, 500))
 
+    assert System.monotonic_time(:millisecond) - started < 1_500
+    slow_id = slow.id
+    assert_receive {:signing, _, %{endpoint: %{id: ^slow_id}}, false}
+    assert {:error, :timeout} = :gen_tcp.accept(listener, 5)
+    assert only_attempt(slow_row).reason == "attempt_timeout"
+    assert only_attempt(slow_row).latency_ms == nil
     assert Ash.get!(Delivery, slow_row.id, tenant: "tenant-a", authorize?: false).last_error ==
              "attempt_timeout"
   end
@@ -1036,7 +1113,10 @@ defmodule AshHooks.HostExtensionSeamsTest do
     other =
       Ash.create!(
         CustodyEndpoint,
-        %{url: endpoint.url, host_signing_key_ref: endpoint.host_signing_key_ref},
+        %{
+          url: "https://hooks.example.test/hook",
+          host_signing_key_ref: endpoint.host_signing_key_ref
+        },
         tenant: "tenant-b",
         authorize?: false
       )
@@ -1214,7 +1294,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
     {listener, url} = listener()
     endpoint = endpoint!(Endpoint, %{url: url})
     receiver = receive_async(listener)
-    opts = config() |> Keyword.put(:type, :event)
+    opts = config() |> Keyword.merge(type: :event, tenant: "tenant-a")
     assert {:ok, %{status: :succeeded, delivery: row}} = Runtime.test_send(endpoint, opts)
     Task.await(receiver)
     assert_receive {:signing, _, %{event_id: event_id, attempt: 1}, false}
@@ -1347,10 +1427,11 @@ defmodule AshHooks.HostExtensionSeamsTest do
       {listener, url} = listener()
       endpoint = endpoint!(Endpoint, %{url: url})
       row = delivery!(endpoint)
-      route = AshHooks.OutboundBinding.named_route(Worker, :enqueue)
+      worker = AshHooks.HostExtensionSeamsTest.Worker
+      route = AshHooks.OutboundBinding.named_route(worker, :enqueue)
       {:ok, bound} = AshHooks.Worker.bind_route(row, route, "tenant-a")
       receiver = receive_async(listener)
-      assert :ok = apply(Worker, :perform, [%Oban.Job{args: args(bound)}])
+      assert :ok = apply(worker, :perform, [%Oban.Job{args: args(bound)}])
       Task.await(receiver)
 
       assert_receive {:signing, request, %{tenant: "tenant-a", event_id: event_id, attempt: 1},
@@ -1366,11 +1447,15 @@ defmodule AshHooks.HostExtensionSeamsTest do
       {listener, url} = listener()
 
       endpoint =
-        Ash.create!(PlainEndpoint, %{url: url, secret_ref: "standard-current"},
+        Ash.create!(
+          PlainEndpoint,
+          %{url: "https://hooks.example.test/hook", secret_ref: "standard-current"},
           tenant: "tenant-a",
           authorize?: false
         )
 
+      update_machine(endpoint, %{url: url})
+      endpoint = Ash.get!(PlainEndpoint, endpoint.id, tenant: "tenant-a", authorize?: false)
       row = delivery!(endpoint)
       receiver = receive_async(listener)
 
@@ -1456,7 +1541,11 @@ defmodule AshHooks.HostExtensionSeamsTest do
         payload: "雪",
         endpoint_id: endpoint.id,
         signing_mode: opts[:signing_mode]
-      }, action: :dispatch, tenant: opts[:tenant] || "tenant-a", authorize?: false)
+      },
+      action: :dispatch,
+      tenant: opts[:tenant] || "tenant-a",
+      authorize?: false
+    )
   end
 
   defp args(row, endpoint_resource \\ Endpoint, tenant \\ "tenant-a") do

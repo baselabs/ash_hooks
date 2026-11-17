@@ -13,6 +13,13 @@ defmodule AshHooks.HostExtensionDslTest do
     def sign(_, _), do: :skip
   end
 
+  defmodule UnreadableType do
+    use Ash.Type.NewType, subtype_of: :string
+
+    @impl true
+    def dump_to_embedded(_, _), do: raise("type cannot serialize embedded values")
+  end
+
   test "Spark refuses a signer without its behaviour or without the callback" do
     assert_dsl_error(~r/signer must implement AshHooks.Signer/, fn ->
       endpoint(
@@ -35,7 +42,8 @@ defmodule AshHooks.HostExtensionDslTest do
     for {attribute, pattern} <- [
           {:absent, ~r/must name resource attributes/},
           {:credential, ~r/must not be sensitive/},
-          {:opaque, ~r/JSON-readable stored type/}
+          {:opaque, ~r/JSON-readable stored type/},
+          {:unreadable, ~r/JSON-readable stored type/}
         ] do
       assert_dsl_error(pattern, fn ->
         endpoint(
@@ -67,7 +75,7 @@ defmodule AshHooks.HostExtensionDslTest do
       endpoint(
         quote do
           signer AshHooks.HostExtensionDslTest.ValidSigner
-          signer_attributes [:algorithm, :identifier]
+          signer_attributes [:algorithm, :identifier, :labels]
           native_signing :optional
         end
       )
@@ -191,6 +199,8 @@ defmodule AshHooks.HostExtensionDslTest do
           attribute :opaque, :term
           attribute :algorithm, :atom
           attribute :identifier, :uuid
+          attribute :labels, {:array, :string}
+          attribute :unreadable, AshHooks.HostExtensionDslTest.UnreadableType
         end
 
         endpoint do
