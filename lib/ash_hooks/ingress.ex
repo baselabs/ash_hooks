@@ -57,7 +57,7 @@ defmodule AshHooks.Ingress do
   provider payloads and signed-body digests. See the README's retention and security section.
   The returned row can remain `:received` or `:claimed` when this call did not
   obtain ownership. Inspect its status before choosing an HTTP acknowledgment.
-  Handler exceptions, exits, and throws are contained and recorded as
+  Handler and claimed-receipt parser exceptions, exits, and throws are recorded as
   `:failed_retryable` with error class `"handler_crashed"`, using the current
   claim's fencing token. Both synchronous ingestion and reaping use this path.
   Any handler result outside `{:ok, value}` or a retry/permanent error triple,
@@ -861,13 +861,14 @@ defmodule AshHooks.Ingress do
   between claim and mark). Returns the number re-driven; unexpired leases
   and terminal rows are left alone. `:tenant` scopes the sweep; a
   tenant-less global reap over a multitenant ledger is the named
-  `{:error, :tenant_required}` (this head would otherwise crash on the
-  bang read); per-tenant sweeps compose with `AshHooks.reap_all/2`.
+  `{:error, :tenant_required}` (the unscoped read would otherwise fail);
+  per-tenant sweeps compose with `AshHooks.reap_all/2`.
 
   Rows that cannot be re-driven (inbound declaration removed, provider
-  unresolved) are skipped without stopping the sweep. Handler exceptions, exits,
-  and throws are recorded as retryable failures and count as re-driven when that
-  write succeeds. One failing row never stops the remaining rows.
+  unresolved) are skipped without stopping the sweep. Handler and parser
+  exceptions, exits, and throws are recorded as retryable failures and count as
+  re-driven when that write succeeds. One failing row never stops the remaining
+  rows.
   """
   @spec reap(module(), keyword()) ::
           {:ok, non_neg_integer()} | {:error, :tenant_required | :tenancy_mismatch}
@@ -936,18 +937,10 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  defp invoke_handler(provider, type, payload, context) do
-    Provider.handle_event(provider, type, payload, context)
-  rescue
-    _reason -> {:error, :retry, :handler_crashed}
-  catch
-    kind, _reason when kind in [:exit, :throw] -> {:error, :retry, :handler_crashed}
-  end
-
   defp handle_and_mark(resource, env, delivery_id, claimed) do
     tenant = env[:tenant]
 
-    case handling_outcome(env.parsed_type, env) do
+    case handling_outcome(env) do
       :processed ->
         gated_update(resource, delivery_id, claimed.fencing_token, :mark_processed, %{}, tenant)
 
@@ -968,8 +961,23 @@ defmodule AshHooks.Ingress do
     end
   end
 
+  defp handling_outcome(env) do
+    parsed_type =
+      Provider.parse_event_type(env.provider, env.payload, %{
+        env.context
+        | delivery_id: nil,
+          external_event_id: nil
+      })
+
+    handling_outcome(parsed_type, env)
+  rescue
+    _reason -> {:failed, "handler_crashed", false}
+  catch
+    kind, _reason when kind in [:exit, :throw] -> {:failed, "handler_crashed", false}
+  end
+
   defp handling_outcome({:ok, type}, env) when is_atom(type) do
-    case invoke_handler(env.provider, type, env.payload, env.context) do
+    case Provider.handle_event(env.provider, type, env.payload, env.context) do
       {:ok, _value} -> :processed
       {:error, :retry, term} -> {:failed, error_class_string(term), false}
       {:error, :permanent, term} -> {:failed, error_class_string(term), true}
@@ -1012,13 +1020,6 @@ defmodule AshHooks.Ingress do
         external_event_id: row.external_event_id
       }
 
-      parsed_type =
-        Provider.parse_event_type(provider, row.payload, %{
-          context
-          | delivery_id: nil,
-            external_event_id: nil
-        })
-
       {:ok,
        %{
          name: row.provider,
@@ -1026,8 +1027,6 @@ defmodule AshHooks.Ingress do
          payload: row.payload,
          digest: row.payload_digest,
          external_event_id: row.external_event_id,
-         parsed_type: parsed_type,
-         type_string: type_string(parsed_type),
          scope: scope,
          tenant: tenant,
          context: context

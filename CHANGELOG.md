@@ -27,7 +27,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Ingress records out-of-contract handler and parser results as retryable
   `invalid_handler_result` failures under the claim fence. Every recorded
   failure emits ingress telemetry; stale owners only reload the receipt. Every
-  `{:ok, value}` remains a processed success, including non-struct values.
+  `{:ok, value}` remains a processed success, including non-struct values. Parser
+  crashes while driving a claimed receipt finalize as retryable `handler_crashed`
+  failures.
 
 - Row-security documentation separates tenant-bound Oban insertion from queue
   execution under a dedicated engine role, with forced policies on jobs and

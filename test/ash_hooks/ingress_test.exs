@@ -1148,7 +1148,20 @@ defmodule AshHooks.IngressTest do
 
   for kind <- ["raise", "exit", "throw"] do
     @tag release_fix: 8
-    test "release reaping contains a provider #{kind} outside the handler and keeps sweeping" do
+    test "reaping finalizes a parser #{kind} under the fence and keeps sweeping" do
+      owner = self()
+      id = {__MODULE__, make_ref()}
+
+      :telemetry.attach(
+        id,
+        [:ash_hooks, :ingress, :failure],
+        fn _, measurements, metadata, _ ->
+          send(owner, {:ingress_failure, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(id) end)
       valid = stranded_received_row("evt_reap_after_parse_crash")
       {:ok, _, _} = Ingress.claim_delivery(Ledger, valid.id)
       expire_lease("evt_reap_after_parse_crash")
@@ -1171,14 +1184,21 @@ defmodule AshHooks.IngressTest do
         ]
       )
 
-      assert {:ok, 1} = Ingress.reap(Ledger)
+      assert {:ok, 2} = Ingress.reap(Ledger)
       assert_receive {:handled, :counted, _}
       assert [%{status: :processed}] = rows()
 
-      assert [["claimed"]] =
-               Repo.query!(
-                 "SELECT status FROM " <> @table <> " WHERE external_event_id = 'evt_parse_crash'"
-               ).rows
+      assert [
+               %{
+                 status: :failed_retryable,
+                 error_class: "handler_crashed",
+                 fencing_token: 2,
+                 attempts: 2
+               }
+             ] = rows(:parse_crash)
+
+      assert_receive {:ingress_failure, %{count: 1},
+                      %{source: :parse_crash, error_class: "handler_crashed", permanent?: false}}
     end
   end
 end

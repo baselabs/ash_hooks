@@ -3,7 +3,8 @@ defmodule AshHooks.Telemetry do
   Lifecycle events for ingress, queue admission, outbound delivery, and key disposal.
 
   Events carry identifiers, measurements, fixed atoms, and classified reasons.
-  The package omits bodies, payloads, and resolved signing secrets. For a
+  Package-generated metadata omits bodies, payloads, and resolved signing secrets.
+  Ingress failure classes can include host-provided text, as described below. For a
   secret fingerprint in your own event, `AshHooks.Telemetry.fingerprint/1`
   returns an eight-character hexadecimal value; package events do not use it.
 
@@ -18,7 +19,12 @@ defmodule AshHooks.Telemetry do
       :lease_held}`
     * `[:ash_hooks, :ingress, :failure]`: `%{count: 1}`; `%{source,
       error_class: binary, permanent?: boolean}` after a failure is recorded;
-      stale fencing tokens emit nothing
+      stale fencing tokens emit nothing. `error_class` is exactly the bounded
+      class recorded on the ledger row, including host-provided classes from
+      `{:error, :retry | :permanent, term}`. Valid binary classes are capped at
+      255 UTF-8 bytes, atoms use their names, other terms become `unclassified`,
+      and invalid UTF-8 becomes `[binary]`. Hosts must not put secrets or payload
+      data in this class; it is not restricted to the package's fixed vocabulary
     * `[:ash_hooks, :dispatch, :enqueue_failed]`: `%{endpoint_id,
       event_uuid, reason}` (classified, contents-free)
     * `[:ash_hooks, :delivery, :attempt]`: `%{endpoint_id, event_uuid,

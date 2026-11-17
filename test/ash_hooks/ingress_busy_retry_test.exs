@@ -101,7 +101,7 @@ if Code.ensure_loaded?(AshSqlite) do
 
       :ok = BusyRepo.stop(30_000)
       # let the dying repo's connections release the db before the pool
-      # reopens (connect-time WAL pragmas need a brief write lock)
+      # reopens and initializes its connections
       Process.sleep(200)
 
       # The contention substrate: a small pool whose busy_timeout is short
