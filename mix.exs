@@ -44,7 +44,10 @@ defmodule AshHooks.MixProject do
       # Shared test cases run as ordinary functions so coverage sees their code.
       # Their assertions and cleanup callbacks require ExUnit in the test PLT.
       # The documentation gate uses ExDoc's Markdown parser directly.
+      # The core PLTs live beside the project PLT in _build, so one build
+      # directory carries every PLT the Dialyzer run reads.
       dialyzer: [
+        plt_core_path: "_build/#{Mix.env()}",
         plt_add_apps: [:mix, :ash_sqlite, :ash_postgres, :ecto_sql, :ex_unit, :earmark_parser]
       ],
       test_coverage: [summary: [threshold: 100]]

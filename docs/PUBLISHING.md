@@ -29,8 +29,8 @@ step that runs `mix hex.publish` receives it.
    then hand the release to the release maintainer with the full commit SHA,
    the version and anything the release needs first.
 2. **The release maintainer asks the owner and dispatches.** After the owner
-   approves, the release maintainer dispatches the workflow from `main`. The
-   job runs only for the owner's accounts, and the `publish` environment
+   approves, the release maintainer dispatches the workflow from `main`. Both
+   jobs run only for the owner's accounts, and the `publish` environment
    admits only `main`.
 3. **The workflow publishes and reads the release back.** See
    [What the workflow checks](#what-the-workflow-checks).

@@ -82,6 +82,12 @@ CI does not run on pull requests. A maintainer runs the full workflow on the
 exact commit before it reaches `main`, and reports any failure on the pull
 request.
 
+CI only restores build caches. The one writer is
+`.github/workflows/cache-warmer.yml`, which runs hourly on `main` and builds each
+key CI restores from the committed lock: every test lane (the default lane with
+its Dialyzer PLTs), the floor and dev. A commit that changes `mix.lock` qualifies
+on a cold build until the warmer next runs.
+
 To qualify a persisted tenant worker on exact Ash 3.37.2 and Spark 2.7.6, configure PostgreSQL
 as above and run:
 

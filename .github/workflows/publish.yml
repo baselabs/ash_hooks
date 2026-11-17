@@ -30,7 +30,7 @@ jobs:
     environment: publish
     # A public repository runs only on GitHub-hosted runners.
     runs-on: ubuntu-24.04
-    timeout-minutes: 4 # twice the slowest green, 111s on rehearsal run 44179917802
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 111s on rehearsal run 44179917802
     env:
       MIX_ENV: dev
     outputs:
@@ -125,6 +125,7 @@ jobs:
   verify:
     name: Read back
     needs: publish
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     runs-on: ubuntu-24.04
     # Twice the slowest green (236s on rehearsal run 44187801263) plus the
     # bounded propagation retries below: up to 2.5 minutes for the archive,

@@ -11,6 +11,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Caches are restore-only. A cache saved on a kci/<sha> ref can be restored
+# only by that ref, so the one writer is cache-warmer.yml on the default
+# branch. Each key names one build: a test lane (on the default lane also the
+# PostgreSQL and Dialyzer build, PLTs included), the floor, or dev. The warmer
+# builds exactly these keys, on the same paths.
+
 jobs:
   # Runtime versions live only in .tool-versions files. The root file
   # supplies the development default and compatibility lanes; each
@@ -19,35 +25,18 @@ jobs:
   toolchain:
     name: Read runtime toolchains
     runs-on: ubuntu-24.04
-    timeout-minutes: 1 # twice the slowest green, 16s on run 44165315179
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 16s on run 44165315179
     outputs:
-      elixir: ${{ steps.versions.outputs.elixir }}
-      otp: ${{ steps.versions.outputs.otp }}
-      beam_lanes: ${{ steps.versions.outputs.beam_lanes }}
-      test_matrix: ${{ steps.matrix.outputs.test_matrix }}
+      elixir: ${{ steps.toolchain.outputs.elixir }}
+      otp: ${{ steps.toolchain.outputs.otp }}
+      beam_lanes: ${{ steps.toolchain.outputs.beam_lanes }}
+      test_matrix: ${{ steps.toolchain.outputs.test_matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Test the version-file parser
-        run: sh scripts/toolchain.sh --self-test
-      - name: Read defaults and compatibility lanes
-        id: versions
-        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
-      - name: Compose the default, no-optional and compatibility legs
-        id: matrix
-        env:
-          ELIXIR_VERSION: ${{ steps.versions.outputs.elixir }}
-          OTP_VERSION: ${{ steps.versions.outputs.otp }}
-          BEAM_LANES: ${{ steps.versions.outputs.beam_lanes }}
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os
-          default = {"elixir": os.environ["ELIXIR_VERSION"], "otp": os.environ["OTP_VERSION"]}
-          lanes = [default, {**default, "no_optional": "1"}]
-          lanes.extend(json.loads(os.environ["BEAM_LANES"]))
-          print("test_matrix=" + json.dumps({"include": lanes}, separators=(",", ":")))
-          PY
+      - uses: ./.github/actions/toolchain
+        id: toolchain
 
   # The default and compatibility lanes use the full development dependencies.
   # The no-optional lane proves Oban and Plug are optional (ADR-0004).
@@ -69,12 +58,12 @@ jobs:
         with:
           elixir: ${{ matrix.elixir }}
           otp: ${{ matrix.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: mix-${{ matrix.elixir }}-${{ matrix.otp }}-noopt-${{ matrix.no_optional }}-${{ hashFiles('mix.lock') }}
+          key: test-${{ matrix.elixir }}-${{ matrix.otp }}-noopt-${{ matrix.no_optional }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get --check-locked
       - run: mix compile --warnings-as-errors
       - run: mix format --check-formatted
@@ -102,7 +91,7 @@ jobs:
         with:
           elixir: ${{ matrix.elixir }}
           otp: ${{ matrix.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
@@ -135,12 +124,12 @@ jobs:
         with:
           elixir: ${{ steps.versions.outputs.elixir }}
           otp: ${{ steps.versions.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: mix-floor-${{ steps.versions.outputs.elixir }}-${{ steps.versions.outputs.otp }}-${{ hashFiles('mix.lock') }}
+          key: floor-${{ steps.versions.outputs.elixir }}-${{ steps.versions.outputs.otp }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get --check-locked
       - run: mix compile --warnings-as-errors
       - run: mix test
@@ -205,12 +194,12 @@ jobs:
         with:
           elixir: ${{ needs.toolchain.outputs.elixir }}
           otp: ${{ needs.toolchain.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: mix-pg-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
+          key: test-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-noopt--${{ hashFiles('mix.lock') }}
       - run: mix deps.get --check-locked
       - run: mix compile --warnings-as-errors
       - name: Wait for the real receiver
@@ -223,7 +212,7 @@ jobs:
         run: mix test --cover
       - name: Upload coverage HTML on a gate miss
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cover-html-postgres-${{ matrix.postgres }}
           path: cover/
@@ -244,13 +233,12 @@ jobs:
         with:
           elixir: ${{ needs.toolchain.outputs.elixir }}
           otp: ${{ needs.toolchain.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-            ~/.mix
-          key: dialyzer-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
+          key: test-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-noopt--${{ hashFiles('mix.lock') }}
       - run: mix deps.get --check-locked
       - run: mix dialyzer
 
@@ -267,12 +255,12 @@ jobs:
         with:
           elixir: ${{ needs.toolchain.outputs.elixir }}
           otp: ${{ needs.toolchain.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: package-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
+          key: dev-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get --check-locked
       - name: Regenerate formatter and DSL references
         run: |
@@ -281,7 +269,7 @@ jobs:
           git diff --exit-code -- .formatter.exs mix.exs lib test scripts/generate-dsl-docs.exs documentation/dsls
       - name: Upload generated references and formatting on drift
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: generated-references-and-formatting
           path: |
@@ -321,12 +309,6 @@ jobs:
         with:
           elixir: ${{ needs.toolchain.outputs.elixir }}
           otp: ${{ needs.toolchain.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: |
-            ~/.mix
-            ~/.cache
-          key: livebook-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get --check-locked
       - run: ./scripts/check-package.sh
       - name: Wait for the real receiver
@@ -345,7 +327,7 @@ jobs:
   security:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 4 # twice the slowest green, 114s on run 44190445327
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 114s on run 44190445327
     env:
       OSV_SCANNER_VERSION: "2.7.1"
       OSV_SCANNER_SHA256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
@@ -375,6 +357,12 @@ jobs:
         with:
           elixir: ${{ needs.toolchain.outputs.elixir }}
           otp: ${{ needs.toolchain.outputs.otp }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: dev-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
       - name: Install checksum-pinned osv-scanner
         run: |
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/osv-scanner" \
@@ -439,12 +427,12 @@ jobs:
         with:
           elixir: ${{ needs.toolchain.outputs.elixir }}
           otp: ${{ needs.toolchain.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: confidentiality-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
+          key: dev-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get --check-locked
       - name: Scan with the private policy
         env:
@@ -456,7 +444,7 @@ jobs:
     needs: [toolchain, checks, test, floor, postgres, dialyzer, package, livebook, security, confidentiality]
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 1 # twice the slowest green, 7s on run 44144689313
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 7s on run 44144689313
     steps:
       - name: Require every needed job green
         env:
