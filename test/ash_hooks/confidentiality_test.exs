@@ -128,6 +128,7 @@ defmodule AshHooks.ConfidentialityTest do
         if surface == "package", do: assert(output =~ "README.md:1 rule-1")
       end
     end
+
     File.write!(Path.join(docs, "broken.epub"), "invalid archive")
 
     assert {"", 2} =
