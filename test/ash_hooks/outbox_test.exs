@@ -705,12 +705,14 @@ for {module, namespace} <- [
     end
 
     test "A2 every transaction entry point rolls back inner and outer action writes", f do
-      for entry <- [:raw, :transact, :transaction], rollback_at <- [:inner, :outer] do
+      for outer <- [:raw, :transact, :transaction],
+          inner <- [:raw, :transact, :transaction],
+          rollback_at <- [:inner, :outer] do
         event = Cases.event()
 
         result =
-          Cases.entry(f, entry, fn ->
-            Cases.entry(f, entry, fn ->
+          Cases.entry(f, outer, fn ->
+            Cases.entry(f, inner, fn ->
               assert {:ok, :accepted} = Cases.publish(f, event)
               Ash.create!(f.emitter, %{value: "nested"}, tenant: "tenant-a", authorize?: false)
               if rollback_at == :inner, do: f.repo.rollback(:undo)
@@ -725,13 +727,13 @@ for {module, namespace} <- [
         assert Cases.rows(f, :emitter) == []
       end
 
-      for entry <- [:raw, :transact, :transaction] do
+      for outer <- [:raw, :transact, :transaction], inner <- [:raw, :transact, :transaction] do
         event = Cases.event()
 
         assert {:ok, :ok} =
-                 Cases.entry(f, entry, fn ->
+                 Cases.entry(f, outer, fn ->
                    assert {:ok, :ok} =
-                            Cases.entry(f, entry, fn ->
+                            Cases.entry(f, inner, fn ->
                               assert {:ok, :accepted} = Cases.publish(f, event)
 
                               Ash.create!(f.emitter, %{value: "nested"},
