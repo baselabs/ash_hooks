@@ -32,6 +32,8 @@ defmodule AshHooks.OutboxMatching.CustomBoolean do
   use Ash.Type.NewType, subtype_of: :boolean
 end
 
+Code.require_file("outbox_type_resources.exs", __DIR__)
+
 for {name, layer, shape} <- [
       {:EtsStrings, Ash.DataLayer.Ets, :strings},
       {:EtsAtoms, Ash.DataLayer.Ets, :closed_atoms},
@@ -256,7 +258,7 @@ defmodule AshHooks.OutboxMatching.Outbox do
   end
 
   outbox do
-    declarations [
+    declarations AshHooks.OutboxTypeCases.declarations() ++ [
       {AshHooks.OutboxMatching.EtsStrings.Emitter, :changed},
       {AshHooks.OutboxMatching.EtsAtoms.Emitter, :changed},
       {AshHooks.OutboxMatching.SimpleStrings.Emitter, :changed},
@@ -306,6 +308,11 @@ defmodule AshHooks.OutboxMatching.Domain do
   use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
 
   resources do
+    for variant <- AshHooks.OutboxTypeCases.cases() do
+      resource variant.subscription
+      resource variant.emitter
+    end
+
     resource AshHooks.OutboxMatching.Attempt
     resource AshHooks.OutboxMatching.EtsStrings.Subscription
     resource AshHooks.OutboxMatching.EtsStrings.Emitter
@@ -430,14 +437,16 @@ defmodule AshHooks.OutboxMatchingTest do
             )
           ]
 
-      nil_types = struct(subscription,
-        id: Ash.UUID.generate(),
-        org_id: "tenant-a",
-        event_types: nil,
-        paused: false,
-        endpoint_id: endpoint.id,
-        event_filters: nil
-      )
+      nil_types =
+        struct(subscription,
+          id: Ash.UUID.generate(),
+          org_id: "tenant-a",
+          event_types: nil,
+          paused: false,
+          endpoint_id: endpoint.id,
+          event_filters: nil
+        )
+
       rows = rows ++ [nil_types]
 
       Application.put_env(:ash_hooks, subscription, {self(), rows})
@@ -530,6 +539,77 @@ for {test_module, namespace} <- [
       Cases.clean(context)
     end
 
+    for variant <- AshHooks.OutboxTypeCases.cases(),
+        variant.namespace == @namespace do
+      @variant variant
+      test "A12 accepted event array #{inspect(variant.subscription)} agrees through dispatch and fanout",
+           f do
+        variant = @variant
+        resource = variant.subscription
+        sql? = variant.layer in [AshSqlite.DataLayer, AshPostgres.DataLayer]
+        if sql?, do: AshHooks.OutboxTypeCases.create_table(f, resource)
+
+        if variant.layer == Ash.DataLayer.Ets,
+          do: on_exit(fn -> Ash.DataLayer.Ets.stop(resource) end)
+
+        endpoint = Cases.endpoint(f)
+        # Remove the control subscription: only this variant participates.
+        f.owner.query!("DELETE FROM #{Cases.table(f.subscription)}")
+        atoms? = variant.shape in [:ClosedAtoms, :OpenAtoms, :NewAtoms, :AtomArray]
+
+        values = [
+          if(atoms?, do: [:changed], else: ["changed"]),
+          if(atoms?, do: [:other], else: ["other"]),
+          nil
+        ]
+
+        rows =
+          Enum.map(values, fn types ->
+            Ash.create!(resource, %{endpoint_id: endpoint.id, event_types: types},
+              tenant: "tenant-a",
+              authorize?: false
+            )
+          end)
+
+        if variant.layer == Ash.DataLayer.Simple do
+          Application.put_env(:ash_hooks, resource, {self(), rows})
+          on_exit(fn -> Application.delete_env(:ash_hooks, resource) end)
+        end
+
+        event = Cases.event()
+
+        expected =
+          rows
+          |> Enum.filter(&AshHooks.Subscription.matches?(&1, event.type))
+          |> Enum.map(& &1.id)
+
+        refute List.last(rows).id in expected
+        query = resource |> AshHooks.Subscription.Query.select(event)
+
+        query =
+          if variant.layer == Ash.DataLayer.Simple,
+            do: Ash.DataLayer.Simple.set_data(query, rows),
+            else: query
+
+        selected = Ash.read!(query, tenant: "tenant-a", authorize?: false)
+        refute List.last(rows).id in Enum.map(selected, & &1.id)
+        guarded = Enum.filter(selected, &AshHooks.Subscription.matches?(&1, event.type))
+        assert Enum.sort(Enum.map(guarded, & &1.id)) == Enum.sort(expected)
+
+        assert {:ok, [%{status: :deferred}]} =
+                 AshHooks.dispatch(variant.emitter, :changed, event, tenant: "tenant-a")
+
+        outbox = AshHooks.OutboxMatching.Outbox
+
+        assert {:ok, :accepted} =
+                 AshHooks.publish(outbox, {variant.emitter, :changed}, event, tenant: "tenant-a")
+
+        assert :done = AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
+        assert [%{subscription_id: id}] = Cases.rows(f, :delivery)
+        assert id in expected
+      end
+    end
+
     test "nil endpoint status is disabled through dispatch and fanout", f do
       endpoint = Cases.endpoint(f, status: nil)
       refute AshHooks.Endpoint.enabled?(endpoint)
@@ -544,26 +624,32 @@ for {test_module, namespace} <- [
       {server, port} = AshHooks.Test.HttpReceiver.start()
       on_exit(fn -> :inets.stop(:httpd, server) end)
       on_exit(fn -> Ash.DataLayer.Ets.stop(AshHooks.OutboxMatching.Attempt) end)
-      endpoint = Cases.endpoint(f,
-        url: "http://localhost:#{port}/200",
-        response_capture: nil,
-        response_capture_retention_seconds: nil
-      )
 
-      assert {:ok, %{status: :succeeded}} = AshHooks.Delivery.test_send(endpoint,
-        type: :changed,
-        deliveries: f.delivery,
-        attempts: AshHooks.OutboxMatching.Attempt,
-        tenant: "tenant-a",
-        secret_resolver: {AshHooks.OutboxProcess, :secret},
-        ssrf_check: &AshHooks.Ssrf.registration_safe?/1,
-        http_opts: [validate_destination: false, timeout: 1_000],
-        attempt_timeout: 3_000,
-        finalization_allowance: 1_000
-      )
+      endpoint =
+        Cases.endpoint(f,
+          url: "http://localhost:#{port}/200",
+          response_capture: nil,
+          response_capture_retention_seconds: nil
+        )
+
+      assert {:ok, %{status: :succeeded}} =
+               AshHooks.Delivery.test_send(endpoint,
+                 type: :changed,
+                 deliveries: f.delivery,
+                 attempts: AshHooks.OutboxMatching.Attempt,
+                 tenant: "tenant-a",
+                 secret_resolver: {AshHooks.OutboxProcess, :secret},
+                 ssrf_check: &AshHooks.Ssrf.registration_safe?/1,
+                 http_opts: [validate_destination: false, timeout: 1_000],
+                 attempt_timeout: 3_000,
+                 finalization_allowance: 1_000
+               )
+
       assert_receive {:http_received, _request}, 5_000
+
       assert [%{response_headers: nil, response_snippet: snippet}] =
-        Ash.read!(AshHooks.OutboxMatching.Attempt, tenant: "tenant-a", authorize?: false)
+               Ash.read!(AshHooks.OutboxMatching.Attempt, tenant: "tenant-a", authorize?: false)
+
       refute String.starts_with?(snippet || "", "[captured]")
     end
 
@@ -574,20 +660,33 @@ for {test_module, namespace} <- [
       nil_id = Cases.raw_subscription(f, endpoint, %{}, types: nil)
       event = Cases.event()
       rows = Ash.read!(resource, tenant: "tenant-a", authorize?: false)
-      expected = rows |> Enum.filter(&AshHooks.Subscription.matches?(&1, event.type)) |> Enum.map(& &1.id) |> Enum.sort()
+
+      expected =
+        rows
+        |> Enum.filter(&AshHooks.Subscription.matches?(&1, event.type))
+        |> Enum.map(& &1.id)
+        |> Enum.sort()
+
       refute nil_id in expected
-      selected = resource |> AshHooks.Subscription.Query.select(event) |> Ash.read!(tenant: "tenant-a", authorize?: false)
+
+      selected =
+        resource
+        |> AshHooks.Subscription.Query.select(event)
+        |> Ash.read!(tenant: "tenant-a", authorize?: false)
+
       assert Enum.sort(Enum.map(selected, & &1.id)) == expected
 
       assert {:ok, [%{status: :deferred}]} =
                AshHooks.dispatch(emitter, :changed, event, tenant: "tenant-a")
 
       outbox = AshHooks.OutboxMatching.Outbox
-      assert {:ok, :accepted} = AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
+
+      assert {:ok, :accepted} =
+               AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
+
       assert :done = AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
       assert [%{subscription_id: id, signing_mode: :standard}] = Cases.rows(f, :delivery)
       assert id in expected
-
     end
   end
 end

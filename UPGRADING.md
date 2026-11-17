@@ -27,7 +27,7 @@ their existing contracts.
 | Resource | Type and fields | Nullability |
 | --- | --- | --- |
 | Subscription | Boolean: `paused` under `pausable :on`; UUID reference: `endpoint_id` | required |
-| Subscription | string or atom array: `event_types` | either; nil matches nothing |
+| Subscription | string, atom or term array: `event_types` | either; nil matches nothing |
 | Subscription | map: `event_filters` under `filter_attributes` | either |
 | Subscription | atom: `signing_mode` | either |
 | Endpoint | `AshHooks.Endpoint.Url`: `url`; atom: `status`; `AshHooks.Endpoint.SecretRef` or string: `secret_ref` | required; optional native signing makes `secret_ref` nullable |
@@ -56,7 +56,10 @@ their existing contracts.
 The endpoint table shows generated nullability; the three nil-safe fields
 listed above also accept nullable host declarations. Native
 `Ash.Type.NewType` subtypes of the listed types are accepted, except
-outbox metadata, whose codec must remain unmodified. Event atom arrays may
+outbox metadata, whose codec must remain unmodified. Event string, atom and term arrays can carry every declared event name.
+Boolean, integer and map element arrays, and scalar containers, cannot carry
+those names and are refused; migrate their contents and column storage to a
+supported array type before updating the declaration. Event atom arrays may
 have a finite `one_of` constraint or be open. Open arrays and unrecognized
 physical storage use conservative query selection and the Elixir guard.
 UUID reference fields retain their UUID-storage compatibility check. The
@@ -82,6 +85,7 @@ column names. SQLite migrations perform the same backfill and rebuild the
 table with `paused BOOLEAN NOT NULL DEFAULT FALSE` through AshSqlite's
 migration generator. Set `allow_nil?: false, default: false` in the resource.
 
+<!-- not-run: PostgreSQL migration template; substitute the host table and source column names. -->
 ```sql
 UPDATE subscriptions SET paused = FALSE WHERE paused IS NULL;
 ALTER TABLE subscriptions ALTER COLUMN paused SET DEFAULT FALSE;

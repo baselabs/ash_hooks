@@ -25,7 +25,7 @@ defmodule AshHooks.MixProject do
       test_ignore_filters: [
         ~r{\Atest/consumer/(deps|_build)/},
         ~r{\Atest/consumer/(mix|verify)\.exs\z},
-        ~r{\Atest/ash_hooks/outbox_(process|resources)\.exs\z}
+        ~r{\Atest/ash_hooks/outbox_(process|resources|type_resources)\.exs\z}
       ],
       deps: deps(),
       package: package(),

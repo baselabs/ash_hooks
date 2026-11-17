@@ -59,8 +59,9 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
   end
 
   # The consumer owns filters. Both nil and a map have defined matching semantics.
-  defp nullability(:subscription, %{name: name}) when name in [:event_types, :event_filters, :signing_mode],
-    do: :either
+  defp nullability(:subscription, %{name: name})
+       when name in [:event_types, :event_filters, :signing_mode],
+       do: :either
 
   defp nullability(:endpoint, %{name: name})
        when name in [:status, :response_capture, :response_capture_retention_seconds],
@@ -74,12 +75,14 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
     native = Ash.Type.get_type(expected.type)
 
     cond do
+      # OutboundReferences owns reference storage validation against the joined key.
       expected.name in [:endpoint_id, :subscription_id] ->
-        Ash.Type.storage_type(actual.type, actual.constraints) == :uuid
+        true
 
       section == :subscription and expected.name == :event_types ->
         type_matches?(actual.type, {:array, Ash.Type.String}) or
-          type_matches?(actual.type, {:array, Ash.Type.Atom})
+          type_matches?(actual.type, {:array, Ash.Type.Atom}) or
+          type_matches?(actual.type, {:array, Ash.Type.Term})
 
       native == AshHooks.Endpoint.SecretRef ->
         type_matches?(actual.type, native) or type_matches?(actual.type, Ash.Type.String)
@@ -112,7 +115,7 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
     do: "unmodified :map without a :fields constraint"
 
   defp accepted_types(:subscription, %{name: :event_types}),
-    do: "{:array, :string} or {:array, :atom}, including native NewType subtypes"
+    do: "{:array, :string}, {:array, :atom} or {:array, :term}, including native NewType subtypes"
 
   defp accepted_types(_section, %{type: AshHooks.Endpoint.SecretRef}),
     do: "AshHooks.Endpoint.SecretRef or :string, including native NewType subtypes"

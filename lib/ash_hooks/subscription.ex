@@ -34,11 +34,13 @@ defmodule AshHooks.Subscription do
   ## Typing contract
 
   Events carry string types. You can declare `event_types` yourself,
-  including as an array of atoms, with or without item constraints. Native
-  `Ash.Type.NewType` subtypes of string, atom, map and Boolean are supported.
+  including as an array of strings, atoms or terms. Atom arrays may be open
+  or constrained to the host's declared event names. Native `Ash.Type.NewType`
+  subtypes of these arrays or elements, map and Boolean are supported.
   When enabled, `paused` must be non-null. A nullable `event_types` value
   matches nothing. `event_filters`
-  may be nullable or non-null; null filters match. Other element types and
+  may be nullable or non-null; null filters match. Boolean, integer and map
+  element arrays cannot carry arbitrary declared event names. These types and
   incompatible overrides fail resource verification. Your declaration replaces the
   generated attribute, including its constraints and default. Atom and string
   entries match the same event names. The bare `"*"` or `:"*"` entry matches

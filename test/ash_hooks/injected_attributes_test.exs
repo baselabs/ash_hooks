@@ -76,18 +76,20 @@ defmodule AshHooks.InjectedAttributesTest do
           transformer.attributes_spec(InjectedAttributeStates.state(extension, section)) do
       @attribute name
 
-      test "#{section}.#{name} refuses an incompatible host type that cannot store package input" do
-        {state, actual, type, opts} =
-          attribute_state(@extension, @section, @transformer, @attribute)
+      if name not in [:endpoint_id, :subscription_id] do
+        test "#{section}.#{name} refuses an incompatible host type that cannot store package input" do
+          {state, actual, type, opts} =
+            attribute_state(@extension, @section, @transformer, @attribute)
 
-        value = example(type, opts)
-        wrong = if is_map(value), do: Ash.Type.Boolean, else: Ash.Type.Map
-        assert {:ok, _} = Ash.Type.cast_input(actual.type, value, actual.constraints)
-        refute match?({:ok, _}, Ash.Type.cast_input(wrong, value, []))
-        invalid = replace(state, %{actual | type: wrong, constraints: []})
+          value = example(type, opts)
+          wrong = if is_map(value), do: Ash.Type.Boolean, else: Ash.Type.Map
+          assert {:ok, _} = Ash.Type.cast_input(actual.type, value, actual.constraints)
+          refute match?({:ok, _}, Ash.Type.cast_input(wrong, value, []))
+          invalid = replace(state, %{actual | type: wrong, constraints: []})
 
-        assert_raise Spark.Error.DslError, ~r/attribute .* declares .*accepted shapes/s, fn ->
-          InjectedAttributes.verify(invalid)
+          assert_raise Spark.Error.DslError, ~r/attribute .* declares .*accepted shapes/s, fn ->
+            InjectedAttributes.verify(invalid)
+          end
         end
       end
 
@@ -98,7 +100,8 @@ defmodule AshHooks.InjectedAttributesTest do
         invalid = replace(state, %{actual | allow_nil?: not actual.allow_nil?})
 
         either? =
-          (@section == :subscription and @attribute in [:event_types, :event_filters, :signing_mode]) or
+          (@section == :subscription and
+             @attribute in [:event_types, :event_filters, :signing_mode]) or
             (@section == :endpoint and
                @attribute in [:status, :response_capture, :response_capture_retention_seconds])
 
@@ -154,15 +157,26 @@ defmodule AshHooks.InjectedAttributesTest do
     assert AshHooks.Subscription.matches_filters?(struct(resource, event_filters: %{}), %{})
   end
 
-  test "non-string and non-atom event elements cannot match canonical event names" do
-    refute AshHooks.Subscription.matches?(%{event_types: [1, true, %{}]}, "changed")
-
-    for type <- [:integer, :boolean, :map] do
+  test "refused event types cannot carry a declared event name" do
+    for type <- [
+          {:array, :integer},
+          {:array, :boolean},
+          {:array, :map},
+          :map,
+          :boolean,
+          :integer,
+          :string
+        ] do
+      {:ok, attribute} = Builder.build_attribute(:event_types, type, [])
+      refute match?(
+               {:ok, _},
+               Ash.Type.cast_input(attribute.type, ["changed"], attribute.constraints)
+             )
       errors =
         Spark.Test.dsl_errors do
           subscription(
             quote do
-              attribute :event_types, {:array, unquote(type)}, allow_nil?: false
+              attribute :event_types, unquote(Macro.escape(type)), allow_nil?: false
             end
           )
         end
