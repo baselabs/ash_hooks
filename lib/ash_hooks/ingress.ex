@@ -910,9 +910,10 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  # the redrive invokes the CONSUMER's handle_event; raises, throws,
-  # and exits (a GenServer.call timeout in a handler) are all contained
-  #
+  # Provider callbacks are contained in handling_outcome. The redrive also
+  # runs the host's own code on the ledger (resource changes and hooks on
+  # the claim and mark actions), which Ash re-raises; its raises, throws,
+  # and exits fail only this row.
   defp safe_redrive(resource, row, tenant) do
     redrive(resource, row, tenant)
   rescue

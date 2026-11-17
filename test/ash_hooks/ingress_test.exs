@@ -182,12 +182,74 @@ defmodule AshHooks.IngressTest do
     defdelegate handle_event(type, payload), to: AshHooks.CountingProvider
   end
 
+  # The host's own code on every update of its ledger: an atomic change whose
+  # after_batch callback sees each updated row. Ash re-raises what it raises,
+  # exits, or throws, so the reaper's per-row containment is what keeps one
+  # failing row from stopping the sweep.
+  defmodule HostHook do
+    @moduledoc false
+    use Ash.Resource.Change
+
+    @impl true
+    def change(changeset, _opts, _context), do: changeset
+
+    @impl true
+    def atomic(changeset, _opts, _context), do: {:ok, changeset}
+
+    @impl true
+    def after_batch(changesets_and_records, _opts, _context) do
+      Enum.map(changesets_and_records, fn {_changeset, record} -> run(record) end)
+    end
+
+    defp run(%{account_id: "raise"}), do: raise("host hook failure")
+    defp run(%{account_id: "exit"}), do: exit(:host_hook_failure)
+    defp run(%{account_id: "throw"}), do: throw(:host_hook_failure)
+    defp run(record), do: {:ok, record}
+  end
+
+  defmodule HookedLedger do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.IngressTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks, AshHooks.InboundDelivery]
+
+    sqlite do
+      table("ingress_test_hooked_ledgers")
+      repo(AshHooks.Test.Repo)
+    end
+
+    inbound_delivery do
+      scope_identity([:account_id])
+    end
+
+    attributes do
+      attribute(:account_id, :string, allow_nil?: false, constraints: [max_length: 16])
+    end
+
+    actions do
+      defaults([:read])
+    end
+
+    changes do
+      change(AshHooks.IngressTest.HostHook, on: [:update])
+    end
+
+    webhooks do
+      inbound :counter do
+        provider(AshHooks.CountingProvider)
+        secret {AshHooks.IngressTest, :secret, []}
+      end
+    end
+  end
+
   defmodule Domain do
     @moduledoc false
     use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
 
     resources do
       resource(AshHooks.IngressTest.Ledger)
+      resource(AshHooks.IngressTest.HookedLedger)
     end
   end
 
@@ -200,11 +262,22 @@ defmodule AshHooks.IngressTest do
   alias AshHooks.Test.Repo
 
   @table "ingress_test_ledgers"
+  @hooked_table "ingress_test_hooked_ledgers"
   @secret "test-secret"
 
   setup_all do
+    for table <- [@table, @hooked_table], do: create_ledger_table(table)
+
+    on_exit(fn ->
+      for table <- [@table, @hooked_table], do: Repo.query!("DROP TABLE IF EXISTS #{table}")
+    end)
+
+    :ok
+  end
+
+  defp create_ledger_table(table) do
     Repo.query!("""
-    CREATE TABLE IF NOT EXISTS #{@table} (
+    CREATE TABLE IF NOT EXISTS #{table} (
       id TEXT PRIMARY KEY,
       provider TEXT NOT NULL,
       external_event_id TEXT NOT NULL,
@@ -221,18 +294,12 @@ defmodule AshHooks.IngressTest do
     """)
 
     Repo.query!(
-      "CREATE UNIQUE INDEX IF NOT EXISTS #{@table}_unique_ingest_index ON #{@table} (provider, external_event_id, account_id)"
+      "CREATE UNIQUE INDEX IF NOT EXISTS #{table}_unique_ingest_index ON #{table} (provider, external_event_id, account_id)"
     )
-
-    on_exit(fn ->
-      Repo.query!("DROP TABLE IF EXISTS #{@table}")
-    end)
-
-    :ok
   end
 
   setup do
-    Repo.query!("DELETE FROM #{@table}")
+    for table <- [@table, @hooked_table], do: Repo.query!("DELETE FROM #{table}")
     CountingProvider.put_sink(self())
     CountingProvider.put_outcome(:ok)
     on_exit(&CountingProvider.cleanup/0)
@@ -863,6 +930,44 @@ defmodule AshHooks.IngressTest do
         |> then(& &1.rows)
 
       assert poison_status == [["claimed"]]
+    end
+
+    for kind <- ["raise", "exit", "throw"] do
+      test "a host ledger hook #{kind} on one row never stops the sweep" do
+        for {id, account_id} <- [{"evt_host_hook", unquote(kind)}, {"evt_host_ok", "acct-1"}] do
+          raw = body(id)
+
+          Repo.query!(
+            "INSERT INTO " <>
+              @hooked_table <>
+              " (id, provider, external_event_id, external_event_type, payload, payload_digest, status, fencing_token, lease_expires_at, attempts, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+              Ash.UUID.generate(),
+              "counter",
+              id,
+              "counted",
+              raw,
+              :crypto.hash(:sha256, raw) |> Base.encode16(case: :lower),
+              "claimed",
+              1,
+              "2000-01-01T00:00:00Z",
+              1,
+              account_id
+            ]
+          )
+        end
+
+        assert {:ok, 1} = Ingress.reap(HookedLedger)
+        assert_receive {:handled, :counted, %{"id" => "evt_host_ok"}}
+        refute_received {:handled, _, _}
+
+        statuses =
+          HookedLedger
+          |> Ash.read!(authorize?: false)
+          |> Map.new(&{&1.external_event_id, &1.status})
+
+        assert statuses == %{"evt_host_hook" => :claimed, "evt_host_ok" => :processed}
+      end
     end
   end
 

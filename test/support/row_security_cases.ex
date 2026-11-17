@@ -81,7 +81,6 @@ defmodule AshHooks.Test.RowSecurityCases do
   alias AshHooks.KeyRegistry.Transitions
   alias AshHooks.Test.Documentation, as: Docs
   alias AshHooks.Test.RealReceiver
-  alias Oban.Engines.Basic
   alias Spark.Dsl.Transformer
 
   def setup_postgres(namespace, repo, read_repo, shape \\ :string) do
@@ -1247,378 +1246,387 @@ defmodule AshHooks.Test.RowSecurityCases do
     assert Enum.sort(received) == Enum.sort(retained)
   end
 
-  def oban_role_access(ctx) do
-    for repo <- [ctx.repo, ctx.engine_repo] do
-      assert %{rows: [[false, false]]} =
-               repo.query!(
-                 "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"
-               )
+  # These cases drive Oban itself; they exist only where the optional
+  # dependency is compiled.
+  if Code.ensure_loaded?(Oban) do
+    alias Oban.Engines.Basic
 
-      for table <- ["oban_jobs", "oban_peers"] do
-        assert %{rows: [[true, true, true]]} =
+    def oban_role_access(ctx) do
+      for repo <- [ctx.repo, ctx.engine_repo] do
+        assert %{rows: [[false, false]]} =
                  repo.query!(
-                   "SELECT relrowsecurity, relforcerowsecurity, relowner <> (SELECT oid FROM pg_roles WHERE rolname = current_user) FROM pg_class WHERE oid = $1::text::regclass",
-                   ["row_security_oban." <> table],
-                   log: false
+                   "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"
+                 )
+
+        for table <- ["oban_jobs", "oban_peers"] do
+          assert %{rows: [[true, true, true]]} =
+                   repo.query!(
+                     "SELECT relrowsecurity, relforcerowsecurity, relowner <> (SELECT oid FROM pg_roles WHERE rolname = current_user) FROM pg_class WHERE oid = $1::text::regclass",
+                     ["row_security_oban." <> table],
+                     log: false
+                   )
+        end
+      end
+
+      assert %{rows: [[true, true, false, false, false]]} =
+               ctx.repo.query!("""
+               SELECT has_table_privilege(current_user, 'row_security_oban.oban_jobs', 'SELECT'),
+                      has_table_privilege(current_user, 'row_security_oban.oban_jobs', 'INSERT'),
+                      has_table_privilege(current_user, 'row_security_oban.oban_jobs', 'UPDATE'),
+                      has_table_privilege(current_user, 'row_security_oban.oban_jobs', 'DELETE'),
+                      has_table_privilege(current_user, 'row_security_oban.oban_peers', 'SELECT')
+               """)
+
+      for resource <- ctx.resources do
+        assert %{rows: [[false]]} =
+                 ctx.engine_repo.query!(
+                   "SELECT has_table_privilege(current_user, $1, 'SELECT')",
+                   [table(resource)]
                  )
       end
-    end
 
-    assert %{rows: [[true, true, false, false, false]]} =
-             ctx.repo.query!("""
-             SELECT has_table_privilege(current_user, 'row_security_oban.oban_jobs', 'SELECT'),
-                    has_table_privilege(current_user, 'row_security_oban.oban_jobs', 'INSERT'),
-                    has_table_privilege(current_user, 'row_security_oban.oban_jobs', 'UPDATE'),
-                    has_table_privilege(current_user, 'row_security_oban.oban_jobs', 'DELETE'),
-                    has_table_privilege(current_user, 'row_security_oban.oban_peers', 'SELECT')
-             """)
-
-    for resource <- ctx.resources do
-      assert %{rows: [[false]]} =
+      assert %{rows: [[nil]]} =
                ctx.engine_repo.query!(
-                 "SELECT has_table_privilege(current_user, $1, 'SELECT')",
-                 [table(resource)]
+                 "SELECT nullif(current_setting('ash_hooks_test.tenant', true), '')"
                )
     end
 
-    assert %{rows: [[nil]]} =
-             ctx.engine_repo.query!(
-               "SELECT nullif(current_setting('ash_hooks_test.tenant', true), '')"
-             )
-  end
+    def oban_runtime_isolation(ctx) do
+      application = start_oban(ctx, 0)
+      config = Oban.config(application)
+      assert config.queues == []
+      assert config.plugins == []
+      assert config.stager == false
+      assert {Oban.Peers.Isolated, [leader?: false]} = config.peer
 
-  def oban_runtime_isolation(ctx) do
-    application = start_oban(ctx, 0)
-    config = Oban.config(application)
-    assert config.queues == []
-    assert config.plugins == []
-    assert config.stager == false
-    assert {Oban.Peers.Isolated, [leader?: false]} = config.peer
+      for {tenant, _endpoint} <- seed(ctx) do
+        event = enqueue_event(ctx, tenant)
+        assert {:ok, %{records: [delivery]}} = Delivery.list(ctx.delivery, tenant: tenant)
+        # The second insert runs the real unique-job SELECT, without UPDATE privileges.
+        assert :ok = ctx.worker.enqueue(delivery, event)
+      end
 
-    for {tenant, _endpoint} <- seed(ctx) do
-      event = enqueue_event(ctx, tenant)
-      assert {:ok, %{records: [delivery]}} = Delivery.list(ctx.delivery, tenant: tenant)
-      # The second insert runs the real unique-job SELECT, without UPDATE privileges.
-      assert :ok = ctx.worker.enqueue(delivery, event)
+      before = oban_rows(ctx)
+      assert [[_, "tenant_a", "available", 0, nil], [_, "tenant_b", "available", 0, nil]] = before
+      [[_a_id, _, _, _, _], [b_id, _, _, _, _]] = before
+
+      assert %{rows: [[0]]} = ctx.repo.query!("SELECT count(*) FROM row_security_oban.oban_jobs")
+
+      assert %{rows: [[0]]} =
+               ctx.owner.query!("SELECT count(*) FROM row_security_oban.oban_peers")
+
+      assert {:ok, args} =
+               tenant_phase(ctx, "tenant_a", fn ->
+                 assert %{rows: [[args]]} =
+                          ctx.repo.query!("SELECT args FROM row_security_oban.oban_jobs")
+
+                 assert args["tenant"] == "tenant_a"
+                 args
+               end)
+
+      assert {:error, :enqueue_rollback} =
+               tenant_phase(ctx, "tenant_a", fn ->
+                 delivery = host_delivery(ctx, %{id: args["endpoint_id"]}, "tenant_a")
+                 assert :ok = ctx.worker.enqueue(delivery, nil)
+                 ctx.repo.rollback(:enqueue_rollback)
+               end)
+
+      assert oban_rows(ctx) == before
+      assert {:ok, %{records: [_]}} = Delivery.list(ctx.delivery, tenant: "tenant_a")
+
+      error =
+        assert_raise Postgrex.Error, fn ->
+          tenant_phase(ctx, "tenant_a", fn ->
+            Oban.insert(application, ctx.worker.new(Map.put(args, "tenant", "tenant_b")))
+          end)
+        end
+
+      assert error.postgres.code == :insufficient_privilege
+
+      error =
+        assert_raise Postgrex.Error, fn ->
+          Oban.drain_queue(application, queue: :webhooks)
+        end
+
+      # Oban retries a denied fetch inside the enclosing transaction. A retry
+      # may report that PostgreSQL has already aborted that transaction.
+      assert error.postgres.code in [:insufficient_privilege, :in_failed_sql_transaction]
+
+      error =
+        assert_raise Postgrex.Error, fn ->
+          tenant_phase(ctx, "tenant_a", fn ->
+            ctx.repo.query!(
+              "UPDATE row_security_oban.oban_jobs SET state = 'executing', attempted_at = now() WHERE id = $1",
+              [b_id]
+            )
+          end)
+        end
+
+      assert error.postgres.code == :insufficient_privilege
+      assert oban_rows(ctx) == before
     end
 
-    before = oban_rows(ctx)
-    assert [[_, "tenant_a", "available", 0, nil], [_, "tenant_b", "available", 0, nil]] = before
-    [[_a_id, _, _, _, _], [b_id, _, _, _, _]] = before
+    def oban_engine_delivery(ctx) do
+      oban_role_access(ctx)
+      receiver = RealReceiver.open!()
+      on_exit(fn -> RealReceiver.close!(receiver) end)
+      application = start_oban(ctx, 0)
+      observe_oban_jobs(ctx)
+      engine = start_oban(ctx, 1)
+      assert_notifier_connected(application)
+      assert_notifier_connected(engine)
 
-    assert %{rows: [[0]]} = ctx.repo.query!("SELECT count(*) FROM row_security_oban.oban_jobs")
-    assert %{rows: [[0]]} = ctx.owner.query!("SELECT count(*) FROM row_security_oban.oban_peers")
+      # Listen as the engine login, independently of either instance's name.
+      listener =
+        start_supervised!(
+          {Postgrex.Notifications,
+           ctx.engine_repo.config()
+           |> Keyword.drop([:name, :pool, :pool_size])
+           |> Keyword.put(:sync_connect, true)
+           |> Keyword.put(:parameters, application_name: "ash_hooks_engine_listener")}
+        )
 
-    assert {:ok, args} =
-             tenant_phase(ctx, "tenant_a", fn ->
-               assert %{rows: [[args]]} =
-                        ctx.repo.query!("SELECT args FROM row_security_oban.oban_jobs")
+      ref = Postgrex.Notifications.listen!(listener, "row_security_oban.oban_insert")
+      engine_role = ctx.engine_role
 
-               assert args["tenant"] == "tenant_a"
-               args
-             end)
+      assert %{rows: [[^engine_role]]} =
+               ctx.owner.query!(
+                 "SELECT usename FROM pg_stat_activity WHERE application_name = 'ash_hooks_engine_listener'"
+               )
 
-    assert {:error, :enqueue_rollback} =
-             tenant_phase(ctx, "tenant_a", fn ->
-               delivery = host_delivery(ctx, %{id: args["endpoint_id"]}, "tenant_a")
-               assert :ok = ctx.worker.enqueue(delivery, nil)
-               ctx.repo.rollback(:enqueue_rollback)
-             end)
+      for {tenant, _endpoint} <- seed(ctx, RealReceiver.url(receiver)) do
+        enqueue_event(ctx, tenant)
 
-    assert oban_rows(ctx) == before
-    assert {:ok, %{records: [_]}} = Delivery.list(ctx.delivery, tenant: "tenant_a")
+        assert_receive {:notification, ^listener, ^ref, "row_security_oban.oban_insert", payload},
+                       5_000
 
-    error =
-      assert_raise Postgrex.Error, fn ->
-        tenant_phase(ctx, "tenant_a", fn ->
-          Oban.insert(application, ctx.worker.new(Map.put(args, "tenant", "tenant_b")))
-        end)
+        assert Jason.decode!(payload) == %{"queue" => "webhooks"}
       end
 
-    assert error.postgres.code == :insufficient_privilege
-
-    error =
-      assert_raise Postgrex.Error, fn ->
-        Oban.drain_queue(application, queue: :webhooks)
+      for [id] <- ctx.owner.query!("SELECT id FROM row_security_oban.oban_jobs").rows do
+        assert_receive {:row_security_job, ^id, :success}, 15_000
       end
 
-    # Oban retries a denied fetch inside the enclosing transaction. A retry
-    # may report that PostgreSQL has already aborted that transaction.
-    assert error.postgres.code in [:insufficient_privilege, :in_failed_sql_transaction]
+      assert [
+               [_, "tenant_a", "completed", 1, %NaiveDateTime{}],
+               [_, "tenant_b", "completed", 1, %NaiveDateTime{}]
+             ] = oban_rows(ctx)
 
-    error =
-      assert_raise Postgrex.Error, fn ->
-        tenant_phase(ctx, "tenant_a", fn ->
-          ctx.repo.query!(
-            "UPDATE row_security_oban.oban_jobs SET state = 'executing', attempted_at = now() WHERE id = $1",
-            [b_id]
-          )
-        end)
+      for tenant <- ["tenant_a", "tenant_b"] do
+        assert {:ok, %{records: [%{status: :succeeded, attempts: 1}]}} =
+                 Delivery.list(ctx.delivery, tenant: tenant)
       end
 
-    assert error.postgres.code == :insufficient_privilege
-    assert oban_rows(ctx) == before
-  end
+      assert length(RealReceiver.requests!(receiver)) == 2
+      assert Oban.Peer.leader?(engine)
+      name = inspect(engine)
 
-  def oban_engine_delivery(ctx) do
-    oban_role_access(ctx)
-    receiver = RealReceiver.open!()
-    on_exit(fn -> RealReceiver.close!(receiver) end)
-    application = start_oban(ctx, 0)
-    observe_oban_jobs(ctx)
-    engine = start_oban(ctx, 1)
-    assert_notifier_connected(application)
-    assert_notifier_connected(engine)
+      assert %{rows: [[^name]]} =
+               ctx.owner.query!("SELECT name FROM row_security_oban.oban_peers")
+    end
 
-    # Listen as the engine login, independently of either instance's name.
-    listener =
-      start_supervised!(
-        {Postgrex.Notifications,
-         ctx.engine_repo.config()
-         |> Keyword.drop([:name, :pool, :pool_size])
-         |> Keyword.put(:sync_connect, true)
-         |> Keyword.put(:parameters, application_name: "ash_hooks_engine_listener")}
-      )
-
-    ref = Postgrex.Notifications.listen!(listener, "row_security_oban.oban_insert")
-    engine_role = ctx.engine_role
-
-    assert %{rows: [[^engine_role]]} =
-             ctx.owner.query!(
-               "SELECT usename FROM pg_stat_activity WHERE application_name = 'ash_hooks_engine_listener'"
-             )
-
-    for {tenant, _endpoint} <- seed(ctx, RealReceiver.url(receiver)) do
+    def oban_tenant_shape(ctx, tenant) do
+      receiver = RealReceiver.open!()
+      on_exit(fn -> RealReceiver.close!(receiver) end)
+      application = start_oban(ctx, 0)
+      observe_oban_jobs(ctx)
+      engine = start_oban(ctx, 1)
+      assert_notifier_connected(application)
+      assert_notifier_connected(engine)
+      [{^tenant, _endpoint}] = seed(ctx, RealReceiver.url(receiver), [tenant])
       enqueue_event(ctx, tenant)
-
-      assert_receive {:notification, ^listener, ^ref, "row_security_oban.oban_insert", payload},
-                     5_000
-
-      assert Jason.decode!(payload) == %{"queue" => "webhooks"}
+      [[id]] = ctx.owner.query!("SELECT id FROM row_security_oban.oban_jobs").rows
+      assert_receive {:row_security_job, ^id, state}, 15_000
+      assert state == :success
+      text = to_string(tenant)
+      assert [[^id, ^text, "completed", 1, %NaiveDateTime{}]] = oban_rows(ctx)
+      assert {:ok, %{records: [row]}} = Delivery.list(ctx.delivery, tenant: tenant)
+      assert row.status == :succeeded
+      expected = if ctx.tenant_shape == :custom, do: parse_tenant(tenant), else: tenant
+      expected = if is_atom(expected), do: to_string(expected), else: expected
+      assert row.tenant_id == expected
+      assert %{rows: [[0]]} = ctx.repo.query!("SELECT count(*) FROM #{table(ctx.delivery)}")
+      assert length(RealReceiver.requests!(receiver)) == 1
     end
 
-    for [id] <- ctx.owner.query!("SELECT id FROM row_security_oban.oban_jobs").rows do
-      assert_receive {:row_security_job, ^id, :success}, 15_000
+    defp assert_notifier_connected(instance, remaining \\ 100) do
+      if Oban.Notifier.status(instance) in [:unknown, :isolated] and remaining > 0 do
+        Process.sleep(50)
+        assert_notifier_connected(instance, remaining - 1)
+      else
+        assert Oban.Notifier.status(instance) in [:solitary, :clustered]
+      end
     end
 
-    assert [
-             [_, "tenant_a", "completed", 1, %NaiveDateTime{}],
-             [_, "tenant_b", "completed", 1, %NaiveDateTime{}]
-           ] = oban_rows(ctx)
+    def oban_engine_retry(ctx) do
+      receiver = RealReceiver.open!(status: 503, headers: %{"Retry-After" => "60"})
+      on_exit(fn -> RealReceiver.close!(receiver) end)
+      start_oban(ctx, 0)
+      observe_oban_jobs(ctx)
 
-    for tenant <- ["tenant_a", "tenant_b"] do
-      assert {:ok, %{records: [%{status: :succeeded, attempts: 1}]}} =
-               Delivery.list(ctx.delivery, tenant: tenant)
+      for {tenant, _endpoint} <- seed(ctx, RealReceiver.url(receiver)),
+          do: enqueue_event(ctx, tenant)
+
+      start_oban(ctx, 1)
+
+      for [id] <- ctx.owner.query!("SELECT id FROM row_security_oban.oban_jobs").rows do
+        assert_receive {:row_security_job, ^id, :snoozed}, 15_000
+      end
+
+      assert [
+               [_, "tenant_a", "scheduled", 0, %NaiveDateTime{}],
+               [_, "tenant_b", "scheduled", 0, %NaiveDateTime{}]
+             ] = oban_rows(ctx)
+
+      for tenant <- ["tenant_a", "tenant_b"] do
+        assert {:ok,
+                %{records: [%{status: :failed_retryable, attempts: 1, response_status: 503}]}} =
+                 Delivery.list(ctx.delivery, tenant: tenant)
+      end
+
+      assert length(RealReceiver.requests!(receiver)) == 2
     end
 
-    assert length(RealReceiver.requests!(receiver)) == 2
-    assert Oban.Peer.leader?(engine)
-    name = inspect(engine)
+    def oban_engine_maintenance(ctx) do
+      start_oban(ctx, 0)
 
-    assert %{rows: [[^name]]} =
-             ctx.owner.query!("SELECT name FROM row_security_oban.oban_peers")
-  end
+      for {tenant, _endpoint} <- seed(ctx), do: enqueue_event(ctx, tenant)
 
-  def oban_tenant_shape(ctx, tenant) do
-    receiver = RealReceiver.open!()
-    on_exit(fn -> RealReceiver.close!(receiver) end)
-    application = start_oban(ctx, 0)
-    observe_oban_jobs(ctx)
-    engine = start_oban(ctx, 1)
-    assert_notifier_connected(application)
-    assert_notifier_connected(engine)
-    [{^tenant, _endpoint}] = seed(ctx, RealReceiver.url(receiver), [tenant])
-    enqueue_event(ctx, tenant)
-    [[id]] = ctx.owner.query!("SELECT id FROM row_security_oban.oban_jobs").rows
-    assert_receive {:row_security_job, ^id, state}, 15_000
-    assert state == :success
-    text = to_string(tenant)
-    assert [[^id, ^text, "completed", 1, %NaiveDateTime{}]] = oban_rows(ctx)
-    assert {:ok, %{records: [row]}} = Delivery.list(ctx.delivery, tenant: tenant)
-    assert row.status == :succeeded
-    expected = if ctx.tenant_shape == :custom, do: parse_tenant(tenant), else: tenant
-    expected = if is_atom(expected), do: to_string(expected), else: expected
-    assert row.tenant_id == expected
-    assert %{rows: [[0]]} = ctx.repo.query!("SELECT count(*) FROM #{table(ctx.delivery)}")
-    assert length(RealReceiver.requests!(receiver)) == 1
-  end
+      {Oban, options} = Enum.fetch!(oban_children(ctx), 1)
+      config = Oban.Config.new(options)
 
-  defp assert_notifier_connected(instance, remaining \\ 100) do
-    if Oban.Notifier.status(instance) in [:unknown, :isolated] and remaining > 0 do
-      Process.sleep(50)
-      assert_notifier_connected(instance, remaining - 1)
-    else
-      assert Oban.Notifier.status(instance) in [:solitary, :clustered]
-    end
-  end
+      ctx.owner.query!("""
+      UPDATE row_security_oban.oban_jobs
+      SET state = 'scheduled', scheduled_at = now() - interval '1 day'
+      """)
 
-  def oban_engine_retry(ctx) do
-    receiver = RealReceiver.open!(status: 503, headers: %{"Retry-After" => "60"})
-    on_exit(fn -> RealReceiver.close!(receiver) end)
-    start_oban(ctx, 0)
-    observe_oban_jobs(ctx)
+      assert {:ok, staged} = Basic.stage_jobs(config, Oban.Job, limit: 10)
+      assert length(staged) == 2
 
-    for {tenant, _endpoint} <- seed(ctx, RealReceiver.url(receiver)),
-        do: enqueue_event(ctx, tenant)
+      ctx.owner.query!("""
+      UPDATE row_security_oban.oban_jobs
+      SET state = 'executing', attempted_at = now() - interval '1 day',
+          attempt = CASE WHEN args->>'tenant' = 'tenant_b' THEN max_attempts ELSE 1 END
+      """)
 
-    start_oban(ctx, 1)
+      assert {:ok, rescued} =
+               Basic.rescue_jobs(config, Oban.Job, rescue_after: 60_000)
 
-    for [id] <- ctx.owner.query!("SELECT id FROM row_security_oban.oban_jobs").rows do
-      assert_receive {:row_security_job, ^id, :snoozed}, 15_000
+      assert Enum.sort(Enum.map(rescued, & &1.state)) == ["available", "discarded"]
+
+      assert [
+               [_, "tenant_a", "available", 1, %NaiveDateTime{}],
+               [_, "tenant_b", "discarded", 20, %NaiveDateTime{}]
+             ] = oban_rows(ctx)
+
+      ctx.owner.query!("""
+      UPDATE row_security_oban.oban_jobs
+      SET state = 'completed' WHERE args->>'tenant' = 'tenant_a'
+      """)
+
+      ctx.owner.query!("""
+      UPDATE row_security_oban.oban_jobs
+      SET discarded_at = now() - interval '1 day' WHERE args->>'tenant' = 'tenant_b'
+      """)
+
+      assert {:ok, pruned} =
+               Basic.prune_jobs(config, Oban.Job, max_age: 60, limit: 10)
+
+      assert length(pruned) == 2
+      assert oban_rows(ctx) == []
     end
 
-    assert [
-             [_, "tenant_a", "scheduled", 0, %NaiveDateTime{}],
-             [_, "tenant_b", "scheduled", 0, %NaiveDateTime{}]
-           ] = oban_rows(ctx)
+    def oban_engine_errors(ctx) do
+      receiver = RealReceiver.open!(status: 503)
+      on_exit(fn -> RealReceiver.close!(receiver) end)
+      start_oban(ctx, 0)
+      observe_oban_jobs(ctx)
 
-    for tenant <- ["tenant_a", "tenant_b"] do
-      assert {:ok, %{records: [%{status: :failed_retryable, attempts: 1, response_status: 503}]}} =
-               Delivery.list(ctx.delivery, tenant: tenant)
+      for {tenant, _endpoint} <- seed(ctx, RealReceiver.url(receiver)),
+          do: enqueue_event(ctx, tenant)
+
+      # A real database rejection after the real 503 exercises the driver's
+      # execution-error path. Ordinary HTTP retries snooze rather than error.
+      ctx.owner.query!("""
+      ALTER TABLE #{table(ctx.delivery)} ADD CONSTRAINT row_security_finalization
+      CHECK (status <> 'failed_retryable')
+      """)
+
+      on_exit(fn ->
+        ctx.owner.query!(
+          "ALTER TABLE #{table(ctx.delivery)} DROP CONSTRAINT row_security_finalization"
+        )
+      end)
+
+      # Seed the second trigger at its final allowed Oban attempt. The engine
+      # must fetch it and discard it through its normal executor acknowledgment.
+      ctx.owner.query!("""
+      UPDATE row_security_oban.oban_jobs SET attempt = max_attempts - 1
+      WHERE args->>'tenant' = 'tenant_b'
+      """)
+
+      start_oban(ctx, 1)
+
+      [[a_id, _, _, _, _], [b_id, _, _, _, _]] = oban_rows(ctx)
+      assert_receive {:row_security_job, ^a_id, :failure}, 15_000
+      assert_receive {:row_security_job, ^b_id, :discard}, 15_000
+
+      assert [
+               [^a_id, "tenant_a", "retryable", 1, %NaiveDateTime{}],
+               [^b_id, "tenant_b", "discarded", 20, %NaiveDateTime{}]
+             ] = oban_rows(ctx)
+
+      assert %{rows: [[1], [1]]} =
+               ctx.owner.query!(
+                 "SELECT cardinality(errors) FROM row_security_oban.oban_jobs ORDER BY args->>'tenant'"
+               )
+
+      assert length(RealReceiver.requests!(receiver)) == 2
     end
 
-    assert length(RealReceiver.requests!(receiver)) == 2
-  end
+    defp tenant_phase(ctx, tenant, fun) do
+      Ash.DataLayer.transaction(ctx.delivery, fun, nil, %{
+        type: :custom,
+        tenant: tenant,
+        metadata: %{}
+      })
+    end
 
-  def oban_engine_maintenance(ctx) do
-    start_oban(ctx, 0)
+    defp enqueue_event(ctx, tenant) do
+      {:ok, event} = AshHooks.Event.new(type: :event, payload: Jason.encode!(%{tenant: tenant}))
 
-    for {tenant, _endpoint} <- seed(ctx), do: enqueue_event(ctx, tenant)
+      assert {:ok, [%{status: :created}]} =
+               Dispatcher.dispatch(ctx.emitter, :event, event,
+                 tenant: tenant,
+                 enqueue: {ctx.worker, :enqueue}
+               )
 
-    {Oban, options} = Enum.fetch!(oban_children(ctx), 1)
-    config = Oban.Config.new(options)
+      event
+    end
 
-    ctx.owner.query!("""
-    UPDATE row_security_oban.oban_jobs
-    SET state = 'scheduled', scheduled_at = now() - interval '1 day'
-    """)
+    defp oban_rows(ctx) do
+      ctx.owner.query!("""
+      SELECT id, args->>'tenant', state, attempt, attempted_at
+      FROM row_security_oban.oban_jobs ORDER BY args->>'tenant'
+      """).rows
+    end
 
-    assert {:ok, staged} = Basic.stage_jobs(config, Oban.Job, limit: 10)
-    assert length(staged) == 2
+    defp observe_oban_jobs(ctx) do
+      parent = self()
+      engine = Module.concat(ctx.namespace, :ObanEngine)
+      handler = {__MODULE__, make_ref()}
 
-    ctx.owner.query!("""
-    UPDATE row_security_oban.oban_jobs
-    SET state = 'executing', attempted_at = now() - interval '1 day',
-        attempt = CASE WHEN args->>'tenant' = 'tenant_b' THEN max_attempts ELSE 1 END
-    """)
-
-    assert {:ok, rescued} =
-             Basic.rescue_jobs(config, Oban.Job, rescue_after: 60_000)
-
-    assert Enum.sort(Enum.map(rescued, & &1.state)) == ["available", "discarded"]
-
-    assert [
-             [_, "tenant_a", "available", 1, %NaiveDateTime{}],
-             [_, "tenant_b", "discarded", 20, %NaiveDateTime{}]
-           ] = oban_rows(ctx)
-
-    ctx.owner.query!("""
-    UPDATE row_security_oban.oban_jobs
-    SET state = 'completed' WHERE args->>'tenant' = 'tenant_a'
-    """)
-
-    ctx.owner.query!("""
-    UPDATE row_security_oban.oban_jobs
-    SET discarded_at = now() - interval '1 day' WHERE args->>'tenant' = 'tenant_b'
-    """)
-
-    assert {:ok, pruned} =
-             Basic.prune_jobs(config, Oban.Job, max_age: 60, limit: 10)
-
-    assert length(pruned) == 2
-    assert oban_rows(ctx) == []
-  end
-
-  def oban_engine_errors(ctx) do
-    receiver = RealReceiver.open!(status: 503)
-    on_exit(fn -> RealReceiver.close!(receiver) end)
-    start_oban(ctx, 0)
-    observe_oban_jobs(ctx)
-
-    for {tenant, _endpoint} <- seed(ctx, RealReceiver.url(receiver)),
-        do: enqueue_event(ctx, tenant)
-
-    # A real database rejection after the real 503 exercises the driver's
-    # execution-error path. Ordinary HTTP retries snooze rather than error.
-    ctx.owner.query!("""
-    ALTER TABLE #{table(ctx.delivery)} ADD CONSTRAINT row_security_finalization
-    CHECK (status <> 'failed_retryable')
-    """)
-
-    on_exit(fn ->
-      ctx.owner.query!(
-        "ALTER TABLE #{table(ctx.delivery)} DROP CONSTRAINT row_security_finalization"
+      :telemetry.attach_many(
+        handler,
+        [[:oban, :job, :stop], [:oban, :job, :exception]],
+        fn _, _, %{conf: %{name: ^engine}, job: job, state: state}, _ ->
+          send(parent, {:row_security_job, job.id, state})
+        end,
+        nil
       )
-    end)
 
-    # Seed the second trigger at its final allowed Oban attempt. The engine
-    # must fetch it and discard it through its normal executor acknowledgment.
-    ctx.owner.query!("""
-    UPDATE row_security_oban.oban_jobs SET attempt = max_attempts - 1
-    WHERE args->>'tenant' = 'tenant_b'
-    """)
-
-    start_oban(ctx, 1)
-
-    [[a_id, _, _, _, _], [b_id, _, _, _, _]] = oban_rows(ctx)
-    assert_receive {:row_security_job, ^a_id, :failure}, 15_000
-    assert_receive {:row_security_job, ^b_id, :discard}, 15_000
-
-    assert [
-             [^a_id, "tenant_a", "retryable", 1, %NaiveDateTime{}],
-             [^b_id, "tenant_b", "discarded", 20, %NaiveDateTime{}]
-           ] = oban_rows(ctx)
-
-    assert %{rows: [[1], [1]]} =
-             ctx.owner.query!(
-               "SELECT cardinality(errors) FROM row_security_oban.oban_jobs ORDER BY args->>'tenant'"
-             )
-
-    assert length(RealReceiver.requests!(receiver)) == 2
-  end
-
-  defp tenant_phase(ctx, tenant, fun) do
-    Ash.DataLayer.transaction(ctx.delivery, fun, nil, %{
-      type: :custom,
-      tenant: tenant,
-      metadata: %{}
-    })
-  end
-
-  defp enqueue_event(ctx, tenant) do
-    {:ok, event} = AshHooks.Event.new(type: :event, payload: Jason.encode!(%{tenant: tenant}))
-
-    assert {:ok, [%{status: :created}]} =
-             Dispatcher.dispatch(ctx.emitter, :event, event,
-               tenant: tenant,
-               enqueue: {ctx.worker, :enqueue}
-             )
-
-    event
-  end
-
-  defp oban_rows(ctx) do
-    ctx.owner.query!("""
-    SELECT id, args->>'tenant', state, attempt, attempted_at
-    FROM row_security_oban.oban_jobs ORDER BY args->>'tenant'
-    """).rows
-  end
-
-  defp observe_oban_jobs(ctx) do
-    parent = self()
-    engine = Module.concat(ctx.namespace, :ObanEngine)
-    handler = {__MODULE__, make_ref()}
-
-    :telemetry.attach_many(
-      handler,
-      [[:oban, :job, :stop], [:oban, :job, :exception]],
-      fn _, _, %{conf: %{name: ^engine}, job: job, state: state}, _ ->
-        send(parent, {:row_security_job, job.id, state})
-      end,
-      nil
-    )
-
-    on_exit(fn -> :telemetry.detach(handler) end)
+      on_exit(fn -> :telemetry.detach(handler) end)
+    end
   end
 
   def driver_state_phases(ctx) do
