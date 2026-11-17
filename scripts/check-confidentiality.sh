@@ -56,7 +56,9 @@ from pathlib import Path
 import sys
 import zipfile
 for path in list(Path(sys.argv[1]).rglob("*.epub")):
-    if not path.is_file():
+    # ExDoc writes this text manifest beside the actual EPUB archive.
+    # It remains included in the ordinary file scan below.
+    if not path.is_file() or path.name == ".build.epub":
         continue
     if not zipfile.is_zipfile(path):
         raise SystemExit(f"{path}: invalid EPUB archive ({path.stat().st_size} bytes)")

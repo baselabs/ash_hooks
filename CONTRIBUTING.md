@@ -80,7 +80,7 @@ job in a fresh BEAM process. It keeps the main lock, dependencies, and build fil
 unchanged by using `_build/ash-floor` for the minimum supported graph and removing it
 on exit. Ash requires Spark 2.7.6 or later; older Spark versions cannot resolve
 with the supported Ash floor. Opt-in
-public HTTPS checks are excluded from ordinary tests and CI.
+public HTTPS checks run in CI qualification and are excluded from ordinary tests.
 
 ## Documentation and confidentiality checks
 

@@ -93,7 +93,9 @@ replay_options = [
 
 {:ok, %{count: 1}} =
   AshHooks.OutboundEvent.replay(
-    MyApp.OutboundEvent, endpoint, Keyword.put(replay_options, :dry_run, true)
+    MyApp.OutboundEvent,
+    endpoint,
+    Keyword.put(replay_options, :dry_run, true)
   )
 
 {:ok, replay_counts} =

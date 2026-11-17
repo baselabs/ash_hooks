@@ -12,6 +12,7 @@ Attach next to the consumer's own data layer:
 
 
 <!-- not-run: This ledger fragment requires host attributes, domain, and data layer configuration. -->
+
     use Ash.Resource,
       data_layer: AshSqlite.DataLayer,
       extensions: [AshHooks, AshHooks.InboundDelivery]

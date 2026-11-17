@@ -27,8 +27,7 @@ defmodule MyApp.WebhookNetwork do
 
   @impl AshHooks.Transport
   def request(method, url, headers, body, opts) do
-    AshHooks.Http.Bounded.request(method, url, headers, body,
-      Keyword.put(opts, :timeout, 5_000))
+    AshHooks.Http.Bounded.request(method, url, headers, body, Keyword.put(opts, :timeout, 5_000))
   end
 end
 ```
@@ -46,6 +45,7 @@ run_config = [
   destination_policy: {MyApp.WebhookNetwork, :check},
   transport: {MyApp.WebhookNetwork, :transport}
 ]
+
 :ok = AshHooks.Delivery.run(%{"delivery_pk" => AshHooks.PrimaryKey.encode(delivery)}, run_config)
 sent_delivery = Ash.get!(MyApp.OutboundDelivery, delivery.id, authorize?: false)
 ```
@@ -93,8 +93,11 @@ Query health and schedule sweeps through trusted application code:
 
 <!-- tested: operations-health -->
 ```elixir
-{:ok, health} = AshHooks.EndpointHealth.stats(MyApp.OutboundAttempt,
-  endpoint_id: endpoint.id, window_seconds: 3_600)
+{:ok, health} =
+  AshHooks.EndpointHealth.stats(MyApp.OutboundAttempt,
+    endpoint_id: endpoint.id,
+    window_seconds: 3_600
+  )
 
 sweep_result = AshHooks.EndpointHealth.sweep(MyApp.WebhookEndpoint, MyApp.OutboundAttempt)
 

@@ -10,6 +10,7 @@ its enable/disable state and references to signing secrets.
 
 
 <!-- not-run: This resource fragment requires a host resource with its own attributes and data layer configuration. -->
+
     use Ash.Resource,
       data_layer: AshSqlite.DataLayer,
       extensions: [AshHooks.Endpoint]

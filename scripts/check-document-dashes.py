@@ -31,6 +31,9 @@ def check(package=None, docs=None):
             if path.suffix == ".html":
                 offenses.extend(lines(path, path.read_bytes()))
             elif path.suffix == ".epub":
+                if path.name == ".build.epub":
+                    offenses.extend(lines(path, path.read_bytes()))
+                    continue
                 with zipfile.ZipFile(path) as book:
                     for name in book.namelist():
                         offenses.extend(lines(f"{path}/{name}", book.read(name)))

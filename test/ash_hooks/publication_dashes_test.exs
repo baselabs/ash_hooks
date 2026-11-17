@@ -58,6 +58,7 @@ defmodule AshHooks.PublicationDashesTest do
         archive.addfile(member, io.BytesIO(data))
     docs = root / "docs"
     docs.mkdir(exist_ok=True)
+    (docs / ".build.epub").write_text("reference.epub\n")
     (docs / "index.html").write_bytes(text if surface == "html" else clean)
     with zipfile.ZipFile(docs / "reference.epub", "w") as book:
         book.writestr("EPUB/index.xhtml", text if surface == "epub" else clean)

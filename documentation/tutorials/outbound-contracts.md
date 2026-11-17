@@ -86,34 +86,47 @@ for the resolver from get started. The URL must be safe for the chosen transport
 {:ok, [catalog_entry]} = AshHooks.Catalog.entries(MyApp.Order)
 {:ok, ^catalog_entry} = AshHooks.Catalog.entry(MyApp.Order, :order_paid)
 
-{:ok, endpoint} = Ash.create(MyApp.WebhookEndpoint, %{
-  url: System.fetch_env!("PUBLIC_WEBHOOK_TEST_URL"),
-  secret_ref: "outbound-main",
-  pinned_payload_version: 1
-}, authorize?: false)
+{:ok, endpoint} =
+  Ash.create(
+    MyApp.WebhookEndpoint,
+    %{
+      url: System.fetch_env!("PUBLIC_WEBHOOK_TEST_URL"),
+      secret_ref: "outbound-main",
+      pinned_payload_version: 1
+    }, authorize?: false)
 
-{:ok, _subscription} = Ash.create(MyApp.WebhookSubscription, %{
-  endpoint_id: endpoint.id,
-  event_types: ["order_paid"],
-  event_filters: %{"region" => ["us", "ca"]}
-}, authorize?: false)
+{:ok, _subscription} =
+  Ash.create(
+    MyApp.WebhookSubscription,
+    %{
+      endpoint_id: endpoint.id,
+      event_types: ["order_paid"],
+      event_filters: %{"region" => ["us", "ca"]}
+    }, authorize?: false)
 
-{:ok, event} = AshHooks.Event.new(
-  id: "msg_contract-order-1",
-  type: :order_paid,
-  payload: Jason.encode!(%{order_id: "order-1", schema_version: 2}),
-  metadata: %{"region" => "us"}
-)
+{:ok, event} =
+  AshHooks.Event.new(
+    id: "msg_contract-order-1",
+    type: :order_paid,
+    payload: Jason.encode!(%{order_id: "order-1", schema_version: 2}),
+    metadata: %{"region" => "us"}
+  )
 
 {:ok, [%{status: :deferred}]} = AshHooks.dispatch(MyApp.Order, :order_paid, event)
+
 {:ok, %{records: [delivery]}} =
   AshHooks.Delivery.list(MyApp.OutboundDelivery, endpoint_id: endpoint.id)
+
 %{"order_id" => "order-1"} = Jason.decode!(delivery.payload)
 
-{:ok, excluded} = AshHooks.Event.new(
-  id: "msg_contract-order-2", type: :order_paid,
-  payload: event.payload, metadata: %{"region" => "eu"}
-)
+{:ok, excluded} =
+  AshHooks.Event.new(
+    id: "msg_contract-order-2",
+    type: :order_paid,
+    payload: event.payload,
+    metadata: %{"region" => "eu"}
+  )
+
 {:ok, []} = AshHooks.dispatch(MyApp.Order, :order_paid, excluded)
 ```
 
