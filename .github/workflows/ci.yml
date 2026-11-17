@@ -111,7 +111,6 @@ jobs:
     env:
       MIX_ENV: test
       ASH_HOOKS_POSTGRES: "1"
-      ASH_HOOKS_HTTPBUN: "1"
       ASH_HOOKS_TEST_PG_HOST: localhost
       ASH_HOOKS_TEST_PG_PORT: "5432"
       ASH_HOOKS_TEST_PG_USER: postgres
