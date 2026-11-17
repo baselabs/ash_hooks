@@ -110,16 +110,6 @@ defmodule AshHooks.Ingress do
   @prune_default_batch_size 100
   @prune_max_batch_size 1_000
 
-  # Transient sqlite write-lock contention (pool > 1 consumers on the
-  # best-effort sqlite leg): the fenced ops are idempotent or gate-reevaluated,
-  # so a bounded wall-clock retry converts busy/locked errors into convergence
-  # instead of surfacing them to the caller. Classified NARROWLY by exqlite's
-  # busy/locked error text; no other data layer's errors can match, so e.g.
-  # postgres consumers see zero behavior change.
-  @transient_retry_deadline_ms 2_000
-  @transient_retry_spacing_ms 100
-  @transient_retry_jitter_ms 50
-
   @doc "Builds the legacy provider-identity adoption audit without writing rows."
   defdelegate plan_legacy_identity_adoption(resource, name, opts \\ []),
     to: AshHooks.InboundDelivery.LegacyAdoption,
@@ -488,7 +478,7 @@ defmodule AshHooks.Ingress do
     id = Ash.UUID.generate()
     input = Map.put(input, :id, id)
 
-    with_transient_retry(fn ->
+    AshHooks.Contention.run(fn ->
       case AshHooks.Phase.run(
              resource,
              tenant,
@@ -517,7 +507,7 @@ defmodule AshHooks.Ingress do
   end
 
   defp pre_read_create(resource, input, env, tenant) do
-    with_transient_retry(fn ->
+    AshHooks.Contention.run(fn ->
       AshHooks.Phase.run(
         resource,
         tenant,
@@ -545,17 +535,15 @@ defmodule AshHooks.Ingress do
   # repeat across accounts/connections
   defp fetch_ingested(resource, env, tenant) do
     result =
-      with_transient_retry(fn ->
-        AshHooks.Phase.run(
-          resource
-          |> Ash.Query.do_filter(
-            [provider: env.name, external_event_id: env.external_event_id] ++
-              Map.to_list(env.scope)
-          ),
-          tenant,
-          &Ash.read_one(&1, authorize?: false, tenant: tenant)
-        )
-      end)
+      AshHooks.Phase.run(
+        resource
+        |> Ash.Query.do_filter(
+          [provider: env.name, external_event_id: env.external_event_id] ++
+            Map.to_list(env.scope)
+        ),
+        tenant,
+        &Ash.read_one(&1, authorize?: false, tenant: tenant)
+      )
 
     case result do
       {:ok, nil} -> :missing
@@ -608,7 +596,7 @@ defmodule AshHooks.Ingress do
       # spends contention time sleeping must not grant a lease that is
       # shorter than configured or already expired.
       result =
-        with_transient_retry(fn ->
+        AshHooks.Contention.run(fn ->
           attempt_now = now()
           lease_expires_at = DateTime.add(attempt_now, lease_seconds(resource), :second)
 
@@ -685,7 +673,7 @@ defmodule AshHooks.Ingress do
       primary_key = Ash.Resource.Info.primary_key(resource)
 
       result =
-        with_transient_retry(fn ->
+        AshHooks.Contention.run(fn ->
           AshHooks.Phase.bulk(
             resource
             |> Ash.Query.filter(
@@ -886,15 +874,13 @@ defmodule AshHooks.Ingress do
       now = now()
 
       expired =
-        with_transient_retry(fn ->
-          AshHooks.Phase.run(
-            resource
-            |> claim_alias_filter(nil)
-            |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now),
-            tenant,
-            &Ash.read!(&1, authorize?: false, tenant: tenant)
-          )
-        end)
+        AshHooks.Phase.run(
+          resource
+          |> claim_alias_filter(nil)
+          |> Ash.Query.filter(status == :claimed and lease_expires_at < ^now),
+          tenant,
+          &Ash.read!(&1, authorize?: false, tenant: tenant)
+        )
 
       re_driven =
         expired
@@ -1183,13 +1169,13 @@ defmodule AshHooks.Ingress do
     # the reload after a successful mark must not crash the caller for a
     # delivered-and-processed event under read contention (consumer journal
     # modes can block readers on writers)
-    with_transient_retry(fn -> read_by_key(resource, delivery_id, tenant) end)
+    read_by_key(resource, delivery_id, tenant)
   end
 
   defp gated_update(resource, delivery_id, token, action, input, tenant) do
     with {:ok, key} <- normalize_primary_key(resource, delivery_id) do
       result =
-        with_transient_retry(fn ->
+        AshHooks.Contention.run(fn ->
           AshHooks.Phase.bulk(
             resource
             |> Ash.Query.do_filter(key)
@@ -1254,55 +1240,6 @@ defmodule AshHooks.Ingress do
 
   defp result(true), do: :created
   defp result(false), do: :duplicate
-
-  # Bounded wall-clock retry for transient sqlite write-lock contention:
-  # while the result's error classifies as exqlite busy/locked and the
-  # deadline holds, sleep a jittered spacing and re-run. Every other result
-  # (ok, :lease_held, :stale_token, any non-busy error) returns immediately;
-  # the classifier is the whole safety story.
-  defp with_transient_retry(fun),
-    do: with_transient_retry(fun, System.monotonic_time(:millisecond))
-
-  defp with_transient_retry(fun, started_at) do
-    result = fun.()
-
-    if transient_retryable?(result) and
-         System.monotonic_time(:millisecond) - started_at < @transient_retry_deadline_ms do
-      Process.sleep(@transient_retry_spacing_ms + :rand.uniform(@transient_retry_jitter_ms))
-      with_transient_retry(fun, started_at)
-    else
-      result
-    end
-  end
-
-  defp transient_retryable?({:error, error}), do: transient_sqlite_contention?(error)
-
-  defp transient_retryable?(%Ash.BulkResult{status: :error, errors: [_ | _] = errors}),
-    do: Enum.all?(errors, &transient_sqlite_contention?/1)
-
-  defp transient_retryable?(_other), do: false
-
-  # exqlite surfaces busy/locked as a string-wrapped
-  # Ash.Error.Unknown.UnknownError (probe 2026-08-21); match its text
-  # narrowly so only sqlite contention ever retries.
-  defp transient_sqlite_contention?(%Ash.Error.Unknown{} = error) do
-    Enum.any?(error.errors, &transient_sqlite_contention?/1)
-  end
-
-  defp transient_sqlite_contention?(%Ash.Error.Unknown.UnknownError{error: inner}) do
-    # splode's to_class flatten path can store a raw non-string term here;
-    # `to_string` would raise Protocol.UndefinedError and relabel the real
-    # error; inspect it instead.
-    inner = if is_binary(inner), do: inner, else: inspect(inner)
-    String.contains?(inner, "Exqlite.Error") and contentiously_busy?(inner)
-  end
-
-  defp transient_sqlite_contention?(_other), do: false
-
-  defp contentiously_busy?(inner) do
-    down = String.downcase(inner)
-    String.contains?(down, "database busy") or String.contains?(down, "database is locked")
-  end
 
   # resolve/4: provider + inbound entity + secret + verification + decode +
   # digest + external id + parsed type. Nothing here writes to the ledger.

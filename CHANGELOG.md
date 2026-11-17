@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Ingress and dispatch share one bounded SQLite contention policy for fenced
+  or idempotent writes. Mixed error sets and reads are never retried.
+
 - Development and CI runtime versions come from `.tool-versions` files. CI
   tests the version-file parser before constructing its matrix.
 

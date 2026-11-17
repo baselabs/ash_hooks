@@ -184,7 +184,11 @@ if Code.ensure_loaded?(AshSqlite) do
 
       {:ok, _boot} = BusyRepo.start_link()
 
-      on_exit(fn -> File.rm(db_path) end)
+      on_exit(fn ->
+        if Process.whereis(BusyRepo), do: BusyRepo.stop(30_000)
+        Application.delete_env(:ash_hooks, BusyRepo)
+        for suffix <- ["", "-wal", "-shm"], do: File.rm(db_path <> suffix)
+      end)
 
       :ok
     end

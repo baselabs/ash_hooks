@@ -309,7 +309,7 @@ defmodule AshHooks.Dispatcher do
   # matched-records count is the win signal; the stale loser re-reads and
   # sees the row someone else already claimed).
   defp claim_for_enqueue_result(deliv_mod, row, tenant) do
-    with_transient_retry(fn ->
+    AshHooks.Contention.run(fn ->
       AshHooks.Phase.bulk(
         deliv_mod
         |> Ash.Query.do_filter(PrimaryKey.filter(row))
@@ -356,7 +356,7 @@ defmodule AshHooks.Dispatcher do
   defp dispatch_with_supplied_id(deliv_mod, input, tenant) do
     id = Ash.UUID.generate()
 
-    case with_transient_retry(fn ->
+    case AshHooks.Contention.run(fn ->
            AshHooks.Phase.run(
              deliv_mod,
              tenant,
@@ -382,7 +382,7 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp create_pre_read_row(deliv_mod, input, tenant) do
-    with_transient_retry(fn ->
+    AshHooks.Contention.run(fn ->
       AshHooks.Phase.run(
         deliv_mod,
         tenant,
@@ -402,14 +402,12 @@ defmodule AshHooks.Dispatcher do
 
   defp fetch_delivery(deliv_mod, endpoint_id, event_uuid, tenant) do
     result =
-      with_transient_retry(fn ->
-        AshHooks.Phase.run(
-          deliv_mod
-          |> Ash.Query.filter(endpoint_id == ^endpoint_id and event_uuid == ^event_uuid),
-          tenant,
-          &Ash.read_one(&1, authorize?: false, tenant: tenant)
-        )
-      end)
+      AshHooks.Phase.run(
+        deliv_mod
+        |> Ash.Query.filter(endpoint_id == ^endpoint_id and event_uuid == ^event_uuid),
+        tenant,
+        &Ash.read_one(&1, authorize?: false, tenant: tenant)
+      )
 
     case result do
       {:ok, nil} -> :missing
@@ -489,7 +487,7 @@ defmodule AshHooks.Dispatcher do
   # already moved on.
   defp mark_enqueue_failed(deliv_mod, row, reason, tenant) do
     result =
-      with_transient_retry(fn ->
+      AshHooks.Contention.run(fn ->
         # the reason arrives ALREADY classified (enqueue_result applied
         # error_string); re-classifying would mangle the prefixed forms
         AshHooks.Phase.bulk(
@@ -514,14 +512,12 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp reload(deliv_mod, row, tenant) do
-    case with_transient_retry(fn ->
-           AshHooks.Phase.run(
-             deliv_mod
-             |> Ash.Query.do_filter(PrimaryKey.filter(row)),
-             tenant,
-             &Ash.read_one(&1, authorize?: false, tenant: tenant)
-           )
-         end) do
+    case AshHooks.Phase.run(
+           deliv_mod
+           |> Ash.Query.do_filter(PrimaryKey.filter(row)),
+           tenant,
+           &Ash.read_one(&1, authorize?: false, tenant: tenant)
+         ) do
       {:ok, row} when not is_nil(row) -> row
       _missing_or_error -> nil
     end
@@ -577,9 +573,7 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp read_subscriptions(subs_mod, tenant) do
-    case with_transient_retry(fn ->
-           AshHooks.Phase.run(subs_mod, tenant, &Ash.read(&1, authorize?: false, tenant: tenant))
-         end) do
+    case AshHooks.Phase.run(subs_mod, tenant, &Ash.read(&1, authorize?: false, tenant: tenant)) do
       {:ok, subscriptions} -> collect_pages(subscriptions, [], subs_mod, tenant)
       {:error, error} -> {:error, error}
     end
@@ -587,9 +581,7 @@ defmodule AshHooks.Dispatcher do
 
   defp collect_pages(%{results: results, more?: true} = page, acc, resource, tenant) do
     result =
-      with_transient_retry(fn ->
-        AshHooks.Phase.run(resource, tenant, fn -> Ash.page(page, :next) end)
-      end)
+      AshHooks.Phase.run(resource, tenant, fn -> Ash.page(page, :next) end)
 
     with {:ok, next} <- result do
       collect_pages(next, [results | acc], resource, tenant)
@@ -604,8 +596,7 @@ defmodule AshHooks.Dispatcher do
 
   # Endpoint resolution distinguishes three outcomes per subscription
   # : an ENABLED endpoint matches; a gone or disabled
-  # one is SKIPPED by design (no row, no entry); a READ ERROR after the
-  # transient retry is surfaced as a per-endpoint :endpoint_error result,
+  # one is SKIPPED by design (no row, no entry); a READ ERROR is surfaced as a per-endpoint :endpoint_error result,
   # never silently conflated with gone, or a transient blip would drop the
   # event with nothing recorded and nothing re-drivable.
   defp resolve_endpoints(subscriptions, endpoint_mod, tenant) do
@@ -627,17 +618,15 @@ defmodule AshHooks.Dispatcher do
   # misconfiguration skip a gone endpoint gets: tenant-enforced, no new
   # outcome shape.
   defp resolve_endpoint(subscription, endpoint_mod, tenant) do
-    case with_transient_retry(fn ->
-           AshHooks.Phase.run(
-             endpoint_mod,
-             tenant,
-             &Ash.get(&1.resource, subscription.endpoint_id,
-               authorize?: false,
-               tenant: tenant,
-               context: AshHooks.Phase.context(endpoint_mod)
-             )
+    case AshHooks.Phase.run(
+           endpoint_mod,
+           tenant,
+           &Ash.get(&1.resource, subscription.endpoint_id,
+             authorize?: false,
+             tenant: tenant,
+             context: AshHooks.Phase.context(endpoint_mod)
            )
-         end) do
+         ) do
       # the single enabled check: the injected status attribute or the
       # consumer-mapped switch; exactly one attribute decides
       {:ok, endpoint} ->
@@ -784,15 +773,13 @@ defmodule AshHooks.Dispatcher do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     result =
-      with_transient_retry(fn ->
-        AshHooks.Phase.run(
-          deliv_mod
-          |> Ash.Query.filter(dispatch_source == ^source)
-          |> recovery_candidate_filter(cutoff, now),
-          tenant,
-          &Ash.read(&1, authorize?: false, tenant: tenant)
-        )
-      end)
+      AshHooks.Phase.run(
+        deliv_mod
+        |> Ash.Query.filter(dispatch_source == ^source)
+        |> recovery_candidate_filter(cutoff, now),
+        tenant,
+        &Ash.read(&1, authorize?: false, tenant: tenant)
+      )
 
     case result do
       {:ok, rows} -> collect_pages(rows, [], deliv_mod, tenant)
@@ -1182,53 +1169,4 @@ defmodule AshHooks.Dispatcher do
     do: AshHooks.Telemetry.classify_token(Exception.message(exception))
 
   defp error_string(term), do: AshHooks.Telemetry.classify_token(term)
-
-  # ────────────────────────── transient contention retry ──────────────────────────
-  # As in inbound processing, concurrent dispatchers on the best-effort
-  # sqlite leg contend for the single write lock, and the dispatcher's ops
-  # are idempotent or CAS-gated, so a bounded wall-clock retry converts
-  # transient contention into convergence instead of an :endpoint_error.
-  # Classified NARROWLY by exqlite's error text; other data layers see
-  # zero behavior change.
-  @transient_retry_deadline_ms 2_000
-  @transient_retry_spacing_ms 100
-  @transient_retry_jitter_ms 50
-
-  defp with_transient_retry(fun),
-    do: with_transient_retry(fun, System.monotonic_time(:millisecond))
-
-  defp with_transient_retry(fun, started_at) do
-    result = fun.()
-
-    if transient_retryable?(result) and
-         System.monotonic_time(:millisecond) - started_at < @transient_retry_deadline_ms do
-      Process.sleep(@transient_retry_spacing_ms + :rand.uniform(@transient_retry_jitter_ms))
-      with_transient_retry(fun, started_at)
-    else
-      result
-    end
-  end
-
-  defp transient_retryable?({:error, error}), do: transient_sqlite_contention?(error)
-
-  defp transient_retryable?(%Ash.BulkResult{status: :error, errors: [_ | _] = errors}),
-    do: Enum.all?(errors, &transient_sqlite_contention?/1)
-
-  defp transient_retryable?(_other), do: false
-
-  defp transient_sqlite_contention?(%Ash.Error.Unknown{} = error) do
-    Enum.any?(error.errors, &transient_sqlite_contention?/1)
-  end
-
-  defp transient_sqlite_contention?(%Ash.Error.Unknown.UnknownError{error: inner}) do
-    inner = if is_binary(inner), do: inner, else: inspect(inner)
-    String.contains?(inner, "Exqlite.Error") and contentiously_busy?(inner)
-  end
-
-  defp transient_sqlite_contention?(_other), do: false
-
-  defp contentiously_busy?(inner) do
-    down = String.downcase(inner)
-    String.contains?(down, "database busy") or String.contains?(down, "database is locked")
-  end
 end
