@@ -56,7 +56,8 @@ defmodule AshHooks.Outbox do
     case result do
       {:ok, row, notifications} ->
         with {:ok, disposition} <- disposition(row, input) do
-          notifications = Enum.flat_map(notifications, &route_notification(&1, resource, Notifier))
+          notifications =
+            Enum.flat_map(notifications, &route_notification(&1, resource, Notifier))
 
           notify(resource, disposition, notifications, opts)
         end
