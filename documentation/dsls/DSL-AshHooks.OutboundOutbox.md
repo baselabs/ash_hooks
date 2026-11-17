@@ -29,7 +29,8 @@ Generate and apply a migration, including the tenant-leading
 uses native `json` to preserve integer and float kinds; keep that generated
 column type. Subscription filters still use `jsonb`. The extension declares
 tenant-leading partial indexes on `next_attempt_at` for pending rows and
-`failed_at` for failed rows in the data layer's migration configuration. The upsert requires both INSERT and UPDATE grants and row
+`failed_at` for failed rows in the data layer's migration configuration.
+The upsert requires both INSERT and UPDATE grants and row
 security policies. Host hooks, notifiers, and database triggers may issue
 additional statements beyond publish's single package statement.
 

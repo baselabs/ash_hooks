@@ -84,7 +84,9 @@ for {name, layer, shape} <- [
               attribute :event_types, {:array, :atom}, public?: true
 
             :custom ->
-              attribute :event_types, {:array, AshHooks.OutboxMatching.CustomString}, public?: true
+              attribute :event_types, {:array, AshHooks.OutboxMatching.CustomString},
+                public?: true
+
               attribute :event_filters, AshHooks.OutboxMatching.CustomMap, public?: true
               attribute :paused, AshHooks.OutboxMatching.CustomBoolean, default: false
 
