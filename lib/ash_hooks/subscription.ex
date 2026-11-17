@@ -176,7 +176,8 @@ defmodule AshHooks.Subscription do
   use Spark.Dsl.Extension,
     sections: [@section],
     transformers: [AshHooks.Subscription.Transformers.AddSubscriptionFields],
-    verifiers: [AshHooks.Verifiers.InjectedAttributes,
+    verifiers: [
+      AshHooks.Verifiers.InjectedAttributes,
       AshHooks.Verifiers.MultitenancyNoBypass,
       AshHooks.Verifiers.OutboundReferences
     ]

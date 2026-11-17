@@ -93,7 +93,10 @@ for {name, layer, shape} <- [
                 public?: true
 
               attribute :event_filters, AshHooks.OutboxMatching.CustomMap, public?: true
-              attribute :paused, AshHooks.OutboxMatching.CustomBoolean, allow_nil?: false, default: false
+
+              attribute :paused, AshHooks.OutboxMatching.CustomBoolean,
+                allow_nil?: false,
+                default: false
 
             :strings ->
               :ok

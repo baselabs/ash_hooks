@@ -487,5 +487,5 @@ defmodule AshHooks.OutboundEvent do
       AshHooks.OutboundEvent.Transformers.AddEventIdentity,
       AshHooks.OutboundEvent.Transformers.AddEventActions
     ],
-    verifiers: [AshHooks.Verifiers.InjectedAttributes,AshHooks.Verifiers.MultitenancyNoBypass]
+    verifiers: [AshHooks.Verifiers.InjectedAttributes, AshHooks.Verifiers.MultitenancyNoBypass]
 end

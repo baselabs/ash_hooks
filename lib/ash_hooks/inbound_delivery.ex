@@ -161,5 +161,9 @@ defmodule AshHooks.InboundDelivery do
       AshHooks.InboundDelivery.Transformers.AddLedgerIdentity,
       AshHooks.InboundDelivery.Transformers.AddFencedActions
     ],
-    verifiers: [AshHooks.Verifiers.InjectedAttributes,AshHooks.Verifiers.MultitenancyNoBypass, AshHooks.Verifiers.ProviderJsonDecoder]
+    verifiers: [
+      AshHooks.Verifiers.InjectedAttributes,
+      AshHooks.Verifiers.MultitenancyNoBypass,
+      AshHooks.Verifiers.ProviderJsonDecoder
+    ]
 end

@@ -33,6 +33,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
 
   defp attributes_spec(state, mapped) do
     base = if is_nil(mapped), do: attributes_spec(), else: mapped_attributes_spec()
+
     capture =
       if Extension.get_opt(state, [:endpoint], :response_capture_attributes, :off) == :on,
         do: capture_attributes_spec(),
@@ -47,7 +48,12 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
 
     custody_names =
       if Extension.get_opt(state, [:endpoint], :legacy_key_lifecycle, :off) == :on,
-        do: [:secret_kind, :previous_secret_kind, :legacy_secret_kind, :legacy_previous_secret_kind],
+        do: [
+          :secret_kind,
+          :previous_secret_kind,
+          :legacy_secret_kind,
+          :legacy_previous_secret_kind
+        ],
         else: [:secret_kind, :previous_secret_kind]
 
     custody =

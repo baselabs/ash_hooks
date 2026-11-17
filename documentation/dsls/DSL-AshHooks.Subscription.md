@@ -39,7 +39,11 @@ the `paused` column; the default `:off` adds no attribute or schema requirement.
 ## Typing contract
 
 Events carry string types. You can declare `event_types` yourself,
-including as an array of constrained atoms. Your declaration replaces the
+including as an array of atoms, with or without item constraints. Native
+`Ash.Type.NewType` subtypes of string, atom, map and Boolean are supported.
+`event_types` and, when enabled, `paused` must be non-null. `event_filters`
+may be nullable or non-null; null filters match. Other element types and
+incompatible overrides fail resource verification. Your declaration replaces the
 generated attribute, including its constraints and default. Atom and string
 entries match the same event names. The bare `"*"` or `:"*"` entry matches
 all event names.

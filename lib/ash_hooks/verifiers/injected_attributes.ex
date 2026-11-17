@@ -7,21 +7,33 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
   alias Spark.Error.DslError
 
   @families [
-    {AshHooks.Subscription, :subscription, AshHooks.Subscription.Transformers.AddSubscriptionFields},
+    {AshHooks.Subscription, :subscription,
+     AshHooks.Subscription.Transformers.AddSubscriptionFields},
     {AshHooks.Endpoint, :endpoint, AshHooks.Endpoint.Transformers.AddEndpointFields},
-    {AshHooks.OutboundDelivery, :outbound_delivery, AshHooks.OutboundDelivery.Transformers.AddDeliveryFields},
-    {AshHooks.OutboundAttempt, :outbound_attempt, AshHooks.OutboundAttempt.Transformers.AddAttemptFields},
+    {AshHooks.OutboundDelivery, :outbound_delivery,
+     AshHooks.OutboundDelivery.Transformers.AddDeliveryFields},
+    {AshHooks.OutboundAttempt, :outbound_attempt,
+     AshHooks.OutboundAttempt.Transformers.AddAttemptFields},
     {AshHooks.OutboundEvent, :outbound_event, AshHooks.OutboundEvent.Transformers.AddEventFields},
-    {AshHooks.InboundDelivery, :inbound_delivery, AshHooks.InboundDelivery.Transformers.AddLedgerFields},
-    {AshHooks.InboundSource, :inbound_source, AshHooks.InboundSource.Transformers.AddSourceFields},
+    {AshHooks.InboundDelivery, :inbound_delivery,
+     AshHooks.InboundDelivery.Transformers.AddLedgerFields},
+    {AshHooks.InboundSource, :inbound_source,
+     AshHooks.InboundSource.Transformers.AddSourceFields},
     {AshHooks.KeyRegistry, :key_registry, AshHooks.KeyRegistry.Transformers.AddRegistry},
     {AshHooks.OutboundOutbox, :outbox, AshHooks.OutboundOutbox.Transformers.AddOutbox}
   ]
 
   def verify(state) do
     for {extension, section, transformer} <- @families,
-        extension in Spark.extensions(state),
-        {name, type, opts} <- transformer.attributes_spec(state) do
+        extension in Spark.extensions(state) do
+      verify_attributes!(state, section, transformer.attributes_spec(state))
+    end
+
+    :ok
+  end
+
+  def verify_attributes!(state, section, specs) do
+    for {name, type, opts} <- specs do
       {:ok, expected} = Builder.build_attribute(name, type, opts)
       actual = Enum.find(Verifier.get_entities(state, [:attributes]), &(&1.name == name))
       verify_attribute!(state, section, actual, expected)
@@ -42,12 +54,17 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
         message:
           "attribute #{inspect(actual.name)} declares #{inspect(actual.type)}, " <>
             "allow_nil?: #{inspect(actual.allow_nil?)}, constraints: #{inspect(actual.constraints)}; " <>
-            "accepted shapes: #{accepted_types(section, expected)}; #{inspect(nullable)} nullability"
+            "must match accepted shapes: #{accepted_types(section, expected)}; #{inspect(nullable)} nullability"
     end
   end
 
   # The consumer owns filters. Both nil and a map have defined matching semantics.
-  defp nullability(:subscription, %{name: :event_filters}), do: :either
+  defp nullability(:subscription, %{name: name}) when name in [:event_filters, :signing_mode],
+    do: :either
+
+  defp nullability(:endpoint, %{name: name})
+       when name in [:status, :response_capture, :response_capture_retention_seconds],
+       do: :either
   defp nullability(_section, %{allow_nil?: false}), do: :required
   # Other nullable fields are cleared or supplied as nil by package actions.
   defp nullability(_section, _expected), do: :nullable

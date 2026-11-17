@@ -47,7 +47,7 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptFields do
 
   defp add_attributes(dsl_state) do
     Enum.reduce_while(attributes_spec(dsl_state), {:ok, dsl_state}, fn {name, type, opts},
-                                                              {:ok, dsl_state} ->
+                                                                       {:ok, dsl_state} ->
       {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
     end)
   end

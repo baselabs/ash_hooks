@@ -2,6 +2,7 @@ defmodule AshHooks.InboundSource.Transformers.AddSourceFields do
   @moduledoc false
   use Spark.Dsl.Transformer
   alias Ash.Resource.Builder
+  alias AshHooks.Verifiers.InjectedAttributes
   alias Spark.Dsl.{Extension, Transformer}
   alias Spark.Error.DslError
 
@@ -18,6 +19,7 @@ defmodule AshHooks.InboundSource.Transformers.AddSourceFields do
     with :ok <- check_roles(state, roles),
          {:ok, state} <- primary_key(state),
          {:ok, state} <- inject(state, attributes_spec(state)) do
+      InjectedAttributes.verify_attributes!(state, :inbound_source, attributes_spec(state))
       Builder.add_identity(state, :unique_source, roles)
     end
   end

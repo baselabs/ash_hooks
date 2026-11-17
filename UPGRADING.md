@@ -18,15 +18,17 @@ Restore the injected type or a supported variant and migrate incompatible
 stored values before changing the column type. The following table lists
 all injected fields; optional groups apply only when their DSL option is on.
 `required` means `allow_nil?: false`; `nullable` means `allow_nil?: true`
-because package actions write or clear nil. Host-owned `event_filters` accepts
-either nullability. Ordinary defaults, constraints and writable settings keep
+because package actions write or clear nil. Host-owned `event_filters` and subscription `signing_mode` accept either
+nullability. Endpoint `status`, `response_capture` and
+`response_capture_retention_seconds` also accept either nullability: nil status
+is disabled, nil capture is off, and retention is a host pruning setting. Ordinary defaults, constraints and writable settings keep
 their existing contracts.
 
 | Resource | Type and fields | Nullability |
 | --- | --- | --- |
 | Subscription | string or atom array: `event_types`; Boolean: `paused` under `pausable :on`; UUID reference: `endpoint_id` | required |
 | Subscription | map: `event_filters` under `filter_attributes` | either |
-| Subscription | atom: `signing_mode` | nullable |
+| Subscription | atom: `signing_mode` | either |
 | Endpoint | `AshHooks.Endpoint.Url`: `url`; atom: `status`; `AshHooks.Endpoint.SecretRef` or string: `secret_ref` | required; optional native signing makes `secret_ref` nullable |
 | Endpoint | SecretRef or string: `previous_secret_ref`, `legacy_secret_ref`, `legacy_previous_secret_ref` | nullable |
 | Endpoint capture | Boolean: `response_capture`; integer: `response_capture_max_bytes`, `response_capture_retention_seconds`; string array: `response_header_allowlist` | required |
@@ -50,7 +52,9 @@ their existing contracts.
 | Outbox | UUID: `id`, `acceptance_token`; string: `event_uuid`, `event_type`, `dispatch_source`, `dispatch_route`; integer: `version`, `format_version`, `attempts`; binary: `payload`; unmodified map: `metadata`; atom: `state`; UTC microsecond datetime: `next_attempt_at`, `inserted_at`, `updated_at` | required |
 | Outbox | UUID: `claim_token`; string: `last_error`; UTC microsecond datetime: `lease_expires_at`, `completed_at`, `failed_at` | nullable |
 
-Native `Ash.Type.NewType` subtypes of the listed types are accepted, except
+The endpoint table shows generated nullability; the three nil-safe fields
+listed above also accept nullable host declarations. Native
+`Ash.Type.NewType` subtypes of the listed types are accepted, except
 outbox metadata, whose codec must remain unmodified. Event atom arrays may
 have a finite `one_of` constraint or be open. Open arrays and unrecognized
 physical storage use conservative query selection and the Elixir guard.

@@ -31,6 +31,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
 
   def attributes_spec(state) do
     payload = Extension.get_opt(state, [:outbound_delivery], :payload_attribute, :payload)
+
     resend =
       if Extension.get_opt(state, [:outbound_delivery], :resend_tracking, :off) == :on,
         do: resend_attributes_spec(),
@@ -101,7 +102,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
 
   defp add_attributes(dsl_state, _payload_attribute) do
     Enum.reduce_while(attributes_spec(dsl_state), {:ok, dsl_state}, fn {name, type, opts},
-                                                                               {:ok, dsl_state} ->
+                                                                       {:ok, dsl_state} ->
       {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
     end)
   end

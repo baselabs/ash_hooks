@@ -652,7 +652,8 @@ defmodule AshHooks.Endpoint do
       AshHooks.Endpoint.Transformers.AddEndpointFields,
       AshHooks.Endpoint.Transformers.AddEndpointActions
     ],
-    verifiers: [AshHooks.Verifiers.InjectedAttributes,
+    verifiers: [
+      AshHooks.Verifiers.InjectedAttributes,
       AshHooks.Endpoint.Verifiers.Custody,
       AshHooks.Endpoint.Verifiers.Signer,
       AshHooks.Endpoint.Verifiers.Overlap,
