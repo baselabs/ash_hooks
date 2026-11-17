@@ -216,31 +216,28 @@ defmodule AshHooks.Signing do
   def verify(payload, headers, @pub_prefix <> _ = whpk, opts)
       when is_binary(payload) and is_map(headers) and is_binary(whpk) do
     with {:ok, public_key} <- normalize_public_key(whpk),
-         {:ok, id, ts, signature_header} <- required_headers(headers) do
-      signed = to_sign(id, ts, payload)
-
-      if Enum.any?(
-           signature_entries(signature_header, "v1a"),
-           &asymmetric_match?(public_key, signed, &1)
-         ) do
-        with :ok <- check_timestamp(ts, opts), do: {:ok, %{id: id, timestamp: ts}}
-      else
-        {:error, :invalid_signature}
-      end
+         {:ok, id, ts, signature_header} <- required_headers(headers),
+         signed = to_sign(id, ts, payload),
+         true <-
+           Enum.any?(
+             signature_entries(signature_header, "v1a"),
+             &asymmetric_match?(public_key, signed, &1)
+           ) || {:error, :invalid_signature},
+         :ok <- check_timestamp(ts, opts) do
+      {:ok, %{id: id, timestamp: ts}}
     end
   end
 
   def verify(payload, headers, whsec, opts)
       when is_binary(payload) and is_map(headers) and is_binary(whsec) do
     with {:ok, id, ts, signature_header} <- required_headers(headers),
-         {:ok, secret} <- decode_verify_secret(whsec) do
-      expected = :crypto.mac(:hmac, :sha256, secret, to_sign(id, ts, payload))
-
-      if Enum.any?(signature_entries(signature_header, "v1"), &symmetric_match?(expected, &1)) do
-        with :ok <- check_timestamp(ts, opts), do: {:ok, %{id: id, timestamp: ts}}
-      else
-        {:error, :invalid_signature}
-      end
+         {:ok, secret} <- decode_verify_secret(whsec),
+         expected = :crypto.mac(:hmac, :sha256, secret, to_sign(id, ts, payload)),
+         true <-
+           Enum.any?(signature_entries(signature_header, "v1"), &symmetric_match?(expected, &1)) ||
+             {:error, :invalid_signature},
+         :ok <- check_timestamp(ts, opts) do
+      {:ok, %{id: id, timestamp: ts}}
     end
   end
 
