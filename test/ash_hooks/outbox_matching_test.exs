@@ -74,22 +74,22 @@ for {name, layer, shape} <- [
           case unquote(shape) do
             :closed_atoms ->
               attribute :event_types, {:array, :atom},
-                allow_nil?: false,
+                allow_nil?: true,
                 public?: true,
                 constraints: [items: [one_of: [:changed, :other, :*]]]
 
             :empty_atoms ->
               attribute :event_types, {:array, :atom},
-                allow_nil?: false,
+                allow_nil?: true,
                 public?: true,
                 constraints: [items: [one_of: [:other]]]
 
             :open_atoms ->
-              attribute :event_types, {:array, :atom}, allow_nil?: false, public?: true
+              attribute :event_types, {:array, :atom}, allow_nil?: true, public?: true
 
             :custom ->
               attribute :event_types, {:array, AshHooks.OutboxMatching.CustomString},
-                allow_nil?: false,
+                allow_nil?: true,
                 public?: true
 
               attribute :event_filters, AshHooks.OutboxMatching.CustomMap, public?: true
@@ -99,9 +99,10 @@ for {name, layer, shape} <- [
                 default: false
 
             :strings ->
-              :ok
+              attribute :event_types, {:array, :string}, allow_nil?: true, public?: true
 
             :host_pause ->
+              attribute :event_types, {:array, :string}, allow_nil?: true, public?: true
               attribute :paused, :boolean, allow_nil?: false, default: false, public?: true
           end
         end
@@ -189,6 +190,8 @@ for {namespace, layer, repo, table} <- [
 
         attributes do
           attribute :org_id, :string, allow_nil?: false
+          attribute :event_types, {:array, :string}, allow_nil?: true, public?: true
+          attribute :signing_mode, :atom, allow_nil?: false, default: :standard, public?: true
           attribute :paused, :boolean, allow_nil?: false, default: false, public?: true
         end
 
@@ -275,10 +278,35 @@ defmodule AshHooks.OutboxMatching.Outbox do
   end
 end
 
+defmodule AshHooks.OutboxMatching.Attempt do
+  use Ash.Resource,
+    domain: AshHooks.OutboxMatching.Domain,
+    data_layer: Ash.DataLayer.Ets,
+    extensions: [AshHooks.OutboundAttempt]
+
+  ets do
+    private? false
+  end
+
+  attributes do
+    attribute :org_id, :string, allow_nil?: false
+  end
+
+  multitenancy do
+    strategy :attribute
+    attribute :org_id
+  end
+
+  actions do
+    defaults [:read]
+  end
+end
+
 defmodule AshHooks.OutboxMatching.Domain do
   use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
 
   resources do
+    resource AshHooks.OutboxMatching.Attempt
     resource AshHooks.OutboxMatching.EtsStrings.Subscription
     resource AshHooks.OutboxMatching.EtsStrings.Emitter
     resource AshHooks.OutboxMatching.EtsAtoms.Subscription
@@ -402,6 +430,16 @@ defmodule AshHooks.OutboxMatchingTest do
             )
           ]
 
+      nil_types = struct(subscription,
+        id: Ash.UUID.generate(),
+        org_id: "tenant-a",
+        event_types: nil,
+        paused: false,
+        endpoint_id: endpoint.id,
+        event_filters: nil
+      )
+      rows = rows ++ [nil_types]
+
       Application.put_env(:ash_hooks, subscription, {self(), rows})
 
       on_exit(fn ->
@@ -436,6 +474,7 @@ defmodule AshHooks.OutboxMatchingTest do
       assert {:ok, results} = AshHooks.dispatch(emitter, :changed, event, tenant: "tenant-a")
       assert length(results) == if(empty?, do: 0, else: 1)
       candidates = selected(subscription, [])
+      refute nil_types.id in candidates
       assert MapSet.subset?(MapSet.new(expected), MapSet.new(candidates))
       unless widened?, do: assert(candidates == expected)
 
@@ -454,6 +493,7 @@ defmodule AshHooks.OutboxMatchingTest do
 
       assert :done = AshHooks.fanout(AshHooks.OutboxMatching.Outbox, event.id, tenant: "tenant-a")
       candidates = selected(subscription, [])
+      refute nil_types.id in candidates
       assert MapSet.subset?(MapSet.new(expected), MapSet.new(candidates))
       unless widened?, do: assert(candidates == expected)
       assert length(Cases.rows(f, :delivery)) == if(empty?, do: 0, else: 1)
@@ -486,21 +526,68 @@ for {test_module, namespace} <- [
       {:ok, Cases.setup(@namespace)}
     end
 
-    test "A12 identical host pause declarations retain Boolean matching in both paths", f do
-      Cases.endpoint(f)
-      emitter = Module.concat(@namespace, :HostPauseEmitter)
+    setup context do
+      Cases.clean(context)
+    end
+
+    test "nil endpoint status is disabled through dispatch and fanout", f do
+      endpoint = Cases.endpoint(f, status: nil)
+      refute AshHooks.Endpoint.enabled?(endpoint)
       event = Cases.event()
+      assert {:ok, []} = AshHooks.dispatch(f.emitter, :changed, event, tenant: "tenant-a")
+      assert {:ok, :accepted} = Cases.publish(f, event)
+      assert :done = Cases.fanout(f, event.id)
+      assert Cases.rows(f, :delivery) == []
+    end
+
+    test "nil capture and retention preserve a real send with uncaptured attempt history", f do
+      {server, port} = AshHooks.Test.HttpReceiver.start()
+      on_exit(fn -> :inets.stop(:httpd, server) end)
+      on_exit(fn -> Ash.DataLayer.Ets.stop(AshHooks.OutboxMatching.Attempt) end)
+      endpoint = Cases.endpoint(f,
+        url: "http://localhost:#{port}/200",
+        response_capture: nil,
+        response_capture_retention_seconds: nil
+      )
+
+      assert {:ok, %{status: :succeeded}} = AshHooks.Delivery.test_send(endpoint,
+        type: :changed,
+        deliveries: f.delivery,
+        attempts: AshHooks.OutboxMatching.Attempt,
+        tenant: "tenant-a",
+        secret_resolver: {AshHooks.OutboxProcess, :secret},
+        ssrf_check: &AshHooks.Ssrf.registration_safe?/1,
+        http_opts: [validate_destination: false, timeout: 1_000],
+        attempt_timeout: 3_000,
+        finalization_allowance: 1_000
+      )
+      assert_receive {:http_received, _request}, 5_000
+      assert [%{response_headers: nil, response_snippet: snippet}] =
+        Ash.read!(AshHooks.OutboxMatching.Attempt, tenant: "tenant-a", authorize?: false)
+      refute String.starts_with?(snippet || "", "[captured]")
+    end
+
+    test "A12 nullable event types select no match in SQL, dispatch and fanout", f do
+      endpoint = Cases.endpoint(f)
+      emitter = Module.concat(@namespace, :HostPauseEmitter)
+      resource = Module.concat(@namespace, :HostPauseSubscription)
+      nil_id = Cases.raw_subscription(f, endpoint, %{}, types: nil)
+      event = Cases.event()
+      rows = Ash.read!(resource, tenant: "tenant-a", authorize?: false)
+      expected = rows |> Enum.filter(&AshHooks.Subscription.matches?(&1, event.type)) |> Enum.map(& &1.id) |> Enum.sort()
+      refute nil_id in expected
+      selected = resource |> AshHooks.Subscription.Query.select(event) |> Ash.read!(tenant: "tenant-a", authorize?: false)
+      assert Enum.sort(Enum.map(selected, & &1.id)) == expected
 
       assert {:ok, [%{status: :deferred}]} =
                AshHooks.dispatch(emitter, :changed, event, tenant: "tenant-a")
 
       outbox = AshHooks.OutboxMatching.Outbox
-
-      assert {:ok, :accepted} =
-               AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
-
+      assert {:ok, :accepted} = AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
       assert :done = AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
-      assert length(Cases.rows(f, :delivery)) == 1
+      assert [%{subscription_id: id, signing_mode: :standard}] = Cases.rows(f, :delivery)
+      assert id in expected
+
     end
   end
 end

@@ -34,7 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   compile time. Unsupported types, nullable required fields and non-null
   fields cleared by package actions are refused. Subscription `paused` must
   be Boolean and non-null; string and atom event arrays and native NewType
-  variants remain supported. Nullable and non-null map filters remain valid.
+  variants remain supported. Nullable event arrays match nothing. Nullable
+  and non-null map filters remain valid.
   See UPGRADING for every field contract and migration.
 
 - Malformed filter containers never match, including the former

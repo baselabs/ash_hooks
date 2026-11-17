@@ -77,7 +77,9 @@ defmodule AshHooks.InjectedAttributesTest do
       @attribute name
 
       test "#{section}.#{name} refuses an incompatible host type that cannot store package input" do
-        {state, actual, type, opts} = attribute_state(@extension, @section, @transformer, @attribute)
+        {state, actual, type, opts} =
+          attribute_state(@extension, @section, @transformer, @attribute)
+
         value = example(type, opts)
         wrong = if is_map(value), do: Ash.Type.Boolean, else: Ash.Type.Map
         assert {:ok, _} = Ash.Type.cast_input(actual.type, value, actual.constraints)
@@ -90,11 +92,13 @@ defmodule AshHooks.InjectedAttributesTest do
       end
 
       test "#{section}.#{name} checks host nullability against package input and matching needs" do
-        {state, actual, _type, _opts} = attribute_state(@extension, @section, @transformer, @attribute)
+        {state, actual, _type, _opts} =
+          attribute_state(@extension, @section, @transformer, @attribute)
+
         invalid = replace(state, %{actual | allow_nil?: not actual.allow_nil?})
 
         either? =
-          (@section == :subscription and @attribute in [:event_filters, :signing_mode]) or
+          (@section == :subscription and @attribute in [:event_types, :event_filters, :signing_mode]) or
             (@section == :endpoint and
                @attribute in [:status, :response_capture, :response_capture_retention_seconds])
 
@@ -115,14 +119,12 @@ defmodule AshHooks.InjectedAttributesTest do
     assert AshHooks.Endpoint.enabled?(%{endpoint | status: :enabled})
   end
 
-  test "nil pause and nil event types break the real final matching guards" do
+  test "nil pause breaks the final guard while nil event types match nothing" do
     assert_raise ArgumentError, fn -> not Map.fetch!(%{paused: nil}, :paused) end
 
-    assert_raise Protocol.UndefinedError, fn ->
-      AshHooks.Subscription.matches?(%{event_types: nil}, "changed")
-    end
+    refute AshHooks.Subscription.matches?(%{event_types: nil}, "changed")
 
-    for {name, type} <- [{:paused, :boolean}, {:event_types, {:array, :string}}] do
+    for {name, type} <- [{:paused, :boolean}] do
       errors =
         Spark.Test.dsl_errors do
           subscription(
@@ -142,7 +144,8 @@ defmodule AshHooks.InjectedAttributesTest do
       subscription(
         quote do
           attribute :paused, :boolean, allow_nil?: false, default: false
-          attribute :event_types, {:array, :string}, allow_nil?: false, default: ["*"]
+          attribute :event_types, {:array, :string}, allow_nil?: true, default: ["*"]
+          attribute :signing_mode, :atom, allow_nil?: false, default: :standard
           attribute :event_filters, :map, allow_nil?: false, default: %{}
         end
       )
@@ -189,6 +192,7 @@ defmodule AshHooks.InjectedAttributesTest do
   defp attribute_state(extension, section, transformer, name) do
     state = InjectedAttributeStates.state(extension, section)
     specs = transformer.attributes_spec(state)
+
     state =
       Enum.reduce(specs, state, fn {field, type, opts}, state ->
         {:ok, attribute} = Builder.build_attribute(field, type, opts)

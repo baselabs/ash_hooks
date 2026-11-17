@@ -123,6 +123,11 @@ defmodule AshHooks.OutboxFixtures.SQLite.Endpoint do
 
   attributes do
     attribute :org_id, :string, allow_nil?: false
+    attribute :status, :atom, allow_nil?: true, default: :enabled, public?: true,
+      constraints: [one_of: [:enabled, :disabled]]
+    attribute :response_capture, :boolean, allow_nil?: true, default: false, public?: true
+    attribute :response_capture_retention_seconds, :integer,
+      allow_nil?: true, default: 2_592_000, public?: true
   end
 
   multitenancy do
@@ -137,6 +142,7 @@ defmodule AshHooks.OutboxFixtures.SQLite.Endpoint do
 
   endpoint do
     version_pinning :on
+    response_capture_attributes :on
   end
 end
 
@@ -399,6 +405,11 @@ defmodule AshHooks.OutboxFixtures.Postgres.Endpoint do
 
   attributes do
     attribute :org_id, :string, allow_nil?: false
+    attribute :status, :atom, allow_nil?: true, default: :enabled, public?: true,
+      constraints: [one_of: [:enabled, :disabled]]
+    attribute :response_capture, :boolean, allow_nil?: true, default: false, public?: true
+    attribute :response_capture_retention_seconds, :integer,
+      allow_nil?: true, default: 2_592_000, public?: true
   end
 
   multitenancy do
@@ -413,6 +424,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Endpoint do
 
   endpoint do
     version_pinning :on
+    response_capture_attributes :on
   end
 end
 

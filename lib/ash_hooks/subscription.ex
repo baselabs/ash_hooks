@@ -36,7 +36,8 @@ defmodule AshHooks.Subscription do
   Events carry string types. You can declare `event_types` yourself,
   including as an array of atoms, with or without item constraints. Native
   `Ash.Type.NewType` subtypes of string, atom, map and Boolean are supported.
-  `event_types` and, when enabled, `paused` must be non-null. `event_filters`
+  When enabled, `paused` must be non-null. A nullable `event_types` value
+  matches nothing. `event_filters`
   may be nullable or non-null; null filters match. Other element types and
   incompatible overrides fail resource verification. Your declaration replaces the
   generated attribute, including its constraints and default. Atom and string

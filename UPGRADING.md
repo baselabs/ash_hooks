@@ -18,7 +18,7 @@ Restore the injected type or a supported variant and migrate incompatible
 stored values before changing the column type. The following table lists
 all injected fields; optional groups apply only when their DSL option is on.
 `required` means `allow_nil?: false`; `nullable` means `allow_nil?: true`
-because package actions write or clear nil. Host-owned `event_filters` and subscription `signing_mode` accept either
+because package actions write or clear nil. Host-owned `event_types`, `event_filters` and subscription `signing_mode` accept either
 nullability. Endpoint `status`, `response_capture` and
 `response_capture_retention_seconds` also accept either nullability: nil status
 is disabled, nil capture is off, and retention is a host pruning setting. Ordinary defaults, constraints and writable settings keep
@@ -26,7 +26,8 @@ their existing contracts.
 
 | Resource | Type and fields | Nullability |
 | --- | --- | --- |
-| Subscription | string or atom array: `event_types`; Boolean: `paused` under `pausable :on`; UUID reference: `endpoint_id` | required |
+| Subscription | Boolean: `paused` under `pausable :on`; UUID reference: `endpoint_id` | required |
+| Subscription | string or atom array: `event_types` | either; nil matches nothing |
 | Subscription | map: `event_filters` under `filter_attributes` | either |
 | Subscription | atom: `signing_mode` | either |
 | Endpoint | `AshHooks.Endpoint.Url`: `url`; atom: `status`; `AshHooks.Endpoint.SecretRef` or string: `secret_ref` | required; optional native signing makes `secret_ref` nullable |
@@ -88,8 +89,8 @@ ALTER TABLE subscriptions ALTER COLUMN paused SET NOT NULL;
 ```
 
 A nullable `event_filters` column needs no migration. Null filters match.
-A nullable `event_types` column must be backfilled with the intended event
-array before adding `NOT NULL`; choose `["*"]` only when all events are intended.
+A nullable `event_types` column also needs no migration. Nil event arrays
+match nothing in the query and the final guard, on every data layer.
 
 ### Add and migrate the outbox
 

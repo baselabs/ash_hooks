@@ -59,18 +59,18 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
   end
 
   # The consumer owns filters. Both nil and a map have defined matching semantics.
-  defp nullability(:subscription, %{name: name}) when name in [:event_filters, :signing_mode],
+  defp nullability(:subscription, %{name: name}) when name in [:event_types, :event_filters, :signing_mode],
     do: :either
 
   defp nullability(:endpoint, %{name: name})
        when name in [:status, :response_capture, :response_capture_retention_seconds],
        do: :either
+
   defp nullability(_section, %{allow_nil?: false}), do: :required
   # Other nullable fields are cleared or supplied as nil by package actions.
   defp nullability(_section, _expected), do: :nullable
 
   defp accepted_type?(section, actual, expected) do
-    type = Ash.Type.NewType.subtype_of(actual.type)
     native = Ash.Type.get_type(expected.type)
 
     cond do
@@ -78,21 +78,29 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
         Ash.Type.storage_type(actual.type, actual.constraints) == :uuid
 
       section == :subscription and expected.name == :event_types ->
-        type in [{:array, Ash.Type.String}, {:array, Ash.Type.Atom}]
+        type_matches?(actual.type, {:array, Ash.Type.String}) or
+          type_matches?(actual.type, {:array, Ash.Type.Atom})
 
       native == AshHooks.Endpoint.SecretRef ->
-        type in [native, Ash.Type.String]
+        type_matches?(actual.type, native) or type_matches?(actual.type, Ash.Type.String)
 
       true ->
-        type == native
+        type_matches?(actual.type, native)
     end
+  end
+
+  defp type_matches?({:array, actual}, {:array, native}), do: type_matches?(actual, native)
+
+  defp type_matches?(actual, native) do
+    actual == native or
+      (Ash.Type.NewType.new_type?(actual) and type_matches?(actual.subtype_of(), native))
   end
 
   defp accepted_constraints?(:outbox, %{name: :metadata} = actual, _expected),
     do: actual.type == Ash.Type.Map and not Keyword.has_key?(actual.constraints, :fields)
 
   # Scope identity and provider aliases must keep the declared value domain.
-  defp accepted_constraints?(:inbound_source, actual, expected) do
+  defp accepted_constraints?(:inbound_source, actual, %{allow_nil?: false} = expected) do
     {:ok, expected_constraints} = Ash.Type.init(expected.type, expected.constraints)
     {:ok, actual_constraints} = Ash.Type.init(actual.type, actual.constraints)
     expected_constraints == actual_constraints

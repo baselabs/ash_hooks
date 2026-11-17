@@ -13,7 +13,7 @@ defmodule AshHooks.Subscription.Query do
     types = types(resource, event.type, layer)
     pause = pause(resource, layer)
     filters = filters(resource, event.metadata, layer)
-    Ash.Query.filter(resource, ^types and ^pause and ^filters)
+    Ash.Query.filter(resource, not is_nil(event_types) and ^types and ^pause and ^filters)
   end
 
   defp types(resource, name, layer) do

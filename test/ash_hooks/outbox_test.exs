@@ -525,11 +525,12 @@ defmodule AshHooks.OutboxAcceptance do
     types = Keyword.get(opts, :types, ["changed"])
     paused = Keyword.get(opts, :paused, false)
     json = if filters == :sql_null, do: nil, else: Jason.encode!(filters)
+    types_json = if is_nil(types), do: nil, else: Jason.encode!(types)
 
     if f.sqlite? do
       f.owner.query!(
         "INSERT INTO #{table(f.subscription)} (id, org_id, endpoint_id, event_types, event_filters, paused) VALUES (?, ?, ?, ?, ?, ?)",
-        [id, "tenant-a", endpoint.id, Jason.encode!(types), json, if(paused, do: 1, else: 0)]
+        [id, "tenant-a", endpoint.id, types_json, json, if(paused, do: 1, else: 0)]
       )
     else
       f.owner.query!(
