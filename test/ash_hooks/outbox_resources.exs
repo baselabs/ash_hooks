@@ -1,3 +1,20 @@
+defmodule AshHooks.OutboxFixtures.Postgres.Repo do
+  use AshPostgres.Repo, otp_app: :ash_hooks, warn_on_missing_ash_functions?: false
+  def min_pg_version, do: %Version{major: 16, minor: 0, patch: 0}
+  def on_transaction_begin(reason) do
+    if tenant = reason[:tenant] do
+      query!("SELECT set_config('outbox_acceptance.tenant', $1, true)",
+        [to_string(tenant)], log: false)
+    end
+    :ok
+  end
+end
+
+defmodule AshHooks.OutboxFixtures.Postgres.EngineRepo do
+  use AshPostgres.Repo, otp_app: :ash_hooks, warn_on_missing_ash_functions?: false
+  def min_pg_version, do: %Version{major: 16, minor: 0, patch: 0}
+end
+
 defmodule AshHooks.OutboxFixtures.SQLiteRepo do
   use AshSqlite.Repo, otp_app: :ash_hooks
   def write_transactions?, do: true
@@ -19,6 +36,10 @@ defmodule AshHooks.OutboxFixtures.SQLite.Runtime do
       pid when is_pid(pid) ->
         send(pid, {:triggered, row.event_uuid, tenant})
         :ok
+
+      :oban ->
+        row.__struct__ |> Module.split() |> Enum.drop(-1) |> Module.concat()
+        |> Module.concat(:Worker) |> apply(:enqueue_fanout, [row, tenant])
 
       :raise ->
         raise "trigger failed"
@@ -125,6 +146,17 @@ defmodule AshHooks.OutboxFixtures.SQLite.Delivery do
   end
 end
 
+if Code.ensure_loaded?(Oban) do
+  defmodule AshHooks.OutboxFixtures.SQLite.Worker do
+    use AshHooks.Worker,
+      deliveries: AshHooks.OutboxFixtures.SQLite.Delivery,
+      endpoints: AshHooks.OutboxFixtures.SQLite.Endpoint,
+      outbox: AshHooks.OutboxFixtures.SQLite.Outbox,
+      oban: AshHooks.OutboxFixtures.SQLite.Oban,
+      queue: :outbox_acceptance
+  end
+end
+
 defmodule AshHooks.OutboxFixtures.SQLite.Outbox do
   use Ash.Resource,
     domain: AshHooks.OutboxFixtures.SQLite.Domain,
@@ -152,6 +184,7 @@ defmodule AshHooks.OutboxFixtures.SQLite.Outbox do
   outbox do
     declarations [{AshHooks.OutboxFixtures.SQLite.Emitter, :changed}]
     delivery_routes default: nil, queued: {AshHooks.OutboxFixtures.SQLite.Runtime, :enqueue}
+    # Worker routes are exercised where Oban is installed.
     trigger {AshHooks.OutboxFixtures.SQLite.Runtime, :trigger}
     deduplication_horizon_seconds 3600
     fanout_timeout 1_000
@@ -234,16 +267,7 @@ defmodule AshHooks.OutboxFixtures.SQLite.Domain do
   end
 end
 
-if Code.ensure_loaded?(Oban) do
-  defmodule AshHooks.OutboxFixtures.SQLite.Worker do
-    use AshHooks.Worker,
-      deliveries: AshHooks.OutboxFixtures.SQLite.Delivery,
-      endpoints: AshHooks.OutboxFixtures.SQLite.Endpoint,
-      outbox: AshHooks.OutboxFixtures.SQLite.Outbox,
-      oban: AshHooks.OutboxFixtures.SQLite.Oban,
-      queue: :outbox_acceptance
-  end
-end
+
 
 defmodule AshHooks.OutboxFixtures.Postgres.Runtime do
   def build(record, _context) do
@@ -260,6 +284,10 @@ defmodule AshHooks.OutboxFixtures.Postgres.Runtime do
       pid when is_pid(pid) ->
         send(pid, {:triggered, row.event_uuid, tenant})
         :ok
+
+      :oban ->
+        row.__struct__ |> Module.split() |> Enum.drop(-1) |> Module.concat()
+        |> Module.concat(:Worker) |> apply(:enqueue_fanout, [row, tenant])
 
       :raise ->
         raise "trigger failed"
@@ -286,7 +314,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Endpoint do
 
   postgres do
     table "outbox_postgres_endpoints"
-    repo(AshHooks.TestPostgres.Repo)
+    repo(AshHooks.OutboxFixtures.Postgres.Repo)
   end
 
   attributes do
@@ -316,7 +344,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Subscription do
 
   postgres do
     table "outbox_postgres_subscriptions"
-    repo(AshHooks.TestPostgres.Repo)
+    repo(AshHooks.OutboxFixtures.Postgres.Repo)
   end
 
   attributes do
@@ -348,7 +376,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Delivery do
 
   postgres do
     table "outbox_postgres_deliveries"
-    repo(AshHooks.TestPostgres.Repo)
+    repo(AshHooks.OutboxFixtures.Postgres.Repo)
   end
 
   attributes do
@@ -366,6 +394,17 @@ defmodule AshHooks.OutboxFixtures.Postgres.Delivery do
   end
 end
 
+if Code.ensure_loaded?(Oban) do
+  defmodule AshHooks.OutboxFixtures.Postgres.Worker do
+    use AshHooks.Worker,
+      deliveries: AshHooks.OutboxFixtures.Postgres.Delivery,
+      endpoints: AshHooks.OutboxFixtures.Postgres.Endpoint,
+      outbox: AshHooks.OutboxFixtures.Postgres.Outbox,
+      oban: AshHooks.OutboxFixtures.Postgres.Oban,
+      queue: :outbox_acceptance
+  end
+end
+
 defmodule AshHooks.OutboxFixtures.Postgres.Outbox do
   use Ash.Resource,
     domain: AshHooks.OutboxFixtures.Postgres.Domain,
@@ -374,7 +413,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Outbox do
 
   postgres do
     table "outbox_postgres_publications"
-    repo(AshHooks.TestPostgres.Repo)
+    repo(AshHooks.OutboxFixtures.Postgres.Repo)
   end
 
   attributes do
@@ -393,6 +432,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Outbox do
   outbox do
     declarations [{AshHooks.OutboxFixtures.Postgres.Emitter, :changed}]
     delivery_routes default: nil, queued: {AshHooks.OutboxFixtures.Postgres.Runtime, :enqueue}
+    # Worker routes are exercised where Oban is installed.
     trigger {AshHooks.OutboxFixtures.Postgres.Runtime, :trigger}
     deduplication_horizon_seconds 3600
     fanout_timeout 1_000
@@ -411,7 +451,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Emitter do
 
   postgres do
     table "outbox_postgres_emitters"
-    repo(AshHooks.TestPostgres.Repo)
+    repo(AshHooks.OutboxFixtures.Postgres.Repo)
   end
 
   attributes do
@@ -472,16 +512,5 @@ defmodule AshHooks.OutboxFixtures.Postgres.Domain do
     resource AshHooks.OutboxFixtures.Postgres.Delivery
     resource AshHooks.OutboxFixtures.Postgres.Outbox
     resource AshHooks.OutboxFixtures.Postgres.Emitter
-  end
-end
-
-if Code.ensure_loaded?(Oban) do
-  defmodule AshHooks.OutboxFixtures.Postgres.Worker do
-    use AshHooks.Worker,
-      deliveries: AshHooks.OutboxFixtures.Postgres.Delivery,
-      endpoints: AshHooks.OutboxFixtures.Postgres.Endpoint,
-      outbox: AshHooks.OutboxFixtures.Postgres.Outbox,
-      oban: AshHooks.OutboxFixtures.Postgres.Oban,
-      queue: :outbox_acceptance
   end
 end

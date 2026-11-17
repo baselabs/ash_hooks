@@ -24,6 +24,7 @@ defmodule AshHooks.OutboxProcess do
   def variant(event) do
     count = Process.get(:outbox_builder_calls, 0) + 1
     Process.put(:outbox_builder_calls, count)
+    if observer = Application.get_env(:ash_hooks, :outbox_observer), do: send(observer, {:outbox_builder, self()})
     if count == 2, do: checkpoint(:mid_fanout)
     {:ok, "v2:" <> event.payload}
   end
@@ -37,40 +38,47 @@ defmodule AshHooks.OutboxProcess do
       marker && event.metadata["admission"] != "fail" ->
         {:error, :metadata_missing}
 
-      event.metadata["admission"] == "fail" and marker && not File.exists?(marker) ->
-      File.write!(marker, "refused")
-      {:error, :closed}
+      (event.metadata["admission"] == "fail" and marker) && not File.exists?(marker) ->
+        File.write!(marker, "refused")
+        {:error, :closed}
+
       true ->
-      worker = Module.concat(namespace, :RouteWorker)
-      oban = Module.concat(namespace, :Oban)
+        worker = Module.concat(namespace, :RouteWorker)
+        oban = Module.concat(namespace, :Oban)
 
-      args = %{
-        "delivery_pk" => AshHooks.PrimaryKey.encode(row),
-        "delivery_resource" => Atom.to_string(row.__struct__),
-        "endpoint_resource" => Atom.to_string(Module.concat(namespace, :Endpoint)),
-        "endpoint_id" => row.endpoint_id,
-        "event_uuid" => row.event_uuid,
-        "dispatch_source" => row.dispatch_source,
-        "dispatch_route" => row.dispatch_route,
-        "tenant" => AshHooks.Tenancy.from_row(row)
-      }
+        args = %{
+          "delivery_pk" => AshHooks.PrimaryKey.encode(row),
+          "delivery_resource" => Atom.to_string(row.__struct__),
+          "endpoint_resource" => Atom.to_string(Module.concat(namespace, :Endpoint)),
+          "endpoint_id" => row.endpoint_id,
+          "event_uuid" => row.event_uuid,
+          "dispatch_source" => row.dispatch_source,
+          "dispatch_route" => row.dispatch_route,
+          "tenant" => AshHooks.Tenancy.from_row(row)
+        }
 
-      result =
-        AshHooks.Phase.run(row.__struct__, args["tenant"], fn ->
-          Oban.insert(oban,
-            worker.new(args,
-              unique: [fields: [:args], period: :infinity,
-                states: [:available, :scheduled, :executing, :retryable]]))
-        end)
+        result =
+          AshHooks.Phase.run(row.__struct__, args["tenant"], fn ->
+            Oban.insert(
+              oban,
+              worker.new(args,
+                unique: [
+                  fields: [:args],
+                  period: :infinity,
+                  states: [:available, :scheduled, :executing, :retryable]
+                ]
+              )
+            )
+          end)
 
-      case result do
-        {:ok, %{id: id}} when is_integer(id) ->
-          checkpoint(:after_admission)
-          :ok
+        case result do
+          {:ok, %{id: id}} when is_integer(id) ->
+            checkpoint(:after_admission)
+            :ok
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+          {:error, reason} ->
+            {:error, reason}
+        end
     end
   end
 
@@ -84,7 +92,8 @@ defmodule AshHooks.OutboxProcess do
       ssrf_check: false,
       http_opts: [validate_destination: false, timeout: 500],
       attempt_timeout: 2_000,
-      finalization_allowance: 1_000)
+      finalization_allowance: 1_000
+    )
   end
 
   def boot(repo, config, oban_options) do
@@ -105,6 +114,10 @@ defmodule AshHooks.OutboxProcess do
     :ok
   end
 
+  defp bind(AshHooks.OutboxFixtures.Postgres.Repo = repo),
+    do: repo.query!("SELECT set_config('outbox_acceptance.tenant', $1, true)", ["tenant-a"], log: false)
+  defp bind(_repo), do: :ok
+
   def execute(namespace, stage, event, path, marker) do
     Application.put_env(:ash_hooks, :outbox_checkpoint, {stage, path})
     if marker, do: Application.put_env(:ash_hooks, :outbox_admission_marker, marker)
@@ -116,6 +129,7 @@ defmodule AshHooks.OutboxProcess do
       case stage do
         :before_commit ->
           repo.transaction(fn ->
+            bind(repo)
             {:ok, :accepted} = AshHooks.publish(outbox, {emitter, :changed}, event,
               tenant: "tenant-a")
             checkpoint(stage)
@@ -123,6 +137,7 @@ defmodule AshHooks.OutboxProcess do
 
         :after_commit ->
           {:ok, :ok} = repo.transaction(fn ->
+            bind(repo)
             {:ok, :accepted} = AshHooks.publish(outbox, {emitter, :changed}, event,
               tenant: "tenant-a")
             :ok

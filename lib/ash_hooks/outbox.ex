@@ -166,12 +166,15 @@ defmodule AshHooks.Outbox do
   defp run(row, tenant) do
     owner = self()
     ref = make_ref()
+
     resources =
       Enum.flat_map(option(row.__struct__, :declarations), fn {emitter, name} ->
         entity = Info.outbound(emitter, name)
         endpoint = Extension.get_opt(entity.subscriptions, [:subscription], :endpoint_resource)
         [emitter, entity.subscriptions, entity.deliveries, entity.events, endpoint]
-      end) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+      end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
 
     repositories =
       Enum.map([row.__struct__ | resources], &repository_binding/1) |> Enum.reject(&is_nil/1)
@@ -393,7 +396,8 @@ defmodule AshHooks.Outbox do
           do:
             Ash.Query.filter(
               query,
-              (is_nil(next_attempt_at) or next_attempt_at <= ^time) and (is_nil(lease_expires_at) or lease_expires_at <= ^time)
+              (is_nil(next_attempt_at) or next_attempt_at <= ^time) and
+                (is_nil(lease_expires_at) or lease_expires_at <= ^time)
             ),
           else: query
 
