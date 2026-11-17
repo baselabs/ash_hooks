@@ -19,6 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The installer resolves parser aliases and preserves existing body readers.
+  It adds notices for custom readers and endpoint configurations that need
+  manual setup, and remains safe to rerun.
+
 - Ingress records out-of-contract handler and parser results as retryable
   `invalid_handler_result` failures under the claim fence. Every recorded
   failure emits ingress telemetry; stale owners only reload the receipt.
