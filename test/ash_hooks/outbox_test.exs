@@ -769,12 +769,13 @@ defmodule AshHooks.OutboxAcceptance do
             assert [surviving] =
                      Enum.filter(Cases.rows(f, :delivery), &(&1.event_uuid == event.id))
 
+            # Either crash leaves the real 30-second admission lease live.
+            # The delivery driver waits for it before acquiring its send claim.
+            Process.sleep(30_100)
+
             if stage == :after_admission do
               assert %{success: 1} = Cases.drain(f)
               assert_receive {:http_received, _request}, 5_000
-            else
-              # The killed claimant held the real 30-second enqueue lease.
-              Process.sleep(30_100)
             end
 
             Cases.expire(f, event)
@@ -840,7 +841,7 @@ defmodule AshHooks.OutboxAcceptance do
           event = Cases.event(Ash.UUID.generate(), %{"admission" => "fail", "region" => "west"})
           assert {:ok, :accepted} = Cases.publish(f, event, route: :queued)
           Cases.crash(f, :admission_failure, event, marker)
-          assert [%{status: :enqueue_failed} = surviving] = Cases.rows(f, :delivery)
+          assert [%{status: :pending, last_error: "closed"} = surviving] = Cases.rows(f, :delivery)
           assert File.read!(marker) == "refused"
           Cases.expire(f, event)
           assert :done = Cases.fanout(f, event.id)
@@ -1234,6 +1235,22 @@ defmodule AshHooks.OutboxAcceptance do
 
             refute_receive {:triggered, _, _}
             assert :done = Cases.fanout(f, event.id)
+
+            for inner <- [:transact, :transaction] do
+              nested = Cases.event()
+
+              assert {:ok, {:ok, :ok}} =
+                       Cases.transaction(f, fn ->
+                         Cases.entry(f, inner, fn ->
+                           assert {:ok, :accepted} = Cases.publish(f, nested)
+                           refute_receive {:triggered, _, _}
+                           :ok
+                         end)
+                       end)
+
+              refute_receive {:triggered, _, _}
+              assert :done = Cases.fanout(f, nested.id)
+            end
           after
             if is_nil(previous),
               do: Application.delete_env(:ash, :missed_notifications),
