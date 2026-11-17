@@ -66,8 +66,8 @@ may join the host transaction; invoking the driver inside that transaction is re
 
 Transactional publish adds one outbox upsert to the producer's bound
 connection. Its notifier runs only after physical commit and hints a separately
-declared trigger route. Raw repository transactions return notifications and
-rely on a per-tenant sweep or an explicit fanout after commit. Trigger failures
+declared trigger route. Raw repository transactions suppress Ash notifications
+and rely on a per-tenant sweep or an explicit fanout after commit. Trigger failures
 are contained. The trigger never replaces the sweep's correctness obligation.
 
 Fanout refuses an enclosing transaction. Claim, subscription and endpoint

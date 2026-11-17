@@ -58,14 +58,9 @@ defmodule AshHooks.OutboxAcceptance do
       table = table(resource)
 
       fields =
-        Enum.map_join(Ash.Resource.Info.attributes(resource), ", ", fn attr ->
-          type =
-            if not sqlite? and resource == resources.outbox and attr.name == :metadata,
-              do: "JSON",
-              else: sql_type(Ash.Type.storage_type(attr.type, attr.constraints), sqlite?)
-
-          "\"#{attr.name}\" #{type}" <> if(attr.primary_key?, do: " PRIMARY KEY", else: "")
-        end)
+        Enum.map_join(Ash.Resource.Info.attributes(resource), ", ",
+          &column(&1, resource == resources.outbox, sqlite?)
+        )
 
       owner.query!("CREATE TABLE #{table} (#{fields})")
     end)
@@ -91,6 +86,15 @@ defmodule AshHooks.OutboxAcceptance do
         "CREATE INDEX #{name} ON #{table(resources.outbox)} (#{fields}) WHERE #{index.where}"
       )
     end
+  end
+
+  defp column(attr, outbox?, sqlite?) do
+    type =
+      if not sqlite? and outbox? and attr.name == :metadata,
+        do: "JSON",
+        else: sql_type(Ash.Type.storage_type(attr.type, attr.constraints), sqlite?)
+
+    "\"#{attr.name}\" #{type}" <> if(attr.primary_key?, do: " PRIMARY KEY", else: "")
   end
 
   defp cleanup(fixture) do
