@@ -1157,6 +1157,57 @@ defmodule AshHooks.DocumentationGateTest do
     Docs.track_test(context)
   end
 
+  @tag :postgres
+  test "the host extension upgrade SQL preserves rows and admits the optional fields" do
+    repo = AshHooks.TestPostgres.Repo
+
+    assert {:error, :documentation_complete} =
+             repo.transaction(fn ->
+               repo.query!("CREATE TEMP TABLE inbound_deliveries (id TEXT PRIMARY KEY)")
+               repo.query!("CREATE TEMP TABLE outbound_attempts (id TEXT PRIMARY KEY)")
+
+               repo.query!(
+                 "CREATE TEMP TABLE webhook_endpoints (id TEXT PRIMARY KEY, secret_ref TEXT NOT NULL)"
+               )
+
+               repo.query!("INSERT INTO inbound_deliveries VALUES ('existing')")
+               repo.query!("INSERT INTO outbound_attempts VALUES ('existing')")
+               repo.query!("INSERT INTO webhook_endpoints VALUES ('existing', 'native-key')")
+               Docs.run!(Docs.block("upgrade-host-extension-columns"), repo)
+
+               assert [["existing", nil]] =
+                        repo.query!("SELECT id, verified_facts FROM inbound_deliveries").rows
+
+               assert [["existing", nil]] =
+                        repo.query!("SELECT id, signing_key_refs FROM outbound_attempts").rows
+
+               assert [["existing", "native-key"]] =
+                        repo.query!("SELECT id, secret_ref FROM webhook_endpoints").rows
+
+               facts = %{"key_ref" => "credited-key"}
+               refs = ["native-key", "host-key"]
+
+               assert [[^facts]] =
+                        repo.query!(
+                          "INSERT INTO inbound_deliveries VALUES ('new', $1) RETURNING verified_facts",
+                          [facts]
+                        ).rows
+
+               assert [[^refs]] =
+                        repo.query!(
+                          "INSERT INTO outbound_attempts VALUES ('new', $1) RETURNING signing_key_refs",
+                          [refs]
+                        ).rows
+
+               assert [[nil]] =
+                        repo.query!(
+                          "INSERT INTO webhook_endpoints VALUES ('host-only', NULL) RETURNING secret_ref"
+                        ).rows
+
+               repo.rollback(:documentation_complete)
+             end)
+  end
+
   test "the parser extracts fenced, indented, nested, and quoted code blocks" do
     for {opening, closing} <- [{"```sql", "```"}, {"~~~sh", "~~~"}, {"```", "```"}] do
       assert [_] = Docs.parse(opening <> "\n:ok\n" <> closing, "guide.md")

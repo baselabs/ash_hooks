@@ -38,6 +38,7 @@ when all new options stay at their defaults.
 For PostgreSQL, the nullable-column changes have this shape; replace the table
 names with the tables declared by your resources:
 
+<!-- tested: upgrade-host-extension-columns -->
 ```sql
 ALTER TABLE inbound_deliveries ADD COLUMN verified_facts jsonb;
 ALTER TABLE outbound_attempts ADD COLUMN signing_key_refs text[];

@@ -171,18 +171,6 @@ defmodule AshHooks.HostExtensionDslTest do
     refute :signing_key_refs in ResourceInfo.action(old_attempt, :record).accept
   end
 
-  test "host extension guide additions contain no unexecuted Elixir blocks" do
-    for {file, heading} <- [
-          {"verify-any-sender.md", "## Verified facts and upstream proof"},
-          {"outbound-contracts.md", "## Host signing and exact prepared requests"}
-        ] do
-      [_, section] =
-        File.read!("documentation/tutorials/" <> file) |> String.split(heading, parts: 2)
-
-      refute section =~ "```elixir"
-    end
-  end
-
   defp assert_dsl_error(pattern, fun) do
     errors =
       Spark.Test.dsl_errors do

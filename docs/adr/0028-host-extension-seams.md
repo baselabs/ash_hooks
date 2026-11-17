@@ -22,7 +22,8 @@ adapt to these seams.
 
 ## Decision
 
-**Verified facts.**
+### Verified facts
+
 - `inbound_delivery do record_verified_facts :on end` injects a nullable, sensitive
   `verified_facts` map.
 - `verify_signature/3` may return `{:ok, facts}`. The facts have string keys and JSON values, a
@@ -36,14 +37,16 @@ adapt to these seams.
 - Facts are what the provider chose to keep, never credentials, signatures or raw signature
   parameters.
 
-**Upstream context.**
+### Upstream context
+
 - The Plug resolver and `Ingress.ingest` accept an opaque `host_context`, which reaches the
   provider in its verification context.
 - Only the provider admits a request. A provider that reuses an upstream result must bind it to
   the request body, tenant and source policy.
 - `host_context` is never persisted, inspected or included in an error.
 
-**Signer.**
+### Signer
+
 - The endpoint resource declares `signer`, `signer_attributes` and `native_signing`
   (`:required` by default, or `:optional`). A Spark verifier checks the declaration.
 - `AshHooks.Signer.sign/2` receives:
@@ -70,7 +73,8 @@ adapt to these seams.
   subscription, replay retains the existing `:standard` fallback. Only conflicting matching
   modes are skipped.
 
-**Prepared request.**
+### Prepared request
+
 - `%AshHooks.Http.Request{}` carries the method, the exact request target, the complete ordered
   header lines (including `host`, `content-length`, `content-type` and `connection`) and the
   body. These are fixed before the signer runs.
@@ -85,7 +89,8 @@ adapt to these seams.
 - When the endpoint resource declares a signer, an adapter without `send_prepared/2` is refused,
   terminally, before the signer runs, and never downgraded.
 
-**Signing provenance.**
+### Signing provenance
+
 - `outbound_attempt do record_signing_provenance :on end` injects `signing_key_refs`: every
   native reference used plus the signer's key refs.
 - The 410 recovery snapshot carries this list.
@@ -95,6 +100,7 @@ adapt to these seams.
 - `[:ash_hooks, :delivery, :sign]` reports the signing duration and outcome class.
 
 This record amends:
+
 - **ADR 0012:** the 410 snapshot and conditional disable include `signer_attributes`, compared as
   typed values, and treat a nil `secret_ref` as a value. A snapshot without a signer key never
   disables the endpoint.
@@ -105,16 +111,19 @@ This record amends:
 
 ## Consequences
 
-**Additive in a minor release (ADR 0010).**
+### Additive in a minor release (ADR 0010)
+
 - Each new column is opt-in, and the host migrates it before enabling the option. A host-only
   endpoint needs a migration that relaxes `secret_ref`'s NOT NULL.
 - With every option off, schemas, adapters and the bytes on the wire are unchanged.
 - The singular key ref and the replay signing mode change as corrections of existing defects.
 
-**Hosts and receivers.**
+### Hosts and receivers
+
 - Hosts that sign with their own scheme do it per endpoint, with the explicit tenant, through
   their own key custody.
 - Receivers can verify a host signature over exactly the bytes they received.
 
-**Custom adapters.**
+### Custom adapters
+
 - A custom adapter that cannot send prepared requests cannot carry host-signed deliveries.
