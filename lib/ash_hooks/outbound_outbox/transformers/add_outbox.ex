@@ -26,14 +26,9 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
          {:ok, state} <- identity(state) do
       state = indexes(state)
 
-      Enum.reduce_while(actions(state), {:ok, state}, &add_action/2)
-    end
-  end
-
-  defp add_action({type, name, opts}, {:ok, state}) do
-    case Builder.build_action(type, name, opts) do
-      {:ok, action} -> {:cont, {:ok, Transformer.add_entity(state, [:actions], action)}}
-      {:error, error} -> {:halt, {:error, error}}
+      Enum.reduce(actions(state), {:ok, state}, fn {type, name, opts}, result ->
+        Builder.prepend_action(result, type, name, opts)
+      end)
     end
   end
 
@@ -80,11 +75,8 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
        [allow_nil?: false, default: &DateTime.utc_now/0, update_default: &DateTime.utc_now/0]}
     ]
 
-    Enum.reduce_while(specs, {:ok, state}, fn {name, type, opts}, {:ok, state} ->
-      case Builder.add_new_attribute(state, name, type, Keyword.put(opts, :public?, true)) do
-        {:ok, state} -> {:cont, {:ok, state}}
-        {:error, error} -> {:halt, {:error, error}}
-      end
+    Enum.reduce(specs, {:ok, state}, fn {name, type, opts}, result ->
+      Builder.add_new_attribute(result, name, type, Keyword.put(opts, :public?, true))
     end)
   end
 

@@ -227,9 +227,9 @@ defmodule AshHooks do
       payload_versions: [
         type: :any,
         doc: """
-        The declared variant builders: a map of `version => {module,
-        function}` where `f(event) :: {:ok, payload_bytes} | {:error,
-        reason}`. No pin, or a pin equal to the event's payload version,
+        The declared variant builders map `version => {module, function}`.
+        Each builder implements `f(event) :: {:ok, payload_bytes} | {:error, reason}`.
+        No pin, or a pin equal to the event's payload version,
         receives the original bytes. Other declared pins run their builder;
         undeclared pins fail that endpoint closed (`:unknown_pinned_version`)
         before any row is written. Outbox recovery uses the stored payload

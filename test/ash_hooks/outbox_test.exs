@@ -1032,6 +1032,53 @@ for {module, namespace} <- [
         end
       end
 
+      test "A1 and A13 grant failures remain visible at every outbox write entry point", f do
+        [pending, failed, done] = events = for _ <- 1..3, do: Cases.event()
+        for event <- events, do: assert({:ok, :accepted} = Cases.publish(f, event))
+        Cases.set(f, failed.id, state: "failed", failed_at: DateTime.utc_now())
+
+        Cases.set(f, done.id,
+          state: "done",
+          completed_at: DateTime.add(DateTime.utc_now(), -3_601, :second)
+        )
+
+        for privilege <- ["INSERT", "UPDATE", "DELETE"] do
+          f.owner.query!(
+            "REVOKE #{privilege} ON #{Cases.table(f.outbox)} FROM #{f.roles.runtime}",
+            [],
+            log: false
+          )
+
+          try do
+            case privilege do
+              "INSERT" ->
+                assert {:error, _error} = Cases.publish(f, Cases.event())
+
+              "UPDATE" ->
+                assert {:error, _error} = Cases.fanout(f, pending.id)
+                assert {:error, _error} = AshHooks.rearm(f.outbox, failed.id, tenant: "tenant-a")
+
+                assert {:ok, %{errors: [_error], done: 0}} =
+                         AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
+
+              "DELETE" ->
+                assert {:error, _error} =
+                         AshHooks.OutboundOutbox.prune(f.outbox, tenant: "tenant-a")
+            end
+          after
+            f.owner.query!(
+              "GRANT #{privilege} ON #{Cases.table(f.outbox)} TO #{f.roles.runtime}",
+              [],
+              log: false
+            )
+          end
+        end
+
+        assert Cases.publication(f, pending.id).state == :pending
+        assert Cases.publication(f, failed.id).state == :failed
+        assert Cases.publication(f, done.id).state == :done
+      end
+
       test "A5 losing the fanout owner kills its blocked SQL runner", f do
         Cases.endpoint(f, pinned_payload_version: 1)
         event = Cases.event()
