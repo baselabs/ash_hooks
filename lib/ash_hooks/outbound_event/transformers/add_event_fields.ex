@@ -39,7 +39,7 @@ defmodule AshHooks.OutboundEvent.Transformers.AddEventFields do
     end
   end
 
-  defp attributes_spec do
+  def attributes_spec(_state \\ nil) do
     [
       {:event_uuid, :string, [allow_nil?: false, constraints: [max_length: 255]]},
       {:event_type, :string, [allow_nil?: false, constraints: [max_length: 255]]},

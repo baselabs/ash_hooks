@@ -12,36 +12,26 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
   def before?(Ash.Resource.Transformers.AttributesByName), do: true
   def before?(_), do: false
 
-  def transform(dsl_state) do
-    with {:ok, dsl_state} <- add_primary_key(dsl_state),
-         {:ok, dsl_state} <- add_filter_attribute(dsl_state),
-         {:ok, dsl_state} <- add_pause_attribute(dsl_state) do
-      add_attributes(dsl_state)
+  def transform(state) do
+    with {:ok, state} <- add_primary_key(state) do
+      Enum.reduce(attributes_spec(state), {:ok, state}, fn {name, type, opts}, result ->
+        Builder.add_new_attribute(result, name, type, opts)
+      end)
     end
   end
 
-  defp add_pause_attribute(dsl_state) do
-    case Extension.get_opt(dsl_state, [:subscription], :pausable, :off) do
-      :off ->
-        {:ok, dsl_state}
+  def attributes_spec(state) do
+    filters =
+      if Extension.get_opt(state, [:subscription], :filter_attributes, []) == [],
+        do: [],
+        else: [{:event_filters, :map, [public?: true]}]
 
-      :on ->
-        Builder.add_new_attribute(dsl_state, :paused, :boolean,
-          allow_nil?: false,
-          default: false,
-          public?: true
-        )
-    end
-  end
+    pause =
+      if Extension.get_opt(state, [:subscription], :pausable, :off) == :on,
+        do: [{:paused, :boolean, [allow_nil?: false, default: false, public?: true]}],
+        else: []
 
-  # Declaring filter_attributes injects the event_filters column; an
-  # EXISTING schema is never silently widened; the consumer migrates the
-  # column when adopting attribute filters.
-  defp add_filter_attribute(dsl_state) do
-    case Extension.get_opt(dsl_state, [:subscription], :filter_attributes, []) do
-      [] -> {:ok, dsl_state}
-      _declared -> Builder.add_new_attribute(dsl_state, :event_filters, :map, public?: true)
-    end
+    filters ++ pause ++ attributes_spec()
   end
 
   defp add_primary_key(dsl_state) do
@@ -60,13 +50,6 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
         default: &Ash.UUID.generate/0
       )
     end
-  end
-
-  defp add_attributes(dsl_state) do
-    Enum.reduce_while(attributes_spec(), {:ok, dsl_state}, fn {name, type, opts},
-                                                              {:ok, dsl_state} ->
-      {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
-    end)
   end
 
   defp attributes_spec do

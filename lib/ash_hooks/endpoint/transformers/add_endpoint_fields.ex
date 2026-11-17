@@ -22,72 +22,58 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
 
   def transform(dsl_state) do
     with {:ok, dsl_state, status_attribute} <- check_status_attribute(dsl_state),
-         {:ok, dsl_state} <- add_primary_key(dsl_state),
-         {:ok, dsl_state} <- add_capture_attributes(dsl_state),
-         {:ok, dsl_state} <- add_lifecycle_attributes(dsl_state),
-         {:ok, dsl_state} <- add_custody_attributes(dsl_state),
-         {:ok, dsl_state} <- add_pinning_attributes(dsl_state),
-         {:ok, dsl_state} <- add_warning_attributes(dsl_state) do
-      add_attributes(dsl_state, status_attribute)
+         {:ok, dsl_state} <- add_primary_key(dsl_state) do
+      inject(dsl_state, attributes_spec(dsl_state, status_attribute))
     end
   end
 
-  defp add_custody_attributes(state) do
-    if Extension.get_opt(state, [:endpoint], :custodian) do
-      names = [:secret_kind, :previous_secret_kind]
-
-      names =
-        if Extension.get_opt(state, [:endpoint], :legacy_key_lifecycle, :off) == :on,
-          do: names ++ [:legacy_secret_kind, :legacy_previous_secret_kind],
-          else: names
-
-      specs = Enum.map(names, &{&1, :term, []})
-
-      inject(state, specs)
-    else
-      {:ok, state}
-    end
+  def attributes_spec(state) do
+    attributes_spec(state, Extension.get_opt(state, [:endpoint], :status_attribute))
   end
 
-  # The payload-version pinning opt-in (default :off): declaring
-  # `version_pinning :on` injects the pin column dispatch consults
-  defp add_pinning_attributes(dsl_state) do
-    case Extension.get_opt(dsl_state, [:endpoint], :version_pinning, :off) do
-      :off ->
-        {:ok, dsl_state}
+  defp attributes_spec(state, mapped) do
+    base = if is_nil(mapped), do: attributes_spec(), else: mapped_attributes_spec()
+    capture =
+      if Extension.get_opt(state, [:endpoint], :response_capture_attributes, :off) == :on,
+        do: capture_attributes_spec(),
+        else: []
 
-      :on ->
-        Builder.add_new_attribute(dsl_state, :pinned_payload_version, :integer, public?: true)
-    end
-  end
-
-  # The signing-key lifecycle opt-in (default :off): declaring
-  # `key_lifecycle :on` injects the created/first-used/retired timestamps
-  # behind roll_secret/expire; an EXISTING schema is never silently
-  # widened; the consumer migrates the six columns when adopting.
-  defp add_lifecycle_attributes(dsl_state) do
-    specs =
+    lifecycle =
       for slot <- [:standard, :legacy],
           fields = AshHooks.KeyLifecycle.fields(slot),
-          Extension.get_opt(dsl_state, [:endpoint], fields.option, :off) == :on,
+          Extension.get_opt(state, [:endpoint], fields.option, :off) == :on,
           spec <- lifecycle_attributes_spec(slot),
           do: spec
 
-    inject(dsl_state, specs)
-  end
+    custody_names =
+      if Extension.get_opt(state, [:endpoint], :legacy_key_lifecycle, :off) == :on,
+        do: [:secret_kind, :previous_secret_kind, :legacy_secret_kind, :legacy_previous_secret_kind],
+        else: [:secret_kind, :previous_secret_kind]
 
-  # The auto-disable policy's warned marker: `disable_warned_at` carries
-  # the standing "a warning sweep has fired" fact between sweeps; a
-  # disable lands only after it (the warning-first contract). Injected
-  # WITH the policy declaration itself; the migration rides the same one.
-  defp add_warning_attributes(dsl_state) do
-    if auto_disable_declared?(dsl_state) do
-      Builder.add_new_attribute(dsl_state, :disable_warned_at, :utc_datetime_usec,
-        public?: true,
-        writable?: false
-      )
+    custody =
+      if Extension.get_opt(state, [:endpoint], :custodian),
+        do: Enum.map(custody_names, &{&1, :term, []}),
+        else: []
+
+    pinning =
+      if Extension.get_opt(state, [:endpoint], :version_pinning, :off) == :on,
+        do: [{:pinned_payload_version, :integer, [public?: true]}],
+        else: []
+
+    warning =
+      if auto_disable_declared?(state),
+        do: [{:disable_warned_at, :utc_datetime_usec, [public?: true, writable?: false]}],
+        else: []
+
+    specs = base ++ capture ++ lifecycle ++ custody ++ pinning ++ warning
+
+    if Extension.get_opt(state, [:endpoint], :native_signing, :required) == :optional do
+      Enum.map(specs, fn
+        {:secret_ref, type, opts} -> {:secret_ref, type, Keyword.put(opts, :allow_nil?, true)}
+        other -> other
+      end)
     else
-      {:ok, dsl_state}
+      specs
     end
   end
 
@@ -112,23 +98,6 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
 
     names = if slot == :standard, do: [:secret_retired_at | names], else: names
     Enum.map(names, &{&1, :utc_datetime_usec, []})
-  end
-
-  # The per-endpoint response-capture opt-in (default :off): declaring
-  # `response_capture_attributes :on` injects the capture columns; an
-  # EXISTING schema is never silently widened; the consumer migrates the
-  # four columns when they adopt the seam.
-  defp add_capture_attributes(dsl_state) do
-    case Extension.get_opt(dsl_state, [:endpoint], :response_capture_attributes, :off) do
-      :off ->
-        {:ok, dsl_state}
-
-      :on ->
-        Enum.reduce_while(capture_attributes_spec(), {:ok, dsl_state}, fn {name, type, opts},
-                                                                          {:ok, dsl_state} ->
-          {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
-        end)
-    end
   end
 
   defp capture_attributes_spec do
@@ -282,26 +251,7 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
     end
   end
 
-  defp add_attributes(dsl_state, nil),
-    do: inject(dsl_state, attributes_spec())
-
-  # a mapped switch means the injected :status attribute STAYS OUT; the
-  # consumer's own attribute (any type: boolean, enum, ...) governs
-  # delivery, exactly one switch
-  defp add_attributes(dsl_state, _mapped),
-    do: inject(dsl_state, mapped_attributes_spec())
-
   defp inject(dsl_state, spec) do
-    spec =
-      if Extension.get_opt(dsl_state, [:endpoint], :native_signing, :required) == :optional do
-        Enum.map(spec, fn
-          {:secret_ref, type, opts} -> {:secret_ref, type, Keyword.put(opts, :allow_nil?, true)}
-          other -> other
-        end)
-      else
-        spec
-      end
-
     Enum.reduce_while(spec, {:ok, dsl_state}, fn {name, type, opts}, {:ok, dsl_state} ->
       case {name, Keyword.get(opts, :allow_nil?),
             Enum.find(Transformer.get_entities(dsl_state, [:attributes]), &(&1.name == name))} do

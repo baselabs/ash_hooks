@@ -50,7 +50,13 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
   end
 
   defp fields(state) do
-    specs = [
+    Enum.reduce(attributes_spec(state), {:ok, state}, fn {name, type, opts}, result ->
+      Builder.add_new_attribute(result, name, type, Keyword.put(opts, :public?, true))
+    end)
+  end
+
+  def attributes_spec(_state) do
+    [
       {:id, :uuid, [primary_key?: true, allow_nil?: false, default: &Ash.UUID.generate/0]},
       {:event_uuid, :string, [allow_nil?: false, constraints: [max_length: 255]]},
       {:event_type, :string, [allow_nil?: false, constraints: [max_length: 255]]},
@@ -74,10 +80,6 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
       {:updated_at, :utc_datetime_usec,
        [allow_nil?: false, default: &DateTime.utc_now/0, update_default: &DateTime.utc_now/0]}
     ]
-
-    Enum.reduce(specs, {:ok, state}, fn {name, type, opts}, result ->
-      Builder.add_new_attribute(result, name, type, Keyword.put(opts, :public?, true))
-    end)
   end
 
   defp identity(state) do

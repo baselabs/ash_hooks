@@ -64,7 +64,6 @@ defmodule AshHooks.Subscription.Query do
     attribute = Info.attribute(resource, :paused)
 
     if Extension.get_opt(resource, [:subscription], :pausable, :off) == :on and
-         match?(%{type: Ash.Type.Boolean, allow_nil?: false}, attribute) and
          storage(resource, attribute, layer) in [:boolean, :bool, :integer] do
       expr(not paused)
     else
@@ -73,11 +72,8 @@ defmodule AshHooks.Subscription.Query do
   end
 
   defp filters(resource, metadata, layer) do
-    shape =
-      case Info.attribute(resource, :event_filters) do
-        %{type: Ash.Type.Map} = attribute -> {layer, storage(resource, attribute, layer)}
-        _unknown -> :unknown
-      end
+    attribute = Info.attribute(resource, :event_filters)
+    shape = if attribute, do: {layer, storage(resource, attribute, layer)}
 
     case shape do
       {layer, _storage} when layer in [Ash.DataLayer.Ets, Ash.DataLayer.Simple] ->

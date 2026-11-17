@@ -161,5 +161,5 @@ defmodule AshHooks.OutboundAttempt do
       AshHooks.OutboundAttempt.Transformers.AddAttemptIdentity,
       AshHooks.OutboundAttempt.Transformers.AddAttemptActions
     ],
-    verifiers: [AshHooks.Verifiers.MultitenancyNoBypass]
+    verifiers: [AshHooks.Verifiers.InjectedAttributes,AshHooks.Verifiers.MultitenancyNoBypass]
 end

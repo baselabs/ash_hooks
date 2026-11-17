@@ -225,7 +225,7 @@ defmodule AshHooks.InboundSource do
       AshHooks.InboundSource.Transformers.AddSourceFields,
       AshHooks.InboundSource.Transformers.AddSourceActions
     ],
-    verifiers: [
+    verifiers: [AshHooks.Verifiers.InjectedAttributes,
       AshHooks.InboundSource.Verifiers.Source,
       AshHooks.Verifiers.MultitenancyNoBypass,
       AshHooks.Endpoint.Verifiers.Overlap

@@ -153,7 +153,7 @@ defmodule AshHooks.OutboundDelivery do
       AshHooks.OutboundDelivery.Transformers.AddDeliveryActions,
       AshHooks.OutboundDelivery.Transformers.AddSendActions
     ],
-    verifiers: [
+    verifiers: [AshHooks.Verifiers.InjectedAttributes,
       AshHooks.Verifiers.MultitenancyNoBypass,
       AshHooks.Verifiers.OutboundDeliveryFields
     ]

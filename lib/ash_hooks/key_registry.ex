@@ -356,5 +356,5 @@ defmodule AshHooks.KeyRegistry do
   use Spark.Dsl.Extension,
     sections: [@section],
     transformers: [AshHooks.KeyRegistry.Transformers.AddRegistry],
-    verifiers: [AshHooks.KeyRegistry.Verifiers.Storage, AshHooks.Verifiers.MultitenancyNoBypass]
+    verifiers: [AshHooks.Verifiers.InjectedAttributes,AshHooks.KeyRegistry.Verifiers.Storage, AshHooks.Verifiers.MultitenancyNoBypass]
 end

@@ -12,19 +12,11 @@ defmodule AshHooks.OutboundOutbox.Verifier do
     identity =
       Enum.find(Verifier.get_entities(state, [:identities]), &(&1.name == :unique_publication))
 
-    metadata = Enum.find(Verifier.get_entities(state, [:attributes]), &(&1.name == :metadata))
-
     cond do
       invalid_identity?(identity, expected) ->
         error(
           state,
           "unique_publication must contain exactly the tenant attribute and event_uuid, without all_tenants? or where"
-        )
-
-      metadata.type != Ash.Type.Map or Keyword.has_key?(metadata.constraints, :fields) ->
-        error(
-          state,
-          "outbox metadata must use the unmodified :map type without a custom codec or fields constraint"
         )
 
       custom_metadata_codec?(state) ->

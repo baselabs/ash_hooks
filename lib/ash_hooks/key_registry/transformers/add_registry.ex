@@ -18,7 +18,7 @@ defmodule AshHooks.KeyRegistry.Transformers.AddRegistry do
 
   def transform(state) do
     state =
-      Enum.reduce(attributes(), state, fn {name, type, options}, state ->
+      Enum.reduce(attributes_spec(state), state, fn {name, type, options}, state ->
         {:ok, state} = Builder.add_new_attribute(state, name, type, options)
         state
       end)
@@ -27,7 +27,7 @@ defmodule AshHooks.KeyRegistry.Transformers.AddRegistry do
 
     actions = [
       {:read, :read, [primary?: true, pagination: pagination]},
-      {:create, :issue_key, [accept: Enum.map(attributes(), &elem(&1, 0))]},
+      {:create, :issue_key, [accept: Enum.map(attributes_spec(state), &elem(&1, 0))]},
       {:update, :transition_key,
        [
          accept: [
@@ -59,7 +59,7 @@ defmodule AshHooks.KeyRegistry.Transformers.AddRegistry do
     {:ok, state}
   end
 
-  defp attributes do
+  def attributes_spec(_state) do
     [
       {:ref, :string, [primary_key?: true, allow_nil?: false, constraints: [max_length: 40]]},
       {:kind, :term, [allow_nil?: false]},

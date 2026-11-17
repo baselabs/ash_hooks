@@ -98,7 +98,7 @@ defmodule AshHooks.OutboundOutbox do
   use Spark.Dsl.Extension,
     sections: [@section],
     transformers: [AshHooks.OutboundOutbox.Transformers.AddOutbox],
-    verifiers: [
+    verifiers: [AshHooks.Verifiers.InjectedAttributes,
       AshHooks.Verifiers.MultitenancyNoBypass,
       AshHooks.OutboundOutbox.Verifier
     ]

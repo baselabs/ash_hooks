@@ -92,8 +92,9 @@ defmodule AshHooks.OutboxConfigurationTest do
           &(&1.name == :metadata)
         )
 
-      assert {:error, %Spark.Error.DslError{message: message}} = Verifier.verify(invalid)
-      assert message =~ "unmodified :map"
+      assert_raise Spark.Error.DslError, ~r/accepted shapes/, fn ->
+        AshHooks.Verifiers.InjectedAttributes.verify(invalid)
+      end
     end
 
     invalid =

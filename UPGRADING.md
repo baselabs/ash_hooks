@@ -8,6 +8,85 @@ and enqueues synchronously. Every dispatch now selects matching subscriptions
 in SQL and retains the Elixir guard. Malformed filter containers never match;
 this corrects the former `__invalid__` sentinel case for every host.
 
+### Check host declarations of injected attributes
+
+Every resource extension now verifies host overrides against its native field
+contract. A refusal names the resource, attribute, declared type, nullability
+and constraints, and accepted shapes. This catches configurations that cannot
+store package action inputs or that break matching and state transitions.
+Restore the injected type or a supported variant and migrate incompatible
+stored values before changing the column type. The following table lists
+all injected fields; optional groups apply only when their DSL option is on.
+`required` means `allow_nil?: false`; `nullable` means `allow_nil?: true`
+because package actions write or clear nil. Host-owned `event_filters` accepts
+either nullability. Ordinary defaults, constraints and writable settings keep
+their existing contracts.
+
+| Resource | Type and fields | Nullability |
+| --- | --- | --- |
+| Subscription | string or atom array: `event_types`; Boolean: `paused` under `pausable :on`; UUID reference: `endpoint_id` | required |
+| Subscription | map: `event_filters` under `filter_attributes` | either |
+| Subscription | atom: `signing_mode` | nullable |
+| Endpoint | `AshHooks.Endpoint.Url`: `url`; atom: `status`; `AshHooks.Endpoint.SecretRef` or string: `secret_ref` | required; optional native signing makes `secret_ref` nullable |
+| Endpoint | SecretRef or string: `previous_secret_ref`, `legacy_secret_ref`, `legacy_previous_secret_ref` | nullable |
+| Endpoint capture | Boolean: `response_capture`; integer: `response_capture_max_bytes`, `response_capture_retention_seconds`; string array: `response_header_allowlist` | required |
+| Endpoint lifecycle | UTC microsecond datetime: `secret_created_at`, `secret_first_used_at`, `secret_retired_at`, `previous_secret_created_at`, `previous_secret_first_used_at`, `previous_secret_retired_at`, `legacy_secret_created_at`, `legacy_secret_first_used_at`, `legacy_previous_secret_created_at`, `legacy_previous_secret_first_used_at`, `legacy_previous_secret_retired_at` | nullable |
+| Endpoint custody | term: `secret_kind`, `previous_secret_kind`, `legacy_secret_kind`, `legacy_previous_secret_kind` | nullable |
+| Endpoint pinning and warning | integer: `pinned_payload_version`; UTC microsecond datetime: `disable_warned_at` | nullable |
+| Outbound delivery | string: `event_uuid`, `event_type`, `dispatch_source`, `dispatch_route`; binary: `payload` or the configured `payload_attribute`; UUID reference: `endpoint_id`; atom: `status`; integer: `attempts` | required |
+| Outbound delivery | UUID: `subscription_id`, `attempt_token`, `enqueue_token`; atom: `signing_mode`; UTC microsecond datetime: `send_lease_expires_at`, `enqueue_lease_expires_at`, `next_attempt_at`; map: `endpoint_snapshot`; integer: `response_status`; string: `response_snippet`, `last_error` | nullable |
+| Outbound delivery resend and test | integer: `resend_baseline`, `resend_count`; Boolean: `test` | required |
+| Outbound delivery resend | string: `last_resend_by`; UTC microsecond datetime: `last_resend_at` | nullable |
+| Outbound attempt | map: `delivery_pk`; UUID: `endpoint_id`; string: `event_uuid`, `event_type`; integer: `attempt`; atom: `outcome`; Boolean: `test`; UTC microsecond datetime: `attempted_at` | required |
+| Outbound attempt | string: `reason`, `response_snippet`, `signing_key_ref`; integer: `response_status`, `latency_ms`; map: `response_headers`; string array: `signing_key_refs` when provenance is on | nullable |
+| Outbound event | string: `event_uuid`, `event_type`; binary: `payload` | required |
+| Outbound event | integer: `version` | nullable |
+| Inbound delivery | atom: `provider`, `status`; string: `external_event_id`, `payload_digest`; `AshHooks.InboundDelivery.Payload`: `payload`; integer: `fencing_token`, `attempts`, and optional `duplicates` | required |
+| Inbound delivery | string: `external_event_type`, `error_class`; UTC microsecond datetime: `lease_expires_at`; optional atom: `provider_alias`; optional map: `verified_facts` | nullable |
+| Inbound source | atom: configured `source_attribute`, `provider`; each declared scope type; Boolean: `paused` | required |
+| Inbound source | SecretRef or string: `secret_ref`, `previous_secret_ref`; term: `secret_kind`, `previous_secret_kind`, `public_key`, `public_key_kind`; UTC microsecond datetime: `secret_created_at`, `secret_first_used_at`, `previous_secret_created_at`, `previous_secret_first_used_at`, `previous_secret_retired_at` | nullable |
+| Key registry | string: `ref`; term: `kind`; atom: `owner_resource`, `state`; integer: `attempts`, `destroy_generation`; UTC microsecond datetime: `issued_at`, `inserted_at`, `updated_at` | required |
+| Key registry | map: `owner_key`; string: `custody_tenant`, `last_error`; UTC microsecond datetime: `destroy_after`, `next_attempt_at` | nullable |
+| Outbox | UUID: `id`, `acceptance_token`; string: `event_uuid`, `event_type`, `dispatch_source`, `dispatch_route`; integer: `version`, `format_version`, `attempts`; binary: `payload`; unmodified map: `metadata`; atom: `state`; UTC microsecond datetime: `next_attempt_at`, `inserted_at`, `updated_at` | required |
+| Outbox | UUID: `claim_token`; string: `last_error`; UTC microsecond datetime: `lease_expires_at`, `completed_at`, `failed_at` | nullable |
+
+Native `Ash.Type.NewType` subtypes of the listed types are accepted, except
+outbox metadata, whose codec must remain unmodified. Event atom arrays may
+have a finite `one_of` constraint or be open. Open arrays and unrecognized
+physical storage use conservative query selection and the Elixir guard.
+UUID reference fields retain their UUID-storage compatibility check. The
+default primary key is added only when a host has no primary key; existing
+custom, composite and UUIDv7 primary keys retain their documented rules.
+A mapped endpoint `status_attribute` remains a host-owned switch of any type.
+Inbound source identity and provider constraints must also match their native
+specification. The outbox separately verifies the physical metadata codec and
+PostgreSQL `json` migration type.
+
+For every newly refused nullable required field, backfill existing nulls to
+valid application values, then add `NOT NULL` and update the host declaration.
+For a newly refused non-null field that the package clears, drop `NOT NULL`
+and set `allow_nil?: true`; no backfill is needed. For an unsupported type,
+convert existing values into the listed native domain, migrate the column and
+restore the native declaration. Do not cast arbitrary identifiers into UUIDs;
+retain their identity through an application migration or repair the reference.
+
+For an existing nullable subscription `paused` column, the migration is
+backfill first, then alter. This PostgreSQL example assumes the host's table
+is named `subscriptions`; substitute the resource's actual table and source
+column names. SQLite migrations perform the same backfill and rebuild the
+table with `paused BOOLEAN NOT NULL DEFAULT FALSE` through AshSqlite's
+migration generator. Set `allow_nil?: false, default: false` in the resource.
+
+```sql
+UPDATE subscriptions SET paused = FALSE WHERE paused IS NULL;
+ALTER TABLE subscriptions ALTER COLUMN paused SET DEFAULT FALSE;
+ALTER TABLE subscriptions ALTER COLUMN paused SET NOT NULL;
+```
+
+A nullable `event_filters` column needs no migration. Null filters match.
+A nullable `event_types` column must be backfilled with the intended event
+array before adding `NOT NULL`; choose `["*"]` only when all events are intended.
+
 ### Add and migrate the outbox
 
 Define a separate resource using `AshHooks.OutboundOutbox`, a primary read

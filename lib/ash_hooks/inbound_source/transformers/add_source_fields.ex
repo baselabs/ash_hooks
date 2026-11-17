@@ -13,22 +13,26 @@ defmodule AshHooks.InboundSource.Transformers.AddSourceFields do
   def transform(state) do
     source = Extension.get_opt(state, [:inbound_source], :source_attribute, :source)
     scope = Extension.get_opt(state, [:inbound_source], :scope, [])
-    aliases = Keyword.keys(Extension.get_opt(state, [:inbound_source], :providers, []))
     roles = [source | Enum.map(scope, &elem(&1, 0))]
-
-    specs =
-      [
-        {source, :atom, [allow_nil?: false]}
-        | Enum.map(scope, fn {name, type, constraints} ->
-            {name, type, [allow_nil?: false, constraints: constraints]}
-          end)
-      ] ++ fixed_specs(aliases)
 
     with :ok <- check_roles(state, roles),
          {:ok, state} <- primary_key(state),
-         {:ok, state} <- inject(state, specs) do
+         {:ok, state} <- inject(state, attributes_spec(state)) do
       Builder.add_identity(state, :unique_source, roles)
     end
+  end
+
+  def attributes_spec(state) do
+    source = Extension.get_opt(state, [:inbound_source], :source_attribute, :source)
+    scope = Extension.get_opt(state, [:inbound_source], :scope, [])
+    aliases = Keyword.keys(Extension.get_opt(state, [:inbound_source], :providers, []))
+
+    [
+      {source, :atom, [allow_nil?: false]}
+      | Enum.map(scope, fn {name, type, constraints} ->
+          {name, type, [allow_nil?: false, constraints: constraints]}
+        end)
+    ] ++ fixed_specs(aliases)
   end
 
   defp check_roles(state, roles) do
@@ -58,25 +62,8 @@ defmodule AshHooks.InboundSource.Transformers.AddSourceFields do
 
   defp inject(state, specs) do
     Enum.reduce_while(specs, {:ok, state}, fn {name, type, opts}, {:ok, state} ->
-      existing = Enum.find(Transformer.get_entities(state, [:attributes]), &(&1.name == name))
-      {:ok, expected} = Builder.build_attribute(name, type, opts)
-
-      if is_nil(existing) or shape(existing) == shape(expected) do
-        {:cont, Builder.add_new_attribute(state, name, type, Keyword.put(opts, :public?, true))}
-      else
-        {:halt,
-         error(
-           state,
-           "host attribute #{inspect(name)} must match the injected type, constraints and nullability"
-         )}
-      end
+      {:cont, Builder.add_new_attribute(state, name, type, Keyword.put(opts, :public?, true))}
     end)
-  end
-
-  defp shape(attribute) do
-    type = Ash.Type.get_type(attribute.type)
-    {:ok, constraints} = Ash.Type.init(type, attribute.constraints)
-    {type, constraints, attribute.allow_nil?}
   end
 
   defp fixed_specs(aliases) do

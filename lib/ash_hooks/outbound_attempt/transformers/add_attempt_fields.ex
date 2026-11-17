@@ -14,18 +14,17 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptFields do
 
   def transform(dsl_state) do
     with {:ok, dsl_state} <- add_primary_key(dsl_state) do
-      with {:ok, dsl_state} <- add_attributes(dsl_state), do: add_provenance(dsl_state)
+      add_attributes(dsl_state)
     end
   end
 
-  defp add_provenance(state) do
-    if Extension.get_opt(state, [:outbound_attempt], :record_signing_provenance, :off) == :on do
-      Builder.add_new_attribute(state, :signing_key_refs, {:array, :string},
-        constraints: [items: [max_length: 255]]
-      )
-    else
-      {:ok, state}
-    end
+  def attributes_spec(state) do
+    provenance =
+      if Extension.get_opt(state, [:outbound_attempt], :record_signing_provenance, :off) == :on,
+        do: [{:signing_key_refs, {:array, :string}, [constraints: [items: [max_length: 255]]]}],
+        else: []
+
+    attributes_spec() ++ provenance
   end
 
   defp add_primary_key(dsl_state) do
@@ -47,7 +46,7 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptFields do
   end
 
   defp add_attributes(dsl_state) do
-    Enum.reduce_while(attributes_spec(), {:ok, dsl_state}, fn {name, type, opts},
+    Enum.reduce_while(attributes_spec(dsl_state), {:ok, dsl_state}, fn {name, type, opts},
                                                               {:ok, dsl_state} ->
       {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
     end)

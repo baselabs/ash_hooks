@@ -26,39 +26,22 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
     with :ok <- check_scope_slots(dsl_state),
          {:ok, dsl_state} <- add_primary_key(dsl_state),
          {:ok, dsl_state} <- add_attributes(dsl_state),
-         {:ok, dsl_state} <- add_provider_alias(dsl_state),
-         {:ok, dsl_state} <- add_verified_facts(dsl_state),
-         {:ok, dsl_state} <- add_tracking_attributes(dsl_state),
          :ok <- validate_primary_key_sources(dsl_state) do
       {:ok, dsl_state}
     end
   end
 
-  defp add_verified_facts(state) do
-    if Extension.get_opt(state, [:inbound_delivery], :record_verified_facts, :off) == :on,
-      do: Builder.add_new_attribute(state, :verified_facts, :map, sensitive?: true),
-      else: {:ok, state}
-  end
+  def attributes_spec(state) do
+    optional = [
+      {:record_verified_facts, {:verified_facts, :map, [sensitive?: true]}},
+      {:record_provider_alias, {:provider_alias, :atom, []}},
+      {:ingress_tracking, {:duplicates, :integer, [allow_nil?: false, default: 0]}}
+    ]
 
-  defp add_provider_alias(state) do
-    if Extension.get_opt(state, [:inbound_delivery], :record_provider_alias, :off) == :on,
-      do: Builder.add_new_attribute(state, :provider_alias, :atom),
-      else: {:ok, state}
-  end
-
-  # The ingress-counting opt-in (default :off): `duplicates` bumps on
-  # every duplicate ingest; an EXISTING schema is never silently widened.
-  defp add_tracking_attributes(dsl_state) do
-    case Extension.get_opt(dsl_state, [:inbound_delivery], :ingress_tracking, :off) do
-      :off ->
-        {:ok, dsl_state}
-
-      :on ->
-        Builder.add_new_attribute(dsl_state, :duplicates, :integer,
-          allow_nil?: false,
-          default: 0
-        )
-    end
+    attributes_spec() ++
+      for {option, spec} <- optional,
+          Extension.get_opt(state, [:inbound_delivery], option, :off) == :on,
+          do: spec
   end
 
   defp check_scope_slots(dsl_state) do
@@ -130,7 +113,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
   end
 
   defp add_attributes(dsl_state) do
-    Enum.reduce_while(attributes_spec(), {:ok, dsl_state}, fn {name, type, opts},
+    Enum.reduce_while(attributes_spec(dsl_state), {:ok, dsl_state}, fn {name, type, opts},
                                                               {:ok, dsl_state} ->
       {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
     end)

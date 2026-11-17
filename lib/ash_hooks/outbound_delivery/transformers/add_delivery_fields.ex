@@ -24,27 +24,24 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
     with {:ok, payload_attribute} <- check_payload_attribute(dsl_state),
          {:ok, dsl_state} <- add_primary_key(dsl_state),
          {:ok, dsl_state} <- add_attributes(dsl_state, payload_attribute),
-         {:ok, dsl_state} <- add_resend_attributes(dsl_state),
-         {:ok, dsl_state} <- add_test_attributes(dsl_state),
          :ok <- validate_primary_key_sources(dsl_state, payload_attribute) do
       {:ok, dsl_state}
     end
   end
 
-  # The resend-tracking opt-in (default :off): declaring :on injects the
-  # machine columns resend/2 and replay/2 write; an EXISTING schema is
-  # never silently widened; the consumer migrates the four columns.
-  defp add_resend_attributes(dsl_state) do
-    case Extension.get_opt(dsl_state, [:outbound_delivery], :resend_tracking, :off) do
-      :off ->
-        {:ok, dsl_state}
+  def attributes_spec(state) do
+    payload = Extension.get_opt(state, [:outbound_delivery], :payload_attribute, :payload)
+    resend =
+      if Extension.get_opt(state, [:outbound_delivery], :resend_tracking, :off) == :on,
+        do: resend_attributes_spec(),
+        else: []
 
-      :on ->
-        Enum.reduce_while(resend_attributes_spec(), {:ok, dsl_state}, fn {name, type, opts},
-                                                                         {:ok, dsl_state} ->
-          {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
-        end)
-    end
+    test =
+      if Extension.get_opt(state, [:outbound_delivery], :test_tracking, :off) == :on,
+        do: [{:test, :boolean, [allow_nil?: false, default: false, public?: true]}],
+        else: []
+
+    base_attributes_spec(payload) ++ resend ++ test
   end
 
   defp resend_attributes_spec do
@@ -59,21 +56,6 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
     ]
   end
 
-  # The test-flag opt-in (default :off): `test` marks test_send rows
-  defp add_test_attributes(dsl_state) do
-    case Extension.get_opt(dsl_state, [:outbound_delivery], :test_tracking, :off) do
-      :off ->
-        {:ok, dsl_state}
-
-      :on ->
-        Builder.add_new_attribute(dsl_state, :test, :boolean,
-          allow_nil?: false,
-          default: false,
-          public?: true
-        )
-    end
-  end
-
   # The configured name replaces :payload in the injected spec; every
   # other spec name is reserved against it (the scope_identity pattern).
   defp check_payload_attribute(dsl_state) do
@@ -83,7 +65,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
       Extension.get_opt(dsl_state, [:outbound_delivery], :payload_attribute, :payload)
 
     reserved =
-      (Enum.map(attributes_spec(payload_attribute), &elem(&1, 0)) -- [payload_attribute]) ++
+      (Enum.map(base_attributes_spec(payload_attribute), &elem(&1, 0)) -- [payload_attribute]) ++
         Enum.map(resend_attributes_spec(), &elem(&1, 0)) ++ [:test]
 
     if payload_attribute in [:id | reserved] do
@@ -117,8 +99,8 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
     end
   end
 
-  defp add_attributes(dsl_state, payload_attribute) do
-    Enum.reduce_while(attributes_spec(payload_attribute), {:ok, dsl_state}, fn {name, type, opts},
+  defp add_attributes(dsl_state, _payload_attribute) do
+    Enum.reduce_while(attributes_spec(dsl_state), {:ok, dsl_state}, fn {name, type, opts},
                                                                                {:ok, dsl_state} ->
       {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
     end)
@@ -172,7 +154,7 @@ defmodule AshHooks.OutboundDelivery.Transformers.AddDeliveryFields do
     end
   end
 
-  defp attributes_spec(payload_attribute) do
+  defp base_attributes_spec(payload_attribute) do
     [
       {:event_uuid, :string, [allow_nil?: false, constraints: [max_length: 255]]},
       {:event_type, :string, [allow_nil?: false, constraints: [max_length: 255]]},

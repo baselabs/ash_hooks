@@ -43,8 +43,8 @@ for {name, layer, shape} <- [
       {:SimpleCustom, Ash.DataLayer.Simple, :custom},
       {:EtsEmptyAtoms, Ash.DataLayer.Ets, :empty_atoms},
       {:SimpleEmptyAtoms, Ash.DataLayer.Simple, :empty_atoms},
-      {:EtsNullablePause, Ash.DataLayer.Ets, :nullable_pause},
-      {:SimpleNullablePause, Ash.DataLayer.Simple, :nullable_pause}
+      {:EtsHostPause, Ash.DataLayer.Ets, :host_pause},
+      {:SimpleHostPause, Ash.DataLayer.Simple, :host_pause}
     ] do
   subscription = Module.concat([AshHooks.OutboxMatching, name, Subscription])
   emitter = Module.concat([AshHooks.OutboxMatching, name, Emitter])
@@ -74,29 +74,32 @@ for {name, layer, shape} <- [
           case unquote(shape) do
             :closed_atoms ->
               attribute :event_types, {:array, :atom},
+                allow_nil?: false,
                 public?: true,
                 constraints: [items: [one_of: [:changed, :other, :*]]]
 
             :empty_atoms ->
               attribute :event_types, {:array, :atom},
+                allow_nil?: false,
                 public?: true,
                 constraints: [items: [one_of: [:other]]]
 
             :open_atoms ->
-              attribute :event_types, {:array, :atom}, public?: true
+              attribute :event_types, {:array, :atom}, allow_nil?: false, public?: true
 
             :custom ->
               attribute :event_types, {:array, AshHooks.OutboxMatching.CustomString},
+                allow_nil?: false,
                 public?: true
 
               attribute :event_filters, AshHooks.OutboxMatching.CustomMap, public?: true
-              attribute :paused, AshHooks.OutboxMatching.CustomBoolean, default: false
+              attribute :paused, AshHooks.OutboxMatching.CustomBoolean, allow_nil?: false, default: false
 
             :strings ->
               :ok
 
-            :nullable_pause ->
-              attribute :paused, :boolean, public?: true
+            :host_pause ->
+              attribute :paused, :boolean, allow_nil?: false, default: false, public?: true
           end
         end
 
@@ -153,8 +156,8 @@ for {namespace, layer, repo, table} <- [
       {AshHooks.OutboxFixtures.Postgres, AshPostgres.DataLayer,
        AshHooks.OutboxFixtures.Postgres.Repo, "outbox_postgres_subscriptions"}
     ] do
-  subscription = Module.concat(namespace, :NullableSubscription)
-  emitter = Module.concat(namespace, :NullableEmitter)
+  subscription = Module.concat(namespace, :HostPauseSubscription)
+  emitter = Module.concat(namespace, :HostPauseEmitter)
   endpoint = Module.concat(namespace, :Endpoint)
   delivery = Module.concat(namespace, :Delivery)
   path = if layer == AshSqlite.DataLayer, do: :sqlite, else: :postgres
@@ -183,7 +186,7 @@ for {namespace, layer, repo, table} <- [
 
         attributes do
           attribute :org_id, :string, allow_nil?: false
-          attribute :paused, :boolean, public?: true
+          attribute :paused, :boolean, allow_nil?: false, default: false, public?: true
         end
 
         multitenancy do
@@ -258,10 +261,10 @@ defmodule AshHooks.OutboxMatching.Outbox do
       {AshHooks.OutboxMatching.SimpleCustom.Emitter, :changed},
       {AshHooks.OutboxMatching.EtsEmptyAtoms.Emitter, :changed},
       {AshHooks.OutboxMatching.SimpleEmptyAtoms.Emitter, :changed},
-      {AshHooks.OutboxMatching.EtsNullablePause.Emitter, :changed},
-      {AshHooks.OutboxMatching.SimpleNullablePause.Emitter, :changed},
-      {AshHooks.OutboxFixtures.SQLite.NullableEmitter, :changed},
-      {AshHooks.OutboxFixtures.Postgres.NullableEmitter, :changed}
+      {AshHooks.OutboxMatching.EtsHostPause.Emitter, :changed},
+      {AshHooks.OutboxMatching.SimpleHostPause.Emitter, :changed},
+      {AshHooks.OutboxFixtures.SQLite.HostPauseEmitter, :changed},
+      {AshHooks.OutboxFixtures.Postgres.HostPauseEmitter, :changed}
     ]
 
     delivery_routes default: nil
@@ -293,14 +296,14 @@ defmodule AshHooks.OutboxMatching.Domain do
     resource AshHooks.OutboxMatching.EtsEmptyAtoms.Emitter
     resource AshHooks.OutboxMatching.SimpleEmptyAtoms.Subscription
     resource AshHooks.OutboxMatching.SimpleEmptyAtoms.Emitter
-    resource AshHooks.OutboxMatching.EtsNullablePause.Subscription
-    resource AshHooks.OutboxMatching.EtsNullablePause.Emitter
-    resource AshHooks.OutboxMatching.SimpleNullablePause.Subscription
-    resource AshHooks.OutboxMatching.SimpleNullablePause.Emitter
-    resource AshHooks.OutboxFixtures.SQLite.NullableSubscription
-    resource AshHooks.OutboxFixtures.SQLite.NullableEmitter
-    resource AshHooks.OutboxFixtures.Postgres.NullableSubscription
-    resource AshHooks.OutboxFixtures.Postgres.NullableEmitter
+    resource AshHooks.OutboxMatching.EtsHostPause.Subscription
+    resource AshHooks.OutboxMatching.EtsHostPause.Emitter
+    resource AshHooks.OutboxMatching.SimpleHostPause.Subscription
+    resource AshHooks.OutboxMatching.SimpleHostPause.Emitter
+    resource AshHooks.OutboxFixtures.SQLite.HostPauseSubscription
+    resource AshHooks.OutboxFixtures.SQLite.HostPauseEmitter
+    resource AshHooks.OutboxFixtures.Postgres.HostPauseSubscription
+    resource AshHooks.OutboxFixtures.Postgres.HostPauseEmitter
     resource AshHooks.OutboxMatching.Outbox
   end
 end
@@ -329,8 +332,8 @@ defmodule AshHooks.OutboxMatchingTest do
         :SimpleCustom,
         :EtsEmptyAtoms,
         :SimpleEmptyAtoms,
-        :EtsNullablePause,
-        :SimpleNullablePause
+        :EtsHostPause,
+        :SimpleHostPause
       ] do
     @tag name: name
     test "A12 production reads retain pagination and exact in-memory matching for #{name}", f do
@@ -341,8 +344,6 @@ defmodule AshHooks.OutboxMatchingTest do
       atoms? = empty? or name in [:EtsAtoms, :SimpleAtoms, :EtsOpenAtoms, :SimpleOpenAtoms]
       types = if empty?, do: [:other], else: if(atoms?, do: [:changed], else: ["changed"])
       widened? = name in [:EtsOpenAtoms, :SimpleOpenAtoms, :EtsCustom, :SimpleCustom]
-      nullable_pause? = name in [:EtsNullablePause, :SimpleNullablePause]
-      widened? = widened? or nullable_pause?
       ets? = Ash.DataLayer.data_layer(subscription) == Ets
       endpoint = Cases.endpoint(f)
 
@@ -466,8 +467,8 @@ defmodule AshHooks.OutboxMatchingTest do
 end
 
 for {test_module, namespace} <- [
-      {AshHooks.OutboxNullableSQLiteTest, AshHooks.OutboxFixtures.SQLite},
-      {AshHooks.OutboxNullablePostgresTest, AshHooks.OutboxFixtures.Postgres}
+      {AshHooks.OutboxHostPauseSQLiteTest, AshHooks.OutboxFixtures.SQLite},
+      {AshHooks.OutboxHostPausePostgresTest, AshHooks.OutboxFixtures.Postgres}
     ] do
   defmodule test_module do
     use ExUnit.Case, async: false
@@ -482,9 +483,9 @@ for {test_module, namespace} <- [
       {:ok, Cases.setup(@namespace)}
     end
 
-    test "A12 nullable host pause declarations retain Boolean matching in both paths", f do
+    test "A12 identical host pause declarations retain Boolean matching in both paths", f do
       Cases.endpoint(f)
-      emitter = Module.concat(@namespace, :NullableEmitter)
+      emitter = Module.concat(@namespace, :HostPauseEmitter)
       event = Cases.event()
 
       assert {:ok, [%{status: :deferred}]} =
