@@ -63,14 +63,35 @@ defmodule AshHooks.ContentionTest do
 
   test "the deadline preserves the final error without sleeping after the last operation" do
     owner = self()
-    error = {:error, busy()}
+    first = {:error, busy()}
+    final = {:error, busy("database is locked")}
     session = :trace.session_create(__MODULE__, owner, [])
+
+    # The second operation ends 1,950 ms after the first began. The deadline is at most
+    # 2,000 ms after that and the spacing is at least 100 ms, so no further sleep fits,
+    # however late the scheduler runs this process. It waits with `receive` so that only
+    # the retry's own sleeps reach the trace.
+    operation = fn ->
+      case Process.get(:first_operation_at) do
+        nil ->
+          Process.put(:first_operation_at, System.monotonic_time(:millisecond))
+          first
+
+        began ->
+          remaining = max(began + 1_950 - System.monotonic_time(:millisecond), 0)
+
+          receive do
+          after
+            remaining -> final
+          end
+      end
+    end
 
     task =
       Task.async(fn ->
         receive do
           :run ->
-            result = Contention.run(fn -> error end)
+            result = Contention.run(operation)
             send(owner, {:retry_result, self(), result})
 
             receive do
@@ -86,19 +107,14 @@ defmodule AshHooks.ContentionTest do
       assert :trace.process(session, task.pid, true, [:call]) == 1
       assert :trace.function(session, {Contention, :attempt, 2}, true, [:local]) == 1
       assert :trace.function(session, {Process, :sleep, 1}, true, []) == 1
-      started = System.monotonic_time(:millisecond)
       send(task.pid, :run)
       pid = task.pid
-      assert_receive {:retry_result, ^pid, ^error}, 5_000
-      assert System.monotonic_time(:millisecond) - started >= 1_850
+      assert_receive {:retry_result, ^pid, ^final}, 5_000
       delivered = :trace.delivered(session, pid)
       assert_receive {:trace_delivered, ^pid, ^delivered}, 5_000
-      events = retry_events(pid, [])
-      assert [:attempt | _] = events
-      assert :sleep in events
-      assert List.last(events) == :attempt
+      assert retry_events(pid, []) == [:attempt, :sleep, :attempt]
       send(pid, :finish)
-      assert ^error = Task.await(task)
+      assert ^final = Task.await(task)
     after
       :trace.session_destroy(session)
       if Process.alive?(task.pid), do: Task.shutdown(task, :brutal_kill)
