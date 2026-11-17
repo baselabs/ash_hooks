@@ -24,7 +24,7 @@ jobs:
   toolchain:
     name: Read runtime toolchains
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; the CI job's slowest green was 16s on run 44165315179
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 10s on run 44197885333
     outputs:
       elixir: ${{ steps.toolchain.outputs.elixir }}
       otp: ${{ steps.toolchain.outputs.otp }}
@@ -50,9 +50,7 @@ jobs:
   test:
     needs: toolchain
     runs-on: ubuntu-24.04
-    # Twice the slowest cold green of the same build in CI: the cold Dialyzer
-    # job (fetch, compile and PLTs), 269s on run 44187378503.
-    timeout-minutes: 9
+    timeout-minutes: 11 # twice the slowest green, 314s (default lane, PLTs) on run 44196835879
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}
@@ -103,9 +101,7 @@ jobs:
 
   floor:
     runs-on: ubuntu-24.04
-    # Twice the slowest cold green of the CI floor job, which also runs the
-    # suite and the consumer: 314s on run 44187378503.
-    timeout-minutes: 11
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 115s on run 44196835879
     env:
       MIX_ENV: test
     steps:
@@ -152,7 +148,7 @@ jobs:
   dev:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; the cold CI package job took 112s on run 44187378503
+    timeout-minutes: 5 # twice the slowest green, 141s on run 44196835879
     steps:
       - name: Refuse any ref but the default branch
         env:
