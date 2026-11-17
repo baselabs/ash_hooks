@@ -68,7 +68,8 @@ defmodule AshHooks.PublicationDashesTest do
           "<title>Guide #{dash} OtherProject v3.2.0</title>",
           "<title>Guide #{dash} AshHooks v0.0.0</title>",
           "<title>Guide #{dash} AshHooks v3.2.0 suffix</title>",
-          "<title>AshHooks v3.2.0 #{dash} Documentation</title>"
+          "<title>OtherProject v3.2.0 #{dash} Documentation</title>",
+          "<title>AshHooks v0.0.0 #{dash} Documentation</title>"
         ] do
       File.write!(page, "#{project}\n#{title}")
       {output, status} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)

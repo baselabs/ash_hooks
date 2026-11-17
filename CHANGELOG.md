@@ -27,6 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Generated HTML is checked without rewriting ExDoc output. Only the page-title
+  and index redirect template separators are exempt, anchored to the build's
+  project name and version. Authored title and body dashes remain rejected.
+
 - Shipped examples have explicit execution dispositions and use the exported
   consumer formatter settings. Upgrade and contributor commands explain their
   host project and service requirements. Phoenix mounting examples retain the
