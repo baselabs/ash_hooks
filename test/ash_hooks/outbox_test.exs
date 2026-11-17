@@ -7,7 +7,12 @@ defmodule AshHooks.OutboxAcceptance do
 
   def setup(namespace) do
     sqlite? = namespace == AshHooks.OutboxFixtures.SQLite
-    repo = if sqlite?, do: AshHooks.OutboxFixtures.SQLiteRepo, else: AshHooks.OutboxFixtures.Postgres.Repo
+
+    repo =
+      if sqlite?,
+        do: AshHooks.OutboxFixtures.SQLiteRepo,
+        else: AshHooks.OutboxFixtures.Postgres.Repo
+
     owner = if sqlite?, do: repo, else: AshHooks.TestPostgres.Repo
     database = Path.join(System.tmp_dir!(), "outbox_#{Ash.UUID.generate()}.sqlite3")
 
@@ -59,8 +64,12 @@ defmodule AshHooks.OutboxAcceptance do
       if oban_options do
         name = Keyword.fetch!(oban_options, :name)
         if pid = GenServer.whereis(name), do: Supervisor.stop(pid)
-        if engine = GenServer.whereis(Module.concat(namespace, :EngineOban)), do: Supervisor.stop(engine)
-        if sqlite?, do: owner.query!("DROP TABLE oban_jobs"),
+
+        if engine = GenServer.whereis(Module.concat(namespace, :EngineOban)),
+          do: Supervisor.stop(engine)
+
+        if sqlite?,
+          do: owner.query!("DROP TABLE oban_jobs"),
           else: owner.query!("DROP SCHEMA outbox_acceptance_oban CASCADE")
       end
 
@@ -83,7 +92,14 @@ defmodule AshHooks.OutboxAcceptance do
       end
     end)
 
-    Map.merge(resources, %{repo: repo, owner: owner, roles: roles, namespace: namespace, sqlite?: sqlite?, oban_options: oban_options})
+    Map.merge(resources, %{
+      repo: repo,
+      owner: owner,
+      roles: roles,
+      namespace: namespace,
+      sqlite?: sqlite?,
+      oban_options: oban_options
+    })
   end
 
   def clean(fixture) do
@@ -127,26 +143,45 @@ defmodule AshHooks.OutboxAcceptance do
         """)
       else
         owner.query!("CREATE SCHEMA outbox_acceptance_oban")
-        :ok = Ecto.Migrator.up(owner, 2_026_111_701,
-          AshHooks.OutboxFixtures.ObanMigration, prefix: "outbox_acceptance_oban", log: false)
+
+        :ok =
+          Ecto.Migrator.up(owner, 2_026_111_701, AshHooks.OutboxFixtures.ObanMigration,
+            prefix: "outbox_acceptance_oban",
+            log: false
+          )
       end
 
       unless sqlite? do
         for role <- Map.values(roles) do
           owner.query!("GRANT USAGE ON SCHEMA outbox_acceptance_oban TO #{role}", [], log: false)
-          owner.query!("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA outbox_acceptance_oban TO #{role}", [], log: false)
-          owner.query!("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA outbox_acceptance_oban TO #{role}", [], log: false)
+
+          owner.query!(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA outbox_acceptance_oban TO #{role}",
+            [], log: false)
+
+          owner.query!(
+            "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA outbox_acceptance_oban TO #{role}",
+            [], log: false)
         end
+
         for table <- ["oban_jobs", "oban_peers"] do
           relation = "outbox_acceptance_oban.#{table}"
           owner.query!("ALTER TABLE #{relation} ENABLE ROW LEVEL SECURITY")
           owner.query!("ALTER TABLE #{relation} FORCE ROW LEVEL SECURITY")
-          owner.query!("CREATE POLICY engine_access ON #{relation} TO #{roles.engine} USING (true) WITH CHECK (true)")
+
+          owner.query!(
+            "CREATE POLICY engine_access ON #{relation} TO #{roles.engine} USING (true) WITH CHECK (true)"
+          )
         end
-        owner.query!("CREATE POLICY tenant_jobs ON outbox_acceptance_oban.oban_jobs TO #{roles.runtime} USING (args->>'tenant' = current_setting('outbox_acceptance.tenant', true)) WITH CHECK (args->>'tenant' = current_setting('outbox_acceptance.tenant', true))")
+
+        owner.query!(
+          "CREATE POLICY tenant_jobs ON outbox_acceptance_oban.oban_jobs TO #{roles.runtime} USING (args->>'tenant' = current_setting('outbox_acceptance.tenant', true)) WITH CHECK (args->>'tenant' = current_setting('outbox_acceptance.tenant', true))"
+        )
       end
 
-      options = [name: Module.concat(namespace, :Oban), repo: repo,
+      options = [
+        name: Module.concat(namespace, :Oban),
+        repo: repo,
         engine: if(sqlite?, do: Oban.Engines.Lite, else: Oban.Engines.Basic),
         queues: false,
         plugins: [],
@@ -164,8 +199,12 @@ defmodule AshHooks.OutboxAcceptance do
       {:ok, pid} = Oban.start_link(options)
       Process.unlink(pid)
       unless sqlite? do
-        engine_options = Keyword.merge(options, repo: AshHooks.OutboxFixtures.Postgres.EngineRepo,
-          name: Module.concat(namespace, :EngineOban))
+        engine_options =
+          Keyword.merge(options,
+            repo: AshHooks.OutboxFixtures.Postgres.EngineRepo,
+            name: Module.concat(namespace, :EngineOban)
+          )
+
         {:ok, engine} = Oban.start_link(engine_options)
         Process.unlink(engine)
       end
@@ -178,40 +217,95 @@ defmodule AshHooks.OutboxAcceptance do
     roles = %{runtime: "outbox_runtime_#{suffix}", engine: "outbox_engine_#{suffix}"}
     for {kind, role} <- roles do
       password = Base.encode16(:crypto.strong_rand_bytes(32))
-      owner.query!("CREATE ROLE #{role} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '#{password}'", [], log: false)
+
+      owner.query!("CREATE ROLE #{role} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '#{password}'", [],
+        log: false
+      )
+
       module = if kind == :runtime, do: repo, else: AshHooks.OutboxFixtures.Postgres.EngineRepo
-      Application.put_env(:ash_hooks, module, Keyword.merge(owner.config(),
-        username: role, password: password, pool_size: 5, log: false))
+
+      Application.put_env(
+        :ash_hooks,
+        module,
+        Keyword.merge(owner.config(),
+          username: role,
+          password: password,
+          pool_size: 5,
+          log: false
+        )
+      )
+
       {:ok, pid} = module.start_link()
       Process.unlink(pid)
     end
 
     for {_name, resource} <- resources do
       relation = table(resource)
-      owner.query!("GRANT SELECT, INSERT, UPDATE, DELETE ON #{relation} TO #{roles.runtime}", [], log: false)
+
+      owner.query!("GRANT SELECT, INSERT, UPDATE, DELETE ON #{relation} TO #{roles.runtime}", [],
+        log: false
+      )
+
       owner.query!("ALTER TABLE #{relation} ENABLE ROW LEVEL SECURITY")
       owner.query!("ALTER TABLE #{relation} FORCE ROW LEVEL SECURITY")
-      owner.query!("CREATE POLICY tenant_isolation ON #{relation} TO #{roles.runtime} USING (org_id = current_setting('outbox_acceptance.tenant', true)) WITH CHECK (org_id = current_setting('outbox_acceptance.tenant', true))")
+
+      owner.query!(
+        "CREATE POLICY tenant_isolation ON #{relation} TO #{roles.runtime} USING (org_id = current_setting('outbox_acceptance.tenant', true)) WITH CHECK (org_id = current_setting('outbox_acceptance.tenant', true))"
+      )
     end
     roles
   end
 
   def transaction(f, operation) do
     f.repo.transaction(fn ->
-      unless f.sqlite?, do: f.repo.query!("SELECT set_config('outbox_acceptance.tenant', $1, true)", ["tenant-a"], log: false)
+      unless f.sqlite?,
+        do:
+          f.repo.query!("SELECT set_config('outbox_acceptance.tenant', $1, true)", ["tenant-a"],
+            log: false
+          )
+
       operation.()
     end)
   end
 
+  def ash_transact(f, operation), do: Ash.transact(f.outbox, operation, tenant: "tenant-a")
+
   def start_peer(f) do
-    {:ok, peer, _node} = :peer.start_link(%{connection: :standard_io,
-      args: [~c"+S", ~c"2", ~c"-pa" | :code.get_path()], wait_boot: 30_000})
+    {:ok, peer, _node} =
+      :peer.start_link(%{
+        connection: :standard_io,
+        args: [~c"+S", ~c"2", ~c"-pa" | :code.get_path()],
+        wait_boot: 30_000
+      })
+
     {:ok, _} = :peer.call(peer, Application, :ensure_all_started, [:mix])
-    :test = :peer.call(peer, Mix, :env, [:test])
-    :peer.call(peer, Code, :require_file, [Path.expand("test/ash_hooks/outbox_process.exs")], 30_000)
-    :peer.call(peer, Code, :require_file, [Path.expand("test/ash_hooks/outbox_resources.exs")], 30_000)
-    :ok = :peer.call(peer, AshHooks.OutboxProcess, :boot,
-      [f.repo, f.repo.config(), f.oban_options], 30_000)
+    :ok = :peer.call(peer, Mix, :env, [:test])
+
+    :peer.call(
+      peer,
+      Code,
+      :require_file,
+      [Path.expand("test/ash_hooks/outbox_process.exs")],
+      30_000
+    )
+
+    :peer.call(
+      peer,
+      Code,
+      :require_file,
+      [Path.expand("test/ash_hooks/outbox_resources.exs")],
+      30_000
+    )
+
+    :ok =
+      :peer.call(
+        peer,
+        AshHooks.OutboxProcess,
+        :boot,
+        [f.repo, f.repo.config(), f.oban_options],
+        30_000
+      )
+
     ExUnit.Callbacks.on_exit(fn -> stop_peer(peer) end)
     peer
   end
@@ -268,8 +362,10 @@ defmodule AshHooks.OutboxAcceptance do
   end
 
   def drain(f) do
-    Oban.drain_queue(Module.concat(f.namespace, if(f.sqlite?, do: :Oban, else: :EngineOban)), queue: :outbox_acceptance,
-      with_safety: false)
+    Oban.drain_queue(Module.concat(f.namespace, if(f.sqlite?, do: :Oban, else: :EngineOban)),
+      queue: :outbox_acceptance,
+      with_safety: false
+    )
   end
 
   def table(resource) do
@@ -311,9 +407,11 @@ defmodule AshHooks.OutboxAcceptance do
   def fanout(f, id), do: AshHooks.fanout(f.outbox, id, tenant: "tenant-a")
 
   def rows(f, resource, tenant \\ "tenant-a") do
-    {:ok, rows} = AshHooks.Phase.run(f[resource], tenant, fn ->
-      Ash.read(f[resource], authorize?: false, tenant: tenant)
-    end)
+    {:ok, rows} =
+      AshHooks.Phase.run(f[resource], tenant, fn ->
+        Ash.read(f[resource], authorize?: false, tenant: tenant)
+      end)
+
     rows
   end
 
@@ -370,11 +468,15 @@ defmodule AshHooks.OutboxAcceptance do
     paused = Keyword.get(opts, :paused, false)
     json = if filters == :sql_null, do: nil, else: Jason.encode!(filters)
     if f.sqlite? do
-      f.owner.query!("INSERT INTO #{table(f.subscription)} (id, org_id, endpoint_id, event_types, event_filters, paused) VALUES (?, ?, ?, ?, ?, ?)",
-        [id, "tenant-a", endpoint.id, Jason.encode!(types), json, paused])
+      f.owner.query!(
+        "INSERT INTO #{table(f.subscription)} (id, org_id, endpoint_id, event_types, event_filters, paused) VALUES (?, ?, ?, ?, ?, ?)",
+        [id, "tenant-a", endpoint.id, Jason.encode!(types), json, if(paused, do: 1, else: 0)]
+      )
     else
-      f.owner.query!("INSERT INTO #{table(f.subscription)} (id, org_id, endpoint_id, event_types, event_filters, paused) VALUES ($1, $2, $3, $4, $5::text::jsonb, $6)",
-        [Ecto.UUID.dump!(id), "tenant-a", Ecto.UUID.dump!(endpoint.id), types, json, paused])
+      f.owner.query!(
+        "INSERT INTO #{table(f.subscription)} (id, org_id, endpoint_id, event_types, event_filters, paused) VALUES ($1, $2, $3, $4, $5::text::jsonb, $6)",
+        [Ecto.UUID.dump!(id), "tenant-a", Ecto.UUID.dump!(endpoint.id), types, json, paused]
+      )
     end
     id
   end
@@ -468,7 +570,8 @@ defmodule AshHooks.OutboxAcceptance do
         assert [%{state: :pending, attempts: 0}] = Cases.rows(f, :outbox)
       end
 
-      test "A1 statement counts hold in Ash transactions, the deprecated entry point and actions", f do
+      test "A1 statement counts hold in Ash transactions, the deprecated entry point and actions",
+           f do
         for entry <- [:transact, :transaction] do
           event = Cases.event()
           result = apply(Ash, entry, [f.outbox, fn ->
@@ -480,14 +583,21 @@ defmodule AshHooks.OutboxAcceptance do
             assert Cases.publication(f, event.id).updated_at == original.updated_at
             assert Cases.publication(f, event.id).inserted_at == original.inserted_at
             :ok
-          end])
+          end, [tenant: "tenant-a"]])
           assert result == {:ok, :ok}
         end
 
-        {_record, queries} = Cases.count_queries(f, fn ->
-          Ash.create!(f.emitter, %{value: "action"}, authorize?: false, tenant: "tenant-a")
-        end)
-        assert length(Enum.filter(queries, &String.starts_with?(&1, "INSERT INTO \"#{Cases.table(f.outbox)}\""))) == 1
+        {_record, queries} =
+          Cases.count_queries(f, fn ->
+            Ash.create!(f.emitter, %{value: "action"}, authorize?: false, tenant: "tenant-a")
+          end)
+
+        assert length(
+                 Enum.filter(
+                   queries,
+                   &String.starts_with?(&1, "INSERT INTO \"#{Cases.table(f.outbox)}\"")
+                 )
+               ) == 1
       end
 
       test "A2 nested commits and rollbacks do not leak publications", f do
@@ -502,9 +612,9 @@ defmodule AshHooks.OutboxAcceptance do
         assert [] = Cases.rows(f, :outbox)
 
         assert {:ok, :ok} =
-                 Ash.transact(f.outbox, fn ->
+                 Cases.ash_transact(f, fn ->
                    assert {:ok, :ok} =
-                            Ash.transact(f.outbox, fn ->
+                            Cases.ash_transact(f, fn ->
                               assert {:ok, :accepted} = Cases.publish(f, event)
                               :ok
                             end)
@@ -594,7 +704,10 @@ defmodule AshHooks.OutboxAcceptance do
           assert {:ok, :accepted} = Cases.publish(f, event, tenant: "tenant-b")
           prefix = if f.sqlite?, do: "", else: "outbox_acceptance_oban."
           assert %{:rows => jobs} = f.owner.query!("SELECT args FROM #{prefix}oban_jobs")
-          args = Enum.map(jobs, fn [arg] -> if is_binary(arg), do: Jason.decode!(arg), else: arg end)
+
+          args =
+            Enum.map(jobs, fn [arg] -> if is_binary(arg), do: Jason.decode!(arg), else: arg end)
+
           assert Enum.sort(Enum.map(args, & &1["tenant"])) == ["tenant-a", "tenant-b"]
           assert Enum.all?(args, &(&1["kind"] == "fanout"))
           assert %{success: 2} = Cases.drain(f)
@@ -603,8 +716,15 @@ defmodule AshHooks.OutboxAcceptance do
           assert {:error, :unknown_source} = worker.enqueue_fanout(%AshHooks.Event{}, "tenant-a")
           assert {:error, :unknown_source} = AshHooks.Worker.perform_fanout(nil, %{})
           assert {:error, :invalid_event} = worker.perform(%Oban.Job{args: %{"kind" => "fanout"}})
-          assert {:error, :unknown_source} = worker.perform(%Oban.Job{args: %{
-            "kind" => "fanout", "outbox_resource" => "unknown", "event_uuid" => event.id}})
+
+          assert {:error, :unknown_source} =
+                   worker.perform(%Oban.Job{
+                     args: %{
+                       "kind" => "fanout",
+                       "outbox_resource" => "unknown",
+                       "event_uuid" => event.id
+                     }
+                   })
         end
 
         test "A14 a restarted process re-admits the original metadata to a named route", f do
@@ -671,7 +791,11 @@ defmodule AshHooks.OutboxAcceptance do
           end
           Ash.update!(bad, %{pinned_payload_version: 2}, authorize?: false, tenant: "tenant-a")
           relation = Cases.table(f.delivery)
-          f.owner.query!("ALTER TABLE #{relation} ADD CONSTRAINT reject_one_endpoint CHECK (endpoint_id <> '#{bad.id}'::uuid)")
+
+          f.owner.query!(
+            "ALTER TABLE #{relation} ADD CONSTRAINT reject_one_endpoint CHECK (endpoint_id <> '#{bad.id}'::uuid)"
+          )
+
           try do
             Cases.expire(f, event)
             assert :failed = Cases.fanout(f, event.id)
@@ -689,22 +813,41 @@ defmodule AshHooks.OutboxAcceptance do
           event = Cases.event()
           assert {:ok, :accepted} = Cases.publish(f, event)
           handler = make_ref()
-          :ok = :telemetry.attach(handler, [:ash_hooks, :outbox, :claim], fn _, _, metadata, _ ->
-            if metadata.outcome == :claimed do
-              f.owner.query!("REVOKE UPDATE ON #{Cases.table(f.outbox)} FROM #{f.roles.runtime}", [], log: false)
-            end
-          end, nil)
+
+          :ok =
+            :telemetry.attach(
+              handler,
+              [:ash_hooks, :outbox, :claim],
+              fn _, _, metadata, _ ->
+                if metadata.outcome == :claimed do
+                  f.owner.query!(
+                    "REVOKE UPDATE ON #{Cases.table(f.outbox)} FROM #{f.roles.runtime}",
+                    [], log: false)
+                end
+              end,
+              nil
+            )
+
           try do
             assert {:error, {:publication_transition_failed, _error}} = Cases.fanout(f, event.id)
           after
             :telemetry.detach(handler)
-            f.owner.query!("GRANT UPDATE ON #{Cases.table(f.outbox)} TO #{f.roles.runtime}", [], log: false)
+
+            f.owner.query!("GRANT UPDATE ON #{Cases.table(f.outbox)} TO #{f.roles.runtime}", [],
+              log: false
+            )
           end
-          f.owner.query!("REVOKE SELECT ON #{Cases.table(f.outbox)} FROM #{f.roles.runtime}", [], log: false)
+
+          f.owner.query!("REVOKE SELECT ON #{Cases.table(f.outbox)} FROM #{f.roles.runtime}", [],
+            log: false
+          )
+
           try do
             assert {:error, _error} = AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
           after
-            f.owner.query!("GRANT SELECT ON #{Cases.table(f.outbox)} TO #{f.roles.runtime}", [], log: false)
+            f.owner.query!("GRANT SELECT ON #{Cases.table(f.outbox)} TO #{f.roles.runtime}", [],
+              log: false
+            )
           end
         end
 
@@ -713,20 +856,32 @@ defmodule AshHooks.OutboxAcceptance do
           event = Cases.event()
           assert {:ok, :accepted} = Cases.publish(f, event)
           parent = self()
-          locked = Task.async(fn ->
-            f.owner.transaction(fn ->
-              f.owner.query!("LOCK TABLE #{Cases.table(f.delivery)} IN ACCESS EXCLUSIVE MODE")
-              send(parent, :locked)
-              receive do :release -> :ok end
+
+          locked =
+            Task.async(fn ->
+              f.owner.transaction(fn ->
+                f.owner.query!("LOCK TABLE #{Cases.table(f.delivery)} IN ACCESS EXCLUSIVE MODE")
+                send(parent, :locked)
+
+                receive do
+                  :release -> :ok
+                end
+              end)
             end)
           end)
           assert_receive :locked
           Application.put_env(:ash_hooks, :outbox_observer, self())
           on_exit(fn -> Application.delete_env(:ash_hooks, :outbox_observer) end)
           handler = make_ref()
-          :ok = :telemetry.attach_many(handler,
-            [[:ash_hooks, :outbox, :claim], [:ash_hooks, :outbox, :result]],
-            fn name, _, metadata, _ -> send(parent, {:outbox_telemetry, name, metadata}) end, nil)
+
+          :ok =
+            :telemetry.attach_many(
+              handler,
+              [[:ash_hooks, :outbox, :claim], [:ash_hooks, :outbox, :result]],
+              fn name, _, metadata, _ -> send(parent, {:outbox_telemetry, name, metadata}) end,
+              nil
+            )
+
           try do
             runner_call = Task.async(fn -> Cases.fanout(f, event.id) end)
             assert_receive {:outbox_builder, runner}, 5_000
@@ -736,11 +891,25 @@ defmodule AshHooks.OutboxAcceptance do
             assert :stale = Task.await(runner_call, 5_000)
             assert_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim], %{outcome: :stale}}
             refute_receive {:outbox_telemetry, [:ash_hooks, :outbox, :result], _}
-            sweeps = for _ <- 1..2, do: Task.async(fn -> AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a") end)
+
+            sweeps =
+              for _ <- 1..2,
+                  do:
+                    Task.async(fn ->
+                      AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
+                    end)
+
             worker = Module.concat(f.namespace, :Worker)
             assert :ok = worker.enqueue_fanout(Cases.publication(f, event.id), "tenant-a")
-            reconcile = Task.async(fn -> AshHooks.reconcile_pending(f.emitter, :changed,
-              tenant: "tenant-a", enqueue: {Module.concat(f.namespace, :Runtime), :enqueue}) end)
+
+            reconcile =
+              Task.async(fn ->
+                AshHooks.reconcile_pending(f.emitter, :changed,
+                  tenant: "tenant-a",
+                  enqueue: {Module.concat(f.namespace, :Runtime), :enqueue}
+                )
+              end)
+
             send(locked.pid, :release)
             Task.await(locked, 5_000)
             for task <- sweeps, do: assert({:ok, _summary} = Task.await(task, 10_000))
@@ -908,7 +1077,7 @@ defmodule AshHooks.OutboxAcceptance do
         event = Cases.event()
 
         assert {:ok, :ok} =
-                 Ash.transact(f.outbox, fn ->
+                 Cases.ash_transact(f, fn ->
                    assert {:ok, :accepted} = Cases.publish(f, event)
                    refute_receive {:triggered, _, _}
                    :ok
@@ -927,44 +1096,85 @@ defmodule AshHooks.OutboxAcceptance do
 
       test "A12 both dispatch paths select types, pause and 5C filter candidates in SQL", f do
         values = [
-          {:sql_null, true}, {nil, true}, {%{}, true},
-          {%{"region" => "west"}, true}, {%{"region" => "east"}, false},
+          {:sql_null, true},
+          {nil, true},
+          {%{}, true},
+          {%{"region" => "west"}, true},
+          {%{"region" => "east"}, false},
           {%{"region" => ["west", "south"]}, true},
-          {%{"flag" => true}, true}, {%{"flag" => 1}, false},
-          {%{"count" => 1}, true}, {%{"nested" => %{"value" => true}}, true},
-          {%{"region" => %{}}, false}, {%{"missing" => nil}, false},
-          {[], false}, {"malformed", false}, {true, false}, {42, false}
+          {%{"flag" => true}, true},
+          {%{"flag" => 1}, false},
+          {%{"count" => 1}, true},
+          {%{"nested" => %{"value" => true}}, true},
+          {%{"region" => %{}}, false},
+          {%{"missing" => nil}, false},
+          {[], false},
+          {"malformed", false},
+          {true, false},
+          {42, false}
         ]
-        expected = for {filters, matches?} <- values, reduce: [] do
-          ids ->
-            endpoint = Ash.create!(f.endpoint,
-              %{url: "https://receiver.example.test/hook", secret_ref: "key-reference"},
-              authorize?: false, tenant: "tenant-a")
-            Cases.raw_subscription(f, endpoint, filters)
-            if matches?, do: [endpoint.id | ids], else: ids
-        end
+
+        expected =
+          for {filters, matches?} <- values, reduce: [] do
+            ids ->
+              endpoint =
+                Ash.create!(
+                  f.endpoint,
+                  %{url: "https://receiver.example.test/hook", secret_ref: "key-reference"},
+                  authorize?: false,
+                  tenant: "tenant-a"
+                )
+
+              Cases.raw_subscription(f, endpoint, filters)
+              if matches?, do: [endpoint.id | ids], else: ids
+          end
+
         for options <- [[types: ["other"]], [paused: true]] do
-          endpoint = Ash.create!(f.endpoint,
-            %{url: "https://receiver.example.test/hook", secret_ref: "key-reference"},
-            authorize?: false, tenant: "tenant-a")
+          endpoint =
+            Ash.create!(
+              f.endpoint,
+              %{url: "https://receiver.example.test/hook", secret_ref: "key-reference"},
+              authorize?: false,
+              tenant: "tenant-a"
+            )
+
           Cases.raw_subscription(f, endpoint, %{}, options)
         end
-        metadata = %{"region" => "west", "flag" => true, "count" => 1.0,
-          "nested" => %{"value" => true}, "__invalid__" => true}
+
+        metadata = %{
+          "region" => "west",
+          "flag" => true,
+          "count" => 1.0,
+          "nested" => %{"value" => true},
+          "__invalid__" => true
+        }
+
         event = Cases.event(Ash.UUID.generate(), metadata)
-        assert {{:ok, results}, queries} = Cases.count_queries(f, fn ->
-          AshHooks.dispatch(f.emitter, :changed, event, tenant: "tenant-a")
-        end)
+
+        assert {{:ok, results}, queries} =
+                 Cases.count_queries(f, fn ->
+                   AshHooks.dispatch(f.emitter, :changed, event, tenant: "tenant-a")
+                 end)
+
         assert Enum.sort(Enum.map(results, & &1.endpoint_id)) == Enum.sort(expected)
-        subscription_sql = Enum.find(queries, &String.contains?(&1, "FROM \"#{Cases.table(f.subscription)}\""))
+
+        subscription_sql =
+          Enum.find(queries, &String.contains?(&1, "FROM \"#{Cases.table(f.subscription)}\""))
+
         assert subscription_sql =~ if(f.sqlite?, do: "json_each", else: "jsonb_typeof")
         assert subscription_sql =~ if(f.sqlite?, do: "json_each", else: "::text[] &&")
         assert subscription_sql =~ "paused"
         assert {:ok, :accepted} = Cases.publish(f, event)
         assert :done = Cases.fanout(f, event.id)
-        assert Enum.sort(Enum.map(Cases.rows(f, :delivery), & &1.endpoint_id)) == Enum.sort(expected)
+
+        assert Enum.sort(Enum.map(Cases.rows(f, :delivery), & &1.endpoint_id)) ==
+                 Enum.sort(expected)
+
         for malformed <- [[], "value", true, 1, :invalid] do
-          refute AshHooks.Subscription.matches_filters?(struct(f.subscription, event_filters: malformed), metadata)
+          refute AshHooks.Subscription.matches_filters?(
+                   struct(f.subscription, event_filters: malformed),
+                   metadata
+                 )
         end
       end
 
@@ -1017,7 +1227,7 @@ defmodule AshHooks.OutboxAcceptance do
         assert {:error, _} =
                  Ash.update(record, %{value: "updated"}, authorize?: false, tenant: "tenant-a")
 
-        assert Ash.get!(f.emitter, record.id, authorize?: false, tenant: "tenant-a").value ==
+        assert Enum.find(Cases.rows(f, :emitter), &(&1.id == record.id)).value ==
                  "created"
 
         result =

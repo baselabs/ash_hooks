@@ -34,7 +34,10 @@ defmodule AshHooks.Verifiers.OutboundReferences do
           _other -> nil
         end
 
-      if layer != outbox_layer or is_nil(owner_repo) or
+      transactional? = layer != AshSqlite.DataLayer or not is_atom(owner_repo) or
+        (Code.ensure_loaded?(owner_repo) and owner_repo.write_transactions?())
+
+      if layer != outbox_layer or not transactional? or not Ash.DataLayer.can?(:transact, outbox) or is_nil(owner_repo) or
            (is_atom(owner_repo) and owner_repo != AshHooks.Phase.repo(outbox)) do
         raise DslError,
           module: owner,

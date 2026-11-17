@@ -24,7 +24,10 @@ defmodule AshHooks.OutboxProcess do
   def variant(event) do
     count = Process.get(:outbox_builder_calls, 0) + 1
     Process.put(:outbox_builder_calls, count)
-    if observer = Application.get_env(:ash_hooks, :outbox_observer), do: send(observer, {:outbox_builder, self()})
+
+    if observer = Application.get_env(:ash_hooks, :outbox_observer),
+      do: send(observer, {:outbox_builder, self()})
+
     if count == 2, do: checkpoint(:mid_fanout)
     {:ok, "v2:" <> event.payload}
   end
@@ -115,7 +118,11 @@ defmodule AshHooks.OutboxProcess do
   end
 
   defp bind(AshHooks.OutboxFixtures.Postgres.Repo = repo),
-    do: repo.query!("SELECT set_config('outbox_acceptance.tenant', $1, true)", ["tenant-a"], log: false)
+    do:
+      repo.query!("SELECT set_config('outbox_acceptance.tenant', $1, true)", ["tenant-a"],
+        log: false
+      )
+
   defp bind(_repo), do: :ok
 
   def execute(namespace, stage, event, path, marker) do
@@ -130,18 +137,24 @@ defmodule AshHooks.OutboxProcess do
         :before_commit ->
           repo.transaction(fn ->
             bind(repo)
-            {:ok, :accepted} = AshHooks.publish(outbox, {emitter, :changed}, event,
-              tenant: "tenant-a")
+
+            {:ok, :accepted} =
+              AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
+
             checkpoint(stage)
           end)
 
         :after_commit ->
-          {:ok, :ok} = repo.transaction(fn ->
-            bind(repo)
-            {:ok, :accepted} = AshHooks.publish(outbox, {emitter, :changed}, event,
-              tenant: "tenant-a")
-            :ok
-          end)
+          {:ok, :ok} =
+            repo.transaction(fn ->
+              bind(repo)
+
+              {:ok, :accepted} =
+                AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
+
+              :ok
+            end)
+
           checkpoint(stage)
 
         :admission_failure ->
@@ -160,12 +173,14 @@ end
 if Code.ensure_loaded?(Oban) do
   defmodule AshHooks.OutboxFixtures.SQLite.RouteWorker do
     use Oban.Worker, queue: :outbox_acceptance
+
     def perform(%Oban.Job{args: args}),
       do: AshHooks.OutboxProcess.deliver(AshHooks.OutboxFixtures.SQLite, args)
   end
 
   defmodule AshHooks.OutboxFixtures.Postgres.RouteWorker do
     use Oban.Worker, queue: :outbox_acceptance
+
     def perform(%Oban.Job{args: args}),
       do: AshHooks.OutboxProcess.deliver(AshHooks.OutboxFixtures.Postgres, args)
   end

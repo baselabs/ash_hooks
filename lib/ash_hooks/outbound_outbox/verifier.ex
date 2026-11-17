@@ -26,6 +26,9 @@ defmodule AshHooks.OutboundOutbox.Verifier do
           "outbox metadata must use the unmodified :map type without a custom codec or fields constraint"
         )
 
+      custom_metadata_codec?(state) ->
+        error(state, "outbox metadata storage_types cannot replace the map codec")
+
       not metadata_storage?(state) ->
         error(
           state,
@@ -41,6 +44,15 @@ defmodule AshHooks.OutboundOutbox.Verifier do
       true ->
         verify_routes(state)
     end
+  end
+
+  defp custom_metadata_codec?(state) do
+    path = case Verifier.get_persisted(state, :data_layer) do
+      AshPostgres.DataLayer -> [:postgres]
+      AshSqlite.DataLayer -> [:sqlite]
+      _other -> []
+    end
+    path != [] and Keyword.get(Extension.get_opt(state, path, :storage_types, []), :metadata) not in [nil, :map]
   end
 
   defp metadata_storage?(state) do

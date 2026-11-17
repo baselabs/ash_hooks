@@ -100,7 +100,7 @@ defmodule AshHooks.Subscription do
       nil ->
         true
 
-      filters when is_map(filters) ->
+      filters when is_map(filters) and not is_struct(filters) ->
         Enum.all?(filters, fn {key, expected} ->
           Map.has_key?(metadata, to_string(key)) and to_string(key) in declared and
             value_matches?(Map.fetch!(metadata, to_string(key)), expected)

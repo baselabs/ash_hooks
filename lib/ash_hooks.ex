@@ -286,12 +286,26 @@ defmodule AshHooks do
           {:ok, :accepted | :duplicate} | {:error, term()}
   defdelegate publish(outbox, declaration, event, opts \\ []), to: AshHooks.Outbox
 
+  @typedoc "The outcome of one leased publication fanout. Errors preserve storage failures."
+  @type fanout_result ::
+          :done | {:pending, term()} | :failed | :busy | :stale | :missing | {:error, term()}
+  @typedoc "Counts of per-publication outcomes and storage errors in one bounded tenant sweep."
+  @type sweep_summary :: %{
+          done: non_neg_integer(),
+          pending: non_neg_integer(),
+          failed: non_neg_integer(),
+          busy: non_neg_integer(),
+          stale: non_neg_integer(),
+          missing: non_neg_integer(),
+          errors: [term()]
+        }
+
   @doc """
   Claims and fans out one committed publication for `:tenant`. Refuses an
   enclosing transaction. Every attempt re-observes subscriptions and endpoints;
   existing delivery rows survive. Pending results carry a persisted retry time.
   """
-  @spec fanout(module(), String.t(), keyword()) :: AshHooks.Outbox.fanout_result()
+  @spec fanout(module(), String.t(), keyword()) :: fanout_result()
   defdelegate fanout(outbox, event_id, opts \\ []), to: AshHooks.Outbox
 
   @doc """
@@ -300,7 +314,7 @@ defmodule AshHooks do
   returned, and each publication's failure is isolated in the summary.
   """
   @spec fanout_pending(module(), pos_integer(), keyword()) ::
-          {:ok, AshHooks.Outbox.sweep_summary()} | {:error, term()}
+          {:ok, sweep_summary()} | {:error, term()}
   defdelegate fanout_pending(outbox, batch_size, opts \\ []), to: AshHooks.Outbox
 
   @doc "Rearms one failed publication for its tenant and stored ownership, resetting its attempts."

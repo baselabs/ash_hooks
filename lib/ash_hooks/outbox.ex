@@ -7,18 +7,6 @@ defmodule AshHooks.Outbox do
   alias AshHooks.OutboundOutbox.Metadata
   alias Spark.Dsl.Extension
 
-  @type fanout_result ::
-          :done | {:pending, term()} | :failed | :busy | :stale | :missing | {:error, term()}
-  @type sweep_summary :: %{
-          done: non_neg_integer(),
-          pending: non_neg_integer(),
-          failed: non_neg_integer(),
-          busy: non_neg_integer(),
-          stale: non_neg_integer(),
-          missing: non_neg_integer(),
-          errors: [term()]
-        }
-
   def option(resource, key), do: Extension.get_opt(resource, [:outbox], key)
 
   def publish(resource, declaration, event, opts) do

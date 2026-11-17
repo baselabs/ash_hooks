@@ -36,6 +36,7 @@ defmodule AshHooks.Event do
 
   defstruct [:id, :type, :payload, :version, metadata: %{}]
 
+  @typedoc "Exact payload bytes and unsigned metadata. The outbox sets version when recovering stored bytes."
   @type t :: %__MODULE__{
           id: String.t(),
           type: String.t(),

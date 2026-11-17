@@ -1,11 +1,14 @@
 defmodule AshHooks.OutboxFixtures.Postgres.Repo do
   use AshPostgres.Repo, otp_app: :ash_hooks, warn_on_missing_ash_functions?: false
   def min_pg_version, do: %Version{major: 16, minor: 0, patch: 0}
+
   def on_transaction_begin(reason) do
     if tenant = reason[:tenant] do
-      query!("SELECT set_config('outbox_acceptance.tenant', $1, true)",
+      query!(
+        "SELECT set_config('outbox_acceptance.tenant', $1, true)",
         [to_string(tenant)], log: false)
     end
+
     :ok
   end
 end
@@ -38,8 +41,12 @@ defmodule AshHooks.OutboxFixtures.SQLite.Runtime do
         :ok
 
       :oban ->
-        row.__struct__ |> Module.split() |> Enum.drop(-1) |> Module.concat()
-        |> Module.concat(:Worker) |> apply(:enqueue_fanout, [row, tenant])
+        row.__struct__
+        |> Module.split()
+        |> Enum.drop(-1)
+        |> Module.concat()
+        |> Module.concat(:Worker)
+        |> apply(:enqueue_fanout, [row, tenant])
 
       :raise ->
         raise "trigger failed"
@@ -267,8 +274,6 @@ defmodule AshHooks.OutboxFixtures.SQLite.Domain do
   end
 end
 
-
-
 defmodule AshHooks.OutboxFixtures.Postgres.Runtime do
   def build(record, _context) do
     AshHooks.Event.new(id: "msg_record_" <> record.id, type: :changed, payload: record.value)
@@ -286,8 +291,12 @@ defmodule AshHooks.OutboxFixtures.Postgres.Runtime do
         :ok
 
       :oban ->
-        row.__struct__ |> Module.split() |> Enum.drop(-1) |> Module.concat()
-        |> Module.concat(:Worker) |> apply(:enqueue_fanout, [row, tenant])
+        row.__struct__
+        |> Module.split()
+        |> Enum.drop(-1)
+        |> Module.concat()
+        |> Module.concat(:Worker)
+        |> apply(:enqueue_fanout, [row, tenant])
 
       :raise ->
         raise "trigger failed"
