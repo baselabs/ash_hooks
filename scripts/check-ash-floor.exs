@@ -57,12 +57,18 @@ source_paths =
   [
     "mix.exs",
     ".tool-versions",
-    "test/test_helper.exs",
-    "test/consumer/mix.exs",
-    "test/consumer/verify.exs",
-    "test/ash_hooks/tenant_worker_postgres_test.exs",
     "scripts/check-ash-floor.exs"
-  ] ++ Path.wildcard(Path.join(root, "lib/**/*.ex"))
+  ] ++
+    Path.wildcard(Path.join(root, "lib/**/*.ex")) ++
+    Enum.reject(
+      Path.wildcard(Path.join(root, "test/**/*.ex")) ++
+        Path.wildcard(Path.join(root, "test/**/*.exs")),
+      fn path ->
+        Enum.any?(["test/consumer/deps/", "test/consumer/_build/"], fn directory ->
+          String.starts_with?(Path.relative_to(path, root), directory)
+        end)
+      end
+    )
 
 for path <- source_paths do
   absolute = Path.expand(path, root)
@@ -73,7 +79,10 @@ end
 dependencies =
   Mix.Project.in_project(:ash_hooks, root, [], fn project -> project.project()[:deps] end)
 
-unless List.keymember?(dependencies, :ash, 0), do: raise("root Ash dependency not found")
+for dependency <- [:ash, :spark] do
+  unless List.keymember?(dependencies, dependency, 0),
+    do: raise("root #{dependency} dependency not found")
+end
 
 dependencies =
   dependencies
@@ -114,16 +123,10 @@ try do
     unless spark == "2.7.6", do: raise("expected loaded Spark 2.7.6, found #{spark}")
     IO.puts("LOADED SPARK: #{spark}; #{:code.which(Spark.Dsl.Extension)}")
 
-    Mix.Task.run("test", [
-      "test/ash_hooks/tenant_worker_postgres_test.exs",
-      "--trace",
-      "--seed",
-      "0",
-      "--raise"
-    ])
+    Mix.Task.run("test", ["--seed", "0", "--raise"])
 
     IO.puts(
-      "FLOOR WORKER QUALIFICATION: exact Ash 3.37.2 and Spark 2.7.6 focused case returned without failure"
+      "FLOOR SUITE QUALIFICATION: exact Ash 3.37.2 and Spark 2.7.6 full suite returned without failure"
     )
   end)
 after

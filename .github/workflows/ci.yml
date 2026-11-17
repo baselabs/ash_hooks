@@ -212,6 +212,8 @@ jobs:
         run: mix precommit
       - name: Coverage gate (100% of the declared Mix surface)
         run: mix test --cover
+      - name: Qualify the exact Ash and Spark floor
+        run: env ASH_HOOKS_HTTPBUN=1 elixir scripts/check-ash-floor.exs
       - name: Upload coverage HTML on a gate miss
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

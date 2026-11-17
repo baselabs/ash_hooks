@@ -20,11 +20,29 @@ defmodule AshHooks.OutboxMatching.Preparation do
   end
 end
 
-for {name, layer, atoms?} <- [
-      {:EtsStrings, Ash.DataLayer.Ets, false},
-      {:EtsAtoms, Ash.DataLayer.Ets, true},
-      {:SimpleStrings, Ash.DataLayer.Simple, false},
-      {:SimpleAtoms, Ash.DataLayer.Simple, true}
+defmodule AshHooks.OutboxMatching.CustomString do
+  use Ash.Type.NewType, subtype_of: :string
+end
+
+defmodule AshHooks.OutboxMatching.CustomMap do
+  use Ash.Type.NewType, subtype_of: :map
+end
+
+defmodule AshHooks.OutboxMatching.CustomBoolean do
+  use Ash.Type.NewType, subtype_of: :boolean
+end
+
+for {name, layer, shape} <- [
+      {:EtsStrings, Ash.DataLayer.Ets, :strings},
+      {:EtsAtoms, Ash.DataLayer.Ets, :closed_atoms},
+      {:SimpleStrings, Ash.DataLayer.Simple, :strings},
+      {:SimpleAtoms, Ash.DataLayer.Simple, :closed_atoms},
+      {:EtsOpenAtoms, Ash.DataLayer.Ets, :open_atoms},
+      {:SimpleOpenAtoms, Ash.DataLayer.Simple, :open_atoms},
+      {:EtsCustom, Ash.DataLayer.Ets, :custom},
+      {:SimpleCustom, Ash.DataLayer.Simple, :custom},
+      {:EtsEmptyAtoms, Ash.DataLayer.Ets, :empty_atoms},
+      {:SimpleEmptyAtoms, Ash.DataLayer.Simple, :empty_atoms}
     ] do
   subscription = Module.concat([AshHooks.OutboxMatching, name, Subscription])
   emitter = Module.concat([AshHooks.OutboxMatching, name, Emitter])
@@ -51,10 +69,27 @@ for {name, layer, atoms?} <- [
         attributes do
           attribute :org_id, :string, allow_nil?: false
 
-          if unquote(atoms?) do
-            attribute :event_types, {:array, :atom},
-              public?: true,
-              constraints: [items: [one_of: [:changed, :other, :*]]]
+          case unquote(shape) do
+            :closed_atoms ->
+              attribute :event_types, {:array, :atom},
+                public?: true,
+                constraints: [items: [one_of: [:changed, :other, :*]]]
+
+            :empty_atoms ->
+              attribute :event_types, {:array, :atom},
+                public?: true,
+                constraints: [items: [one_of: [:other]]]
+
+            :open_atoms ->
+              attribute :event_types, {:array, :atom}, public?: true
+
+            :custom ->
+              attribute :event_types, {:array, AshHooks.OutboxMatching.CustomString}, public?: true
+              attribute :event_filters, AshHooks.OutboxMatching.CustomMap, public?: true
+              attribute :paused, AshHooks.OutboxMatching.CustomBoolean, default: false
+
+            :strings ->
+              :ok
           end
         end
 
@@ -134,7 +169,13 @@ defmodule AshHooks.OutboxMatching.Outbox do
       {AshHooks.OutboxMatching.EtsStrings.Emitter, :changed},
       {AshHooks.OutboxMatching.EtsAtoms.Emitter, :changed},
       {AshHooks.OutboxMatching.SimpleStrings.Emitter, :changed},
-      {AshHooks.OutboxMatching.SimpleAtoms.Emitter, :changed}
+      {AshHooks.OutboxMatching.SimpleAtoms.Emitter, :changed},
+      {AshHooks.OutboxMatching.EtsOpenAtoms.Emitter, :changed},
+      {AshHooks.OutboxMatching.SimpleOpenAtoms.Emitter, :changed},
+      {AshHooks.OutboxMatching.EtsCustom.Emitter, :changed},
+      {AshHooks.OutboxMatching.SimpleCustom.Emitter, :changed},
+      {AshHooks.OutboxMatching.EtsEmptyAtoms.Emitter, :changed},
+      {AshHooks.OutboxMatching.SimpleEmptyAtoms.Emitter, :changed}
     ]
 
     delivery_routes default: nil
@@ -154,6 +195,18 @@ defmodule AshHooks.OutboxMatching.Domain do
     resource AshHooks.OutboxMatching.SimpleStrings.Emitter
     resource AshHooks.OutboxMatching.SimpleAtoms.Subscription
     resource AshHooks.OutboxMatching.SimpleAtoms.Emitter
+    resource AshHooks.OutboxMatching.EtsOpenAtoms.Subscription
+    resource AshHooks.OutboxMatching.EtsOpenAtoms.Emitter
+    resource AshHooks.OutboxMatching.SimpleOpenAtoms.Subscription
+    resource AshHooks.OutboxMatching.SimpleOpenAtoms.Emitter
+    resource AshHooks.OutboxMatching.EtsCustom.Subscription
+    resource AshHooks.OutboxMatching.EtsCustom.Emitter
+    resource AshHooks.OutboxMatching.SimpleCustom.Subscription
+    resource AshHooks.OutboxMatching.SimpleCustom.Emitter
+    resource AshHooks.OutboxMatching.EtsEmptyAtoms.Subscription
+    resource AshHooks.OutboxMatching.EtsEmptyAtoms.Emitter
+    resource AshHooks.OutboxMatching.SimpleEmptyAtoms.Subscription
+    resource AshHooks.OutboxMatching.SimpleEmptyAtoms.Emitter
     resource AshHooks.OutboxMatching.Outbox
   end
 end
@@ -171,13 +224,27 @@ defmodule AshHooks.OutboxMatchingTest do
     Cases.clean(context)
   end
 
-  for name <- [:EtsStrings, :EtsAtoms, :SimpleStrings, :SimpleAtoms] do
+  for name <- [
+        :EtsStrings,
+        :EtsAtoms,
+        :SimpleStrings,
+        :SimpleAtoms,
+        :EtsOpenAtoms,
+        :SimpleOpenAtoms,
+        :EtsCustom,
+        :SimpleCustom,
+        :EtsEmptyAtoms,
+        :SimpleEmptyAtoms
+      ] do
     @tag name: name
     test "A12 production reads retain pagination and exact in-memory matching for #{name}", f do
       name = f.name
       subscription = Module.concat([AshHooks.OutboxMatching, name, Subscription])
       emitter = Module.concat([AshHooks.OutboxMatching, name, Emitter])
-      atoms? = name in [:EtsAtoms, :SimpleAtoms]
+      empty? = name in [:EtsEmptyAtoms, :SimpleEmptyAtoms]
+      atoms? = empty? or name in [:EtsAtoms, :SimpleAtoms, :EtsOpenAtoms, :SimpleOpenAtoms]
+      types = if empty?, do: [:other], else: if(atoms?, do: [:changed], else: ["changed"])
+      widened? = name in [:EtsOpenAtoms, :SimpleOpenAtoms, :EtsCustom, :SimpleCustom]
       ets? = Ash.DataLayer.data_layer(subscription) == Ets
       endpoint = Cases.endpoint(f)
 
@@ -200,7 +267,7 @@ defmodule AshHooks.OutboxMatchingTest do
           struct(subscription,
             id: Ash.UUID.generate(),
             org_id: "tenant-a",
-            event_types: if(atoms?, do: [:changed], else: ["changed"]),
+            event_types: types,
             paused: false,
             endpoint_id: endpoint.id,
             event_filters: filters
@@ -226,7 +293,7 @@ defmodule AshHooks.OutboxMatchingTest do
             struct(subscription,
               id: Ash.UUID.generate(),
               org_id: "tenant-a",
-              event_types: if(atoms?, do: [:*], else: ["*"]),
+              event_types: if(empty?, do: [:other], else: if(atoms?, do: [:*], else: ["*"])),
               paused: true,
               endpoint_id: endpoint.id,
               event_filters: nil
@@ -264,8 +331,11 @@ defmodule AshHooks.OutboxMatchingTest do
         |> Enum.map(& &1.id)
         |> Enum.sort()
 
-      assert {:ok, [_result]} = AshHooks.dispatch(emitter, :changed, event, tenant: "tenant-a")
-      assert selected(subscription, []) == expected
+      assert {:ok, results} = AshHooks.dispatch(emitter, :changed, event, tenant: "tenant-a")
+      assert length(results) == if(empty?, do: 0, else: 1)
+      candidates = selected(subscription, [])
+      assert MapSet.subset?(MapSet.new(expected), MapSet.new(candidates))
+      unless widened?, do: assert(candidates == expected)
 
       assert {:ok, :accepted} =
                AshHooks.publish(AshHooks.OutboxMatching.Outbox, {emitter, :changed}, event,
@@ -281,8 +351,10 @@ defmodule AshHooks.OutboxMatchingTest do
                )
 
       assert :done = AshHooks.fanout(AshHooks.OutboxMatching.Outbox, event.id, tenant: "tenant-a")
-      assert selected(subscription, []) == expected
-      assert length(Cases.rows(f, :delivery)) == 1
+      candidates = selected(subscription, [])
+      assert MapSet.subset?(MapSet.new(expected), MapSet.new(candidates))
+      unless widened?, do: assert(candidates == expected)
+      assert length(Cases.rows(f, :delivery)) == if(empty?, do: 0, else: 1)
     end
   end
 

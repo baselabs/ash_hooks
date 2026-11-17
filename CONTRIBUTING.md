@@ -66,7 +66,7 @@ Run focused checks while developing. Before a push, run:
 mix precommit
 ```
 
-To qualify a persisted tenant worker on exact Ash 3.37.2 and Spark 2.7.6, configure PostgreSQL
+To qualify the full suite on exact Ash 3.37.2 and Spark 2.7.6, configure PostgreSQL
 as above and run:
 
 <!-- not-run: This requires a configured PostgreSQL service and sends a request to a public HTTPS receiver. -->
@@ -74,7 +74,7 @@ as above and run:
 ASH_HOOKS_POSTGRES=1 ASH_HOOKS_HTTPBUN=1 elixir scripts/check-ash-floor.exs
 ```
 
-This opt-in check sends a real HTTPS request using the endpoint configured in
+This full-suite check includes a real HTTPS request using the endpoint configured in
 `test/ash_hooks/tenant_worker_postgres_test.exs` and consumes a persisted Oban.Basic
 job in a fresh BEAM process. It keeps the main lock, dependencies, and build files
 unchanged by using `_build/ash-floor` for the minimum supported graph and removing it
