@@ -3,6 +3,11 @@ defmodule AshHooks.PublicationDashesTest do
 
   @script Path.expand("../../scripts/check-document-dashes.py", __DIR__)
 
+  # The checker exempts ExDoc's separator only before this project's own
+  # "<name> v<version>" label, read from the project configuration.
+  @version Mix.Project.config()[:version]
+  @label "#{Mix.Project.config()[:name]} v#{@version}"
+
   test "both dashes fail in archives, HTML and EPUB but repository-only text passes" do
     tree = Path.join(System.tmp_dir!(), "publication_dashes_#{Ash.UUID.generate()}")
     File.mkdir_p!(tree)
@@ -45,8 +50,8 @@ defmodule AshHooks.PublicationDashesTest do
     on_exit(fn -> File.rm_rf!(tree) end)
     page = Path.join(tree, "page.html")
     dash = <<0x2014::utf8>>
-    project = ~s(<meta name="project" content="AshHooks v3.2.0">)
-    title = "<title>Guide #{dash} AshHooks v3.2.0</title>"
+    project = ~s(<meta name="project" content="#{@label}">)
+    title = "<title>Guide #{dash} #{@label}</title>"
     original = "#{project}\n#{title}\n<body>plain</body>"
     File.write!(page, original)
     assert {"", 0} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
@@ -55,7 +60,7 @@ defmodule AshHooks.PublicationDashesTest do
 
     for codepoint <- [0x2013, 0x2014], label <- ["AshHooks.Module", "An extra title"] do
       authored = <<codepoint::utf8>>
-      title = "<title>#{label} #{authored} text #{dash} AshHooks v3.2.0</title>"
+      title = "<title>#{label} #{authored} text #{dash} #{@label}</title>"
       File.write!(page, "#{project}\n#{title}\n<body>#{authored}</body>")
       {output, status} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
       assert status == 1
@@ -65,10 +70,10 @@ defmodule AshHooks.PublicationDashesTest do
     end
 
     for title <- [
-          "<title>Guide #{dash} OtherProject v3.2.0</title>",
+          "<title>Guide #{dash} OtherProject v#{@version}</title>",
           "<title>Guide #{dash} AshHooks v0.0.0</title>",
-          "<title>Guide #{dash} AshHooks v3.2.0 suffix</title>",
-          "<title>OtherProject v3.2.0 #{dash} Documentation</title>",
+          "<title>Guide #{dash} #{@label} suffix</title>",
+          "<title>OtherProject v#{@version} #{dash} Documentation</title>",
           "<title>AshHooks v0.0.0 #{dash} Documentation</title>"
         ] do
       File.write!(page, "#{project}\n#{title}")
@@ -146,8 +151,8 @@ defmodule AshHooks.PublicationDashesTest do
     on_exit(fn -> File.rm_rf!(tree) end)
     archive = Path.join(tree, "guide.epub")
     dash = <<0x2014::utf8>>
-    project = ~s(<meta name="project" content="AshHooks v3.2.0">)
-    title = "<title>Guide #{dash} AshHooks v3.2.0</title>"
+    project = ~s(<meta name="project" content="#{@label}">)
+    title = "<title>Guide #{dash} #{@label}</title>"
 
     assert {:ok, _} =
              :zip.create(String.to_charlist(archive), [
