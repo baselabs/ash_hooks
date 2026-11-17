@@ -314,6 +314,8 @@ defmodule AshHooks.OutboxMatching.Domain do
       resource variant.emitter
     end
 
+    resource AshHooks.OutboxTypeCases.SQLite.PlainTerms
+    resource AshHooks.OutboxTypeCases.SQLite.PlainNewTerms
     resource AshHooks.OutboxMatching.Attempt
     resource AshHooks.OutboxMatching.EtsStrings.Subscription
     resource AshHooks.OutboxMatching.EtsStrings.Emitter
@@ -525,7 +527,13 @@ for {test_module, namespace} <- [
     ] do
   defmodule test_module do
     use ExUnit.Case, async: false
+    alias Ash.DataLayer.{Ets, Simple}
     alias AshHooks.OutboxAcceptance, as: Cases
+    alias AshHooks.OutboxMatching.{Attempt, Outbox}
+    alias AshHooks.OutboxTypeCases
+    alias AshHooks.Subscription
+    alias AshHooks.Subscription.Query
+    alias AshHooks.Test.HttpReceiver
     @namespace namespace
     if @namespace == AshHooks.OutboxFixtures.Postgres, do: @moduletag(:postgres)
 
@@ -540,7 +548,7 @@ for {test_module, namespace} <- [
       Cases.clean(context)
     end
 
-    for variant <- AshHooks.OutboxTypeCases.cases(),
+    for variant <- OutboxTypeCases.cases(),
         variant.namespace == @namespace do
       @variant variant
       test "A12 accepted event array #{inspect(variant.subscription)} agrees through dispatch and fanout",
@@ -548,10 +556,10 @@ for {test_module, namespace} <- [
         variant = @variant
         resource = variant.subscription
         sql? = variant.layer in [AshSqlite.DataLayer, AshPostgres.DataLayer]
-        if sql?, do: AshHooks.OutboxTypeCases.create_table(f, resource)
+        if sql?, do: OutboxTypeCases.create_table(f, resource)
 
-        if variant.layer == Ash.DataLayer.Ets,
-          do: on_exit(fn -> Ash.DataLayer.Ets.stop(resource) end)
+        if variant.layer == Ets,
+          do: on_exit(fn -> Ets.stop(resource) end)
 
         endpoint = Cases.endpoint(f)
         # Remove the control subscription: only this variant participates.
@@ -572,7 +580,7 @@ for {test_module, namespace} <- [
             )
           end)
 
-        if variant.layer == Ash.DataLayer.Simple do
+        if variant.layer == Simple do
           Application.put_env(:ash_hooks, resource, {self(), rows})
           on_exit(fn -> Application.delete_env(:ash_hooks, resource) end)
         end
@@ -581,26 +589,26 @@ for {test_module, namespace} <- [
 
         expected =
           rows
-          |> Enum.filter(&AshHooks.Subscription.matches?(&1, event.type))
+          |> Enum.filter(&Subscription.matches?(&1, event.type))
           |> Enum.map(& &1.id)
 
         refute List.last(rows).id in expected
-        query = resource |> AshHooks.Subscription.Query.select(event)
+        query = resource |> Query.select(event)
 
         query =
-          if variant.layer == Ash.DataLayer.Simple,
-            do: Ash.DataLayer.Simple.set_data(query, rows),
+          if variant.layer == Simple,
+            do: Simple.set_data(query, rows),
             else: query
 
         selected = Ash.read!(query, tenant: "tenant-a", authorize?: false)
         refute List.last(rows).id in Enum.map(selected, & &1.id)
-        guarded = Enum.filter(selected, &AshHooks.Subscription.matches?(&1, event.type))
+        guarded = Enum.filter(selected, &Subscription.matches?(&1, event.type))
         assert Enum.sort(Enum.map(guarded, & &1.id)) == Enum.sort(expected)
 
         assert {:ok, [%{status: :deferred}]} =
                  AshHooks.dispatch(variant.emitter, :changed, event, tenant: "tenant-a")
 
-        outbox = AshHooks.OutboxMatching.Outbox
+        outbox = Outbox
 
         assert {:ok, :accepted} =
                  AshHooks.publish(outbox, {variant.emitter, :changed}, event, tenant: "tenant-a")
@@ -608,6 +616,22 @@ for {test_module, namespace} <- [
         assert :done = AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
         assert [%{subscription_id: id}] = Cases.rows(f, :delivery)
         assert id in expected
+      end
+    end
+
+    if @namespace == AshHooks.OutboxFixtures.SQLite do
+      for resource <- [
+            AshHooks.OutboxTypeCases.SQLite.PlainTerms,
+            AshHooks.OutboxTypeCases.SQLite.PlainNewTerms
+          ] do
+        @plain_resource resource
+        test "SQLite cannot persist declared event names in #{inspect(resource)} without the extension", f do
+          OutboxTypeCases.create_table(f, @plain_resource)
+
+          assert_raise Ash.Error.Unknown, ~r/Ecto.ChangeError.*does not match type/s, fn ->
+            Ash.create!(@plain_resource, %{event_types: ["changed"]}, authorize?: false)
+          end
+        end
       end
     end
 
@@ -622,9 +646,9 @@ for {test_module, namespace} <- [
     end
 
     test "nil capture and retention preserve a real send with uncaptured attempt history", f do
-      {server, port} = AshHooks.Test.HttpReceiver.start()
+      {server, port} = HttpReceiver.start()
       on_exit(fn -> :inets.stop(:httpd, server) end)
-      on_exit(fn -> Ash.DataLayer.Ets.stop(AshHooks.OutboxMatching.Attempt) end)
+      on_exit(fn -> Ets.stop(Attempt) end)
 
       endpoint =
         Cases.endpoint(f,
@@ -637,7 +661,7 @@ for {test_module, namespace} <- [
                AshHooks.Delivery.test_send(endpoint,
                  type: :changed,
                  deliveries: f.delivery,
-                 attempts: AshHooks.OutboxMatching.Attempt,
+                 attempts: Attempt,
                  tenant: "tenant-a",
                  secret_resolver: {AshHooks.OutboxProcess, :secret},
                  ssrf_check: &AshHooks.Ssrf.registration_safe?/1,
@@ -649,7 +673,7 @@ for {test_module, namespace} <- [
       assert_receive {:http_received, _request}, 5_000
 
       assert [%{response_headers: nil, response_snippet: snippet}] =
-               Ash.read!(AshHooks.OutboxMatching.Attempt, tenant: "tenant-a", authorize?: false)
+               Ash.read!(Attempt, tenant: "tenant-a", authorize?: false)
 
       refute String.starts_with?(snippet || "", "[captured]")
     end
@@ -664,7 +688,7 @@ for {test_module, namespace} <- [
 
       expected =
         rows
-        |> Enum.filter(&AshHooks.Subscription.matches?(&1, event.type))
+        |> Enum.filter(&Subscription.matches?(&1, event.type))
         |> Enum.map(& &1.id)
         |> Enum.sort()
 
@@ -672,7 +696,7 @@ for {test_module, namespace} <- [
 
       selected =
         resource
-        |> AshHooks.Subscription.Query.select(event)
+        |> Query.select(event)
         |> Ash.read!(tenant: "tenant-a", authorize?: false)
 
       assert Enum.sort(Enum.map(selected, & &1.id)) == expected
@@ -680,7 +704,7 @@ for {test_module, namespace} <- [
       assert {:ok, [%{status: :deferred}]} =
                AshHooks.dispatch(emitter, :changed, event, tenant: "tenant-a")
 
-      outbox = AshHooks.OutboxMatching.Outbox
+      outbox = Outbox
 
       assert {:ok, :accepted} =
                AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")

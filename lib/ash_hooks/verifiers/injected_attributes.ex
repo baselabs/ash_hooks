@@ -3,6 +3,7 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
   use Spark.Dsl.Verifier
 
   alias Ash.Resource.Builder
+  alias Ash.Type.NewType
   alias Spark.Dsl.Verifier
   alias Spark.Error.DslError
 
@@ -56,7 +57,25 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
             "allow_nil?: #{inspect(actual.allow_nil?)}, constraints: #{inspect(actual.constraints)}; " <>
             "must match accepted shapes: #{accepted_types(section, expected)}; #{inspect(nullable)} nullability"
     end
+
+    verify_storage!(state, section, actual)
   end
+
+  defp verify_storage!(state, :subscription, %{name: :event_types} = attribute) do
+    if Verifier.get_persisted(state, :data_layer) == AshSqlite.DataLayer and
+         type_matches?(attribute.type, {:array, Ash.Type.Term}) do
+      raise DslError,
+        module: Verifier.get_persisted(state, :module),
+        path: [:subscription, :attributes, :event_types],
+        message:
+          "attribute :event_types declares #{inspect(attribute.type)}, " <>
+            "allow_nil?: #{inspect(attribute.allow_nil?)}; Term storage uses " <>
+            ":erlang.term_to_binary, which ecto_sqlite3's JSON array encoding cannot carry. " <>
+            "Use {:array, :string} or {:array, :atom}, including element NewTypes, on AshSqlite.DataLayer."
+    end
+  end
+
+  defp verify_storage!(_state, _section, _attribute), do: :ok
 
   # The consumer owns filters. Both nil and a map have defined matching semantics.
   defp nullability(:subscription, %{name: name})
@@ -84,7 +103,7 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
           type_matches?(actual.type, {:array, Ash.Type.Atom}) or
           type_matches?(actual.type, {:array, Ash.Type.Term})
 
-      native == AshHooks.Endpoint.SecretRef ->
+      native in [AshHooks.Endpoint.SecretRef, AshHooks.Endpoint.Url] ->
         type_matches?(actual.type, native) or type_matches?(actual.type, Ash.Type.String)
 
       true ->
@@ -96,7 +115,7 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
 
   defp type_matches?(actual, native) do
     actual == native or
-      (Ash.Type.NewType.new_type?(actual) and type_matches?(actual.subtype_of(), native))
+      (NewType.new_type?(actual) and type_matches?(actual.subtype_of(), native))
   end
 
   defp accepted_constraints?(:outbox, %{name: :metadata} = actual, _expected),
@@ -116,6 +135,9 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
 
   defp accepted_types(:subscription, %{name: :event_types}),
     do: "{:array, :string}, {:array, :atom} or {:array, :term}, including native NewType subtypes"
+
+  defp accepted_types(_section, %{type: AshHooks.Endpoint.Url}),
+    do: "AshHooks.Endpoint.Url or :string, including native NewType subtypes"
 
   defp accepted_types(_section, %{type: AshHooks.Endpoint.SecretRef}),
     do: "AshHooks.Endpoint.SecretRef or :string, including native NewType subtypes"

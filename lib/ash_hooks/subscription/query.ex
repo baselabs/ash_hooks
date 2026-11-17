@@ -13,8 +13,31 @@ defmodule AshHooks.Subscription.Query do
     types = types(resource, event.type, layer)
     pause = pause(resource, layer)
     filters = filters(resource, event.metadata, layer)
-    Ash.Query.filter(resource, not is_nil(event_types) and ^types and ^pause and ^filters)
+    present = types_present(resource, layer)
+    Ash.Query.filter(resource, ^present and ^types and ^pause and ^filters)
   end
+
+  defp types_present(resource, AshSqlite.DataLayer = layer) do
+    attribute = Info.attribute(resource, :event_types)
+    storage = storage(resource, attribute, layer)
+
+    if match?({:array, _}, storage) or storage in [:text, :string] do
+      # SQLite arrays are JSON. Some element types encode nil as JSON null
+      # rather than SQL NULL; both decode to nil and must select no match.
+      expr(
+        fragment(
+          "CASE WHEN ? IS NULL THEN 0 WHEN json_valid(?) THEN json_type(?) != 'null' ELSE 1 END",
+          event_types,
+          event_types,
+          event_types
+        )
+      )
+    else
+      expr(not is_nil(event_types))
+    end
+  end
+
+  defp types_present(_resource, _layer), do: expr(not is_nil(event_types))
 
   defp types(resource, name, layer) do
     attribute = Info.attribute(resource, :event_types)

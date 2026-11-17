@@ -27,10 +27,12 @@ their existing contracts.
 | Resource | Type and fields | Nullability |
 | --- | --- | --- |
 | Subscription | Boolean: `paused` under `pausable :on`; UUID reference: `endpoint_id` | required |
-| Subscription | string, atom or term array: `event_types` | either; nil matches nothing |
+| Subscription on every data layer | string or atom array: `event_types`, including element NewTypes | either; nil matches nothing |
+| Subscription on PostgreSQL, ETS and Simple | term array: `event_types`, including Term element NewTypes | either; nil matches nothing |
+| Subscription on SQLite | Term arrays are refused: Term binaries cannot be carried by the adapter's JSON array encoding | use string or atom arrays |
 | Subscription | map: `event_filters` under `filter_attributes` | either |
 | Subscription | atom: `signing_mode` | either |
-| Endpoint | `AshHooks.Endpoint.Url`: `url`; atom: `status`; `AshHooks.Endpoint.SecretRef` or string: `secret_ref` | required; optional native signing makes `secret_ref` nullable |
+| Endpoint | `AshHooks.Endpoint.Url` or string: `url`; atom: `status`; `AshHooks.Endpoint.SecretRef` or string: `secret_ref` | required; optional native signing makes `secret_ref` nullable |
 | Endpoint | SecretRef or string: `previous_secret_ref`, `legacy_secret_ref`, `legacy_previous_secret_ref` | nullable |
 | Endpoint capture | Boolean: `response_capture`; integer: `response_capture_max_bytes`, `response_capture_retention_seconds`; string array: `response_header_allowlist` | required |
 | Endpoint lifecycle | UTC microsecond datetime: `secret_created_at`, `secret_first_used_at`, `secret_retired_at`, `previous_secret_created_at`, `previous_secret_first_used_at`, `previous_secret_retired_at`, `legacy_secret_created_at`, `legacy_secret_first_used_at`, `legacy_previous_secret_created_at`, `legacy_previous_secret_first_used_at`, `legacy_previous_secret_retired_at` | nullable |
@@ -58,7 +60,13 @@ listed above also accept nullable host declarations. Native
 `Ash.Type.NewType` subtypes of the listed scalar types are accepted; event
 arrays may use String, Atom or Term element NewTypes. Outbox metadata is the
 exception; its codec must remain unmodified. Event string, atom and term
-arrays can carry every declared event name.
+arrays can carry every declared event name on their supported data layers.
+SQLite cannot encode Term arrays: `Ash.Type.Term` uses
+`:erlang.term_to_binary`, while ecto_sqlite3 encodes arrays as JSON. A host
+with this declaration must change it to `{:array, :string}` or
+`{:array, :atom}` and migrate any imported column values to JSON string
+arrays. An ordinary Ash create cannot have persisted native Term arrays on
+SQLite. PostgreSQL, ETS and Simple keep Term arrays supported.
 Boolean, integer and map element arrays, and scalar containers, cannot carry
 those names and are refused; migrate their contents and column storage to a
 supported array type before updating the declaration. Event atom arrays may

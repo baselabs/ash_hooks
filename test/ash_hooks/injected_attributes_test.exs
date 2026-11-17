@@ -27,12 +27,18 @@ defmodule AshHooks.InjectedAttributeStates do
   end
 end
 
+defmodule AshHooks.InjectedAttributesTest.Term do
+  use Ash.Type.NewType, subtype_of: :term
+end
+
 defmodule AshHooks.InjectedAttributesTest do
   use ExUnit.Case, async: false
   require Spark.Test
 
-  alias Ash.Resource.Builder
+  alias Ash.Resource.{Builder, Info}
   alias AshHooks.InjectedAttributeStates
+  alias AshHooks.Subscription
+  alias Spark.Error.DslError
   alias AshHooks.Verifiers.InjectedAttributes
   alias Spark.Dsl.Transformer
 
@@ -87,7 +93,7 @@ defmodule AshHooks.InjectedAttributesTest do
           refute match?({:ok, _}, Ash.Type.cast_input(wrong, value, []))
           invalid = replace(state, %{actual | type: wrong, constraints: []})
 
-          assert_raise Spark.Error.DslError, ~r/attribute .* declares .*accepted shapes/s, fn ->
+          assert_raise DslError, ~r/attribute .* declares .*accepted shapes/s, fn ->
             InjectedAttributes.verify(invalid)
           end
         end
@@ -108,12 +114,26 @@ defmodule AshHooks.InjectedAttributesTest do
         if either? do
           assert :ok = InjectedAttributes.verify(invalid)
         else
-          assert_raise Spark.Error.DslError, ~r/allow_nil\?/, fn ->
+          assert_raise DslError, ~r/allow_nil\?/, fn ->
             InjectedAttributes.verify(invalid)
           end
         end
       end
     end
+  end
+
+  test "a host string URL retains the working outbound options contract" do
+    {state, actual, _type, _opts} =
+      attribute_state(
+        AshHooks.Endpoint,
+        :endpoint,
+        AshHooks.Endpoint.Transformers.AddEndpointFields,
+        :url
+      )
+
+    assert :ok = InjectedAttributes.verify(replace(state, %{actual | type: Ash.Type.String}))
+    assert {:ok, "https://example.com/events"} =
+             Ash.Type.cast_input(:string, "https://example.com/events", [])
   end
 
   test "nullable endpoint status keeps the package disabled semantics" do
@@ -125,7 +145,7 @@ defmodule AshHooks.InjectedAttributesTest do
   test "nil pause breaks the final guard while nil event types match nothing" do
     assert_raise ArgumentError, fn -> not Map.fetch!(%{paused: nil}, :paused) end
 
-    refute AshHooks.Subscription.matches?(%{event_types: nil}, "changed")
+    refute Subscription.matches?(%{event_types: nil}, "changed")
 
     for {name, type} <- [{:paused, :boolean}] do
       errors =
@@ -153,20 +173,22 @@ defmodule AshHooks.InjectedAttributesTest do
         end
       )
 
-    refute Ash.Resource.Info.attribute(resource, :event_filters).allow_nil?
-    assert AshHooks.Subscription.matches_filters?(struct(resource, event_filters: %{}), %{})
+    refute Info.attribute(resource, :event_filters).allow_nil?
+    assert Subscription.matches_filters?(struct(resource, event_filters: %{}), %{})
   end
 
-  test "refused event types cannot carry a declared event name" do
-    for type <- [
-          {:array, :integer},
-          {:array, :boolean},
-          {:array, :map},
-          :map,
-          :boolean,
-          :integer,
-          :string
-        ] do
+  for type <- [
+        {:array, :integer},
+        {:array, :boolean},
+        {:array, :map},
+        :map,
+        :boolean,
+        :integer,
+        :string
+      ] do
+    @event_type type
+    test "#{inspect(type)} event types cannot carry a declared event name" do
+      type = @event_type
       {:ok, attribute} = Builder.build_attribute(:event_types, type, [])
 
       refute match?(
@@ -188,6 +210,43 @@ defmodule AshHooks.InjectedAttributesTest do
     end
   end
 
+  for element <- [Ash.Type.Term, AshHooks.InjectedAttributesTest.Term] do
+    @element element
+    test "SQLite refuses event arrays using #{inspect(element)} before persistence" do
+      element = @element
+
+      errors =
+        Spark.Test.dsl_errors do
+          subscription(
+            quote do
+              attribute :event_types, {:array, unquote(element)}, allow_nil?: true
+            end,
+            AshSqlite.DataLayer
+          )
+        end
+
+      assert [{_, [error]}] = errors
+      assert Exception.message(error) =~ ":erlang.term_to_binary"
+      assert Exception.message(error) =~ "ecto_sqlite3's JSON array encoding"
+      assert Exception.message(error) =~ "{:array, :string} or {:array, :atom}"
+    end
+  end
+
+  test "a scalar term admits a non-container that raises in event matching" do
+    assert {:ok, "changed"} = Ash.Type.cast_input(:term, "changed", [])
+    assert_raise Protocol.UndefinedError, fn ->
+      Subscription.matches?(%{event_types: "changed"}, "changed")
+    end
+
+    errors =
+      Spark.Test.dsl_errors do
+        subscription(quote do: attribute(:event_types, :term, allow_nil?: true))
+      end
+
+    assert [{_, [error]}] = errors
+    assert Exception.message(error) =~ "accepted shapes"
+  end
+
   test "source identity constraints and lossless outbox metadata remain native" do
     source = InjectedAttributeStates.state(AshHooks.InboundSource, :inbound_source)
     specs = AshHooks.InboundSource.Transformers.AddSourceFields.attributes_spec(source)
@@ -200,7 +259,7 @@ defmodule AshHooks.InjectedAttributesTest do
 
     provider = Enum.find(Transformer.get_entities(source, [:attributes]), &(&1.name == :provider))
 
-    assert_raise Spark.Error.DslError, ~r/constraints/, fn ->
+    assert_raise DslError, ~r/constraints/, fn ->
       InjectedAttributes.verify(replace(source, %{provider | constraints: [one_of: [:other]]}))
     end
   end
@@ -238,7 +297,17 @@ defmodule AshHooks.InjectedAttributesTest do
   defp example(AshHooks.InboundDelivery.Payload, _opts), do: %{"event" => "changed"}
   defp example(_string, _opts), do: "reference"
 
-  defp subscription(attributes) do
+  defp subscription(attributes, layer \\ Ash.DataLayer.Ets) do
+    configuration =
+      if layer == AshSqlite.DataLayer do
+        quote do
+          sqlite do
+            table "injected_term_subscriptions"
+            repo(AshHooks.OutboxFixtures.SQLiteRepo)
+          end
+        end
+      end
+
     module = Module.concat(__MODULE__, "Subscription#{System.unique_integer([:positive])}")
 
     on_exit(fn ->
@@ -250,9 +319,11 @@ defmodule AshHooks.InjectedAttributesTest do
       module,
       quote do
         use Ash.Resource,
-          data_layer: Ash.DataLayer.Ets,
+          data_layer: unquote(layer),
           extensions: [AshHooks.Subscription],
           validate_domain_inclusion?: false
+
+        unquote(configuration)
 
         attributes do
           unquote(attributes)

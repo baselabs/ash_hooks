@@ -14,6 +14,7 @@ end
 
 defmodule AshHooks.OutboxTypeCases do
   @moduledoc false
+  alias Ash.Resource.Info
 
   def types do
     [
@@ -34,7 +35,8 @@ defmodule AshHooks.OutboxTypeCases do
           {:Ets, Ash.DataLayer.Ets, AshHooks.OutboxFixtures.SQLite},
           {:Simple, Ash.DataLayer.Simple, AshHooks.OutboxFixtures.SQLite}
         ],
-        {shape, type, constraints} <- types() do
+        {shape, type, constraints} <- types(),
+        not (layer == AshSqlite.DataLayer and shape in [:Terms, :NewTerms]) do
       prefix = Module.concat([__MODULE__, name, shape])
 
       %{
@@ -56,7 +58,7 @@ defmodule AshHooks.OutboxTypeCases do
     table = AshHooks.OutboxAcceptance.table(resource)
 
     columns =
-      Enum.map_join(Ash.Resource.Info.attributes(resource), ", ", fn attribute ->
+      Enum.map_join(Info.attributes(resource), ", ", fn attribute ->
         storage = Ash.Type.storage_type(attribute.type, attribute.constraints)
 
         "\"#{attribute.name}\" #{sql_type(storage, f.sqlite?)}" <>
@@ -164,6 +166,37 @@ for variant <- AshHooks.OutboxTypeCases.cases() do
             subscriptions unquote(variant.subscription)
             deliveries unquote(Module.concat(variant.namespace, Delivery))
           end
+        end
+      end
+    end
+  )
+end
+
+for {name, element} <- [
+      {:PlainTerms, :term},
+      {:PlainNewTerms, AshHooks.OutboxTypeCases.Term}
+    ] do
+  resource = Module.concat([AshHooks.OutboxTypeCases, SQLite, name])
+
+  Code.eval_quoted(
+    quote do
+      defmodule unquote(resource) do
+        use Ash.Resource,
+          domain: AshHooks.OutboxMatching.Domain,
+          data_layer: AshSqlite.DataLayer
+
+        sqlite do
+          table unquote("outbox_types_" <> String.downcase(to_string(name)))
+          repo(AshHooks.OutboxFixtures.SQLiteRepo)
+        end
+
+        attributes do
+          uuid_primary_key :id
+          attribute :event_types, {:array, unquote(element)}, public?: true
+        end
+
+        actions do
+          defaults create: :*
         end
       end
     end

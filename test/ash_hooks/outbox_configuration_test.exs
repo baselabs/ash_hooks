@@ -7,6 +7,7 @@ defmodule AshHooks.OutboxConfigurationTest do
   alias AshHooks.OutboundOutbox.Transformers.AddOutbox
   alias AshHooks.OutboundOutbox.Verifier
   alias AshHooks.OutboxFixtures.Postgres.Outbox, as: PostgresOutbox
+  alias AshHooks.Verifiers.InjectedAttributes
   alias Spark.Dsl.Transformer
   @resource AshHooks.OutboxFixtures.SQLite.Outbox
 
@@ -93,7 +94,7 @@ defmodule AshHooks.OutboxConfigurationTest do
         )
 
       assert_raise Spark.Error.DslError, ~r/accepted shapes/, fn ->
-        AshHooks.Verifiers.InjectedAttributes.verify(invalid)
+        InjectedAttributes.verify(invalid)
       end
     end
 
