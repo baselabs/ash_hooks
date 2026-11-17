@@ -5,7 +5,9 @@
 useDefault = true
 
 [allowlist]
-description = "Published signature known-answer vectors in the test suite"
+description = "Published signature vectors and throwaway loopback TLS test keys"
+# These exact files are generated test keys, never trusted outside tests.
+paths = ['''^test/fixtures/tls/(local-ca|server)\.key$''']
 regexes = [
   '''^eyJhbGciOiJSUzI1NiJ9\.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAs''',
   '''^0b56c93f30784936100cc12e249dd143dbe61a42cea85c2e6cd3f718198d9c8c$''',

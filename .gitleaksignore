@@ -1,7 +1,3 @@
-# Throwaway loopback TLS fixtures; never trusted outside tests.
-test/fixtures/tls/local-ca.key
-test/fixtures/tls/server.key
-
 # Public RFC 7515 A.2 JWT and deliberately malformed JWT, never credentials.
 # Exact rule/line fingerprints preserve scanning of the rest of these tests.
 test/ash_hooks/provider/verifier_contract_test.exs:generic-api-key:69
