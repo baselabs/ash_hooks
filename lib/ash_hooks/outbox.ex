@@ -42,11 +42,9 @@ defmodule AshHooks.Outbox do
   defp persist(resource, input, tenant, opts) do
     # Raw repo transactions cannot deliver after-commit Ash notifications. Return
     # them so Ash never warns or raises about a notification it cannot send.
-    raw? =
-      Ash.DataLayer.in_transaction?(resource) and
-        not Process.get(:ash_started_transaction?, false)
-
-    return? = raw? or Keyword.get(opts, :return_notifications?, false)
+    managed? = Process.get(:ash_started_transaction?, false)
+    raw? = Ash.DataLayer.in_transaction?(resource) and not managed?
+    suppressed? = raw? or Keyword.get(opts, :return_notifications?, false)
     context = Map.merge(opts[:context] || %{}, Phase.context(resource))
 
     result =
@@ -55,21 +53,46 @@ defmodule AshHooks.Outbox do
         authorize?: false,
         tenant: tenant,
         context: context,
-        return_notifications?: return?,
+        return_notifications?: true,
         rollback_on_error?: false
       )
 
     case result do
-      {:ok, row} ->
-        disposition(row, input)
-
-      {:ok, row, _notifications} ->
+      {:ok, row, notifications} ->
+        unless suppressed?, do: notify(resource, notifications, managed?)
         disposition(row, input)
 
       {:error, reason} ->
         emit(:publish, %{event_uuid: input.event_uuid}, :refused, reason)
         {:error, reason}
     end
+  end
+
+  defp notify(resource, notifications, managed?) do
+    notifier = AshHooks.OutboundOutbox.Notifier
+
+    notifications =
+      Enum.flat_map(notifications, fn notification ->
+        targets = List.wrap(notification.for)
+
+        if notification.resource == resource and notifier in targets do
+          # Ash's managed flag can also belong to a transaction nested inside
+          # a raw repository transaction. Route our notification explicitly;
+          # its notifier checks physical commit before emitting the hint.
+          own = %{notification | resource: nil, for: [notifier]}
+
+          case List.delete(targets, notifier) do
+            [] -> [own]
+            other -> [%{notification | for: other}, own]
+          end
+        else
+          [notification]
+        end
+      end)
+
+    if managed?,
+      do: Ash.Actions.Helpers.queue_notifications(notifications),
+      else: Ash.Notifier.notify(notifications)
   end
 
   defp disposition(row, input) do

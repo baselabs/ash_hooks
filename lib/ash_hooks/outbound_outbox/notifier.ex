@@ -4,6 +4,16 @@ defmodule AshHooks.OutboundOutbox.Notifier do
 
   @impl true
   def notify(%{action: %{name: :publish}, data: row, changeset: changeset}) do
+    unless Ash.DataLayer.in_transaction?(row.__struct__) do
+      committed(row, changeset)
+    end
+
+    :ok
+  end
+
+  def notify(_notification), do: :ok
+
+  defp committed(row, changeset) do
     supplied = Ash.Changeset.get_attribute(changeset, :acceptance_token)
     outcome = if supplied == row.acceptance_token, do: :accepted, else: :duplicate
 
@@ -26,8 +36,6 @@ defmodule AshHooks.OutboundOutbox.Notifier do
 
     :ok
   end
-
-  def notify(_notification), do: :ok
 
   defp trigger(row) do
     case AshHooks.Outbox.option(row.__struct__, :trigger) do

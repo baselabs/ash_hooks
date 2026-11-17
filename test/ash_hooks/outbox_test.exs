@@ -769,13 +769,12 @@ defmodule AshHooks.OutboxAcceptance do
             assert [surviving] =
                      Enum.filter(Cases.rows(f, :delivery), &(&1.event_uuid == event.id))
 
-            # Either crash leaves the real 30-second admission lease live.
-            # The delivery driver waits for it before acquiring its send claim.
-            Process.sleep(30_100)
-
             if stage == :after_admission do
               assert %{success: 1} = Cases.drain(f)
               assert_receive {:http_received, _request}, 5_000
+            else
+              # The killed claimant held the real 30-second enqueue lease.
+              Process.sleep(30_100)
             end
 
             Cases.expire(f, event)
@@ -841,7 +840,10 @@ defmodule AshHooks.OutboxAcceptance do
           event = Cases.event(Ash.UUID.generate(), %{"admission" => "fail", "region" => "west"})
           assert {:ok, :accepted} = Cases.publish(f, event, route: :queued)
           Cases.crash(f, :admission_failure, event, marker)
-          assert [%{status: :pending, last_error: "closed"} = surviving] = Cases.rows(f, :delivery)
+
+          assert [%{status: :pending, last_error: "closed"} = surviving] =
+                   Cases.rows(f, :delivery)
+
           assert File.read!(marker) == "refused"
           Cases.expire(f, event)
           assert :done = Cases.fanout(f, event.id)
@@ -1076,8 +1078,19 @@ defmodule AshHooks.OutboxAcceptance do
 
         results =
           1..2
-          |> Task.async_stream(fn _ -> Cases.publish(f, event) end, max_concurrency: 2)
-          |> Enum.map(fn {:ok, result} -> result end)
+          |> Task.async_stream(
+            fn _ ->
+              Cases.transaction(f, fn ->
+                Cases.count_queries(f, fn -> Cases.publish(f, event) end)
+              end)
+            end,
+            max_concurrency: 2
+          )
+          |> Enum.map(fn {:ok, {:ok, {result, queries}}} ->
+            assert length(queries) == 1
+            assert hd(queries) =~ "ON CONFLICT"
+            result
+          end)
 
         assert Enum.sort(results) == [ok: :accepted, ok: :duplicate]
         assert {:ok, :accepted} = Cases.publish(f, event, tenant: "tenant-b")

@@ -92,7 +92,7 @@ defmodule AshHooks.OutboxProcess do
       deliveries: Module.concat(namespace, :Delivery),
       endpoints: Module.concat(namespace, :Endpoint),
       secret_resolver: {__MODULE__, :secret},
-      ssrf_check: false,
+      ssrf_check: &AshHooks.Ssrf.registration_safe?/1,
       http_opts: [validate_destination: false, timeout: 500],
       attempt_timeout: 2_000,
       finalization_allowance: 1_000
