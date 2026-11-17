@@ -8,9 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Inbound observation counts return storage read errors instead of successful
-  zero counts. Endpoint health sweeps continue across failed history reads and
-  return an incomplete-sweep error with partial write counts and failed reads.
+- Inbound observation counts use data-layer count and sum aggregates without
+  loading ledger rows. Storage read failures return errors instead of successful
+  zero counts. Endpoint health sweeps report unread histories in `unread` and
+  emit `[:ash_hooks, :endpoint_health, :read_failed]`, preserving the affected
+  endpoint's status and warning marker while considering other endpoints.
 
 - Standard Webhooks verification authenticates the signature before checking
   the timestamp window for both HMAC and Ed25519. A bad signature with a stale

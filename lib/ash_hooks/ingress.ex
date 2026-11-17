@@ -117,30 +117,6 @@ defmodule AshHooks.Ingress do
   @transient_retry_jitter_ms 50
 
   @doc "Builds the legacy provider-identity adoption audit without writing rows."
-  defdelegate plan_legacy_identity_adoption(resource, name, opts \\ []),
-    to: AshHooks.InboundDelivery.LegacyAdoption,
-    as: :plan
-
-  @doc "Applies one reviewed, quiesced provider-identity adoption partition."
-  defdelegate adopt_legacy_identity(resource, name, opts \\ []),
-    to: AshHooks.InboundDelivery.LegacyAdoption,
-    as: :apply
-
-  # ────────────────────────── sync pipeline ──────────────────────────
-
-  @doc """
-  Lists inbound deliveries by filter with keyset pagination (newest
-  first), providing the inbound delivery log.
-
-  Options: `:source` (the inbound declaration's name, e.g. `:orders`),
-  `:status` (a list of `AshHooks.InboundDelivery.statuses/0`),
-  `:event_type`, `:from` / `:to` (`DateTime` bounds on `inserted_at`),
-  `:limit` (default 50, max 500), `:after` (the previous page's cursor),
-  and `:tenant`. The resource needs `timestamps()` and an `:id`.
-  Returns `{:ok, %{records:, next_cursor:}}`.
-  """
-  @spec list(module(), keyword()) ::
-          {:ok, %{records: [struct()], next_cursor: binary() | nil}} | {:error, term()}
   def list(resource, opts \\ []) do
     alias AshHooks.{Keyset, Tenancy}
 
@@ -236,7 +212,8 @@ defmodule AshHooks.Ingress do
   and the payload-less `:failed_verification` rejection rows); without
   them both report 0. Paused sources, unavailable custody keys, and
   unrecognized callback failures are excluded from rejection rows and their count.
-  A storage read failure returns `{:error, reason}`; zero counts mean the read
+  Window counts run as data-layer count and sum aggregates, without loading
+  ledger rows or payloads into application memory. A storage read failure returns `{:error, reason}`; zero counts mean the read
   succeeded and found no matching observations.
   """
   @spec counts(module(), keyword()) ::
@@ -254,18 +231,8 @@ defmodule AshHooks.Ingress do
 
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
          :ok <- require_timestamps(resource),
-         {:ok, rows} <- window_rows(resource, opts, tenant) do
-      accepted = Enum.reject(rows, &(&1.status == :failed_verification))
-
-      {:ok,
-       %{
-         received: length(accepted),
-         processed: Enum.count(rows, &(&1.status == :processed)),
-         duplicates: sum_duplicates(rows),
-         failed_verification: Enum.count(rows, &(&1.status == :failed_verification)),
-         handler_failures:
-           Enum.count(rows, &(&1.status in [:failed_retryable, :failed_permanent]))
-       }}
+         {:ok, counts} <- window_counts(resource, opts, tenant) do
+      {:ok, Map.merge(%{duplicates: 0, failed_verification: 0}, counts)}
     end
   end
 
@@ -283,7 +250,7 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  defp window_rows(resource, opts, tenant) do
+  defp window_counts(resource, opts, tenant) do
     now = Keyword.get(opts, :now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
 
     from = Keyword.get(opts, :from) || DateTime.add(now, -86_400, :second)
@@ -296,12 +263,29 @@ defmodule AshHooks.Ingress do
         if opts[:source], do: ingress_eq(query, :provider, opts[:source]), else: query
       end),
       tenant,
-      &Ash.read(&1, authorize?: false, tenant: tenant)
+      &Ash.aggregate(&1, count_aggregates(resource), authorize?: false, tenant: tenant)
     )
+  rescue
+    error -> {:error, Ash.Error.to_error_class(error)}
   end
 
-  defp sum_duplicates(rows) do
-    rows |> Enum.map(&(Map.get(&1, :duplicates) || 0)) |> Enum.sum()
+  defp count_aggregates(resource) do
+    counts = [
+      {:processed, :count, query: [filter: [status: :processed]]},
+      {:handler_failures, :count,
+       query: [filter: [status: [in: [:failed_retryable, :failed_permanent]]]]}
+    ]
+
+    if Spark.Dsl.Extension.get_opt(resource, [:inbound_delivery], :ingress_tracking, :off) == :on do
+      [
+        {:received, :count, query: [filter: [status: [not_eq: :failed_verification]]]},
+        {:failed_verification, :count, query: [filter: [status: :failed_verification]]},
+        {:duplicates, :sum, field: :duplicates, default: 0}
+        | counts
+      ]
+    else
+      [{:received, :count} | counts]
+    end
   end
 
   @doc """

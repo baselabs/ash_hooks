@@ -104,6 +104,14 @@ defmodule AshHooks.RowSecurityPostgresTest do
     end
 
     @tag configuration: configuration
+    @tag :observation
+    test "observation read failures preserve endpoint evidence with #{configuration} reads",
+         context do
+      Cases.observation_reads(context)
+    end
+
+    @tag configuration: configuration
+    @tag :observation
     test "inbound_phases with #{configuration} reads", context do
       Cases.inbound_phases(context)
     end

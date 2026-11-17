@@ -419,7 +419,7 @@ defmodule AshHooks.EndpointHealthTest do
     endpoint!()
     Repo.query!("DROP TABLE IF EXISTS #{@attempts}")
 
-    assert {:error, {:incomplete_sweep, %{disabled: 0, warned: 0, failed: 2}}} =
+    assert {:ok, %{disabled: 0, warned: 0, unread: 2}} =
              AshHooks.EndpointHealth.sweep(Endpoint, Attempt, now: DateTime.utc_now())
 
     # and stats surfaces the read error

@@ -217,7 +217,7 @@ defmodule AshHooks.Test.RowSecurityCases do
           use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
 
           resources do
-            allow_unregistered? true
+            allow_unregistered?(true)
           end
         end
       end
@@ -430,7 +430,7 @@ defmodule AshHooks.Test.RowSecurityCases do
          [
            do:
              quote do
-               table unquote(name)
+               table(unquote(name))
                repo(&unquote(__MODULE__).repo/2)
              end
          ]
@@ -449,12 +449,12 @@ defmodule AshHooks.Test.RowSecurityCases do
         quote do
           actions do
             read :read do
-              primary? true
+              primary?(true)
 
               pagination do
-                required? true
-                offset? true
-                default_limit 1
+                required?(true)
+                offset?(true)
+                default_limit(1)
               end
             end
           end
@@ -476,17 +476,17 @@ defmodule AshHooks.Test.RowSecurityCases do
           unquote(storage)
 
           attributes do
-            attribute :tenant_id, :string, allow_nil?: false
+            attribute(:tenant_id, :string, allow_nil?: false)
             unquote(timestamps)
           end
 
           multitenancy do
-            strategy :attribute
-            attribute :tenant_id
+            strategy(:attribute)
+            attribute(:tenant_id)
           end
 
           actions do
-            defaults unquote(defaults)
+            defaults(unquote(defaults))
           end
 
           unquote(paginated_read)
@@ -840,6 +840,124 @@ defmodule AshHooks.Test.RowSecurityCases do
     end
   end
 
+  def observation_reads(ctx) do
+    seeded = seed(ctx)
+    tenant = "tenant_a"
+    endpoint = seeded |> List.keyfind(tenant, 0) |> elem(1)
+    warned_at = DateTime.add(DateTime.utc_now(), -120, :second) |> DateTime.truncate(:microsecond)
+
+    assert {:ok, _} =
+             AshHooks.Phase.run(ctx.endpoint, tenant, fn _query ->
+               Ash.update(endpoint, %{warned_at: warned_at},
+                 action: :mark_disable_warned,
+                 authorize?: false,
+                 tenant: tenant
+               )
+             end)
+
+    listener = {__MODULE__, self()}
+    test_pid = self()
+    event = [:ash_hooks, :endpoint_health, :read_failed]
+
+    :ok =
+      :telemetry.attach(
+        listener,
+        event,
+        fn name, measurements, metadata, _ -> send(test_pid, {name, measurements, metadata}) end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(listener) end)
+
+    temporarily_unavailable(ctx, ctx.attempt, fn ->
+      assert {:ok, %{disabled: 0, warned: 0, unread: 1}} =
+               EndpointHealth.sweep(ctx.endpoint, ctx.attempt, tenant: tenant)
+
+      assert_receive {^event, %{count: 1}, %{endpoint_id: id, reason: reason}}
+      assert id == endpoint.id
+      assert reason != nil
+      refute_received {^event, _, _}
+
+      assert {:ok, retained} =
+               AshHooks.Phase.run(
+                 ctx.endpoint,
+                 tenant,
+                 &Ash.read_one(Ash.Query.do_filter(&1, id: endpoint.id),
+                   authorize?: false,
+                   tenant: tenant
+                 )
+               )
+
+      assert retained.status == :enabled
+      assert retained.disable_warned_at == warned_at
+    end)
+
+    temporarily_unavailable(ctx, ctx.endpoint, fn ->
+      assert {:error, _} = EndpointHealth.sweep(ctx.endpoint, ctx.attempt, tenant: tenant)
+    end)
+
+    temporarily_unavailable(ctx, ctx.inbound, fn ->
+      assert {:error, _} = Ingress.counts(ctx.inbound, tenant: tenant)
+    end)
+  end
+
+  defp temporarily_unavailable(ctx, resource, fun) do
+    original = table(resource)
+    temporary = original <> "_unavailable"
+    ctx.owner.query!("ALTER TABLE #{original} RENAME TO #{temporary}")
+
+    try do
+      fun.()
+    after
+      ctx.owner.query!("ALTER TABLE #{temporary} RENAME TO #{original}")
+    end
+  end
+
+  defp assert_aggregate_counts(resource, tenant) do
+    test_pid = self()
+    listener = {__MODULE__, :aggregate, self()}
+    repos = [AshHooks.Phase.repo(resource)]
+    # The SQL boundary is observed on each real repository, including split reads.
+    events =
+      for repo <- repos,
+          do: repo.config()[:telemetry_prefix] ++ [:query]
+
+    :ok =
+      :telemetry.attach_many(
+        listener,
+        Enum.uniq(events),
+        fn _, _, metadata, _ ->
+          if String.contains?(metadata.query, table(resource)),
+            do: send(test_pid, {:window_sql, metadata.query})
+        end,
+        nil
+      )
+
+    try do
+      result = Ingress.counts(resource, tenant: tenant)
+      queries = drain_window_sql([])
+      assert queries != []
+      assert Enum.any?(queries, &String.contains?(String.downcase(&1), "sum("))
+
+      assert Enum.all?(queries, fn query ->
+               query = String.downcase(query)
+               String.contains?(query, "count(") or String.contains?(query, "sum(")
+             end)
+
+      result
+    after
+      :telemetry.detach(listener)
+    end
+  end
+
+  defp drain_window_sql(acc) do
+    receive do
+      {:window_sql, query} -> drain_window_sql([query | acc])
+    after
+      0 -> acc
+    end
+  end
+
   def inbound_phases(ctx) do
     seeds =
       for tenant <- ["tenant_b", "tenant_a"] do
@@ -917,7 +1035,7 @@ defmodule AshHooks.Test.RowSecurityCases do
                 duplicates: 1,
                 failed_verification: 1,
                 handler_failures: 1
-              }} = Ingress.counts(ctx.inbound, tenant: tenant)
+              }} = assert_aggregate_counts(ctx.inbound, tenant)
 
       assert {:ok, %{records: all_rows}} = Ingress.list(ctx.inbound, tenant: tenant)
       assert length(all_rows) == 5

@@ -71,15 +71,20 @@ defmodule AshHooks.EndpointHealth do
   `:sustained_failure`. Counts and telemetry reflect successful writes. A failed
   disable leaves its warning marker available for a later sweep to retry.
 
-  Options: `:now` and `:tenant`. Returns `{:ok, %{disabled: n, warned: n}}`.
-  Failed history reads do not stop other endpoints from being considered, but
-  return `{:error, {:incomplete_sweep, %{disabled: n, warned: n, failed: n}}}`.
-  The partial counts describe committed writes and the number of failed reads.
-  Endpoint-list read errors return `{:error, reason}` directly. Retry incomplete
-  sweeps after repairing storage; persisted warning markers preserve timing.
+  Options: `:now` and `:tenant`. Returns
+  `{:ok, %{disabled: n, warned: n, unread: n}}`. Failed history reads do not
+  stop other endpoints from being considered. Each increments `unread` and emits
+  `[:ash_hooks, :endpoint_health, :read_failed]` with measurement `%{count: 1}`
+  and metadata `%{endpoint_id: id, reason: reason}`. That endpoint's status and
+  warning marker remain unchanged. A positive `unread` count means the sweep is
+  incomplete; repair storage and retry. Counts describe committed writes.
+  Endpoint-list read errors return `{:error, reason}` directly. Persisted warning
+  markers preserve timing across retries.
   """
   @spec sweep(module(), module(), keyword()) ::
-          {:ok, %{disabled: non_neg_integer(), warned: non_neg_integer()}} | {:error, term()}
+          {:ok,
+           %{disabled: non_neg_integer(), warned: non_neg_integer(), unread: non_neg_integer()}}
+          | {:error, term()}
   def sweep(endpoints_mod, attempts_mod, opts \\ []) do
     with {:ok, tenant} <- Tenancy.resolve([endpoints_mod, attempts_mod], opts[:tenant]),
          policy when policy != nil <- Endpoint.auto_disable_policy(endpoints_mod),
@@ -90,15 +95,12 @@ defmodule AshHooks.EndpointHealth do
              &Ash.read(&1, authorize?: false, tenant: tenant)
            ) do
       # the ONE enabled-check (mapped switch or injected status)
-      case sweep_endpoints(endpoints, attempts_mod, policy, now(opts), tenant) do
-        {disabled, warned, 0} ->
-          {:ok, %{disabled: disabled, warned: warned}}
+      {disabled, warned, unread} =
+        sweep_endpoints(endpoints, attempts_mod, policy, now(opts), tenant)
 
-        {disabled, warned, failed} ->
-          {:error, {:incomplete_sweep, %{disabled: disabled, warned: warned, failed: failed}}}
-      end
+      {:ok, %{disabled: disabled, warned: warned, unread: unread}}
     else
-      nil -> {:ok, %{disabled: 0, warned: 0}}
+      nil -> {:ok, %{disabled: 0, warned: 0, unread: 0}}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -141,7 +143,13 @@ defmodule AshHooks.EndpointHealth do
 
         {disabled, warned, failed_reads}
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        :telemetry.execute(
+          [:ash_hooks, :endpoint_health, :read_failed],
+          %{count: 1},
+          %{endpoint_id: endpoint_id_of(endpoint), reason: reason}
+        )
+
         {disabled, warned, failed_reads + 1}
     end
   end

@@ -57,6 +57,9 @@ defmodule AshHooks.Telemetry do
       after the write succeeds. HTTP 410 disablement uses
       `[:ash_hooks, :delivery, :disable]`
 
+    * `[:ash_hooks, :endpoint_health, :read_failed]`: measurement `%{count: 1}`;
+      metadata `%{endpoint_id, reason}`: attempt history could not be read.
+      The sweep increments `unread` and preserves this endpoint's warning marker.
     * `[:ash_hooks, :key_registry, :destroy_failed]`: measurement `%{count: 1}`;
       metadata `%{registry: module, ref: reference, reason: reason}`, where
       `reason` is `:tenant_mismatch` or `:unclassified`. The reference's
@@ -85,6 +88,7 @@ defmodule AshHooks.Telemetry do
           [:ash_hooks, :endpoint, :roll],
           [:ash_hooks, :endpoint, :disable_warning],
           [:ash_hooks, :endpoint, :disable],
+          [:ash_hooks, :endpoint_health, :read_failed],
           [:ash_hooks, :event, :record_failed],
           [:ash_hooks, :key_registry, :destroy_failed]
         ],
