@@ -78,6 +78,10 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix format --check-formatted
       - run: mix credo --strict
+      - name: Prove the lock byte check rejects an edit admitted by --check-locked
+        run: elixir scripts/check-locks.exs --self-test
+      - name: Check every committed Mix lock and lock fixture
+        run: elixir scripts/check-locks.exs
 
   test:
     needs: toolchain
