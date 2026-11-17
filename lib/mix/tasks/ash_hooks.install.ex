@@ -22,6 +22,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
 
     use Igniter.Mix.Task
 
+    alias Igniter.Code.Common
     alias Igniter.Code.Function
     alias Igniter.Code.Keyword, as: IK
     alias Igniter.Project.Formatter
@@ -49,7 +50,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
     defp move_to_parsers(zipper) do
       Function.move_to_function_call(zipper, :plug, 2, fn call ->
         with %Zipper{} = first_arg <- Zipper.down(call),
-             true <- parsers_argument?(Zipper.node(first_arg)) do
+             true <- parsers_module?(first_arg) do
           true
         else
           _ -> false
@@ -57,15 +58,40 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
       end)
     end
 
-    # `plug Plug.Parsers` parses as an alias AST node (the Elixir.-prefixed
-    # spelling also parses as an aliases node); anything else is not it.
-    defp parsers_argument?({:__aliases__, _, [:Plug, :Parsers]}), do: true
-    defp parsers_argument?(_), do: false
+    defp parsers_module?(first_arg) do
+      marker = {:__ash_hooks_parsers_argument__, [], [Zipper.node(first_arg)]}
+
+      # Expand grouped aliases into their equivalent declarations only in the
+      # lookup tree. Igniter then resolves lexical aliases, including shadowing.
+      normalized =
+        first_arg
+        |> Zipper.replace(marker)
+        |> Zipper.topmost_root()
+        |> Macro.prewalk(fn
+          {:alias, meta, [{{:., _, [{:__aliases__, prefix_meta, prefix}, :{}]}, _, children}]} ->
+            aliases =
+              Enum.map(children, fn {:__aliases__, _, suffix} ->
+                {:alias, meta, [{:__aliases__, prefix_meta, prefix ++ suffix}]}
+              end)
+
+            {:__block__, [], aliases}
+
+          node ->
+            node
+        end)
+        |> Zipper.zip()
+
+      {:ok, argument} = Common.move_to(normalized, &match?(%Zipper{node: ^marker}, &1))
+      Common.nodes_equal?(Zipper.down(argument), Plug.Parsers)
+    end
 
     defp add_body_reader(zipper) do
       with %Zipper{} = first_arg <- Zipper.down(zipper),
            %Zipper{} = opts <- Zipper.right(first_arg),
-           {:ok, opts} <- IK.set_keyword_key(opts, :body_reader, @body_reader_value) do
+           {:ok, opts} <-
+             IK.set_keyword_key(opts, :body_reader, @body_reader_value, fn current ->
+               {:ok, Common.replace_code(current, Macro.to_string(@body_reader_value))}
+             end) do
         # topmost of the MODIFIED zipper; the edit lives on opts' path
         Zipper.topmost(opts)
       else
@@ -101,3 +127,4 @@ else
     end
   end
 end
+

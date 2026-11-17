@@ -24,6 +24,19 @@ for optional <- [Oban, Plug] do
     do: raise("optional dependency present in minimal consumer")
 end
 
+unless :code.which(Igniter.Mix.Task) == :non_existing,
+  do: raise("Igniter must be absent from the production consumer")
+
+try do
+  Mix.Tasks.AshHooks.Install.run([])
+  raise "installer must refuse without Igniter"
+rescue
+  error in Mix.Error ->
+    unless error.message =~ "requires the :igniter package" and
+             error.message =~ "Manual steps",
+           do: reraise(error, __STACKTRACE__)
+end
+
 Code.ensure_loaded!(Ash.Resource.Info)
 
 unless function_exported?(Ash.Resource.Info, :multitenancy_tenant_from_attribute, 1),
@@ -75,3 +88,4 @@ unless byte_size(httpc_body) > 0 and byte_size(httpc_body) <= 1_024,
 IO.puts(
   "CONSUMER OK: ash_hooks #{version}; Ash #{Application.spec(:ash, :vsn)}; OTP apps started; optional deps absent; HMAC and Ed25519 verified; Ed25519 tampering rejected; Bounded and Httpc HTTPS returned 200"
 )
+

@@ -34,6 +34,32 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
                "body_reader: {AshHooks.BodyReader, :read_body, []}"
     end
 
+    test "replaces a host body reader and imports formatter configuration idempotently" do
+      source =
+        String.replace(
+          @endpoint_source,
+          "parsers: [:urlencoded",
+          "body_reader: {MyApp.Reader, :read_body, []},\n    parsers: [:urlencoded"
+        )
+
+      igniter =
+        Test.test_project(
+          files: %{
+            "lib/my_app_web/endpoint.ex" => source,
+            ".formatter.exs" => "[import_deps: [:ash]]"
+          }
+        )
+        |> Install.igniter()
+        |> Install.igniter()
+
+      endpoint = render(igniter, "lib/my_app_web/endpoint.ex")
+      assert endpoint =~ "body_reader: {AshHooks.BodyReader, :read_body, []}"
+      refute endpoint =~ "MyApp.Reader"
+      {formatter, _} = Code.eval_string(render(igniter, ".formatter.exs"))
+      assert Enum.count(formatter[:import_deps], &(&1 == :ash_hooks)) == 1
+      assert :ash in formatter[:import_deps]
+    end
+
     test "does not touch a second plug's options" do
       igniter =
         Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => @endpoint_source})
@@ -78,15 +104,44 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
     end
 
     describe "parsers argument shapes" do
-      test "the Elixir.-prefixed alias and stringly atom forms are not the alias node" do
-        for replacement <- ["plug Elixir.Plug.Parsers,", ~s(plug :"Plug.Parsers",)] do
-          source = String.replace(@endpoint_source, "plug Plug.Parsers,", replacement)
+      test "recognizes fully qualified, shortened and renamed module aliases" do
+        for {declaration, parser} <- [
+              {"", "Elixir.Plug.Parsers"},
+              {"alias Plug.Parsers", "Parsers"},
+              {"alias Plug.Parsers, as: X", "X"},
+              {"alias Plug, as: P", "P.Parsers"},
+              {"alias Plug.{Parsers, Head}", "Parsers"},
+              {"", ~s(:"Elixir.Plug.Parsers")}
+            ] do
+          source =
+            @endpoint_source
+            |> String.replace("  plug Plug.RequestId", "  #{declaration}\n  plug Plug.RequestId")
+            |> String.replace("plug Plug.Parsers,", "plug #{parser},")
 
           igniter =
             Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
             |> Install.igniter()
 
-          refute render(igniter, "lib/my_app_web/endpoint.ex") =~ "body_reader"
+          assert render(igniter, "lib/my_app_web/endpoint.ex") =~ "body_reader:", parser
+        end
+      end
+
+      test "a module with a similar spelling is left unchanged" do
+        for {declaration, parser} <- [
+              {"", ~s(:"Plug.Parsers")},
+              {"alias MyApp.Parsers, as: Parsers", "Parsers"},
+              {"alias MyApp.Plug", "Plug.Parsers"}
+            ] do
+          source =
+            @endpoint_source
+            |> String.replace("  plug Plug.RequestId", "  #{declaration}\n  plug Plug.RequestId")
+            |> String.replace("plug Plug.Parsers,", "plug #{parser},")
+
+          igniter =
+            Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
+            |> Install.igniter()
+
+          refute render(igniter, "lib/my_app_web/endpoint.ex") =~ "body_reader:"
         end
       end
 
@@ -131,3 +186,4 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
     end
   end
 end
+

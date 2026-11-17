@@ -11,6 +11,29 @@ defmodule AshHooks.ErrorsTest do
     UnknownEventType
   }
 
+  test "unwrap! returns successes and raises the converted error for every refusal shape" do
+    assert Errors.unwrap!({:ok, 42}, []) == 42
+    assert Errors.unwrap!(:ok, []) == :ok
+    error = InvalidSignature.exception(provider: :sender)
+    assert_raise InvalidSignature, fn -> Errors.unwrap!({:error, error}, []) end
+    assert_raise Errors.Unknown, fn -> Errors.unwrap!(:error, []) end
+    assert_raise ArgumentError, fn -> Errors.unwrap!({:unexpected, 42}, []) end
+  end
+
+  test "traverse_errors visits nested leaves and groups results by their paths" do
+    signature = Errors.set_path(InvalidSignature.exception(provider: :sender), [:signature])
+    payload = Errors.set_path(MalformedPayload.exception(provider: :sender), [:payload])
+    errors = Errors.to_class([signature, payload])
+
+    assert %{signature: [:invalid_signature], payload: [:malformed_payload]} =
+             Errors.traverse_errors(errors, fn
+               %InvalidSignature{} -> :invalid_signature
+               %MalformedPayload{} -> :malformed_payload
+             end)
+
+    assert %{signature: [InvalidSignature]} = Errors.traverse_errors([signature], & &1.__struct__)
+  end
+
   describe "from_reason/2" do
     test "preserves every classified package error" do
       for module <- [
