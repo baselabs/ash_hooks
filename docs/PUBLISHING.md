@@ -24,10 +24,10 @@ step that runs `mix hex.publish` receives it.
      and the tenancy adoption checklist.
 
    `main` moves to the commit only after the CI run on that exact commit
-   passes every job, including `all-checks-pass`, which runs the package,
-   Livebook, documentation, confidentiality and dash checks. They then hand
-   the release to the release maintainer with the full commit SHA, the
-   version and anything the release needs first.
+   passes `qualified`, the check that requires every job: the package,
+   Livebook, documentation, confidentiality and dash checks among them. They
+   then hand the release to the release maintainer with the full commit SHA,
+   the version and anything the release needs first.
 2. **The release maintainer asks the owner and dispatches.** After the owner
    approves, the release maintainer dispatches the workflow from `main`. The
    job runs only for the owner's accounts, and the `publish` environment

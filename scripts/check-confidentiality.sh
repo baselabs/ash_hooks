@@ -19,7 +19,10 @@ scan() {
     while IFS= read -r rule; do
       number=$((number + 1))
       status=0
-      grep -aFinw -- "$rule" "$path" > "$work/matches" 2>/dev/null || status=$?
+      # The rule reaches grep through a file, never its arguments, so process
+      # listings and audit logs cannot show it. printf is a shell builtin.
+      printf '%s\n' "$rule" > "$work/rule"
+      grep -aFinw -f "$work/rule" -- "$path" > "$work/matches" 2>/dev/null || status=$?
       if [ "$status" -gt 1 ]; then return 2; fi
       if [ "$status" -eq 0 ]; then
         # Only line numbers leave the private match file.

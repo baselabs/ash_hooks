@@ -30,7 +30,7 @@ jobs:
     environment: publish
     # A public repository runs only on GitHub-hosted runners.
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 4 # twice the slowest green, 111s on rehearsal run 44179917802
     env:
       MIX_ENV: dev
     outputs:
@@ -55,26 +55,10 @@ jobs:
       - name: Read the runtime toolchain
         id: toolchain
         run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+      - uses: ./.github/actions/beam
         with:
-          elixir-version: ${{ steps.toolchain.outputs.elixir }}
-          otp-version: ${{ steps.toolchain.outputs.otp }}
-          version-type: strict
-      - name: Refuse a runtime other than .tool-versions names
-        env:
-          WANT_ELIXIR: ${{ steps.toolchain.outputs.elixir }}
-          WANT_OTP: ${{ steps.toolchain.outputs.otp }}
-        run: |
-          elixir -e '
-            otp_file = Path.join([to_string(:code.root_dir()), "releases", System.otp_release(), "OTP_VERSION"])
-            installed = {"#{System.version()}-otp-#{System.build_info()[:otp_release]}", String.trim(File.read!(otp_file))}
-            wanted = {System.fetch_env!("WANT_ELIXIR"), System.fetch_env!("WANT_OTP")}
-            if installed != wanted do
-              IO.puts(:stderr, "installed Elixir #{elem(installed, 0)} on OTP #{elem(installed, 1)}; .tool-versions names Elixir #{elem(wanted, 0)} on OTP #{elem(wanted, 1)}")
-              System.halt(1)
-            end
-            IO.puts("Elixir #{elem(installed, 0)} on OTP #{elem(installed, 1)}, as .tool-versions names")
-          '
+          elixir: ${{ steps.toolchain.outputs.elixir }}
+          otp: ${{ steps.toolchain.outputs.otp }}
       - name: Read the package version
         id: version
         run: |
@@ -142,7 +126,10 @@ jobs:
     name: Read back
     needs: publish
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Twice the slowest green (170s on rehearsal run 44179917802) plus the
+    # bounded propagation retries below: up to 2.5 minutes for the archive,
+    # 5 for HexDocs and 5 for the registry.
+    timeout-minutes: 19
     services:
       receiver:
         image: ghcr.io/tarampampam/webhook-tester@sha256:85818267b450d3d386cad6510c561e09b974183ed2832c373bc83b125fc1b221
@@ -199,11 +186,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+      - uses: ./.github/actions/beam
         with:
-          elixir-version: ${{ needs.publish.outputs.elixir }}
-          otp-version: ${{ needs.publish.outputs.otp }}
-          version-type: strict
+          elixir: ${{ needs.publish.outputs.elixir }}
+          otp: ${{ needs.publish.outputs.otp }}
       - run: mix deps.get --check-locked
       - name: Wait for the real receiver
         run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version

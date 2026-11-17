@@ -66,6 +66,18 @@ Run focused checks while developing. Before a push, run:
 mix precommit
 ```
 
+A change to the package requirements or to a supported floor also refreshes the
+production consumer's lock, which CI compiles and scans:
+
+<!-- not-run: This resolves the production consumer's dependencies. -->
+```sh
+cd test/consumer && MIX_ENV=prod mix deps.get
+```
+
+CI does not run on pull requests. A maintainer runs the full workflow on the
+exact commit before it reaches `main`, and reports any failure on the pull
+request.
+
 To qualify a persisted tenant worker on exact Ash 3.37.2 and Spark 2.7.6, configure PostgreSQL
 as above and run:
 
@@ -101,9 +113,9 @@ surfaces. Generated HTML is checked without rewriting it. The checker reads
 the build's project name and version through Mix without compiling or starting
 the application. Only ExDoc's final page-title separator before that identity
 and its index redirect separator before `Documentation` are exempt. Authored
-title and body text remain subject to the dash check. Trusted push CI
-runs the confidentiality scan, required-document
-qualification, and publication dash checks, and requires them in the aggregate.
+title and body text remain subject to the dash check. CI runs the
+confidentiality scan, required-document qualification, and publication dash
+checks, and requires them in `qualified`.
 Local optional-service runs remain focused unless their flags are enabled.
 
 ## Code and documentation

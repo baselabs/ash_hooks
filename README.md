@@ -1,7 +1,6 @@
 # AshHooks
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ash_hooks.svg)](https://hex.pm/packages/ash_hooks)
-[![CI](https://github.com/baselabs/ash_hooks/actions/workflows/ci.yml/badge.svg)](https://github.com/baselabs/ash_hooks/actions/workflows/ci.yml)
 
 Receive, verify, and deduplicate incoming webhooks. Sign, deliver, retry, and
 track outgoing webhooks with [Ash Framework](https://ash-hq.org).

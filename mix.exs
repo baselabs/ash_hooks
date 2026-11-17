@@ -85,8 +85,8 @@ defmodule AshHooks.MixProject do
     [
       # Runtime
       # The Ash floor excludes releases affected by published advisories and
-      # supplies the tenant inverse API. The security job scans both the locked
-      # graph and the graph a consumer resolves at this floor.
+      # supplies the tenant inverse API. The security job scans both the
+      # development lock and the consumer lock pinned at this floor.
       {:ash, ">= 3.37.2 and < 4.0.0-0"},
       {:splode, "~> 0.3"},
       {:spark, ">= 2.7.6 and < 3.0.0-0"},
@@ -100,6 +100,8 @@ defmodule AshHooks.MixProject do
         {:ex_doc, "~> 0.31", only: [:dev, :test], runtime: false},
         {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
         {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+        # deps.audit: the Elixir security advisory database, alongside hex.audit.
+        {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
         {:simple_sat, "~> 0.1", only: [:dev, :test], runtime: false},
         # SQLite supplies uniqueness and atomic conditional updates for tests.
         # This development dependency is excluded from package requirements.
