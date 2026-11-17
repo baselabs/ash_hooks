@@ -24,13 +24,17 @@ defmodule AshHooks.OutboundOutbox.Metadata do
   end
 
   defp valid?(value, _depth) when is_binary(value), do: string?(value)
-  defp valid?(value, depth) when is_list(value), do: Enum.all?(value, &valid?(&1, depth + 1))
+  defp valid?(value, depth) when is_list(value), do: valid_list?(value, depth + 1)
   defp valid?(%{__struct__: _}, _depth), do: false
 
   defp valid?(value, depth) when is_map(value),
     do: Enum.all?(value, fn {key, item} -> string?(key) and valid?(item, depth + 1) end)
 
   defp valid?(_value, _depth), do: false
+
+  defp valid_list?([], _depth), do: true
+  defp valid_list?([head | tail], depth), do: valid?(head, depth) and valid_list?(tail, depth)
+  defp valid_list?(_tail, _depth), do: false
 
   defp string?(value) when is_binary(value),
     do: String.valid?(value) and not String.contains?(value, <<0>>)

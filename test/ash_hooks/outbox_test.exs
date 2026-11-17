@@ -38,15 +38,17 @@ defmodule AshHooks.OutboxAcceptance do
     roles = if sqlite?, do: nil, else: setup_roles(resources, repo, owner)
     oban_options = setup_oban(namespace, repo, owner, roles, sqlite?)
 
-    fixture = Map.merge(resources, %{
-      repo: repo,
-      owner: owner,
-      roles: roles,
-      namespace: namespace,
-      sqlite?: sqlite?,
-      database: database,
-      oban_options: oban_options
-    })
+    fixture =
+      Map.merge(resources, %{
+        repo: repo,
+        owner: owner,
+        roles: roles,
+        namespace: namespace,
+        sqlite?: sqlite?,
+        database: database,
+        oban_options: oban_options
+      })
+
     ExUnit.Callbacks.on_exit(fn -> cleanup(fixture) end)
     fixture
   end
@@ -89,13 +91,21 @@ defmodule AshHooks.OutboxAcceptance do
         "CREATE INDEX #{name} ON #{table(resources.outbox)} (#{fields}) WHERE #{index.where}"
       )
     end
-
   end
 
   defp cleanup(fixture) do
-    %{oban_options: oban_options, namespace: namespace, sqlite?: sqlite?,
-      owner: owner, repo: repo, roles: roles, database: database} = fixture
+    %{
+      oban_options: oban_options,
+      namespace: namespace,
+      sqlite?: sqlite?,
+      owner: owner,
+      repo: repo,
+      roles: roles,
+      database: database
+    } = fixture
+
     resources = Map.take(fixture, [:endpoint, :subscription, :delivery, :outbox, :emitter])
+
     if oban_options do
       name = Keyword.fetch!(oban_options, :name)
       if pid = Oban.whereis(name), do: Supervisor.stop(pid)
@@ -561,7 +571,6 @@ defmodule AshHooks.OutboxAcceptance do
       0 -> Enum.reverse(acc)
     end
   end
-
 end
 
 for {module, namespace} <- [
@@ -1198,6 +1207,7 @@ for {module, namespace} <- [
         %{"key" => :value},
         %{"key" => self()},
         %{"key" => {1, 2}},
+        %{"key" => [1 | 2]},
         %{"key" => DateTime.utc_now()},
         %{"key" => <<255>>},
         %{"key" => <<0>>},
@@ -1227,7 +1237,7 @@ for {module, namespace} <- [
           0.0,
           0.0001,
           1.0e20,
-          1.7976931348623157e308
+          1.797_693_134_862_315_7e308
         ],
         "text" => "unicode λ",
         "nested" => [%{}, %{"x" => true}]
@@ -1502,7 +1512,8 @@ for {module, namespace} <- [
       end
     end
 
-    test "A2 and A15 outer actions commit or roll back nested normal, bulk and atomic writes", f do
+    test "A2 and A15 outer actions commit or roll back nested normal, bulk and atomic writes",
+         f do
       for kind <- [:normal, :bulk, :atomic], undo? <- [false, true] do
         target =
           if kind == :atomic do

@@ -131,7 +131,10 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
   end
 
   defp add_index(state, layer, path, fields, where) do
-    if Enum.any?(Transformer.get_entities(state, path), &(&1.fields == fields and &1.where == where)) do
+    if Enum.any?(
+         Transformer.get_entities(state, path),
+         &(&1.fields == fields and &1.where == where)
+       ) do
       state
     else
       index = Transformer.build_entity!(layer, path, :index, fields: fields, where: where)

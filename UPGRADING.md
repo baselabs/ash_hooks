@@ -102,8 +102,8 @@ Other pins run a declared builder; the deployed declaration version never
 relabels older bytes. Every retry observes the current subscriptions,
 pause flags, endpoints and builders, keeping earlier delivery rows.
 
-In a raw `Repo.transaction`, publish returns notifications without sending a
-hint or calling Ash's missed-notification warning path, even when configured
+In a raw `Repo.transaction`, publish creates with returned Ash notifications
+and suppresses them without calling Ash's missed-notification warning path, even when configured
 as `:raise`. Let the per-tenant sweep find the committed row, or call `fanout/3`
 after commit. Never call fanout inside that transaction. Returned notifications,
 bulk notification suppression and writes outside the publish action also rely

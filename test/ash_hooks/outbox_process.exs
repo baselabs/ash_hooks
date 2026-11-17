@@ -200,48 +200,48 @@ defmodule AshHooks.OutboxProcess do
     repo = AshHooks.Phase.repo(outbox)
 
     case stage do
-        :before_commit ->
+      :before_commit ->
+        repo.transaction(fn ->
+          bind(repo)
+
+          {:ok, :accepted} =
+            AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
+
+          checkpoint(stage)
+        end)
+
+      :after_commit ->
+        {:ok, :ok} =
           repo.transaction(fn ->
             bind(repo)
 
             {:ok, :accepted} =
               AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
 
-            checkpoint(stage)
+            :ok
           end)
 
-        :after_commit ->
-          {:ok, :ok} =
-            repo.transaction(fn ->
-              bind(repo)
+        checkpoint(stage)
 
-              {:ok, :accepted} =
-                AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
+      version when version in [:version_one, :version_one_partial] ->
+        deploy_version_one(emitter)
 
-              :ok
-            end)
+        {:ok, :accepted} =
+          AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
 
-          checkpoint(stage)
+        if version == :version_one_partial do
+          {:pending, :unknown_pinned_version} =
+            AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
+        end
 
-        version when version in [:version_one, :version_one_partial] ->
-          deploy_version_one(emitter)
+        checkpoint(stage)
 
-          {:ok, :accepted} =
-            AshHooks.publish(outbox, {emitter, :changed}, event, tenant: "tenant-a")
+      :admission_failure ->
+        {:pending, _} = AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
+        checkpoint(stage)
 
-          if version == :version_one_partial do
-            {:pending, :unknown_pinned_version} =
-              AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
-          end
-
-          checkpoint(stage)
-
-        :admission_failure ->
-          {:pending, _} = AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
-          checkpoint(stage)
-
-        _fanout ->
-          AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
+      _fanout ->
+        AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
     end
   end
 end

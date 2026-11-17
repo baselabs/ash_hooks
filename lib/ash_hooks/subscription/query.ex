@@ -54,7 +54,9 @@ defmodule AshHooks.Subscription.Query do
   defp valid_type_names(values, layer) do
     Enum.filter(values, fn value ->
       text = to_string(value)
-      String.valid?(text) and (layer != AshPostgres.DataLayer or not String.contains?(text, <<0>>))
+
+      String.valid?(text) and
+        (layer != AshPostgres.DataLayer or not String.contains?(text, <<0>>))
     end)
   end
 
