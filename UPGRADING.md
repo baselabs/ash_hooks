@@ -1150,7 +1150,7 @@ defmodule MyApp.Webhooks.SiteTokens do
   use AshHooks.Provider
   alias AshHooks.Provider.{Event, Scheme}
 
-  @scheme [algorithm: :rsa_pkcs1_sha256, signature: :jws_body]
+  @scheme Scheme.new!(algorithm: :rsa_pkcs1_sha256, signature: :jws_body)
 
   @impl true
   def signature_source, do: :body

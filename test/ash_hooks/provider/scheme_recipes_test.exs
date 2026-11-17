@@ -57,6 +57,7 @@ defmodule AshHooks.Provider.SchemeRecipesTest do
   test "ComplyCube lowercase hex body HMAC preserves the published PHP SDK answer" do
     # https://docs.complycube.com/documentation/webhooks
     provider = Docs.compile("upgrade-identity-checks-provider")
+
     ctx = %{
       headers: %{
         "complycube-signature" =>
@@ -128,6 +129,7 @@ defmodule AshHooks.Provider.SchemeRecipesTest do
           {"upgrade-shipping-rates-provider", "shippo-auth-signature"}
         ] do
       provider = Docs.compile(name)
+
       ctx = %{
         headers: %{
           header =>
@@ -171,6 +173,7 @@ defmodule AshHooks.Provider.SchemeRecipesTest do
   test "Ecwid host canonicalization binds eventCreated.eventId and leaves entity data unsigned" do
     # https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_webhooks.md#webhooks-security
     provider = Docs.compile("upgrade-catalog-events-provider")
+
     body =
       ~s({"eventId":"80aece08-40e8-4145-8764-6c2f0d38678","eventCreated":1234567,"entityId":1})
 
@@ -211,6 +214,7 @@ defmodule AshHooks.Provider.SchemeRecipesTest do
   test "HubSpot v3 method/decoded URI/body/millisecond timestamp preserves the published Java answer" do
     # https://developers.hubspot.com/docs/apps/legacy-apps/authentication/validating-requests
     provider = Docs.compile("upgrade-crm-events-provider")
+
     ctx = %{
       headers: %{
         "x-hubspot-signature-v3" => @vector_signature,
