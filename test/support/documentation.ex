@@ -317,20 +317,18 @@ defmodule AshHooks.Test.Documentation do
   end
 
   defp format_offenses(%{block: block, options: options, mounting_locals: mounting_locals}) do
-    try do
-      validate_mounting_calls!(block, mounting_locals)
-      formatted = block.code |> Code.format_string!(options) |> IO.iodata_to_binary()
+    validate_mounting_calls!(block, mounting_locals)
+    formatted = block.code |> Code.format_string!(options) |> IO.iodata_to_binary()
 
-      if formatted <> "\n" == block.code,
-        do: [],
-        else: [
-          "#{block.file}:#{block.line}: Elixir block is not consumer-formatted\n" <>
-            "BEGIN FORMATTED BLOCK\n#{formatted}\nEND FORMATTED BLOCK"
-        ]
-    rescue
-      error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
-        ["#{block.file}:#{block.line}: invalid Elixir block: #{Exception.message(error)}"]
-    end
+    if formatted <> "\n" == block.code,
+      do: [],
+      else: [
+        "#{block.file}:#{block.line}: Elixir block is not consumer-formatted\n" <>
+          "BEGIN FORMATTED BLOCK\n#{formatted}\nEND FORMATTED BLOCK"
+      ]
+  rescue
+    error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
+      ["#{block.file}:#{block.line}: invalid Elixir block: #{Exception.message(error)}"]
   end
 
   defp validate_mounting_calls!(block, locals) do
