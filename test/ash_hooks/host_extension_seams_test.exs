@@ -7,17 +7,19 @@ defmodule AshHooks.HostExtensionSeamsTest do
   alias AshHooks.Delivery, as: Runtime
   alias AshHooks.Endpoint, as: EndpointAPI
   alias AshHooks.Http.{Bounded, Httpc}
+  alias AshHooks.Ingress
   alias AshHooks.KeyRegistry.Transitions
+  alias AshHooks.PrimaryKey
   alias AshHooks.Provider.VerifiedFacts
+  alias AshHooks.Test.RegistryRepo
   alias AshHooks.Test.Repo, as: TestRepo
-  alias AshHooks.{Ingress, PrimaryKey}
   alias Spark.Dsl.Extension
 
   def repo,
     do:
       if(System.get_env("ASH_HOOKS_POSTGRES") == "1",
         do: AshHooks.TestPostgres.Repo,
-        else: AshHooks.Test.RegistryRepo
+        else: RegistryRepo
       )
 
   def custodian,
@@ -535,23 +537,23 @@ defmodule AshHooks.HostExtensionSeamsTest do
 
   setup_all do
     if System.get_env("ASH_HOOKS_POSTGRES") != "1" do
-      previous = Application.get_env(:ash_hooks, AshHooks.Test.RegistryRepo)
+      previous = Application.get_env(:ash_hooks, RegistryRepo)
 
       Application.put_env(
         :ash_hooks,
-        AshHooks.Test.RegistryRepo,
+        RegistryRepo,
         Application.fetch_env!(:ash_hooks, TestRepo)
       )
 
-      {:ok, pid} = AshHooks.Test.RegistryRepo.start_link()
+      {:ok, pid} = RegistryRepo.start_link()
       Process.unlink(pid)
 
       on_exit(fn ->
         Supervisor.stop(pid)
 
         if previous,
-          do: Application.put_env(:ash_hooks, AshHooks.Test.RegistryRepo, previous),
-          else: Application.delete_env(:ash_hooks, AshHooks.Test.RegistryRepo)
+          do: Application.put_env(:ash_hooks, RegistryRepo, previous),
+          else: Application.delete_env(:ash_hooks, RegistryRepo)
       end)
     end
 
