@@ -163,7 +163,9 @@ def main():
     if args.full_history:
         if git(repo, "rev-parse", "--is-shallow-repository") != "false":
             raise ValueError("full-history scanning requires fetch-depth: 0")
-        revision = "--all"
+        # The candidate's own history only: every commit reachable from the
+        # checked-out head. Other branches never decide this candidate's result.
+        revision = git(repo, "rev-parse", "HEAD")
     else:
         event_path = os.environ.get("GITHUB_EVENT_PATH")
         event = json.loads(Path(event_path).read_text()) if event_path else {}

@@ -350,7 +350,7 @@ jobs:
         run: python3 scripts/check-secrets.py --self-test
       - name: Scan the pushed commit range or PR range with the repository rules
         run: python3 scripts/check-secrets.py
-      - name: Scan all fetched history with the repository rules
+      - name: Scan the checked-out head's full history with the repository rules
         run: python3 scripts/check-secrets.py --full-history
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
