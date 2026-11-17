@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- The Spark dependency floor is 2.7.6, matching Ash 3.37.2. Both exact versions
+  pass the fresh dependency-floor qualification.
+
 ### Fixed
 
 - Inbound observation counts use data-layer count and sum aggregates without

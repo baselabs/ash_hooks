@@ -103,7 +103,7 @@ create table(:webhook_endpoints, primary_key: false) do
   add :response_header_allowlist, {:array, :text}, null: false, default: []
 end
 
-# the attempt history (optional; see "Delivery logs and attempt history"):
+# the attempt history (optional; see "Other optional features"):
 # one row per delivery attempt, written by the runtime
 create table(:outbound_attempts, primary_key: false) do
   add :id, :uuid, primary_key: true
@@ -137,6 +137,8 @@ create table(:orders, primary_key: false) do
   add :paid, :boolean, null: false, default: false
 end
 ```
+
+See [Other optional features](#other-optional-features) for attempt-history ownership.
 
 ## Declare the resources
 
@@ -549,3 +551,6 @@ and provider delivery context. The [tenancy checklist](tenancy-adoption-checklis
 explains canonical tenant handling; the [row-security guide](row-security.md)
 adds PostgreSQL transaction binding and policies. Use the
 [upgrade guide](../../UPGRADING.md) when adopting these features on existing tables.
+
+For advanced outbound delivery, follow [event recovery](outbound-recovery.md),
+[catalogs and filters](outbound-contracts.md), and [delivery operations](outbound-operations.md).

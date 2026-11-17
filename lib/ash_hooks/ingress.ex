@@ -117,11 +117,15 @@ defmodule AshHooks.Ingress do
   @transient_retry_jitter_ms 50
 
   @doc "Builds the legacy provider-identity adoption audit without writing rows."
+  @spec plan_legacy_identity_adoption(module(), atom(), keyword()) ::
+          {:ok, AshHooks.InboundDelivery.LegacyAdoption.plan()} | {:error, term()}
   defdelegate plan_legacy_identity_adoption(resource, name, opts \\ []),
     to: AshHooks.InboundDelivery.LegacyAdoption,
     as: :plan
 
   @doc "Applies one reviewed, quiesced provider-identity adoption partition."
+  @spec adopt_legacy_identity(module(), atom(), keyword()) ::
+          {:ok, AshHooks.InboundDelivery.LegacyAdoption.plan()} | {:error, term()}
   defdelegate adopt_legacy_identity(resource, name, opts \\ []),
     to: AshHooks.InboundDelivery.LegacyAdoption,
     as: :apply
@@ -1363,6 +1367,8 @@ defmodule AshHooks.Ingress do
   Options: `:tenant`, `:scope`. The returned struct can be passed as
   `:resolved_source` to ingest, as the HTTP entry point does.
   """
+  @spec resolve_source(module(), atom(), keyword()) ::
+          {:ok, AshHooks.Inbound.ResolvedSource.t()} | {:error, term()}
   def resolve_source(resource, name, opts \\ []) do
     with {:ok, inbound} <- fetch_inbound(resource, name),
          {:ok, scope} <- cast_scope(resource, opts[:scope]),

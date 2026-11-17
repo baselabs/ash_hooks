@@ -32,9 +32,18 @@ connection with `ASH_HOOKS_TEST_PG_HOST`, `ASH_HOOKS_TEST_PG_PORT`,
 `ASH_HOOKS_TEST_PG_DATABASE`.
 
 The PostgreSQL delivery qualification also uses a real WebHook Tester receiver.
-Set `ASH_HOOKS_REAL_RECEIVER_PORT` to its existing loopback port (default 52871).
-CI provides the receiver alongside PostgreSQL. Check the receiver's `/api/version`
-endpoint before the test run.
+For first-time setup, start the receiver from the repository root:
+
+```sh
+docker compose -f ops/local/webhook-tester.compose.yaml up -d
+curl -fsS http://127.0.0.1:52871/api/version
+```
+
+For a different free loopback port, set `LOCAL_WEBHOOK_TESTER_PORT` on the Compose
+command and set `ASH_HOOKS_REAL_RECEIVER_PORT` to the same port for tests. Reuse
+an existing receiver when available; do not restart another user's service or
+remove capture data. See the [receiver guide](https://github.com/baselabs/ash_hooks/blob/main/ops/local/README.md). CI provides
+the receiver alongside PostgreSQL.
 
 ## Testing changes
 
@@ -87,4 +96,7 @@ feature requests. Report vulnerabilities privately as described in
 ## Releases
 
 Releases are maintainer-only. The authoritative procedure is the
-[publishing runbook](https://github.com/baselabs/ash_hooks/blob/v3.2.0/docs/PUBLISHING.md).
+[publishing runbook](https://github.com/baselabs/ash_hooks/blob/main/docs/PUBLISHING.md).
+
+The [architecture decisions](https://github.com/baselabs/ash_hooks/tree/main/docs/adr)
+record the package contracts and their consequences for hosts.

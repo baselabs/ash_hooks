@@ -186,4 +186,3 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
     end
   end
 end
-

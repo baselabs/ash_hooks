@@ -1,5 +1,13 @@
 # Upgrading
 
+## Unreleased
+
+The qualified Spark floor is 2.7.6, the minimum required by Ash 3.37.2.
+Update Spark alongside Ash if your lock contains an older version. The floor
+check resolves both exact versions against a fresh dependency graph.
+
+<a id="upgrade-3-2"></a>
+
 ## 3.1.0 → 3.2.0
 
 For a first implementation, read [key custody and lifecycle](documentation/tutorials/key-custody.md)
@@ -948,7 +956,7 @@ Two obligations for multi-tenant adopters:
    dispatch.** Pre-tenancy job args carry no tenant and fail closed
    (`{:error, :tenant_required}`) against multitenant resources.
    This is correct, but noisy. Drain first.
-2. **String tenants are the supported job-args shape.** The worker
+2. **String and integer tenants are supported job-args shapes.** The worker
    serializes the row's tenant into Oban args (JSON), inverting the
    attribute value through the resource's `tenant_from_attribute`. A
    custom `parse_attribute` should pair with `tenant_from_attribute`
@@ -1056,8 +1064,9 @@ the `:http` override).
 
 `http_opts:` was accepted and silently ignored; it now threads to the adapter. A config that
 passed it with a wrong shape could start behaving differently (correctly); see the `:cacerts`
-seam in the README/CHANGELOG for the intended use (private-CA bundles: compile-time literals,
-or `{m, f, a}` resolved per-perform for computed values).
+option in `AshHooks.Http.Bounded.request/5` and `AshHooks.Http.Httpc.request/5`, passed through
+`AshHooks.Worker`'s `:http_opts` contract. Private CA bundles can be compile-time
+literals or `{m, f, a}` values resolved per perform.
 
 ## 0.2.0 through 0.2.2 → 1.0.0
 

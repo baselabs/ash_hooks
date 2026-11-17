@@ -80,6 +80,14 @@ defmodule AshHooks.KeyRegistry do
   `{:error, :inside_transaction}`. Returns `{:ok, counts}` including the
   current number of `:destroy_failed` rows.
   """
+  @spec sweep(module(), keyword()) ::
+          {:ok,
+           %{
+             destroyed: non_neg_integer(),
+             retired: non_neg_integer(),
+             destroy_failed: non_neg_integer()
+           }}
+          | {:error, term()}
   def sweep(registry, opts \\ []) do
     with :ok <- Phase.outside_transaction(registry),
          {:ok, tenant} <- Tenancy.resolve([registry], opts[:tenant]) do
@@ -102,6 +110,7 @@ defmodule AshHooks.KeyRegistry do
   end
 
   @doc "Lists final destruction failures for the supplied `:tenant`."
+  @spec pending(module(), keyword()) :: {:ok, [struct()]} | {:error, term()}
   def pending(registry, opts \\ []) do
     with {:ok, tenant} <- Tenancy.resolve([registry], opts[:tenant]) do
       Storage.phase(registry, registry, tenant, fn ->
@@ -120,6 +129,7 @@ defmodule AshHooks.KeyRegistry do
   retry timing, and resets attempts. Returns `{:error, :not_destroy_failed}`
   if another writer already moved the row.
   """
+  @spec rearm(module(), String.t(), keyword()) :: {:ok, struct()} | {:error, term()}
   def rearm(registry, ref, opts \\ []) do
     with {:ok, tenant} <- Tenancy.resolve([registry], opts[:tenant]) do
       Storage.phase(registry, registry, tenant, fn -> rearm_in_phase(registry, ref, tenant) end)
@@ -165,6 +175,7 @@ defmodule AshHooks.KeyRegistry do
   Accepts `:tenant`. Active, retired and failed obligations are never pruned.
   Returns `{:ok, count}`. This does not prune the custodian's tombstones.
   """
+  @spec prune(module(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def prune(registry, opts) do
     before = Keyword.fetch!(opts, :before)
 

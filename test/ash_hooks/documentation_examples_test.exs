@@ -147,7 +147,7 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
                 extensions: [AshHooks, AshHooks.InboundDelivery]
 
               sqlite do
-                table unquote(table)
+                table(unquote(table))
                 repo(AshHooks.Test.Repo)
               end
 
@@ -155,7 +155,7 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
               unquote(scope)
 
               actions do
-                defaults [:read]
+                defaults([:read])
               end
 
               webhooks do
@@ -167,7 +167,7 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
               use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
 
               resources do
-                resource MyApp.WebhookLedger
+                resource(MyApp.WebhookLedger)
               end
             end
           end
@@ -215,12 +215,12 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
     defp tenancy_fixture(attribute) do
       quote do
         attributes do
-          attribute unquote(attribute), :string, allow_nil?: false
+          attribute(unquote(attribute), :string, allow_nil?: false)
         end
 
         multitenancy do
-          strategy :attribute
-          attribute unquote(attribute)
+          strategy(:attribute)
+          attribute(unquote(attribute))
         end
       end
     end
@@ -230,7 +230,7 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
     defp scope_fixture(attribute) do
       quote do
         attributes do
-          attribute unquote(attribute), :string, allow_nil?: false
+          attribute(unquote(attribute), :string, allow_nil?: false)
         end
 
         inbound_delivery do
@@ -457,7 +457,7 @@ defmodule AshHooks.DocumentationContentTest do
             domain: nil
 
           postgres do
-            table "row_security_binding_example"
+            table("row_security_binding_example")
             repo(unquote(repo))
           end
         end
@@ -665,18 +665,18 @@ defmodule AshHooks.DocumentationContentTest do
 
           sqlite do
             repo(MyApp.Repo)
-            table "documentation_upgrade_ledger"
+            table("documentation_upgrade_ledger")
           end
 
           attributes do
-            attribute :org_id, :string, allow_nil?: false
-            attribute :account_id, :string, allow_nil?: false
+            attribute(:org_id, :string, allow_nil?: false)
+            attribute(:account_id, :string, allow_nil?: false)
             timestamps()
           end
 
           multitenancy do
-            strategy :attribute
-            attribute :org_id
+            strategy(:attribute)
+            attribute(:org_id)
           end
 
           inbound_delivery do
@@ -684,7 +684,7 @@ defmodule AshHooks.DocumentationContentTest do
           end
 
           actions do
-            defaults [:read]
+            defaults([:read])
           end
 
           unquote(source)
@@ -694,7 +694,7 @@ defmodule AshHooks.DocumentationContentTest do
           use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
 
           resources do
-            resource MyApp.InboundLedger
+            resource(MyApp.InboundLedger)
           end
         end
       end
@@ -899,6 +899,151 @@ defmodule AshHooks.DocumentationContentTest do
     assert :ok = worker.enqueue(binding[:delivery], binding[:event])
     assert [[1]] = repo.query!("SELECT count(*) FROM #{oban_prefix}.oban_jobs").rows
     assert {:ok, _binding} = Docs.eval("get-started-telemetry-in-application", namespace)
+  end
+
+  @tag :postgres
+  @tag :httpbun
+  test "advanced outbound guides migrate, filter, replay, send, and observe real deliveries" do
+    namespace = Docs.namespace("advanced-outbound-application")
+    repo = Module.concat([namespace, MyApp, Repo])
+    domain = Module.concat([namespace, MyApp, Domain])
+    previous_domains = Application.get_env(:ash_hooks, :ash_domains)
+    Application.put_env(:ash_hooks, :ash_domains, [domain])
+
+    on_exit(fn ->
+      if is_nil(previous_domains),
+        do: Application.delete_env(:ash_hooks, :ash_domains),
+        else: Application.put_env(:ash_hooks, :ash_domains, previous_domains)
+    end)
+
+    resources =
+      Macro.prewalk(Docs.ast("get-started-resources-in-application"), fn
+        {:defmodule, meta, [{:__aliases__, _, parts} = name, [do: body]]} ->
+          additions =
+            case parts do
+              [:MyApp, :Order] ->
+                [Docs.ast("contracts-outbound-options")]
+
+              [:MyApp, :OutboundDelivery] ->
+                [Docs.ast("recovery-delivery-options")]
+
+              [:MyApp, :WebhookEndpoint] ->
+                {:endpoint, _, [[do: pinning]]} = Docs.ast("contracts-endpoint-options")
+                {:endpoint, _, [[do: health]]} = Docs.ast("operations-health-options")
+
+                [
+                  quote(
+                    do:
+                      endpoint(
+                        do:
+                          (
+                            unquote(pinning)
+                            unquote(health)
+                          )
+                      )
+                  )
+                ]
+
+              [:MyApp, :WebhookSubscription] ->
+                [Docs.ast("contracts-subscription-options")]
+
+              [:MyApp, :Domain] ->
+                [quote(do: resources(do: resource(MyApp.OutboundEvent)))]
+
+              _ ->
+                []
+            end
+
+          expressions =
+            case body do
+              {:__block__, _, expressions} -> expressions
+              expression -> [expression]
+            end
+
+          replaced =
+            case parts do
+              [:MyApp, :Order] -> :webhooks
+              [:MyApp, :WebhookSubscription] -> :subscription
+              _ -> nil
+            end
+
+          expressions = Enum.reject(expressions, &match?({^replaced, _, _}, &1))
+          {:defmodule, meta, [name, [do: {:__block__, [], expressions ++ additions}]]}
+
+        ast ->
+          ast
+      end)
+
+    quote do
+      defmodule unquote(namespace) do
+        unquote(Docs.ast("contracts-payload-builder"))
+        unquote(Docs.ast("recovery-event-resource"))
+        unquote(Docs.ast("operations-transport"))
+        unquote(resources)
+        unquote(Docs.ast("get-started-worker-in-application"))
+      end
+    end
+    |> Docs.lexical()
+    |> Code.compile_quoted()
+
+    config = AshHooks.TestPostgres.Repo.config()
+    previous_repo_config = Application.get_env(:my_app, repo)
+    Application.put_env(:my_app, repo, config)
+    on_exit(fn -> restore_env(repo, previous_repo_config) end)
+    start_supervised!({repo, config})
+    migration = Module.concat(namespace, Migration)
+
+    quote do
+      defmodule unquote(migration) do
+        use Ecto.Migration
+
+        def change do
+          unquote(Docs.ast("get-started-migration-in-application"))
+          unquote(Docs.ast("recovery-migration"))
+          unquote(Docs.ast("contracts-migration"))
+          unquote(Docs.ast("operations-migration"))
+        end
+      end
+    end
+    |> Docs.lexical()
+    |> Code.compile_quoted()
+
+    [[migration_table]] = repo.query!("SELECT to_regclass('public.schema_migrations')::text").rows
+    :ok = Ecto.Migrator.up(repo, 3_200_001, migration, log: false)
+
+    on_exit(fn ->
+      Ecto.Migrator.down(AshHooks.TestPostgres.Repo, 3_200_001, migration, log: false)
+
+      if is_nil(migration_table),
+        do: AshHooks.TestPostgres.Repo.query!("DROP TABLE schema_migrations")
+    end)
+
+    previous_url = System.get_env("PUBLIC_WEBHOOK_TEST_URL")
+    previous_secret = System.get_env("OUTBOUND_WEBHOOK_SECRET")
+    System.put_env("PUBLIC_WEBHOOK_TEST_URL", "https://httpbun.com/post")
+    System.put_env("OUTBOUND_WEBHOOK_SECRET", AshHooks.Signing.generate_secret())
+
+    on_exit(fn ->
+      restore_system_env("PUBLIC_WEBHOOK_TEST_URL", previous_url)
+      restore_system_env("OUTBOUND_WEBHOOK_SECRET", previous_secret)
+    end)
+
+    {_, binding} = Docs.eval("contracts-dispatch", namespace)
+    assert binding[:catalog_entry].version == 2
+    assert Jason.decode!(binding[:delivery].payload) == %{"order_id" => "order-1"}
+    {_, binding} = Docs.eval("operations-send", namespace, binding)
+    assert binding[:sent_delivery].status == :succeeded
+    {_, binding} = Docs.eval("recovery-replay", namespace, binding)
+    assert binding[:replay_counts] == %{created: 0, re_sent: 1, skipped: 0}
+    {_, binding} = Docs.eval("operations-send", namespace, binding)
+    assert binding[:sent_delivery].status == :succeeded
+    assert binding[:sent_delivery].response_status == 200
+    {_, binding} = Docs.eval("operations-health", namespace, binding)
+    assert binding[:health].attempts == 2
+    assert binding[:health].succeeded == 2
+    assert binding[:sweep_result] == {:ok, %{disabled: 0, warned: 0, unread: 0}}
+    {_, binding} = Docs.eval("recovery-retention", namespace, binding)
+    assert binding[:deleted_events] == 0
   end
 
   test "dependency and config fragments execute in their project and configuration contexts" do

@@ -88,4 +88,3 @@ unless byte_size(httpc_body) > 0 and byte_size(httpc_body) <= 1_024,
 IO.puts(
   "CONSUMER OK: ash_hooks #{version}; Ash #{Application.spec(:ash, :vsn)}; OTP apps started; optional deps absent; HMAC and Ed25519 verified; Ed25519 tampering rejected; Bounded and Httpc HTTPS returned 200"
 )
-

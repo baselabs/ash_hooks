@@ -21,12 +21,14 @@ defmodule AshHooks.Errors do
   Accepts `:error_opts` for error conversion and `:unknown_error_opts` when
   the result is `:error`. See `Splode` for the error-conversion contract.
   """
+  @spec unwrap!(term(), keyword() | nil) :: term()
   def unwrap!(result, opts)
 
   @doc """
   Calls the function for each leaf error and returns a nested map grouped
   by error path. See `Splode.traverse_errors/2` for the traversal contract.
   """
+  @spec traverse_errors(term(), (struct() -> term())) :: map()
   def traverse_errors(error_or_errors, fun)
 
   alias AshHooks.Errors.Invalid.{

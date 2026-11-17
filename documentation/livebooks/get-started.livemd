@@ -21,11 +21,14 @@
 * Create inbound source records, resolve and verify their keys, and pause new requests
 * Apply request-scoped JSON policy and pause subscription fanout
 
-This notebook uses a real SQLite database and an existing WebHook Tester
+This notebook uses a real SQLite database and a WebHook Tester
 receiver, an open-source request-capture server. The notebook checks captured
-request bytes, headers, and signatures. The receiver must already answer at `http://127.0.0.1:52871`;
-set `LOCAL_WEBHOOK_TESTER_PORT` to use another existing receiver. See
-the [local receiver guide](https://github.com/baselabs/ash_hooks/blob/v3.2.0/ops/local/README.md).
+request bytes, headers, and signatures. Before evaluating cells, provision a receiver from a Git checkout with
+`docker compose -f ops/local/webhook-tester.compose.yaml up -d`, or reuse an
+existing receiver. Probe `http://127.0.0.1:52871/api/version`; set
+`LOCAL_WEBHOOK_TESTER_PORT` for both Compose and the notebook to choose another
+free loopback port. See the [local receiver guide](https://github.com/baselabs/ash_hooks/blob/main/ops/local/README.md).
+Do not restart another user's receiver or delete capture data.
 The notebook starts no server. PostgreSQL row security requires PostgreSQL;
 this SQLite notebook cannot exercise its policies. Use the
 [row-security guide](https://github.com/baselabs/ash_hooks/blob/v3.2.0/documentation/tutorials/row-security.md)
@@ -97,9 +100,9 @@ defmodule Tour.Repo do
   @impl true
   def write_transactions?, do: true
 
-  # The SQLite version bundled with the exqlite driver this notebook installs.
+  # SQLite 3.38 supplies JSON operators and includes RETURNING for atomic writes.
   @impl true
-  def min_sqlite_version, do: %Version{major: 3, minor: 54, patch: 1}
+  def min_sqlite_version, do: %Version{major: 3, minor: 38, patch: 0}
 end
 ```
 
@@ -768,6 +771,8 @@ System.at_exit(fn _status ->
 end)
 
 {:ok, _} = Tour.Repo.start_link()
+%{rows: [[sqlite_version]]} = Tour.Repo.query!("SELECT sqlite_version()")
+IO.puts("Installed SQLite: #{sqlite_version}; required feature floor: 3.38.0")
 ```
 
 ## The tables
@@ -963,7 +968,7 @@ records the outcome.
 
 <!-- tested: livebook-get-started-9 -->
 ```elixir
-# A record of what the orders handler ran, to show it runs once per event.
+# A record showing that a duplicate delivery does not run the completed handler again.
 {:ok, _} = Agent.start_link(fn -> [] end, name: Tour.Handled)
 
 # The sender's side: an HMAC-SHA256 of the exact bytes, lowercase hex.

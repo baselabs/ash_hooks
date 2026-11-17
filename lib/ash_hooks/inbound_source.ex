@@ -55,6 +55,8 @@ defmodule AshHooks.InboundSource do
   Issuing refuses enclosing transactions. Direct reference input is refused.
   Options include `:tenant`, `:action` and the application clock `:now`.
   """
+  @spec create_source(module(), map(), keyword()) ::
+          {:ok, struct()} | {:ok, struct(), term()} | {:error, term()}
   def create_source(resource, attributes, opts \\ []), do: Keys.create(resource, attributes, opts)
 
   @doc """
@@ -65,6 +67,8 @@ defmodule AshHooks.InboundSource do
   An active overlap refuses another roll. Expire the previous key first or
   wait for its deadline. Issuing refuses an enclosing transaction.
   """
+  @spec roll_secret(struct(), keyword()) ::
+          {:ok, struct()} | {:ok, struct(), term()} | {:error, term()}
   def roll_secret(source, opts \\ []), do: Keys.roll(source, opts)
 
   @doc """
@@ -75,17 +79,23 @@ defmodule AshHooks.InboundSource do
   verifying immediately. Only the separate previous key keeps working until
   its own deadline. Options: `:tenant` and `:now`. Refuses enclosing transactions.
   """
+  @spec reissue_secret(struct(), keyword()) :: {:ok, struct(), term()} | {:error, term()}
   def reissue_secret(source, opts \\ []), do: Keys.reissue(source, opts)
 
   @doc "Sets a previous key's retirement time, fenced on its reference. Options: `:tenant`, `:now`."
+  @spec schedule_previous_retirement(struct(), term(), keyword()) ::
+          {:ok, struct()} | {:error, term()}
   def schedule_previous_retirement(source, at, opts \\ []),
     do: KeyLifecycle.schedule_previous_retirement(source, at, opts)
 
   @doc "Removes the previous key and retires its custody reference for disposal. Options: `:tenant`, `:now`."
+  @spec expire_previous_secret(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
   def expire_previous_secret(source, opts \\ []),
     do: KeyLifecycle.expire_previous_secret(source, opts)
 
   @doc "Sweeps dated previous keys whose deadlines have ended. Returns `{:ok, count}`. Options: `:tenant`, `:now`."
+  @spec expire_previous_secrets(module(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
   def expire_previous_secrets(resource, opts \\ []),
     do: KeyLifecycle.expire_previous_secrets(resource, opts)
 
@@ -95,6 +105,7 @@ defmodule AshHooks.InboundSource do
   kinds or undecodable keys return `KeyKindMismatch` before writing.
   Option: `:tenant`.
   """
+  @spec register_public_key(struct(), term(), keyword()) :: {:ok, struct()} | {:error, term()}
   def register_public_key(%resource{} = source, public_key, opts \\ []) do
     with {:ok, _tenant} <- Tenancy.resolve([resource], opts[:tenant]),
          {:ok, _pin} <- PublicKey.new(public_key, opts[:kind]) do
@@ -108,9 +119,11 @@ defmodule AshHooks.InboundSource do
   end
 
   @doc "Pauses new requests; authenticated receipts remain recoverable. Option: `:tenant`."
+  @spec pause(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
   def pause(source, opts \\ []), do: update(source, :pause, %{}, opts)
 
   @doc "Resumes new requests. Option: `:tenant`."
+  @spec unpause(struct(), keyword()) :: {:ok, struct()} | {:error, term()}
   def unpause(source, opts \\ []), do: update(source, :unpause, %{}, opts)
 
   @doc """
@@ -127,6 +140,8 @@ defmodule AshHooks.InboundSource do
   use this source resource, and `{:error, :provider_mismatch}` for an unknown
   alias or a mismatched `:expected_provider`. Correct the arguments before retrying.
   """
+  @spec adopt_provider_alias(module(), atom(), atom(), keyword()) ::
+          {:ok, %{driven: non_neg_integer(), remaining: non_neg_integer()}} | {:error, term()}
   def adopt_provider_alias(resource, name, alias, opts \\ []),
     do: AshHooks.Ingress.adopt_provider_alias(resource, name, alias, opts)
 

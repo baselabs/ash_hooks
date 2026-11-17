@@ -1,6 +1,6 @@
 defmodule AshHooks.HttpTest do
   @moduledoc """
-  The default `:httpc` adapter, hardened (derisk slice): IP-pinned
+  The default `:httpc` adapter, hardened: IP-pinned
   connections, bounded streamed bodies, refused redirects. The local
   tests run a real :inets httpd listener (loopback — the adapter's
   validate_destination seam is off for these; the SSRF obligation lives
@@ -79,7 +79,7 @@ defmodule AshHooks.HttpTest do
     end
   end
 
-  describe "the body bound (memory DoS floor — derisk tripwire)" do
+  describe "the body bound (memory DoS floor)" do
     test "a giant 2xx body is CUT at max_body_bytes", %{base: base, opts: opts} do
       assert {:ok, %{status: 200, body: body}} =
                Httpc.request(

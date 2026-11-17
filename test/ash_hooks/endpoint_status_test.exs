@@ -1,14 +1,8 @@
 defmodule AshHooks.EndpointStatusTest do
   @moduledoc """
-  Consumer scenario (H4, the first-serious-consumer integration): the
-  consumer's endpoint register carries its OWN enable switch (sirtify's
-  `active` boolean + `:deactivate`) beside the package's injected
-  `status :enabled | :disabled` — and the dispatcher matched ONLY
-  `%{status: :enabled}` while the send path dead-lettered only on
-  `%{status: :disabled}`, so the consumer's own off switch was silently
-  bypassed: delivery kept flowing while the consumer's gate reported
-  disabled. `status_attribute` maps the package onto the consumer's
-  switch — ONE attribute, so two switches cannot disagree.
+  Hosts can map endpoint enablement to their own boolean attribute. The
+  dispatcher and send path both honor that one switch, so disabling the
+  endpoint stops delivery throughout the application.
   """
 
   defmodule Endpoint do
@@ -24,7 +18,7 @@ defmodule AshHooks.EndpointStatusTest do
     end
 
     attributes do
-      # the consumer's own switch (sirtify's `active`)
+      # the host's own enable switch
       attribute(:active, :boolean, allow_nil?: false, default: true, public?: true)
     end
 

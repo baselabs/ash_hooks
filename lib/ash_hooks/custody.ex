@@ -1,7 +1,7 @@
 defmodule AshHooks.Custody do
   @moduledoc """
   Custody of opaque webhook keys. Secret bytes never return to ash_hooks
-  after `c:store/4`.
+  after `c:AshHooks.Custody.store/4`.
 
   ## Material and kinds
 

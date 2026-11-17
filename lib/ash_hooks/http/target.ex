@@ -5,7 +5,7 @@ defmodule AshHooks.Http.Target do
   # VALIDATED address; TLS names the ORIGINAL host (SNI + RFC 6125
   # check), the host header carries the original host:port. This is what
   # closes the DNS-rebinding TOCTOU: validation and connection share one
-  # resolution (derisk-1).
+  # resolution.
 
   @spec resolve(String.t(), keyword()) ::
           {:ok,

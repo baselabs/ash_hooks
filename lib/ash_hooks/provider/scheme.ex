@@ -213,6 +213,7 @@ defmodule AshHooks.Provider.Scheme do
     do: raise(ArgumentError, "expected an AshHooks.Provider.Scheme or keyword options")
 
   @doc "Returns the configured timestamp header, or `nil` for absent and host-function timestamps."
+  @spec timestamp_header(t()) :: String.t() | nil
   def timestamp_header(%__MODULE__{timestamp: {:header, name}}), do: name
 
   def timestamp_header(%__MODULE__{
@@ -224,6 +225,7 @@ defmodule AshHooks.Provider.Scheme do
   def timestamp_header(%__MODULE__{}), do: nil
 
   @doc "Returns `:body` for JWS envelopes and `:request` for header-based signatures."
+  @spec signature_source(t()) :: :body | :request
   def signature_source(%__MODULE__{signature: :jws_body}), do: :body
   def signature_source(%__MODULE__{}), do: :request
 
@@ -231,6 +233,8 @@ defmodule AshHooks.Provider.Scheme do
   Decodes a JWS body's payload to a map or list through the supplied JSON
   decoder, defaulting to `Jason.decode/1`. This helper does not authenticate it.
   """
+  @spec decode_payload(binary(), t(), (binary() -> {:ok, term()} | {:error, term()})) ::
+          {:ok, map() | list()} | {:error, :malformed_payload}
   def decode_payload(raw_body, scheme, json_decoder \\ &Jason.decode/1)
 
   def decode_payload(raw_body, %__MODULE__{signature: :jws_body}, json_decoder)

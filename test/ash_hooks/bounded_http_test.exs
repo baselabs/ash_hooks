@@ -1,6 +1,6 @@
 defmodule AshHooks.BoundedHttpTest do
   @moduledoc """
-  The bounded native adapter (derisk-2): a raw-socket test server we
+  The bounded native adapter: a raw-socket test server we
   fully control speaks exact bytes — the giant NON-2xx body CUT (the
   residual :httpc could not close), chunked assembly under the bound,
   the header-block cap, and the roundtrips (via :inets httpd for

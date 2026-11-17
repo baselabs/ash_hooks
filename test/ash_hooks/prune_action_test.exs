@@ -1,13 +1,8 @@
 defmodule AshHooks.PruneActionTest do
   @moduledoc """
-  Consumer scenario (H6, the first-serious-consumer integration): an
-  append-only audit-ledger consumer pins `refute :destroy in actions`
-  (sirtify egr_arch_test.exs:142-145 — "the rows ARE the audit"), so the
-  package's injected `destroy :prune` fails the arch pin on adoption.
-  `prune_action :none` opts out of the destroy action's injection —
-  deletion becomes the consumer's own surface, and the package's prune
-  hooks fail LOUD with a named error instead of reaching for an action
-  that no longer exists.
+  Append-only delivery resources can set `prune_action :none` to suppress
+  generated deletion authority. Host-defined destroy actions remain the host's
+  responsibility. Package pruning refuses a resource without its prune action.
   """
 
   defmodule Delivery do

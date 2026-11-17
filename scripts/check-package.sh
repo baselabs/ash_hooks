@@ -68,11 +68,10 @@ with tarfile.open(fileobj=io.BytesIO(content), mode='r:gz') as inner:
                 assert linked in names, f'package documentation link missing: {member.name} -> {target}'
                 checked_links += 1
     assert checked_links > 0, 'relative documentation link instrument saw no known links'
-    # A link into the repository names the release tag when its file ships in
-    # this package, and never a moving branch, so the text a reader installed
-    # matches the source it links to.
-    # The ref must be a release tag (vMAJOR.MINOR.PATCH); the path is compared
-    # after dropping any query or fragment and decoding it.
+    # Links to shipped source name this release, matching the installed text.
+    # Unshipped maintainer runbooks can follow main so publishing and local
+    # operations instructions remain current. Other refs must be release tags.
+    # Compare paths after dropping queries/fragments and decoding them.
     repository = re.compile(r'https://github\.com/baselabs/ash_hooks/(?:blob|tree)/([^\s)<>"]+)')
     release_tag = re.compile(r'v\d+\.\d+\.\d+')
     for member in inner.getmembers():
@@ -81,8 +80,8 @@ with tarfile.open(fileobj=io.BytesIO(content), mode='r:gz') as inner:
             for link in repository.findall(document):
                 ref, _, path = unquote(urlsplit(link).path).partition('/')
                 path = posixpath.normpath(path) if path else ''
-                assert release_tag.fullmatch(ref), f'repository link names {ref}, not a release tag: {member.name} -> {link}'
                 shipped = bool(path) and (path in names or any(n.startswith(path + '/') for n in names))
+                assert release_tag.fullmatch(ref) or (ref == 'main' and not shipped), f'repository link names unsupported ref {ref}: {member.name} -> {link}'
                 assert not shipped or ref == 'v' + sys.argv[2], f'repository link to a shipped file names {ref}, not v{sys.argv[2]}: {member.name} -> {path}'
     for member in inner.getmembers():
         path = pathlib.PurePosixPath(member.name)

@@ -1,13 +1,8 @@
 defmodule AshHooks.PayloadAttributeTest do
   @moduledoc """
-  Consumer scenario (H1, the first-serious-consumer integration): a
-  consumer's arch guard reserves `payload` as the name of the domain's
-  SOLE payload store (sirtify's ADR-0003 sweep, evidence_arch_test.exs:
-  230-251, non-vacuity probe at :251), so the package's injected
-  `{:payload, :binary}` column collides with it — the guard goes RED on
-  extension adoption. `payload_attribute` renames the injected column:
-  the consumer's store keeps the name, and dispatch, signing, and the
-  send path read the configured attribute end to end.
+  Hosts can reserve `payload` for their domain and give the delivery's exact
+  signed bytes a different attribute name. Dispatch, signing, and sending all
+  read the configured delivery attribute.
   """
 
   defmodule Endpoint do

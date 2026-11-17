@@ -13,7 +13,7 @@ Inbound and outbound work independently. Inbound needs no queue. Outbound can
 use the generated Oban worker or your own scheduler calling `AshHooks.Delivery.run/2`.
 
 Requires Elixir `~> 1.20`, Erlang/OTP 28 or 29, and Ash
-`>= 3.37.2 and < 4.0.0-0`. Add `{:ash_hooks, "~> 3.2"}` to your dependencies.
+`>= 3.37.2 and < 4.0.0-0` and Spark `>= 2.7.6 and < 3.0.0-0`. Add `{:ash_hooks, "~> 3.2"}` to your dependencies.
 Oban `~> 2.20` is optional and required for the generated worker. Plug `~> 1.16`
 is optional for HTTP receipt. Every supported Ash version requires your application
 to set `default_string_length_count`; see [UPGRADING.md](UPGRADING.md).
@@ -252,6 +252,10 @@ once; receivers deduplicate using the stable `webhook-id`.
   matching the generated worker and recovery contracts. Terminal replay forwards
   the tenant to resend.
 
+Worked guides cover [event retention and replay](documentation/tutorials/outbound-recovery.md),
+[catalogs, payload versions, and filters](documentation/tutorials/outbound-contracts.md),
+and [destination policies, transports, and health](documentation/tutorials/outbound-operations.md).
+
 ## Fitting the extensions to your domain
 
 `payload_attribute` renames a ledger's byte column. `prune_action :none` prevents
@@ -355,7 +359,7 @@ Development supports macOS and Linux; use WSL2 on Windows.
 Upgrading from before 3.0.0 removes built-in vendor providers. Declare an
 application provider, or use `source_record` to select one from a source resource's
 allowlist. [UPGRADING.md](UPGRADING.md) explains names, identities, schemas, and versions.
-See [CONTRIBUTING.md](CONTRIBUTING.md), the [DSL reference](documentation/dsls/DSL-AshHooks.md),
+See [CONTRIBUTING.md](CONTRIBUTING.md), the [DSL reference](https://hexdocs.pm/ash_hooks/dsl-ashhooks.html),
 and the [API reference](https://hexdocs.pm/ash_hooks) for more.
 
 ## License
