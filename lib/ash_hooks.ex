@@ -208,8 +208,9 @@ defmodule AshHooks do
         type: :pos_integer,
         default: 1,
         doc: """
-        The CURRENT payload version of this event type (default 1).
-        Endpoints without a pin receive this version's bytes.
+        The current payload version of this event type (default 1).
+        Immediate dispatch uses this version. Outbox recovery preserves
+        the version stored when the publication was accepted.
         """
       ],
       events: [
@@ -226,14 +227,14 @@ defmodule AshHooks do
       payload_versions: [
         type: :any,
         doc: """
-        The declared variant builders older pins resolve to: a map of
-        `version => {module, function}` where `f(event) ::
-        {:ok, payload_bytes} | {:error, reason}`. An endpoint pinning a
-        version in this map, other than the current `version`, receives
-        that builder's bytes instead of the dispatch payload; a pin on the
-        current `version` receives the dispatch payload; a pin on any other
-        version fails that endpoint closed (`:unknown_pinned_version`)
-        before any row is written.
+        The declared variant builders: a map of `version => {module,
+        function}` where `f(event) :: {:ok, payload_bytes} | {:error,
+        reason}`. No pin, or a pin equal to the event's payload version,
+        receives the original bytes. Other declared pins run their builder;
+        undeclared pins fail that endpoint closed (`:unknown_pinned_version`)
+        before any row is written. Outbox recovery uses the stored payload
+        version. Declare builders for every other version endpoints may pin
+        while publications are pending.
         """
       ]
     ]

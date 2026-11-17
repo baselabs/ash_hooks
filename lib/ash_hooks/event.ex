@@ -32,6 +32,8 @@ defmodule AshHooks.Event do
     * `payload` is a nonempty binary containing the exact bytes to sign and
       send. Serialize once; maps and structs are rejected.
     * `metadata` is a map of unsigned application context, defaulting to `%{}`.
+    * `version` identifies recovered outbox payload bytes. `new/1` leaves it
+      unset; publish records the declaration's version when accepting bytes.
   """
 
   defstruct [:id, :type, :payload, :version, metadata: %{}]

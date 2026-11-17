@@ -19,11 +19,12 @@ defmodule AshHooks.Catalog do
 
   `entries/1` lists a resource's declared catalog; `entry/2` reads one.
   `payload/3` resolves the bytes a dispatch sends to one endpoint: the
-  dispatch payload when the endpoint has no pin or pinned the declaration's
-  current `version`, otherwise the matching `payload_versions` builder's
-  bytes.
+  event payload when the endpoint has no pin or pins its payload version,
+  otherwise the matching `payload_versions` builder's bytes. Outbox recovery
+  uses the stored event version; immediate dispatch uses the declaration's
+  current version.
 
-  A pin on a version the declaration does not carry fails that endpoint
+  Any other pin without a declared builder fails that endpoint
   closed (`{:error, :unknown_pinned_version}`) BEFORE any delivery row is
   written, as does a variant builder that fails or returns a non-binary
   (`{:error, :variant_failed}`; a crash is contained the same way).
@@ -83,8 +84,10 @@ defmodule AshHooks.Catalog do
 
   @doc """
   Returns `{:ok, bytes}` for the endpoint's declared pinned variant.
-  Endpoints with no pin, a pin to the current version, or no pinning column
-  receive the event's original bytes. An unknown pinned version returns
+  Endpoints with no pin, a pin to the event's payload version, or no pinning
+  column receive the event's original bytes. The payload version is the stored
+  version during outbox recovery and the declaration's current version during
+  immediate dispatch. An unknown pinned version returns
   `{:error, :unknown_pinned_version}`; a failing or invalid variant builder
   returns `{:error, :variant_failed}`.
   """

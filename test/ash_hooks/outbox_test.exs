@@ -507,6 +507,7 @@ defmodule AshHooks.OutboxAcceptance do
 
   defp encode_value(%DateTime{} = value, true), do: DateTime.to_iso8601(value)
   defp encode_value(%DateTime{} = value, false), do: DateTime.to_naive(value)
+  defp encode_value(value, true) when is_map(value), do: Jason.encode!(value)
   defp encode_value(value, _sqlite?), do: value
 
   defp parameter(%{sqlite?: true}, _), do: "?"
@@ -678,6 +679,38 @@ for {module, namespace} <- [
                  &String.starts_with?(&1, "INSERT INTO \"#{Cases.table(f.outbox)}\"")
                )
              ) == 1
+    end
+
+    test "A1 malformed publications and missing tenants refuse before storage", f do
+      event = Cases.event()
+
+      for declaration <- [:changed, {f.emitter, :changed, :extra}] do
+        assert {{:error, :unknown_declaration}, []} =
+                 Cases.count_queries(f, fn ->
+                   AshHooks.publish(f.outbox, declaration, event, tenant: "tenant-a")
+                 end)
+      end
+
+      for invalid <- [nil, %{}, %{event | type: "other"}, %{event | payload: ""}] do
+        assert {{:error, :invalid_event}, []} =
+                 Cases.count_queries(f, fn -> Cases.publish(f, invalid) end)
+      end
+
+      assert {{:error, :unresolved_route}, []} =
+               Cases.count_queries(f, fn -> Cases.publish(f, event, route: :removed) end)
+
+      operations = [
+        fn -> AshHooks.publish(f.outbox, {f.emitter, :changed}, event, []) end,
+        fn -> AshHooks.fanout(f.outbox, event.id, []) end,
+        fn -> AshHooks.fanout_pending(f.outbox, 10, []) end,
+        fn -> AshHooks.rearm(f.outbox, event.id, []) end,
+        fn -> AshHooks.OutboundOutbox.list(f.outbox, []) end,
+        fn -> AshHooks.OutboundOutbox.prune(f.outbox, []) end
+      ]
+
+      for operation <- operations do
+        assert {{:error, :tenant_required}, []} = Cases.count_queries(f, operation)
+      end
     end
 
     test "A2 nested commits and rollbacks do not leak publications", f do
@@ -1499,6 +1532,28 @@ for {module, namespace} <- [
         assert measurements == %{count: 1}
         assert Enum.sort(Map.keys(metadata)) == [:event_uuid, :outcome, :reason]
       end
+    end
+
+    test "A13 readable invalid content parks immediately and missing declarations retry", f do
+      for values <- [
+            [version: 0],
+            [payload: ""],
+            [metadata: %{"number" => 9_223_372_036_854_775_808}]
+          ] do
+        event = Cases.event()
+        assert {:ok, :accepted} = Cases.publish(f, event)
+        Cases.set(f, event.id, values)
+        assert :failed = Cases.fanout(f, event.id)
+        row = Cases.publication(f, event.id)
+        assert row.attempts == 1
+        assert row.last_error == "invalid_publication_content"
+      end
+
+      event = Cases.event()
+      assert {:ok, :accepted} = Cases.publish(f, event)
+      Cases.set(f, event.id, dispatch_source: "removed")
+      assert {:pending, :unknown_declaration} = Cases.fanout(f, event.id)
+      assert Cases.publication(f, event.id).last_error == "unknown_declaration"
     end
 
     test "A13 bounded sweeps isolate poison, park, list and rearm", f do

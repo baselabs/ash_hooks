@@ -24,7 +24,8 @@ version, declaration and delivery-route identifiers, acceptance and claim
 UUIDs, state, attempts, lease, due time, bounded error and completion/failure
 and insertion/update timestamps. It also declares tenant-leading partial
 indexes on `next_attempt_at` where state is `pending`, and `failed_at` where
-state is `failed`. Inspect both indexes in the generated migration. Do not reuse the optional event-log table: its best-effort recording,
+state is `failed`. Inspect both indexes in the generated migration. Do not
+reuse the optional event-log table: its best-effort recording,
 pruning and endpoint-targeted replay retain their existing behavior.
 
 The PostgreSQL outbox `metadata` column uses native `json`, preserving integer
