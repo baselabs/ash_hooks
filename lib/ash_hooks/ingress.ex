@@ -299,6 +299,7 @@ defmodule AshHooks.Ingress do
 
   defp count_aggregates(resource) do
     counts = [
+      {:received, :count, query: [filter: [status: [not_eq: :failed_verification]]]},
       {:processed, :count, query: [filter: [status: :processed]]},
       {:handler_failures, :count,
        query: [filter: [status: [in: [:failed_retryable, :failed_permanent]]]]}
@@ -306,13 +307,12 @@ defmodule AshHooks.Ingress do
 
     if Extension.get_opt(resource, [:inbound_delivery], :ingress_tracking, :off) == :on do
       [
-        {:received, :count, query: [filter: [status: [not_eq: :failed_verification]]]},
         {:failed_verification, :count, query: [filter: [status: :failed_verification]]},
         {:duplicates, :sum, field: :duplicates, default: 0}
         | counts
       ]
     else
-      [{:received, :count} | counts]
+      counts
     end
   end
 

@@ -840,6 +840,34 @@ defmodule AshHooks.Test.RowSecurityCases do
     end
   end
 
+  def tracking_off_counts(ctx) do
+    tenant = "tenant_a"
+
+    for {id, status} <- [{"accepted", :processed}, {"rejected", :failed_verification}] do
+      env = %{
+        tenant: tenant,
+        name: :event,
+        external_event_id: id,
+        type_string: "event",
+        payload: %{},
+        digest: id,
+        scope: %{}
+      }
+
+      assert {:ok, true, row} = Ingress.ingest_delivery(ctx.source_inbound, env)
+      change_fixture(row, %{status: status}, tenant)
+    end
+
+    assert {:ok,
+            %{
+              received: 1,
+              processed: 1,
+              failed_verification: 0,
+              duplicates: 0,
+              handler_failures: 0
+            }} = Ingress.counts(ctx.source_inbound, tenant: tenant)
+  end
+
   def observation_reads(ctx) do
     assert {:ok,
             %{
