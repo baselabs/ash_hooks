@@ -9,10 +9,24 @@ defmodule AshHooks.PublicationDashesTest do
     on_exit(fn -> File.rm_rf!(tree) end)
 
     for codepoint <- [0x2013, 0x2014], surface <- ["package", "html", "epub", "repository"] do
-      {output, status} = System.cmd("python3", ["-c", fixture(), tree, surface, Integer.to_string(codepoint)], stderr_to_stdout: true)
+      {output, status} =
+        System.cmd("python3", ["-c", fixture(), tree, surface, Integer.to_string(codepoint)],
+          stderr_to_stdout: true
+        )
+
       assert status == 0, output
 
-      {output, status} = System.cmd("python3", [@script, "--package", Path.join(tree, "package.tar"), "--docs", Path.join(tree, "docs")], stderr_to_stdout: true)
+      {output, status} =
+        System.cmd(
+          "python3",
+          [
+            @script,
+            "--package",
+            Path.join(tree, "package.tar"),
+            "--docs",
+            Path.join(tree, "docs")
+          ], stderr_to_stdout: true)
+
       if surface == "repository" do
         assert {output, status} == {"", 0}
       else
@@ -24,7 +38,7 @@ defmodule AshHooks.PublicationDashesTest do
   end
 
   defp fixture do
-    """
+    ~S"""
     import io, pathlib, sys, tarfile, zipfile
     root, surface, codepoint = pathlib.Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
     text = ("first\ntext " + chr(codepoint) + " here\n").encode()

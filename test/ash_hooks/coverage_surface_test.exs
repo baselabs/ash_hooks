@@ -21,6 +21,7 @@ defmodule AshHooks.CoverageSurfaceTest do
     assert {:error, _} = Url.cast_input(42, [])
     assert SecretRef.cast_input(nil, []) == {:ok, nil}
     assert SecretRef.cast_input("stored-reference", []) == {:ok, "stored-reference"}
+
     for input <- ["", "whsec_material", "whsk_material", "whpk_material", 42] do
       assert {:error, _} = SecretRef.cast_input(input, [])
     end
@@ -28,9 +29,11 @@ defmodule AshHooks.CoverageSurfaceTest do
     for operation <- [:cast_input, :cast_stored, :dump_to_native], value <- [nil, %{}, []] do
       assert {:ok, ^value} = apply(Payload, operation, [value, []])
     end
+
     for operation <- [:cast_input, :cast_stored, :dump_to_native] do
       assert :error = apply(Payload, operation, [42, []])
     end
+
     assert Payload.cast_input("null", []) == {:ok, nil}
     assert Payload.cast_input("{}", []) == {:ok, %{}}
     assert Payload.cast_input("[]", []) == {:ok, []}
@@ -44,6 +47,7 @@ defmodule AshHooks.CoverageSurfaceTest do
     for repo <- [AshHooks.Test.Repo, AshHooks.Test.BusyRepo] do
       assert Version.compare(repo.min_sqlite_version(), "3.54.1") == :eq
     end
+
     assert Version.compare(AshHooks.TestPostgres.Repo.min_pg_version(), "16.0.0") == :eq
   end
 
@@ -52,24 +56,38 @@ defmodule AshHooks.CoverageSurfaceTest do
     assert provider.webhook_secret_scope() == :per_connection
     assert provider.verify_signature("body", %{}, "secret") == :ok
     assert provider.parse_event_type(%{}) == {:ok, :checked}
-    assert {:ok, %AshHooks.Event{type: :checked, payload: %{}}} = provider.handle_event(:checked, %{})
+
+    assert {:ok, %AshHooks.Event{type: :checked, payload: %{}}} =
+             provider.handle_event(:checked, %{})
   end
 
   test "the counting provider contains malformed types and reports each outcome" do
     provider = AshHooks.CountingProvider
     on_exit(&provider.cleanup/0)
     provider.put_sink(self())
-    for input <- [%{}, %{"type" => nil}, %{"type" => "a-type-that-is-not-an-atom"}, %{"type" => "nil"}] do
+
+    for input <- [
+          %{},
+          %{"type" => nil},
+          %{"type" => "a-type-that-is-not-an-atom"},
+          %{"type" => "nil"}
+        ] do
       assert {:error, _} = provider.parse_event_type(input)
     end
+
     assert provider.parse_event_type(%{"type" => :checked}) == {:ok, :checked}
     assert provider.parse_event_type(%{"type" => "checked"}) == {:ok, :checked}
+
     for outcome <- [:ok, {:error, :retry, :reason}, {:error, :reason}, fn -> :ok end] do
       provider.put_outcome(outcome)
       result = provider.handle_event(:checked, %{})
-      assert match?({:ok, %AshHooks.Event{}}, result) or match?({:error, _}, result) or match?({:error, _, _}, result)
+
+      assert match?({:ok, %AshHooks.Event{}}, result) or match?({:error, _}, result) or
+               match?({:error, _, _}, result)
+
       assert_received {:handled, :checked, %{}}
     end
+
     provider.cleanup()
     assert {:ok, %AshHooks.Event{}} = provider.handle_event(:checked, %{})
     mac = :crypto.mac(:hmac, :sha256, "secret", "body") |> Base.encode16(case: :lower)

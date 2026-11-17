@@ -31,6 +31,7 @@ Application.put_env(:ash_hooks, AshHooks.Test.Repo,
 # excluded and ordinary dev/test runs need no Postgres at all.
 postgres? = System.get_env("ASH_HOOKS_POSTGRES") == "1"
 httpbun? = System.get_env("ASH_HOOKS_HTTPBUN") == "1"
+confidentiality? = System.get_env("PUBLIC_DOCS_DENYLIST") not in [nil, ""]
 
 # The real webhook receiver (CI's postgres job runs it as a service and sets
 # ASH_HOOKS_REAL_RECEIVER_PORT): :real_receiver tests run only where one is.
@@ -54,6 +55,7 @@ ExUnit.start(
   exclude:
     if(postgres?, do: [], else: [:postgres]) ++
       if(httpbun?, do: [], else: [:httpbun]) ++
+      if(confidentiality?, do: [], else: [:confidentiality]) ++
       if(real_receiver?, do: [], else: [:real_receiver]),
   after_suite: [
     fn _stats ->
@@ -66,7 +68,9 @@ ExUnit.start(
 # Only successful tests in this run can contribute executed documentation names.
 ExUnit.after_suite(fn _stats ->
   if System.get_env("ASH_HOOKS_DOCS_REQUIRED") == "1" do
-    blocks = AshHooks.Test.Documentation.validate_manifest!(AshHooks.Test.Documentation.documents())
+    blocks =
+      AshHooks.Test.Documentation.validate_manifest!(AshHooks.Test.Documentation.documents())
+
     AshHooks.Test.Documentation.validate_run!(blocks)
   end
 end)

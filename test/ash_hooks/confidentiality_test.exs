@@ -12,15 +12,23 @@ defmodule AshHooks.ConfidentialityTest do
 
   test "hits use fixed, case-insensitive whole words and reveal only rule numbers", %{tree: tree} do
     path = Path.join(tree, "document.txt")
-    File.write!(path, "typel-7\nL-7\ncedarhost-edge\ncedarhost_suffix\ncedarhost2\n[bracket.token]\n")
+
+    File.write!(
+      path,
+      "typel-7\nL-7\ncedarhost-edge\ncedarhost_suffix\ncedarhost2\n[bracket.token]\n"
+    )
+
     {output, status} = run(tree, "l-7\ncedarhost\n[bracket.token]")
     assert status == 1
+
     assert String.split(output, "\n", trim: true) == [
              "#{path}:2 rule-1",
              "#{path}:3 rule-2",
              "#{path}:6 rule-3"
            ]
-    for token <- ["l-7", "cedarhost", "bracket.token"], do: refute(String.contains?(output, token))
+
+    for token <- ["l-7", "cedarhost", "bracket.token"],
+        do: refute(String.contains?(output, token))
   end
 
   test "a clean tree passes, including near matches", %{tree: tree} do
@@ -34,11 +42,20 @@ defmodule AshHooks.ConfidentialityTest do
     end
   end
 
-  test "the positive control detects a broken control and cleans every temporary file", %{tree: tree} do
+  test "the positive control detects a broken control and cleans every temporary file", %{
+    tree: tree
+  } do
     # Mutate the control's input, not the scanner or an external service.
     mutant = Path.join(tree, "control-mutant.sh")
     code = File.read!(@script)
-    mutated = String.replace(code, "\"$first\" > \"$work/control\"", "\"unrelated-control-input\" > \"$work/control\"")
+
+    mutated =
+      String.replace(
+        code,
+        "\"$first\" > \"$work/control\"",
+        "\"unrelated-control-input\" > \"$work/control\""
+      )
+
     refute mutated == code
     File.write!(mutant, mutated)
     scratch = Path.join(tree, "scratch")
@@ -65,9 +82,19 @@ defmodule AshHooks.ConfidentialityTest do
     refute output =~ "AshHooks"
   end
 
+  @tag :confidentiality
+  @tag timeout: 600_000
+  test "the configured policy scans tracked source, the archive and generated documentation" do
+    {output, status} = System.cmd("bash", [@script], stderr_to_stdout: true)
+    assert status == 0, output
+    assert output == ""
+  end
+
   defp run_paths(paths, policy) do
     System.cmd("bash", [@script, "--tree" | paths],
-      env: [{"PUBLIC_DOCS_DENYLIST", policy}], stderr_to_stdout: true)
+      env: [{"PUBLIC_DOCS_DENYLIST", policy}],
+      stderr_to_stdout: true
+    )
   end
 
   defp run(tree, policy, extra_env \\ []) do

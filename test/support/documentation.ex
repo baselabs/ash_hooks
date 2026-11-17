@@ -72,7 +72,10 @@ defmodule AshHooks.Test.Documentation do
 
       {marker, marker_line} = previous || {"", 0}
       {name, reason} = disposition(marker)
-      opening = lines |> Enum.at(node.lnb - 1) |> String.trim_leading() |> String.trim_leading("> ")
+
+      opening =
+        lines |> Enum.at(node.lnb - 1) |> String.trim_leading() |> String.trim_leading("> ")
+
       fenced? = String.starts_with?(opening, ["```", "~~~"])
 
       %{
@@ -153,7 +156,10 @@ defmodule AshHooks.Test.Documentation do
     unexpected = completed -- required
 
     unless missing == [] and unexpected == [],
-      do: raise("executed examples differ: missing #{inspect(missing)}, unexpected #{inspect(unexpected)}")
+      do:
+        raise(
+          "executed examples differ: missing #{inspect(missing)}, unexpected #{inspect(unexpected)}"
+        )
 
     :ok
   end
@@ -169,8 +175,11 @@ defmodule AshHooks.Test.Documentation do
     # Remove language literals and comments before looking for template operands.
     literals =
       case block.language do
-        "sql" -> ~r/'(?:[^']|'')*'|"(?:[^"]|"")*"|\$([a-zA-Z_]\w*)?\$.*?\$\1\$|--[^\n]*|\/\*.*?\*\//s
-        "sh" -> ~r/'[^']*'|"(?:[^"\\]|\\.)*"|\#[^\n]*/s
+        "sql" ->
+          ~r/'(?:[^']|'')*'|"(?:[^"]|"")*"|\$([a-zA-Z_]\w*)?\$.*?\$\1\$|--[^\n]*|\/\*.*?\*\//s
+
+        "sh" ->
+          ~r/'[^']*'|"(?:[^"\\]|\\.)*"|\#[^\n]*/s
       end
 
     executable = Regex.replace(literals, block.code, " ")
@@ -213,7 +222,9 @@ defmodule AshHooks.Test.Documentation do
     locals =
       Enum.flat_map(@formatter_deps, fn dep ->
         case Mix.Project.deps_paths()[dep] do
-          nil -> []
+          nil ->
+            []
+
           path ->
             {options, _} = Code.eval_file(Path.join(path, ".formatter.exs"))
             options[:export][:locals_without_parens] || []

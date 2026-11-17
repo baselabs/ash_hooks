@@ -55,7 +55,10 @@ defmodule AshHooks.DocumentationContractTest do
     for mode <- [:passed, :skipped, :excluded, :failed, :unexecuted] do
       script = Path.join(tree, "#{mode}.exs")
       File.write!(script, qualification_script(mode))
-      {output, status} = System.cmd("elixir", Enum.flat_map(paths, &["-pa", &1]) ++ [script], stderr_to_stdout: true)
+      {output, status} =
+        System.cmd("elixir", Enum.flat_map(paths, &["-pa", &1]) ++ [script],
+          stderr_to_stdout: true
+        )
 
       if mode == :passed do
         assert status == 0, output
@@ -67,10 +70,16 @@ defmodule AshHooks.DocumentationContractTest do
   end
 
   defp qualification_script(mode) do
-    tag = if mode == :skipped, do: "@tag skip: true", else: "@tag omitted: true"
-    exclusions = if mode == :excluded, do: "[omitted: true]", else: "[]"
-    body = if mode == :unexecuted, do: ":ok", else: ~s(Docs.run!(%{file: "fixture", line: 1, language: "sh", name: "required", code: "true"}, File.cwd!()))
-    failure = if mode == :failed, do: ~s(flunk("executed but failed")), else: ":ok"
+    tag = if(mode == :skipped, do: "@tag skip: true", else: "@tag omitted: true")
+    exclusions = if(mode == :excluded, do: "[omitted: true]", else: "[]")
+
+    body =
+      if mode == :unexecuted,
+        do: ":ok",
+        else:
+          ~s|Docs.run!(%{file: "fixture", line: 1, language: "sh", name: "required", code: "true"}, File.cwd!())|
+
+    failure = if(mode == :failed, do: ~s|flunk("executed but failed")|, else: ":ok")
 
     """
     ExUnit.start(autorun: false, exclude: #{exclusions}, formatters: [ExUnit.CLIFormatter, AshHooks.Test.DocumentationRuns])
@@ -91,6 +100,30 @@ defmodule AshHooks.DocumentationContractTest do
     end
     ExUnit.run()
     """
+  end
+
+  test "only successful runners contribute their names to the current run" do
+    {:ok, tracker} = GenServer.start_link(AshHooks.Test.DocumentationRuns, [])
+    on_exit(fn -> if Process.alive?(tracker), do: GenServer.stop(tracker) end)
+
+    for name <- [:passed, :failed, :skipped] do
+      assert :ok = GenServer.call(tracker, {:completed, {__MODULE__, name}, [to_string(name)]})
+    end
+
+    GenServer.cast(tracker, {:test_finished, %{state: nil, module: __MODULE__, name: :passed}})
+    GenServer.cast(
+      tracker,
+      {:test_finished, %{state: {:failed, []}, module: __MODULE__, name: :failed}}
+    )
+    GenServer.cast(
+      tracker,
+      {:test_finished, %{state: {:skipped, "reason"}, module: __MODULE__, name: :skipped}}
+    )
+    assert ["passed"] = GenServer.call(tracker, :completed_names)
+
+    completed = AshHooks.Test.DocumentationRuns.completed_names()
+    blocks = for name <- completed, do: %{name: name, reason: nil}
+    assert :ok = Docs.validate_run!(blocks)
   end
 
   test "template operands fail while literals, comments and valid operators remain valid" do
