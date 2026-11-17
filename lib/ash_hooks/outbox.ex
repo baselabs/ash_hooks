@@ -103,6 +103,9 @@ defmodule AshHooks.Outbox do
           (Ash.DataLayer.data_layer(caller) != layer or Phase.repo(caller) != Phase.repo(resource)) ->
         {:error, :publication_repository_mismatch}
 
+      get_in(opts[:context] || %{}, [:data_layer, :repo]) not in [nil, Phase.repo(resource)] ->
+        {:error, :publication_repository_mismatch}
+
       opts[:dynamic_repo] && opts[:dynamic_repo] != Phase.repo(resource).get_dynamic_repo() ->
         {:error, :publication_repository_mismatch}
 
@@ -171,9 +174,11 @@ defmodule AshHooks.Outbox do
       spawn_monitor(fn ->
         runner = self()
         spawn(fn -> guard(owner, runner, ref) end)
+
         receive do
           {^ref, :guarded} -> :ok
         end
+
         Enum.each(repositories, fn {repo, instance} -> repo.put_dynamic_repo(instance) end)
         send(owner, {ref, safely(fn -> dispatch(row, tenant) end)})
       end)
@@ -306,7 +311,7 @@ defmodule AshHooks.Outbox do
         :stale
 
       {:ok, updated} ->
-        {status, reason} = if is_tuple(outcome), do: outcome, else: {outcome, nil}
+        {status, reason} = if is_tuple(outcome), do: outcome, else: {outcome, updated.last_error}
         emit(:result, updated, status, reason)
         outcome
 

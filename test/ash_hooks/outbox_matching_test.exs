@@ -272,6 +272,7 @@ defmodule AshHooks.OutboxMatchingTest do
 
       other = if name == :EtsStrings, do: :EtsAtoms, else: :EtsStrings
       other_emitter = Module.concat([AshHooks.OutboxMatching, other, Emitter])
+
       assert {:error, :publication_conflict} =
                AshHooks.publish(AshHooks.OutboxMatching.Outbox, {other_emitter, :changed}, event,
                  tenant: "tenant-a"

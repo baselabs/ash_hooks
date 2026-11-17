@@ -57,6 +57,13 @@ defmodule AshHooks.OutboxAcceptance do
       "CREATE UNIQUE INDEX #{table(resources.delivery)}_unique_delivery_index ON #{table(resources.delivery)} (org_id, endpoint_id, event_uuid)"
     )
 
+    info = if sqlite?, do: AshSqlite.DataLayer.Info, else: AshPostgres.DataLayer.Info
+    for index <- info.custom_indexes(resources.outbox) do
+      name = table(resources.outbox) <> "_" <> Enum.map_join(index.fields, "_", &to_string/1) <> "_index"
+      fields = Enum.map_join(index.fields, ", ", &("\"" <> to_string(&1) <> "\""))
+      owner.query!("CREATE INDEX #{name} ON #{table(resources.outbox)} (#{fields}) WHERE #{index.where}")
+    end
+
     roles = if sqlite?, do: nil, else: setup_roles(resources, repo, owner)
     oban_options = setup_oban(namespace, repo, owner, roles, sqlite?)
 
@@ -288,6 +295,7 @@ defmodule AshHooks.OutboxAcceptance do
 
     {:ok, _} = :peer.call(peer, Application, :ensure_all_started, [:mix])
     :ok = :peer.call(peer, Mix, :env, [:test])
+    :ok = :peer.call(peer, Application, :put_all_env, [[ash: Application.get_all_env(:ash)]])
 
     :peer.call(
       peer,
@@ -948,18 +956,23 @@ defmodule AshHooks.OutboxAcceptance do
           event = Cases.event()
           assert {:ok, :accepted} = Cases.publish(f, event)
           parent = self()
-          locked = Task.async(fn ->
-            f.owner.transaction(fn ->
-              f.owner.query!("LOCK TABLE #{Cases.table(f.delivery)} IN ACCESS EXCLUSIVE MODE")
-              send(parent, :locked)
-              receive do
-                :release -> :ok
-              end
+
+          locked =
+            Task.async(fn ->
+              f.owner.transaction(fn ->
+                f.owner.query!("LOCK TABLE #{Cases.table(f.delivery)} IN ACCESS EXCLUSIVE MODE")
+                send(parent, :locked)
+
+                receive do
+                  :release -> :ok
+                end
+              end)
             end)
-          end)
+
           assert_receive :locked
           Application.put_env(:ash_hooks, :outbox_observer, self())
           on_exit(fn -> Application.delete_env(:ash_hooks, :outbox_observer) end)
+
           try do
             owner = spawn(fn -> Cases.fanout(f, event.id) end)
             assert_receive {:outbox_builder, runner}, 5_000
@@ -971,6 +984,7 @@ defmodule AshHooks.OutboxAcceptance do
             send(locked.pid, :release)
             Task.await(locked, 5_000)
           end
+
           Cases.expire(f, event)
           assert :done = Cases.fanout(f, event.id)
         end

@@ -7,6 +7,19 @@ defmodule AshHooks.OutboxConfigurationTest do
   alias Spark.Dsl.Transformer
   @resource AshHooks.OutboxFixtures.SQLite.Outbox
 
+  test "A17 migration configuration includes tenant-leading recovery indexes" do
+    for {resource, path} <- [
+      {@resource, [:sqlite, :custom_indexes]},
+      {AshHooks.OutboxFixtures.Postgres.Outbox, [:postgres, :custom_indexes]}
+    ] do
+      {:ok, transformed} = AshHooks.OutboundOutbox.Transformers.AddOutbox.transform(resource.spark_dsl_config())
+      indexes = Transformer.get_entities(transformed, path)
+      assert length(indexes) == 2
+      assert Enum.any?(indexes, &(&1.fields == [:org_id, :next_attempt_at] and &1.where == "\"state\" = 'pending'"))
+      assert Enum.any?(indexes, &(&1.fields == [:org_id, :failed_at] and &1.where == "\"state\" = 'failed'"))
+    end
+  end
+
   test "A6 tenant identity cannot be widened, narrowed or made partial" do
     state = @resource.spark_dsl_config()
 
@@ -15,7 +28,15 @@ defmodule AshHooks.OutboxConfigurationTest do
 
     for changes <- [[all_tenants?: true], [keys: [:event_uuid]], [where: [state: :pending]]] do
       changed = struct(identity, changes)
-      invalid = Transformer.replace_entity(state, [:identities], changed, &(&1.name == :unique_publication))
+
+      invalid =
+        Transformer.replace_entity(
+          state,
+          [:identities],
+          changed,
+          &(&1.name == :unique_publication)
+        )
+
       assert {:error, %Spark.Error.DslError{message: message}} = Verifier.verify(invalid)
       assert message =~ "unique_publication"
     end
@@ -26,7 +47,14 @@ defmodule AshHooks.OutboxConfigurationTest do
     metadata = Enum.find(Transformer.get_entities(state, [:attributes]), &(&1.name == :metadata))
 
     for changes <- [[type: Ash.Type.String], [constraints: [fields: []]]] do
-      invalid = Transformer.replace_entity(state, [:attributes], struct(metadata, changes), &(&1.name == :metadata))
+      invalid =
+        Transformer.replace_entity(
+          state,
+          [:attributes],
+          struct(metadata, changes),
+          &(&1.name == :metadata)
+        )
+
       assert {:error, %Spark.Error.DslError{message: message}} = Verifier.verify(invalid)
       assert message =~ "unmodified :map"
     end

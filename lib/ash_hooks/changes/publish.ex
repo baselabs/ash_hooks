@@ -31,7 +31,7 @@ defmodule AshHooks.Changes.Publish do
     Ash.Changeset.after_action(changeset, fn changeset, result ->
       {module, function} = Keyword.fetch!(opts, :build)
 
-      with :ok <- AshHooks.Outbox.atomicity(opts[:outbox], changeset.resource),
+      with :ok <- AshHooks.Outbox.atomicity(opts[:outbox], changeset.resource, context: changeset.context),
            {:ok, event} <- apply(module, function, [result, changeset.context]),
            {:ok, _disposition} <-
              AshHooks.publish(opts[:outbox], opts[:declaration], event,
