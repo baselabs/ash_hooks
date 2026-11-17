@@ -1103,6 +1103,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
     assert {:error, :timeout} = :gen_tcp.accept(listener, 5)
     assert only_attempt(slow_row).reason == "attempt_timeout"
     assert only_attempt(slow_row).latency_ms == nil
+
     assert Ash.get!(Delivery, slow_row.id, tenant: "tenant-a", authorize?: false).last_error ==
              "attempt_timeout"
   end
@@ -1114,7 +1115,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
       Ash.create!(
         CustodyEndpoint,
         %{
-          url: "https://hooks.example.test/hook",
+          url: endpoint.url,
           host_signing_key_ref: endpoint.host_signing_key_ref
         },
         tenant: "tenant-b",
@@ -1449,13 +1450,11 @@ defmodule AshHooks.HostExtensionSeamsTest do
       endpoint =
         Ash.create!(
           PlainEndpoint,
-          %{url: "https://hooks.example.test/hook", secret_ref: "standard-current"},
+          %{url: url, secret_ref: "standard-current"},
           tenant: "tenant-a",
           authorize?: false
         )
 
-      update_machine(endpoint, %{url: url})
-      endpoint = Ash.get!(PlainEndpoint, endpoint.id, tenant: "tenant-a", authorize?: false)
       row = delivery!(endpoint)
       receiver = receive_async(listener)
 
@@ -1516,20 +1515,15 @@ defmodule AshHooks.HostExtensionSeamsTest do
   defp endpoint!(resource, attrs \\ %{}) do
     ref = "host-" <> unique()
     :ok = custodian().store(ref, "host-signing-material", "tenant-a", {:legacy_hmac, :sha256})
-    {url, attrs} = Map.pop(attrs, :url, "http://127.0.0.1:9/a%2Fb?x=%2F")
 
-    endpoint =
-      Ash.create!(
-        resource,
-        Map.merge(%{url: "https://hooks.example.test/hook", host_signing_key_ref: ref}, attrs),
-        tenant: "tenant-a",
-        authorize?: false
-      )
-
-    # Match the delivery fixtures: write the controlled receiver URL after
-    # exercising the resource's production URL validation on creation.
-    update_machine(endpoint, %{url: url})
-    Ash.get!(resource, endpoint.id, tenant: "tenant-a", authorize?: false)
+    # Match RealReceiver: hostname registration passes the production URL type,
+    # and the runtime options explicitly permit the controlled local receiver.
+    Ash.create!(
+      resource,
+      Map.merge(%{url: "http://localhost:9/a%2Fb?x=%2F", host_signing_key_ref: ref}, attrs),
+      tenant: "tenant-a",
+      authorize?: false
+    )
   end
 
   defp delivery!(endpoint, opts \\ []) do
@@ -1632,7 +1626,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
 
     {:ok, port} = :inet.port(socket)
     on_exit(fn -> :gen_tcp.close(socket) end)
-    {socket, "http://127.0.0.1:#{port}/a%2Fb?x=%2F"}
+    {socket, "http://localhost:#{port}/a%2Fb?x=%2F"}
   end
 
   defp receive_async(listener, status \\ 204) do
