@@ -1,6 +1,8 @@
 # Upgrading
 
-## Unreleased
+<a id="upgrade-3-3"></a>
+
+## 3.2.0 → 3.3.0
 
 Applications using HTTP ingress must update Plug to 1.20.4 or later in the 1.x
 series. Earlier versions are excluded because of CVE-2026-120287 in multipart
@@ -10,7 +12,7 @@ The qualified Spark floor is 2.7.6, the minimum required by Ash 3.37.2.
 Update Spark alongside Ash if your lock contains an older version. The floor
 check resolves both exact versions against a fresh dependency graph.
 
-### Host extension seams in 3.3.0
+### Host extension seams
 
 Each schema change is opt-in. Apply the migration before enabling the matching
 option on the resource, and deploy every process that reads that resource with
@@ -74,7 +76,7 @@ subscription's signing mode across all read pages. With no match they retain
 without every declared signer
 attribute finalize without disabling a reconfigured endpoint.
 
-## Oban with forced row security
+### Oban with forced row security
 
 The optional Oban requirement is now `~> 2.24`. Upgrade Oban before using the
 service configuration below.
@@ -1659,7 +1661,7 @@ as the error class.
 
 ## Required `default_string_length_count` configuration
 
-Every Ash version supported by ash_hooks 3.2.0 requires this configuration
+Every Ash version supported by ash_hooks 3.3.0 requires this configuration
 before compiling resources. ash_hooks writes no `:ash` configuration for you. Set it
 in your application's `config/config.exs`:
 
