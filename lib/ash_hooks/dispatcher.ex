@@ -468,15 +468,7 @@ defmodule AshHooks.Dispatcher do
       is_nil(opts[:enqueue]) ->
         %{status: :duplicate, error: nil}
 
-      row.status in [:succeeded, :dead_letter] ->
-        %{status: :duplicate, error: nil}
-
-      (is_nil(row.enqueue_token) and row.enqueue_lease_expires_at) &&
-          DateTime.compare(row.enqueue_lease_expires_at, now) == :gt ->
-        %{status: :duplicate, error: nil}
-
-      (row.status == :sending and row.send_lease_expires_at) &&
-          DateTime.compare(row.send_lease_expires_at, now) == :gt ->
+      admission_settled?(row, now) ->
         %{status: :duplicate, error: nil}
 
       true ->
@@ -499,6 +491,15 @@ defmodule AshHooks.Dispatcher do
         end
     end
   end
+
+  defp admission_settled?(row, now),
+    do:
+      row.status in [:succeeded, :dead_letter] or
+        (is_nil(row.enqueue_token) and live_enqueue_lease?(row.enqueue_lease_expires_at, now)) or
+        (row.status == :sending and live_enqueue_lease?(row.send_lease_expires_at, now))
+
+  defp live_enqueue_lease?(nil, _now), do: false
+  defp live_enqueue_lease?(lease, now), do: DateTime.compare(lease, now) == :gt
 
   defp result(endpoint, subscription, status, error \\ nil) do
     %{

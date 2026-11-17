@@ -4,7 +4,8 @@ defmodule AshHooks.OutboxProcess do
   def checkpoint(stage) do
     case Application.get_env(:ash_hooks, :outbox_checkpoint) do
       {^stage, path} ->
-        File.write!(path, System.pid())
+        File.write!(path <> ".writing", System.pid())
+        File.rename!(path <> ".writing", path)
         wait_for_release(path)
 
       _other ->
@@ -85,7 +86,7 @@ defmodule AshHooks.OutboxProcess do
     end
   end
 
-  def secret(_reference), do: {:ok, :crypto.strong_rand_bytes(32)}
+  def secret(_reference), do: {:ok, Base.encode64(:crypto.strong_rand_bytes(32))}
 
   def deliver(namespace, args) do
     AshHooks.Delivery.run(args,
@@ -97,6 +98,48 @@ defmodule AshHooks.OutboxProcess do
       attempt_timeout: 2_000,
       finalization_allowance: 1_000
     )
+  end
+
+  def build_revision(record, _context) do
+    AshHooks.Event.new(
+      id: "msg_revision_" <> record.id,
+      type: :changed,
+      payload: record.value
+    )
+  end
+
+  def nested(changeset, record, _context) do
+    resource = record.__struct__
+    opts = [authorize?: false, tenant: changeset.tenant]
+
+    result =
+      case Ash.Changeset.get_argument(changeset, :inner_kind) do
+        :normal ->
+          Ash.create(resource, %{value: "inner"}, opts)
+
+        :bulk ->
+          case Ash.bulk_create([%{value: "one"}, %{value: "two"}], resource, :create,
+                 authorize?: false,
+                 tenant: changeset.tenant,
+                 return_records?: true,
+                 return_errors?: true
+               ) do
+            %Ash.BulkResult{status: :success} -> {:ok, :bulk}
+            %Ash.BulkResult{errors: errors} -> {:error, errors}
+          end
+
+        :atomic ->
+          with {:ok, inner} <-
+                 Ash.get(resource, Ash.Changeset.get_argument(changeset, :inner_id), opts) do
+            Ash.update(inner, %{value: "revised"}, Keyword.put(opts, :action, :revise))
+          end
+      end
+
+    with {:ok, _inner} <- result do
+      if Ash.Changeset.get_argument(changeset, :undo),
+        do: {:error, "outer action refused"},
+        else: {:ok, record}
+    end
   end
 
   def boot(repo, config, oban_options) do
@@ -147,12 +190,16 @@ defmodule AshHooks.OutboxProcess do
   def execute(namespace, stage, event, path, marker) do
     Application.put_env(:ash_hooks, :outbox_checkpoint, {stage, path})
     if marker, do: Application.put_env(:ash_hooks, :outbox_admission_marker, marker)
+    spawn(fn -> execute_stage(namespace, stage, event) end)
+    :ok
+  end
+
+  defp execute_stage(namespace, stage, event) do
     outbox = Module.concat(namespace, :Outbox)
     emitter = Module.concat(namespace, :Emitter)
     repo = AshHooks.Phase.repo(outbox)
 
-    spawn(fn ->
-      case stage do
+    case stage do
         :before_commit ->
           repo.transaction(fn ->
             bind(repo)
@@ -195,10 +242,7 @@ defmodule AshHooks.OutboxProcess do
 
         _fanout ->
           AshHooks.fanout(outbox, event.id, tenant: "tenant-a")
-      end
-    end)
-
-    :ok
+    end
   end
 end
 

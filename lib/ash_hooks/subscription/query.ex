@@ -17,32 +17,7 @@ defmodule AshHooks.Subscription.Query do
   defp types(resource, name, layer) do
     attribute = Info.attribute(resource, :event_types)
 
-    values =
-      case attribute do
-        %{type: {:array, Ash.Type.String}} ->
-          Enum.uniq([name, "*"])
-
-        %{type: {:array, Ash.Type.Atom}, constraints: constraints} ->
-          case constraints |> Keyword.get(:items, []) |> Keyword.get(:one_of) do
-            nil -> :unknown
-            atoms -> Enum.filter(atoms, &(Atom.to_string(&1) in [name, "*"]))
-          end
-
-        _other ->
-          :unknown
-      end
-
-    values =
-      if is_list(values) do
-        Enum.filter(values, fn value ->
-          text = to_string(value)
-
-          String.valid?(text) and
-            (layer != AshPostgres.DataLayer or not String.contains?(text, <<0>>))
-        end)
-      else
-        values
-      end
+    values = attribute |> allowed_types(name) |> valid_type_names(layer)
 
     cond do
       values == :unknown or not array_storage?(resource, attribute, layer) ->
@@ -61,6 +36,26 @@ defmodule AshHooks.Subscription.Query do
       true ->
         true
     end
+  end
+
+  defp allowed_types(%{type: {:array, Ash.Type.String}}, name), do: Enum.uniq([name, "*"])
+
+  defp allowed_types(%{type: {:array, Ash.Type.Atom}, constraints: constraints}, name) do
+    case constraints |> Keyword.get(:items, []) |> Keyword.get(:one_of) do
+      nil -> :unknown
+      atoms -> Enum.filter(atoms, &(Atom.to_string(&1) in [name, "*"]))
+    end
+  end
+
+  defp allowed_types(_attribute, _name), do: :unknown
+
+  defp valid_type_names(:unknown, _layer), do: :unknown
+
+  defp valid_type_names(values, layer) do
+    Enum.filter(values, fn value ->
+      text = to_string(value)
+      String.valid?(text) and (layer != AshPostgres.DataLayer or not String.contains?(text, <<0>>))
+    end)
   end
 
   defp pause(resource, layer) do
@@ -116,21 +111,23 @@ defmodule AshHooks.Subscription.Query do
       {sql, args} = object_subset(keys, layer)
 
       {sql, args} =
-        Enum.reduce(keys, {sql, args}, fn key, {sql, args} ->
-          value = Map.fetch!(metadata, key)
-
-          if is_nil(value) or is_boolean(value) or (is_binary(value) and json_text?(value, layer)) do
-            {predicate, parameters} = scalar(key, value, layer)
-            {sql <> " AND " <> predicate, args ++ parameters}
-          else
-            {sql, args}
-          end
-        end)
+        Enum.reduce(keys, {sql, args}, &scalar_filter(&1, metadata, layer, &2))
 
       {sql, args} = container(sql, args, layer)
       %Ash.Query.Call{name: :fragment, args: [sql | args]}
     else
       true
+    end
+  end
+
+  defp scalar_filter(key, metadata, layer, {sql, args}) do
+    value = Map.fetch!(metadata, key)
+
+    if is_nil(value) or is_boolean(value) or (is_binary(value) and json_text?(value, layer)) do
+      {predicate, parameters} = scalar(key, value, layer)
+      {sql <> " AND " <> predicate, args ++ parameters}
+    else
+      {sql, args}
     end
   end
 

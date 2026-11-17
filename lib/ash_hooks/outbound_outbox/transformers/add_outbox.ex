@@ -26,12 +26,14 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
          {:ok, state} <- identity(state) do
       state = indexes(state)
 
-      Enum.reduce_while(actions(state), {:ok, state}, fn {type, name, opts}, {:ok, state} ->
-        case Builder.build_action(type, name, opts) do
-          {:ok, action} -> {:cont, {:ok, Transformer.add_entity(state, [:actions], action)}}
-          {:error, error} -> {:halt, {:error, error}}
-        end
-      end)
+      Enum.reduce_while(actions(state), {:ok, state}, &add_action/2)
+    end
+  end
+
+  defp add_action({type, name, opts}, {:ok, state}) do
+    case Builder.build_action(type, name, opts) do
+      {:ok, action} -> {:cont, {:ok, Transformer.add_entity(state, [:actions], action)}}
+      {:error, error} -> {:halt, {:error, error}}
     end
   end
 
@@ -123,15 +125,17 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
                                                                              state ->
         fields = [tenant, field] |> Enum.reject(&is_nil/1) |> Enum.map(source)
         where = "\"#{state_column}\" = '#{status}'"
-        existing = Transformer.get_entities(state, path)
-
-        if Enum.any?(existing, &(&1.fields == fields and &1.where == where)) do
-          state
-        else
-          index = Transformer.build_entity!(layer, path, :index, fields: fields, where: where)
-          Transformer.add_entity(state, path, index)
-        end
+        add_index(state, layer, path, fields, where)
       end)
+    end
+  end
+
+  defp add_index(state, layer, path, fields, where) do
+    if Enum.any?(Transformer.get_entities(state, path), &(&1.fields == fields and &1.where == where)) do
+      state
+    else
+      index = Transformer.build_entity!(layer, path, :index, fields: fields, where: where)
+      Transformer.add_entity(state, path, index)
     end
   end
 

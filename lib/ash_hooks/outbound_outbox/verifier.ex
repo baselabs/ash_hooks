@@ -14,7 +14,7 @@ defmodule AshHooks.OutboundOutbox.Verifier do
     metadata = Enum.find(Verifier.get_entities(state, [:attributes]), &(&1.name == :metadata))
 
     cond do
-      identity.all_tenants? || identity.where || Enum.sort(identity.keys) != expected ->
+      invalid_identity?(identity, expected) ->
         error(
           state,
           "unique_publication must contain exactly the tenant attribute and event_uuid, without all_tenants? or where"
@@ -46,6 +46,9 @@ defmodule AshHooks.OutboundOutbox.Verifier do
     end
   end
 
+  defp invalid_identity?(identity, expected),
+    do: identity.all_tenants? || identity.where || Enum.sort(identity.keys) != expected
+
   defp custom_metadata_codec?(state) do
     path =
       case Verifier.get_persisted(state, :data_layer) do
@@ -73,8 +76,7 @@ defmodule AshHooks.OutboundOutbox.Verifier do
       error(state, "delivery_routes must have distinct names and at least one route")
     else
       Enum.each(routes, fn {_name, callback} ->
-        if not callback?(callback, 2),
-          do: raise_error(state, "delivery routes must be exported two-argument callbacks or nil")
+        verify_delivery_callback!(state, callback)
       end)
 
       if not callback?(option(state, :trigger), 2),
@@ -82,6 +84,11 @@ defmodule AshHooks.OutboundOutbox.Verifier do
 
       :ok
     end
+  end
+
+  defp verify_delivery_callback!(state, callback) do
+    if not callback?(callback, 2),
+      do: raise_error(state, "delivery routes must be exported two-argument callbacks or nil")
   end
 
   defp callback?(nil, _arity), do: true

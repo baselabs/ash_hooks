@@ -34,13 +34,8 @@ defmodule AshHooks.Verifiers.OutboundReferences do
           _other -> nil
         end
 
-      transactional? =
-        layer != AshSqlite.DataLayer or not is_atom(owner_repo) or
-          (Code.ensure_loaded?(owner_repo) and owner_repo.write_transactions?())
-
-      if layer != outbox_layer or not transactional? or not Ash.DataLayer.can?(:transact, outbox) or
-           is_nil(owner_repo) or
-           (is_atom(owner_repo) and owner_repo != AshHooks.Phase.repo(outbox)) do
+      if layer != outbox_layer or not transactional_repo?(layer, owner_repo) or
+           not Ash.DataLayer.can?(:transact, outbox) or not compatible_repo?(owner_repo, outbox) do
         raise DslError,
           module: owner,
           path: [:actions, action.name],
@@ -49,6 +44,15 @@ defmodule AshHooks.Verifiers.OutboundReferences do
       end
     end
   end
+
+  defp transactional_repo?(AshSqlite.DataLayer, repo) when is_atom(repo),
+    do: Code.ensure_loaded?(repo) and repo.write_transactions?()
+
+  defp transactional_repo?(_layer, _repo), do: true
+
+  defp compatible_repo?(nil, _outbox), do: false
+  defp compatible_repo?(repo, outbox) when is_atom(repo), do: repo == AshHooks.Phase.repo(outbox)
+  defp compatible_repo?(_repo, _outbox), do: true
 
   defp verify_subscription(dsl_state) do
     case Verifier.get_option(dsl_state, [:subscription], :endpoint_resource, nil) do

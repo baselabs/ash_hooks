@@ -43,12 +43,14 @@ defmodule AshHooks.OutboxFixtures.SQLite.Runtime do
         :ok
 
       :oban ->
-        row.__struct__
-        |> Module.split()
-        |> Enum.drop(-1)
-        |> Module.concat()
-        |> Module.concat(:Worker)
-        |> apply(:enqueue_fanout, [row, tenant])
+        worker =
+          row.__struct__
+          |> Module.split()
+          |> Enum.drop(-1)
+          |> Module.concat()
+          |> Module.concat(:Worker)
+
+        worker.enqueue_fanout(row, tenant)
 
       :raise ->
         raise "trigger failed"
@@ -248,6 +250,22 @@ defmodule AshHooks.OutboxFixtures.SQLite.Emitter do
               declaration: {AshHooks.OutboxFixtures.SQLite.Emitter, :changed},
               build: {AshHooks.OutboxFixtures.SQLite.Runtime, :build}}
     end
+
+    update :revise do
+      require_atomic? true
+
+      change {AshHooks.Changes.Publish,
+              outbox: AshHooks.OutboxFixtures.SQLite.Outbox,
+              declaration: {AshHooks.OutboxFixtures.SQLite.Emitter, :changed},
+              build: {AshHooks.OutboxProcess, :build_revision}}
+    end
+
+    create :outer do
+      argument :inner_kind, :atom, constraints: [one_of: [:normal, :bulk, :atomic]]
+      argument :inner_id, :uuid
+      argument :undo, :boolean, default: false
+      change after_action(&AshHooks.OutboxProcess.nested/3)
+    end
   end
 
   webhooks do
@@ -293,12 +311,14 @@ defmodule AshHooks.OutboxFixtures.Postgres.Runtime do
         :ok
 
       :oban ->
-        row.__struct__
-        |> Module.split()
-        |> Enum.drop(-1)
-        |> Module.concat()
-        |> Module.concat(:Worker)
-        |> apply(:enqueue_fanout, [row, tenant])
+        worker =
+          row.__struct__
+          |> Module.split()
+          |> Enum.drop(-1)
+          |> Module.concat()
+          |> Module.concat(:Worker)
+
+        worker.enqueue_fanout(row, tenant)
 
       :raise ->
         raise "trigger failed"
@@ -498,6 +518,22 @@ defmodule AshHooks.OutboxFixtures.Postgres.Emitter do
               outbox: AshHooks.OutboxFixtures.Postgres.Outbox,
               declaration: {AshHooks.OutboxFixtures.Postgres.Emitter, :changed},
               build: {AshHooks.OutboxFixtures.Postgres.Runtime, :build}}
+    end
+
+    update :revise do
+      require_atomic? true
+
+      change {AshHooks.Changes.Publish,
+              outbox: AshHooks.OutboxFixtures.Postgres.Outbox,
+              declaration: {AshHooks.OutboxFixtures.Postgres.Emitter, :changed},
+              build: {AshHooks.OutboxProcess, :build_revision}}
+    end
+
+    create :outer do
+      argument :inner_kind, :atom, constraints: [one_of: [:normal, :bulk, :atomic]]
+      argument :inner_id, :uuid
+      argument :undo, :boolean, default: false
+      change after_action(&AshHooks.OutboxProcess.nested/3)
     end
   end
 

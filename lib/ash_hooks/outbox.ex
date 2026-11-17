@@ -71,28 +71,28 @@ defmodule AshHooks.Outbox do
   defp notify(resource, notifications, managed?) do
     notifier = AshHooks.OutboundOutbox.Notifier
 
-    notifications =
-      Enum.flat_map(notifications, fn notification ->
-        targets = List.wrap(notification.for)
-
-        if notification.resource == resource and notifier in targets do
-          # Ash's managed flag can also belong to a transaction nested inside
-          # a raw repository transaction. Route our notification explicitly;
-          # its notifier checks physical commit before emitting the hint.
-          own = %{notification | resource: nil, for: [notifier]}
-
-          case List.delete(targets, notifier) do
-            [] -> [own]
-            other -> [%{notification | for: other}, own]
-          end
-        else
-          [notification]
-        end
-      end)
+    notifications = Enum.flat_map(notifications, &route_notification(&1, resource, notifier))
 
     if managed?,
       do: Ash.Actions.Helpers.queue_notifications(notifications),
       else: Ash.Notifier.notify(notifications)
+  end
+
+  defp route_notification(notification, resource, notifier) do
+    targets = List.wrap(notification.for)
+
+    if notification.resource == resource and notifier in targets do
+      # An Ash transaction may be nested inside a raw repository transaction.
+      # Our notifier checks physical commit before emitting its hint.
+      own = %{notification | resource: nil, for: [notifier]}
+
+      case List.delete(targets, notifier) do
+        [] -> [own]
+        other -> [%{notification | for: other}, own]
+      end
+    else
+      [notification]
+    end
   end
 
   defp disposition(row, input) do
@@ -122,8 +122,7 @@ defmodule AshHooks.Outbox do
           not Ash.DataLayer.can?(:transact, resource) ->
         {:error, :nontransactional_outbox}
 
-      caller &&
-          (Ash.DataLayer.data_layer(caller) != layer or Phase.repo(caller) != Phase.repo(resource)) ->
+      caller_mismatch?(caller, resource, layer) ->
         {:error, :publication_repository_mismatch}
 
       get_in(opts[:context] || %{}, [:data_layer, :repo]) not in [nil, Phase.repo(resource)] ->
@@ -136,6 +135,11 @@ defmodule AshHooks.Outbox do
         :ok
     end
   end
+
+  defp caller_mismatch?(nil, _resource, _layer), do: false
+
+  defp caller_mismatch?(caller, resource, layer),
+    do: Ash.DataLayer.data_layer(caller) != layer or Phase.repo(caller) != Phase.repo(resource)
 
   def fanout(resource, id, opts) do
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
@@ -351,14 +355,7 @@ defmodule AshHooks.Outbox do
          {:ok, rows} <- list(resource, Keyword.merge(opts, state: :pending, due?: true)) do
       summary = %{done: 0, pending: 0, failed: 0, busy: 0, stale: 0, missing: 0, errors: []}
 
-      summary =
-        Enum.reduce(rows, summary, fn row, acc ->
-          case safely(fn -> fanout(resource, row.event_uuid, tenant: tenant) end) do
-            {:pending, _reason} -> Map.update!(acc, :pending, &(&1 + 1))
-            {:error, error} -> Map.update!(acc, :errors, &[error | &1])
-            outcome -> Map.update!(acc, outcome, &(&1 + 1))
-          end
-        end)
+      summary = Enum.reduce(rows, summary, &sweep_result(&1, tenant, &2))
 
       emit(:sweep, %{}, :complete)
       {:ok, summary}
@@ -366,6 +363,14 @@ defmodule AshHooks.Outbox do
       {:error, reason} = error ->
         emit(:sweep, %{}, :error, reason)
         error
+    end
+  end
+
+  defp sweep_result(row, tenant, summary) do
+    case safely(fn -> fanout(row.__struct__, row.event_uuid, tenant: tenant) end) do
+      {:pending, _reason} -> Map.update!(summary, :pending, &(&1 + 1))
+      {:error, error} -> Map.update!(summary, :errors, &[error | &1])
+      outcome -> Map.update!(summary, outcome, &(&1 + 1))
     end
   end
 
@@ -510,16 +515,18 @@ defmodule AshHooks.Outbox do
     Enum.find_value(
       option(row.__struct__, :declarations),
       {:error, :unknown_declaration},
-      fn entry ->
-        case declaration(row.__struct__, entry) do
-          {:ok, emitter, name, _entity, endpoint} = result ->
-            if OutboundBinding.source(emitter, name, endpoint) == row.dispatch_source, do: result
-
-          _unknown ->
-            nil
-        end
-      end
+      &source_declaration(row.__struct__, &1, row.dispatch_source)
     )
+  end
+
+  defp source_declaration(resource, entry, source) do
+    case declaration(resource, entry) do
+      {:ok, emitter, name, _entity, endpoint} = result ->
+        if OutboundBinding.source(emitter, name, endpoint) == source, do: result
+
+      _unknown ->
+        nil
+    end
   end
 
   defp publication_route(resource, name) do
