@@ -49,7 +49,7 @@ jobs:
 
   # The default and compatibility lanes use the full development dependencies.
   # The no-optional lane proves Oban and Plug are optional (ADR-0004).
-  test:
+  checks:
     needs: toolchain
     runs-on: ubuntu-24.04
     strategy:
@@ -78,6 +78,29 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix format --check-formatted
       - run: mix credo --strict
+
+  test:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}
+    env:
+      MIX_ENV: test
+      ASH_HOOKS_NO_OPTIONAL: ${{ matrix.no_optional }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            deps
+            _build
+          key: test-${{ matrix.elixir }}-${{ matrix.otp }}-noopt-${{ matrix.no_optional }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
       - run: mix test
       - name: Assert optional deps never loaded (no-optional leg)
         if: matrix.no_optional == '1'
@@ -357,11 +380,11 @@ jobs:
       - run: ./scripts/check-confidentiality.sh
 
   # The single branch-protection check name: require `all-checks-pass`
-  # on main and every leg (test matrix, floor, dialyzer, package,
+  # on main and every leg (checks, test matrix, floor, dialyzer, package,
   # postgres, livebook, security) gates through it — no per-job
   # check-name maintenance when the matrix grows.
   all-checks-pass:
-    needs: [toolchain, test, floor, postgres, dialyzer, package, livebook, security, confidentiality]
+    needs: [toolchain, checks, test, floor, postgres, dialyzer, package, livebook, security, confidentiality]
     if: always()
     runs-on: ubuntu-24.04
     steps:

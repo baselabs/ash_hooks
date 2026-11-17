@@ -22,6 +22,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- CI separates static checks from tests and enforces Mix-written lock bytes
+  and the repository secret-scan rules.
+
 - The optional Plug dependency requires 1.20.4 or later in the 1.x series,
   excluding versions affected by CVE-2026-120287. The development lock uses
   Plug 1.20.4.
