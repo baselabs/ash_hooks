@@ -79,16 +79,18 @@ end
 defmodule AshHooks.OutboxSafetyTest do
   use ExUnit.Case, async: false
   alias AshHooks.OutboxAcceptance, as: Cases
+  alias AshHooks.OutboxSafety.{Caller, OtherRepo}
+  alias AshHooks.Verifiers.OutboundReferences
 
   setup_all do
     f = Cases.setup(AshHooks.OutboxFixtures.SQLite)
-    Application.put_env(:ash_hooks, AshHooks.OutboxSafety.OtherRepo, f.repo.config())
-    {:ok, pid} = AshHooks.OutboxSafety.OtherRepo.start_link()
+    Application.put_env(:ash_hooks, OtherRepo, f.repo.config())
+    {:ok, pid} = OtherRepo.start_link()
     Process.unlink(pid)
 
     on_exit(fn ->
       Supervisor.stop(pid)
-      Application.delete_env(:ash_hooks, AshHooks.OutboxSafety.OtherRepo)
+      Application.delete_env(:ash_hooks, OtherRepo)
     end)
 
     {:ok, f}
@@ -114,12 +116,12 @@ defmodule AshHooks.OutboxSafetyTest do
 
     assert {{:error, :publication_repository_mismatch}, []} =
              Cases.count_queries(f, fn ->
-               Cases.publish(f, event, caller_resource: AshHooks.OutboxSafety.Caller)
+               Cases.publish(f, event, caller_resource: Caller)
              end)
 
     assert {{:error, _}, queries} =
              Cases.count_queries(f, fn ->
-               Ash.create(AshHooks.OutboxSafety.Caller, %{value: "rolled back"},
+               Ash.create(Caller, %{value: "rolled back"},
                  tenant: "tenant-a",
                  authorize?: false
                )
@@ -132,7 +134,7 @@ defmodule AshHooks.OutboxSafetyTest do
                Ash.create(f.emitter, %{value: "context rollback"},
                  tenant: "tenant-a",
                  authorize?: false,
-                 context: %{data_layer: %{repo: AshHooks.OutboxSafety.OtherRepo}}
+                 context: %{data_layer: %{repo: OtherRepo}}
                )
              end)
 
@@ -143,9 +145,7 @@ defmodule AshHooks.OutboxSafetyTest do
 
   test "A15 the extension rejects a statically mismatched publishing repository", f do
     assert_raise Spark.Error.DslError, ~r/same transactional data layer/, fn ->
-      AshHooks.Verifiers.OutboundReferences.verify(
-        AshHooks.OutboxSafety.Caller.spark_dsl_config()
-      )
+      OutboundReferences.verify(Caller.spark_dsl_config())
     end
 
     assert Cases.rows(f, :outbox) == []

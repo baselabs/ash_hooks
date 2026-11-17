@@ -587,6 +587,7 @@ for {module, namespace} <- [
     use ExUnit.Case, async: false
     require Ash.Query
     alias AshHooks.OutboxAcceptance, as: Cases
+    alias AshHooks.Test.HttpReceiver
     @moduletag timeout: 180_000
     @namespace namespace
     if @namespace == AshHooks.OutboxFixtures.Postgres, do: @moduletag(:postgres)
@@ -787,7 +788,7 @@ for {module, namespace} <- [
 
     if Code.ensure_loaded?(Oban) do
       test "A3 OS death around durable admission recovers without a second surviving send", f do
-        {server, port} = AshHooks.Test.HttpReceiver.start()
+        {server, port} = HttpReceiver.start()
         on_exit(fn -> :inets.stop(:httpd, server) end)
         Cases.endpoint(f, url: "http://localhost:#{port}/200")
 
@@ -860,7 +861,7 @@ for {module, namespace} <- [
       end
 
       test "A14 a restarted process re-admits the original metadata to a named route", f do
-        {server, port} = AshHooks.Test.HttpReceiver.start()
+        {server, port} = HttpReceiver.start()
         on_exit(fn -> :inets.stop(:httpd, server) end)
         Cases.endpoint(f, url: "http://localhost:#{port}/200")
         marker = Path.join(System.tmp_dir!(), "outbox_admission_#{Ash.UUID.generate()}")

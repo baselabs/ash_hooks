@@ -3,6 +3,7 @@ defmodule AshHooks.OutboundOutbox.Verifier do
   use Spark.Dsl.Verifier
 
   alias Spark.Dsl.{Extension, Verifier}
+  alias Spark.Error.DslError
 
   def verify(state) do
     tenant = Verifier.get_option(state, [:multitenancy], :attribute)
@@ -104,7 +105,7 @@ defmodule AshHooks.OutboundOutbox.Verifier do
 
   defp exception(state, message),
     do:
-      Spark.Error.DslError.exception(
+      DslError.exception(
         module: Verifier.get_persisted(state, :module),
         path: [:outbox],
         message: message

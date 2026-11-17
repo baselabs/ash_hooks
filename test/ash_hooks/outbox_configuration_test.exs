@@ -3,17 +3,18 @@ Code.require_file("outbox_resources.exs", __DIR__)
 
 defmodule AshHooks.OutboxConfigurationTest do
   use ExUnit.Case, async: false
+  alias AshHooks.OutboundOutbox.Transformers.AddOutbox
   alias AshHooks.OutboundOutbox.Verifier
+  alias AshHooks.OutboxFixtures.Postgres.Outbox, as: PostgresOutbox
   alias Spark.Dsl.Transformer
   @resource AshHooks.OutboxFixtures.SQLite.Outbox
 
   test "A17 migration configuration includes tenant-leading recovery indexes" do
     for {resource, path} <- [
           {@resource, [:sqlite, :custom_indexes]},
-          {AshHooks.OutboxFixtures.Postgres.Outbox, [:postgres, :custom_indexes]}
+          {PostgresOutbox, [:postgres, :custom_indexes]}
         ] do
-      {:ok, transformed} =
-        AshHooks.OutboundOutbox.Transformers.AddOutbox.transform(resource.spark_dsl_config())
+      {:ok, transformed} = AddOutbox.transform(resource.spark_dsl_config())
 
       indexes = Transformer.get_entities(transformed, path)
       assert length(indexes) == 2

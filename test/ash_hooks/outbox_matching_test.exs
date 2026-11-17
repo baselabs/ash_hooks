@@ -3,13 +3,14 @@ Code.require_file("outbox_resources.exs", __DIR__)
 
 defmodule AshHooks.OutboxMatching.Preparation do
   use Ash.Resource.Preparation
+  alias Ash.DataLayer.Simple
 
   def prepare(query, _opts, _context) do
     {owner, rows} = Application.fetch_env!(:ash_hooks, query.resource)
 
     query =
-      if Ash.DataLayer.data_layer(query.resource) == Ash.DataLayer.Simple,
-        do: Ash.DataLayer.Simple.set_data(query, rows),
+      if Ash.DataLayer.data_layer(query.resource) == Simple,
+        do: Simple.set_data(query, rows),
         else: query
 
     Ash.Query.after_action(query, fn _query, records ->
@@ -159,6 +160,7 @@ end
 
 defmodule AshHooks.OutboxMatchingTest do
   use ExUnit.Case, async: false
+  alias Ash.DataLayer.Ets
   alias AshHooks.OutboxAcceptance, as: Cases
 
   setup_all do
@@ -176,7 +178,7 @@ defmodule AshHooks.OutboxMatchingTest do
       subscription = Module.concat([AshHooks.OutboxMatching, name, Subscription])
       emitter = Module.concat([AshHooks.OutboxMatching, name, Emitter])
       atoms? = name in [:EtsAtoms, :SimpleAtoms]
-      ets? = Ash.DataLayer.data_layer(subscription) == Ash.DataLayer.Ets
+      ets? = Ash.DataLayer.data_layer(subscription) == Ets
       endpoint = Cases.endpoint(f)
 
       filters = [
@@ -235,12 +237,12 @@ defmodule AshHooks.OutboxMatchingTest do
 
       on_exit(fn ->
         Application.delete_env(:ash_hooks, subscription)
-        if ets?, do: Ash.DataLayer.Ets.stop(subscription)
+        if ets?, do: Ets.stop(subscription)
       end)
 
       if ets? do
         for row <- rows,
-            do: assert({:ok, _} = Ash.DataLayer.Ets.create(subscription, Ash.Changeset.new(row)))
+            do: assert({:ok, _} = Ets.create(subscription, Ash.Changeset.new(row)))
       end
 
       metadata = %{

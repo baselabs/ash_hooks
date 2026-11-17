@@ -3,6 +3,7 @@ defmodule AshHooks.Outbox do
 
   require Ash.Query
 
+  alias Ash.Actions.Helpers
   alias AshHooks.{Event, Info, OutboundBinding, Phase, PrimaryKey, Tenancy}
   alias AshHooks.OutboundOutbox.Metadata
   alias Spark.Dsl.Extension
@@ -74,7 +75,7 @@ defmodule AshHooks.Outbox do
     notifications = Enum.flat_map(notifications, &route_notification(&1, resource, notifier))
 
     if managed?,
-      do: Ash.Actions.Helpers.queue_notifications(notifications),
+      do: Helpers.queue_notifications(notifications),
       else: Ash.Notifier.notify(notifications)
   end
 
