@@ -44,6 +44,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The 3.0 upgrade guide gives tested replacement configurations, event mappings,
+  and delivery identities for every removed vendor verifier module.
+
 - Generated HTML is checked without rewriting ExDoc output. Only the page-title
   and index redirect template separators are exempt, anchored to the build's
   project name and version. Authored title and body dashes remain rejected.

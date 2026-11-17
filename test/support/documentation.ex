@@ -467,10 +467,6 @@ defmodule AshHooks.Test.Documentation do
     {ts <> "." <> body, "x-payments-signature", :structured, key, %{}}
   end
 
-  defp contract("upgrade-shop-provider", body, _ctx, _now, _ts, _ms, key) do
-    {body, "x-shop-signature", :base64, key, %{}}
-  end
-
   defp contract("verify-shop-provider", body, _ctx, _now, _ts, _ms, key) do
     {body, "x-shop-signature", :base64, key, %{}}
   end

@@ -1,3 +1,9 @@
+# The upgrade configurations and their known-answer vectors have one runner,
+# including in the required documentation lane, which selects this file alone.
+if System.get_env("ASH_HOOKS_DOCS_REQUIRED") == "1" do
+  Code.require_file("provider/scheme_recipes_test.exs", __DIR__)
+end
+
 if Code.ensure_loaded?(Phoenix.Endpoint) do
   defmodule AshHooks.DocumentationExamplesTest do
     # The shipped documentation's mounting examples, compiled and run as written.
@@ -444,7 +450,7 @@ defmodule AshHooks.DocumentationContentTest do
     Docs.track_test(context)
   end
 
-  @providers ~w(module-provider-orders readme-payments-provider upgrade-shop-provider verify-orders-provider
+  @providers ~w(module-provider-orders readme-payments-provider verify-orders-provider
     verify-shop-provider verify-prefixed-provider-in-application
     verify-encoded-key-provider-in-application verify-structured-provider-in-application
     verify-standard-provider-in-application verify-request-provider-in-application

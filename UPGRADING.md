@@ -644,31 +644,586 @@ These modules no longer exist: `AshHooks.Provider.ComplyCube` (with
 `AshHooks.Provider.Ecwid`, `AshHooks.Provider.Squarespace`, and
 `AshHooks.Provider.Wix`.
 
-Replace each with a provider module in your application. Most need only
-configuration:
+Replace each removed module with a provider in your application. On each existing
+`inbound` declaration, change only `provider` to the application module shown
+below. Keep the source name, scope, tenant resolution, secret source, and any
+explicit `event_id` extractor. The source-name rule immediately above applies to
+every recipe; the application module name does not select the source name.
 
-This application-defined example verifies a base64 HMAC of the raw body.
+Unless a recipe says otherwise, the generated callbacks keep the former
+`:webhook` classification, return `AshHooks.Provider.Event`, and leave delivery
+identity as the SHA-256 digest of the raw request body. The two former nested
+`Event` structs are replaced by `AshHooks.Provider.Event`, with the same `type`
+and `payload` fields. Update any application struct patterns accordingly.
 
-<!-- tested: upgrade-shop-provider -->
+Pass the exact raw body and ordered request headers to ingress. For a scheme
+that signs the URL or method, also pass the original HTTP method and public
+request URI, preserving percent encodings, query order, scheme, host, and port.
+Behind a proxy, use the application's configured public base URL as described in
+the [verification guide](documentation/tutorials/verify-any-sender.md).
+
+The blocks below are executed by the known-answer recipe tests. The
+[generic verification guide](documentation/tutorials/verify-any-sender.md) covers
+scheme options and host integration. The historical 2.3.0
+[event-type mapping source](https://github.com/baselabs/ash_hooks/blob/v2.3.0/lib/ash_hooks/provider/comply_cube.ex)
+and [batch-provider source](https://github.com/baselabs/ash_hooks/blob/v2.3.0/lib/ash_hooks/provider/hub_spot_v3.ex)
+remain available for comparison. Before changing an identity, follow the
+[legacy identity adoption procedure](#adopt-a-canonical-provider-identity).
+
+#### ComplyCube
+
+Replace `AshHooks.Provider.ComplyCube` with `MyApp.Webhooks.IdentityChecks`.
+The lowercase hex body signature has no timestamp. Keep the complete finite
+mapping below; unknown types fail closed without creating atoms from input.
+Delivery identity remains the raw-body digest.
+
+<!-- tested: upgrade-identity-checks-provider -->
 ```elixir
-defmodule MyApp.Webhooks.Shop do
+defmodule MyApp.Webhooks.IdentityChecks do
+  use AshHooks.Provider,
+    verify: [algorithm: :hmac_sha256, signature: {:header, "complycube-signature"}]
+
+  @event_types %{
+    "client.created" => :client_created,
+    "client.updated" => :client_updated,
+    "client.deleted" => :client_deleted,
+    "document.created" => :document_created,
+    "document.updated" => :document_updated,
+    "document.updated.image_uploaded" => :document_updated_image_uploaded,
+    "document.updated.image_deleted" => :document_updated_image_deleted,
+    "document.deleted" => :document_deleted,
+    "address.created" => :address_created,
+    "address.updated" => :address_updated,
+    "address.deleted" => :address_deleted,
+    "check.pending" => :check_pending,
+    "check.completed" => :check_completed,
+    "check.completed.clear" => :check_completed_clear,
+    "check.completed.attention" => :check_completed_attention,
+    "check.completed.rejected" => :check_completed_rejected,
+    "check.completed.match_confirmed" => :check_completed_match_confirmed,
+    "check.monitoring.attention" => :check_monitoring_attention,
+    "check.failed" => :check_failed,
+    "check.updated" => :check_updated,
+    "workflow.session.started" => :workflow_session_started,
+    "workflow.session.cancelled" => :workflow_session_cancelled,
+    "workflow.session.processing" => :workflow_session_processing,
+    "workflow.session.completed" => :workflow_session_completed,
+    "workflow.session.updated" => :workflow_session_updated
+  }
+
+  @impl true
+  def parse_event_type(%{"type" => raw}) when is_binary(raw) do
+    case Map.fetch(@event_types, raw) do
+      {:ok, type} -> {:ok, type}
+      :error -> {:error, :unknown_event_type}
+    end
+  end
+
+  def parse_event_type(_payload), do: {:error, :malformed_payload}
+
+  @impl true
+  def handle_event(event_type, payload) do
+    {:ok, %AshHooks.Provider.Event{type: event_type, payload: payload}}
+  end
+end
+```
+
+#### Shopify
+
+Replace `AshHooks.Provider.Shopify` with `MyApp.Webhooks.Storefront`.
+Use the signing secret as raw bytes. The signature is a base64 body HMAC.
+Keep the raw-body delivery identity.
+
+<!-- tested: upgrade-storefront-provider -->
+```elixir
+defmodule MyApp.Webhooks.Storefront do
   use AshHooks.Provider,
     verify: [
       algorithm: :hmac_sha256,
-      signature: {:header, "x-shop-signature"},
+      signature: {:header, "x-shopify-hmac-sha256"},
       encoding: :base64
     ]
 end
 ```
 
-Define an application provider from the sender's current signing documentation.
-The [generic verification guide](documentation/tutorials/verify-any-sender.md)
-explains supported signature shapes. Preserve existing source names, event-type
-mappings, and delivery identities. Consult the provider source shipped in
-ash_hooks 2.3.0 when preserving an existing mapping. The historical
-[event-type mapping source](https://github.com/baselabs/ash_hooks/blob/v2.3.0/lib/ash_hooks/provider/comply_cube.ex)
-and [batch-provider source](https://github.com/baselabs/ash_hooks/blob/v2.3.0/lib/ash_hooks/provider/hub_spot_v3.ex)
-remain available in the public repository.
+#### WooCommerce
+
+Replace `AshHooks.Provider.WooCommerce` with `MyApp.Webhooks.StoreOrders`.
+Use the signing secret as raw bytes. The signature is a base64 body HMAC.
+Keep the raw-body delivery identity.
+
+<!-- tested: upgrade-store-orders-provider -->
+```elixir
+defmodule MyApp.Webhooks.StoreOrders do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:header, "x-wc-webhook-signature"},
+      encoding: :base64
+    ]
+end
+```
+
+#### Stripe
+
+Replace `AshHooks.Provider.Stripe` with `MyApp.Webhooks.Payments`.
+The structured header supplies `t` and one or more `v1` signatures over
+`timestamp.body`. The default replay window is 300 seconds in either direction;
+the declaration's `replay_window_seconds` overrides it. Keep the raw-body identity.
+
+<!-- tested: upgrade-payments-provider -->
+```elixir
+defmodule MyApp.Webhooks.Payments do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:structured_header, "stripe-signature", signature_key: "v1"},
+      timestamp: {:signature_field, "t"},
+      signed_input: [:timestamp, ".", :body]
+    ]
+end
+```
+
+#### Shippo
+
+Replace `AshHooks.Provider.Shippo` with `MyApp.Webhooks.ShippingRates`.
+The structured header supplies `t` and one or more `v1` signatures over
+`timestamp.body`. The default replay window is 300 seconds in either direction;
+the declaration's `replay_window_seconds` overrides it. Keep the raw-body identity.
+
+<!-- tested: upgrade-shipping-rates-provider -->
+```elixir
+defmodule MyApp.Webhooks.ShippingRates do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:structured_header, "shippo-auth-signature", signature_key: "v1"},
+      timestamp: {:signature_field, "t"},
+      signed_input: [:timestamp, ".", :body]
+    ]
+end
+```
+
+#### Squarespace
+
+Replace `AshHooks.Provider.Squarespace` with `MyApp.Webhooks.SiteEvents`.
+The secret is a hex-encoded key; decode it before computing the body HMAC.
+Keep the raw-body delivery identity.
+
+<!-- tested: upgrade-site-events-provider -->
+```elixir
+defmodule MyApp.Webhooks.SiteEvents do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:header, "squarespace-signature"},
+      key_encoding: :hex
+    ]
+end
+```
+
+#### Ecwid
+
+Replace `AshHooks.Provider.Ecwid` with `MyApp.Webhooks.CatalogEvents`.
+Only `eventCreated.eventId` is authenticated, not the rest of the body.
+Preserve `eventId` as the delivery identity, including nonnegative integer IDs.
+There is no authenticated replay timestamp.
+
+<!-- tested: upgrade-catalog-events-provider -->
+```elixir
+defmodule MyApp.Webhooks.CatalogEvents do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:header, "x-ecwid-webhook-signature"},
+      encoding: :base64,
+      signed_input: {__MODULE__, :signed_input}
+    ]
+
+  def signed_input(body, ctx) do
+    decoder = Map.get(ctx, :json_decoder, &Jason.decode/1)
+    {:ok, %{"eventCreated" => timestamp} = payload} = decoder.(body)
+    true = is_integer(timestamp) and timestamp >= 0
+    {:ok, id} = event_identity(payload)
+    Integer.to_string(timestamp) <> "." <> id
+  end
+
+  @impl true
+  def event_identity(%{"eventId" => id}) when is_binary(id) and id != "", do: {:ok, id}
+
+  def event_identity(%{"eventId" => id}) when is_integer(id) and id >= 0,
+    do: {:ok, Integer.to_string(id)}
+
+  def event_identity(_payload), do: {:error, :malformed_payload}
+end
+```
+
+#### HubSpotV3
+
+Replace `AshHooks.Provider.HubSpotV3` with `MyApp.Webhooks.CrmEvents`.
+The app client secret signs the method, selectively decoded public URI, raw
+body, and millisecond timestamp. The default replay window is 300 seconds in
+either direction, overridden by `replay_window_seconds` on the declaration.
+
+Keep the finite subscription map and complete batch identity below. Homogeneous
+batches keep their mapped type; mixed known types become `:mixed`. Unknown types
+and malformed or empty batches fail closed. The identity ignores only outer
+`attemptNumber`, sorts object keys and outer events, and preserves repeated
+events and nested list order. It retains the former namespace bytes. Replace
+calls to the removed `decode_request_uri/1` with the application function shown.
+
+<!-- tested: upgrade-crm-events-provider -->
+```elixir
+defmodule MyApp.Webhooks.CrmEvents do
+  alias AshHooks.Provider.Signature
+
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:header, "x-hubspot-signature-v3"},
+      encoding: :base64,
+      signed_input: {__MODULE__, :signed_input},
+      timestamp: {:header, "x-hubspot-request-timestamp"},
+      timestamp_unit: :milliseconds
+    ]
+
+  @subscription_types %{
+    "contact.creation" => :contact_creation,
+    "contact.deletion" => :contact_deletion,
+    "contact.merge" => :contact_merge,
+    "contact.associationChange" => :contact_association_change,
+    "contact.restore" => :contact_restore,
+    "contact.privacyDeletion" => :contact_privacy_deletion,
+    "contact.propertyChange" => :contact_property_change,
+    "company.creation" => :company_creation,
+    "company.deletion" => :company_deletion,
+    "company.propertyChange" => :company_property_change,
+    "company.associationChange" => :company_association_change,
+    "company.restore" => :company_restore,
+    "company.merge" => :company_merge,
+    "deal.creation" => :deal_creation,
+    "deal.deletion" => :deal_deletion,
+    "deal.associationChange" => :deal_association_change,
+    "deal.restore" => :deal_restore,
+    "deal.merge" => :deal_merge,
+    "deal.propertyChange" => :deal_property_change,
+    "ticket.creation" => :ticket_creation,
+    "ticket.deletion" => :ticket_deletion,
+    "ticket.propertyChange" => :ticket_property_change,
+    "ticket.associationChange" => :ticket_association_change,
+    "ticket.restore" => :ticket_restore,
+    "ticket.merge" => :ticket_merge,
+    "product.creation" => :product_creation,
+    "product.deletion" => :product_deletion,
+    "product.restore" => :product_restore,
+    "product.merge" => :product_merge,
+    "product.propertyChange" => :product_property_change,
+    "line_item.creation" => :line_item_creation,
+    "line_item.deletion" => :line_item_deletion,
+    "line_item.associationChange" => :line_item_association_change,
+    "line_item.restore" => :line_item_restore,
+    "line_item.merge" => :line_item_merge,
+    "line_item.propertyChange" => :line_item_property_change,
+    "conversation.creation" => :conversation_creation,
+    "conversation.deletion" => :conversation_deletion,
+    "conversation.privacyDeletion" => :conversation_privacy_deletion,
+    "conversation.propertyChange" => :conversation_property_change,
+    "conversation.newMessage" => :conversation_new_message,
+    "object.creation" => :object_creation,
+    "object.deletion" => :object_deletion,
+    "object.propertyChange" => :object_property_change,
+    "object.associationChange" => :object_association_change,
+    "object.restore" => :object_restore,
+    "object.merge" => :object_merge
+  }
+
+  @identity_namespace "ash_hooks:hubspot:v1:"
+
+  def signed_input(body, ctx) do
+    ctx.method <>
+      decode_request_uri(ctx.request_uri) <>
+      body <> Signature.header(ctx, "x-hubspot-request-timestamp")
+  end
+
+  def decode_request_uri(uri) do
+    replacements = [
+      {"3A", ":"},
+      {"2F", "/"},
+      {"3F", "?"},
+      {"40", "@"},
+      {"21", "!"},
+      {"24", "$"},
+      {"27", "'"},
+      {"28", "("},
+      {"29", ")"},
+      {"2A", "*"},
+      {"2C", ","},
+      {"3B", ";"}
+    ]
+
+    Enum.reduce(replacements, uri, fn {hex, char}, acc ->
+      acc
+      |> String.replace("%" <> hex, char)
+      |> String.replace("%" <> String.downcase(hex), char)
+    end)
+  end
+
+  @impl true
+  def parse_event_type(payload) when is_list(payload) and payload != [] do
+    case batch_types(payload, []) do
+      {:ok, types} ->
+        case Enum.uniq(types) do
+          [single] -> {:ok, single}
+          _mixed -> {:ok, :mixed}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  def parse_event_type(_payload), do: {:error, :malformed_payload}
+
+  @impl true
+  def event_identity(events) when is_list(events) and events != [] do
+    if Enum.all?(events, &identity_event?/1) do
+      canonical_events =
+        events
+        |> Enum.map(fn event ->
+          event
+          |> Map.delete("attemptNumber")
+          |> canonical_value()
+          |> Jason.encode!()
+        end)
+        |> Enum.sort()
+
+      identity =
+        :crypto.hash(:sha256, @identity_namespace <> Jason.encode!(canonical_events))
+        |> Base.encode16(case: :lower)
+
+      {:ok, identity}
+    else
+      {:error, :malformed_payload}
+    end
+  end
+
+  def event_identity(_payload), do: {:error, :malformed_payload}
+
+  @spec batch_types(list(map()), [atom()]) :: {:ok, [atom()]} | {:error, atom()}
+  defp batch_types([], types), do: {:ok, types}
+
+  defp batch_types([%{"subscriptionType" => raw} | rest], types)
+       when is_binary(raw) do
+    case Map.fetch(@subscription_types, raw) do
+      {:ok, type} -> batch_types(rest, [type | types])
+      :error -> {:error, :unknown_event_type}
+    end
+  end
+
+  defp batch_types([_non_event | _rest], _types), do: {:error, :malformed_payload}
+
+  defp canonical_value(value) when is_map(value) do
+    value
+    |> Enum.map(fn {key, nested} -> {key, canonical_value(nested)} end)
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Jason.OrderedObject.new()
+  end
+
+  defp canonical_value(value) when is_list(value), do: Enum.map(value, &canonical_value/1)
+  defp canonical_value(value), do: value
+
+  defp identity_event?(%{"subscriptionType" => type}) when is_binary(type), do: true
+  defp identity_event?(_event), do: false
+end
+```
+
+#### Twilio
+
+Replace `AshHooks.Provider.Twilio` with `MyApp.Webhooks.Messages`.
+The auth token signs the exact public URL and sorted form names and unique
+values. When `bodySHA256` is present, check the JSON body digest and sign only
+the URL. Keep the decoder fallback for form and JSON deliveries, the generic
+`:webhook` type, and the raw-body identity. There is no replay timestamp.
+
+<!-- tested: upgrade-messages-provider -->
+```elixir
+defmodule MyApp.Webhooks.Messages do
+  alias AshHooks.Provider.Signature
+
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha1,
+      signature: {:header, "x-twilio-signature"},
+      encoding: :base64,
+      signed_input: {__MODULE__, :signed_input}
+    ]
+
+  def signed_input(body, ctx) do
+    {:ok, %URI{scheme: scheme, host: host, query: query}} = URI.new(ctx.request_uri)
+    true = scheme in ["http", "https"] and is_binary(host) and host != ""
+
+    case for({"bodySHA256", hash} <- URI.query_decoder(query || ""), do: hash) do
+      [] ->
+        suffix =
+          body
+          |> URI.query_decoder()
+          |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+          |> Enum.sort_by(&elem(&1, 0))
+          |> Enum.map(fn {key, values} -> Enum.map(Enum.sort(Enum.uniq(values)), &[key, &1]) end)
+          |> IO.iodata_to_binary()
+
+        ctx.request_uri <> suffix
+
+      [hash] ->
+        :ok = Signature.compare(Base.encode16(:crypto.hash(:sha256, body), case: :lower), hash)
+        ctx.request_uri
+    end
+  end
+
+  @impl true
+  def decode_payload(body), do: decode_payload(body, &Jason.decode/1)
+
+  @impl true
+  def decode_payload(body, decoder) do
+    case decoder.(body) do
+      {:ok, payload} when is_map(payload) or is_list(payload) -> {:ok, payload}
+      _ -> AshHooks.Provider.decode_body(body, :form)
+    end
+  end
+end
+```
+
+#### BigCommerce
+
+Replace `AshHooks.Provider.BigCommerce` with `MyApp.Webhooks.CommerceEvents`.
+Use the raw client-secret bytes, without `whsec_` or base64 key decoding. The
+Standard Webhooks v1 signature covers `webhook-id.timestamp.body`. The default
+window is 300 seconds in either direction; `replay_window_seconds` overrides it.
+Keep the raw-body identity; do not switch the identity to `webhook-id`.
+
+<!-- tested: upgrade-commerce-events-provider -->
+```elixir
+defmodule MyApp.Webhooks.CommerceEvents do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature:
+        {:structured_header, "webhook-signature",
+         signature_key: "v1", pair_separator: " ", key_value_separator: ","},
+      encoding: :base64,
+      timestamp: {:header, "webhook-timestamp"},
+      signed_input: [{:header, "webhook-id"}, ".", :timestamp, ".", :body]
+    ]
+end
+```
+
+#### Magento2
+
+Replace `AshHooks.Provider.Magento2` with `MyApp.Webhooks.CommerceRsa`.
+Pin the public RSA verification key. The base64 signature authenticates the
+base64 representation of the raw body. Keep the raw-body delivery identity.
+
+<!-- tested: upgrade-commerce-rsa-provider -->
+```elixir
+defmodule MyApp.Webhooks.CommerceRsa do
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :rsa_pkcs1_sha256,
+      signature: {:header, "x-adobe-commerce-webhook-signature"},
+      signed_input: [{:base64, :body}]
+    ]
+end
+```
+
+#### Wix
+
+Replace `AshHooks.Provider.Wix` with `MyApp.Webhooks.SiteTokens`.
+Pin the public RSA key and keep the raw compact JWS body intact through
+verification. This module calls the configured scheme directly to preserve the
+former raw-JWS delivery identity. A generated `verify: [...]` JWS provider would
+instead install a verified-payload identity, which requires legacy identity
+adoption before resuming ingress. The scheme still checks `exp` and `nbf`.
+
+<!-- tested: upgrade-site-tokens-provider -->
+```elixir
+defmodule MyApp.Webhooks.SiteTokens do
+  use AshHooks.Provider
+  alias AshHooks.Provider.{Event, Scheme}
+
+  @scheme [algorithm: :rsa_pkcs1_sha256, signature: :jws_body]
+
+  @impl true
+  def signature_source, do: :body
+
+  @impl true
+  def verify_signature(body, ctx, key), do: Scheme.verify(body, ctx, key, @scheme)
+
+  @impl true
+  def decode_payload(body), do: Scheme.decode_payload(body, @scheme)
+
+  @impl true
+  def decode_payload(body, decoder), do: Scheme.decode_payload(body, @scheme, decoder)
+
+  @impl true
+  defdelegate parse_event_type(payload), to: Event, as: :parse
+
+  @impl true
+  defdelegate handle_event(type, payload), to: Event, as: :build
+end
+```
+
+#### EasyPost
+
+Replace `AshHooks.Provider.EasyPost` with `MyApp.Webhooks.ParcelEvents`.
+Keep both configurations: v1 normalizes byte secrets with Unicode NFKD and signs
+the raw body; v2 uses the raw secret and signs the RFC 2822 timestamp, method,
+encoded path without the query, and body. Supply the exact signed method and
+request URI. A present v2 header selects v2 even if malformed; never fall back
+to v1 after a v2 failure. The v2 recipe has a 60-second symmetric replay window.
+Keep the generic event type and raw-body identity for both versions. Since v1
+has no timestamp, leave declaration-level `replay_window_seconds` unset.
+
+<!-- tested: upgrade-parcel-events-provider -->
+```elixir
+defmodule MyApp.Webhooks.ParcelEvents do
+  alias AshHooks.Provider.Scheme
+
+  use AshHooks.Provider,
+    verify: [
+      algorithm: :hmac_sha256,
+      signature: {:header, "x-hmac-signature", prefix: "hmac-sha256-hex="}
+    ]
+
+  @impl true
+  def verify_signature(body, ctx, key) do
+    if Enum.any?(ctx.headers, fn {name, _} -> String.downcase(name) == "x-hmac-signature-v2" end) do
+      Scheme.verify(body, ctx, key,
+        algorithm: :hmac_sha256,
+        signature: {:header, "x-hmac-signature-v2", prefix: "hmac-sha256-hex="},
+        encoding: :hex_any,
+        signed_input: [{:header, "x-timestamp"}, :method, :path, :body],
+        timestamp: {__MODULE__, :rfc2822_timestamp},
+        tolerance_seconds: 60
+      )
+    else
+      super(body, ctx, :unicode.characters_to_nfkd_binary(key))
+    end
+  end
+
+  def rfc2822_timestamp(_, ctx) do
+    # httpd_util uses numeric offsets and returns UTC seconds since year zero.
+    timestamp = AshHooks.Provider.Signature.header(ctx, "x-timestamp")
+
+    case :httpd_util.convert_request_date(String.to_charlist(timestamp)) do
+      {{_, _, _}, {_, _, _}} = datetime ->
+        {:ok, :calendar.datetime_to_gregorian_seconds(datetime) - 62_167_219_200}
+
+      _ ->
+        :error
+    end
+  end
+end
+```
 
 When replacing a raw-body identity with a verified-payload identity, plan and
 apply legacy identity adoption before resuming ingress. Preserve the former
