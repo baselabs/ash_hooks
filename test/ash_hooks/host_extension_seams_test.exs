@@ -2,11 +2,16 @@ defmodule AshHooks.HostExtensionSeamsTest do
   use ExUnit.Case, async: false
   require Ash.Query
   @moduletag capture_log: true
-  alias AshHooks.{Ingress, PrimaryKey}
-  alias AshHooks.Http.Bounded
+  alias Ash.Resource.Info, as: ResourceInfo
+  alias Ash.Type
   alias AshHooks.Delivery, as: Runtime
   alias AshHooks.Endpoint, as: EndpointAPI
+  alias AshHooks.Http.{Bounded, Httpc}
+  alias AshHooks.KeyRegistry.Transitions
   alias AshHooks.Provider.VerifiedFacts
+  alias AshHooks.Test.Repo, as: TestRepo
+  alias AshHooks.{Ingress, PrimaryKey}
+  alias Spark.Dsl.Extension
 
   def repo,
     do:
@@ -36,6 +41,8 @@ defmodule AshHooks.HostExtensionSeamsTest do
   def key_list, do: {:ok, "rotation-list"}
 
   defmodule FactsProvider do
+    alias AshHooks.Provider.Signature
+
     use AshHooks.Provider, verify: [algorithm: :hmac_sha256, signature: {:header, "x-signature"}]
     @impl true
     def verify_signature(body, context, keys) do
@@ -45,42 +52,45 @@ defmodule AshHooks.HostExtensionSeamsTest do
           else: keys
 
       case context[:host_context] do
-        %{digest: digest, tenant: tenant, key_ref: ref, policy: :events} = proof ->
-          if digest == :crypto.hash(:sha256, body) and tenant == context.tenant and
-               ref == key_ref(keys) and proof[:accepted] == true do
-            {:ok, %{"key_ref" => ref, "upstream" => true}}
-          else
-            {:error, :invalid_signature}
-          end
-
-        {:provider_failure, :raise} ->
-          raise "provider-private-value"
-
-        {:provider_failure, :throw} ->
-          throw("provider-private-value")
-
-        {:provider_failure, :exit} ->
-          exit("provider-private-value")
-
-        {:provider_failure, :malformed} ->
-          :invalid_result
-
-        nil ->
-          case super(body, context, keys) do
-            :ok ->
-              AshHooks.Provider.Signature.verification_result([
-                {:error, :invalid_signature},
-                {:ok, %{"key_ref" => key_ref(keys), "upstream" => false}}
-              ])
-
-            error ->
-              error
-          end
-
-        _ ->
-          {:error, :invalid_signature}
+        nil -> super(body, context, keys) |> with_facts(keys)
+        proof -> verify_context(proof, body, context, keys)
       end
     end
+
+    defp verify_context(
+           %{digest: digest, tenant: tenant, key_ref: ref, policy: :events} = proof,
+           body,
+           context,
+           keys
+         ) do
+      if digest == :crypto.hash(:sha256, body) and tenant == context.tenant and
+           ref == key_ref(keys) and proof[:accepted] == true do
+        {:ok, %{"key_ref" => ref, "upstream" => true}}
+      else
+        {:error, :invalid_signature}
+      end
+    end
+
+    defp verify_context({:provider_failure, :raise}, _, _, _),
+      do: raise("provider-private-value")
+
+    defp verify_context({:provider_failure, :throw}, _, _, _),
+      do: throw("provider-private-value")
+
+    defp verify_context({:provider_failure, :exit}, _, _, _),
+      do: exit("provider-private-value")
+
+    defp verify_context({:provider_failure, :malformed}, _, _, _), do: :invalid_result
+    defp verify_context(_, _, _, _), do: {:error, :invalid_signature}
+
+    defp with_facts(:ok, keys) do
+      Signature.verification_result([
+        {:error, :invalid_signature},
+        {:ok, %{"key_ref" => key_ref(keys), "upstream" => false}}
+      ])
+    end
+
+    defp with_facts(error, _keys), do: error
 
     defp key_ref(%AshHooks.Custody.Key{ref: ref}), do: ref
     defp key_ref(keys) when is_list(keys), do: "rotation-list"
@@ -105,11 +115,13 @@ defmodule AshHooks.HostExtensionSeamsTest do
   end
 
   defmodule MalformedFactsProvider do
+    alias AshHooks.HostExtensionSeamsTest.FactsProvider
+
     use AshHooks.Provider
 
     @impl true
     def verify_signature(body, context, keys),
-      do: AshHooks.HostExtensionSeamsTest.FactsProvider.verify_signature(body, context, keys)
+      do: FactsProvider.verify_signature(body, context, keys)
 
     @impl true
     def event_identity(_), do: {:ok, "authenticated-malformed"}
@@ -132,63 +144,44 @@ defmodule AshHooks.HostExtensionSeamsTest do
         {:signing, request, context, Test.repo().in_transaction?()}
       )
 
-      case context.endpoint.signer_behavior do
-        :skip ->
-          :skip
-
-        :terminal ->
-          {:error, :terminal}
-
-        :retry ->
-          {:error, :retry}
-
-        :raise ->
-          raise "callback-private-value"
-
-        :throw ->
-          throw("callback-private-value")
-
-        :exit ->
-          exit("callback-private-value")
-
-        :bad_result ->
-          {:private, "callback-private-value"}
-
-        :empty_headers ->
-          {:ok, [], %{key_refs: ["host-key"]}}
-
-        :empty_refs ->
-          {:ok, [{"signature", "x"}], %{key_refs: []}}
-
-        :non_list_refs ->
-          {:ok, [{"signature", "x"}], %{key_refs: nil}}
-
-        :bad_refs ->
-          {:ok, [{"signature", "x"}], %{key_refs: [String.duplicate("x", 256)]}}
-
-        :many_refs ->
-          {:ok, [{"signature", "x"}], %{key_refs: List.duplicate("x", 9)}}
-
-        :collision ->
-          {:ok, [{"X-Before", "private"}], %{key_refs: ["host-key"]}}
-
-        :reserved_te ->
-          {:ok, [{"Te", "trailers"}], %{key_refs: ["host-key"]}}
-
-        :reserved_transfer ->
-          {:ok, [{"transfer-encoding", "chunked"}], %{key_refs: ["host-key"]}}
-
-        :invalid_header ->
-          {:ok, [{"signature", "\r\n"}], %{key_refs: ["host-key"]}}
-
-        :slow ->
-          Process.sleep(2_000)
-          {:error, :retry}
-
-        :good ->
-          sign_request(request, context)
-      end
+      respond(context.endpoint.signer_behavior, request, context)
     end
+
+    defp respond(:skip, _, _), do: :skip
+    defp respond(:terminal, _, _), do: {:error, :terminal}
+    defp respond(:retry, _, _), do: {:error, :retry}
+    defp respond(:raise, _, _), do: raise("callback-private-value")
+    defp respond(:throw, _, _), do: throw("callback-private-value")
+    defp respond(:exit, _, _), do: exit("callback-private-value")
+    defp respond(:bad_result, _, _), do: {:private, "callback-private-value"}
+    defp respond(:empty_headers, _, _), do: {:ok, [], %{key_refs: ["host-key"]}}
+    defp respond(:empty_refs, _, _), do: {:ok, [{"signature", "x"}], %{key_refs: []}}
+    defp respond(:non_list_refs, _, _), do: {:ok, [{"signature", "x"}], %{key_refs: nil}}
+
+    defp respond(:bad_refs, _, _),
+      do: {:ok, [{"signature", "x"}], %{key_refs: [String.duplicate("x", 256)]}}
+
+    defp respond(:many_refs, _, _),
+      do: {:ok, [{"signature", "x"}], %{key_refs: List.duplicate("x", 9)}}
+
+    defp respond(:collision, _, _),
+      do: {:ok, [{"X-Before", "private"}], %{key_refs: ["host-key"]}}
+
+    defp respond(:reserved_te, _, _),
+      do: {:ok, [{"Te", "trailers"}], %{key_refs: ["host-key"]}}
+
+    defp respond(:reserved_transfer, _, _),
+      do: {:ok, [{"transfer-encoding", "chunked"}], %{key_refs: ["host-key"]}}
+
+    defp respond(:invalid_header, _, _),
+      do: {:ok, [{"signature", "\r\n"}], %{key_refs: ["host-key"]}}
+
+    defp respond(:slow, _, _) do
+      Process.sleep(2_000)
+      {:error, :retry}
+    end
+
+    defp respond(:good, request, context), do: sign_request(request, context)
 
     defp sign_request(request, context) do
       tenant = context.custody_tenant || context.tenant
@@ -218,7 +211,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
     end
 
     actions do
-      defaults [:read, create: :*, update: :*]
+      defaults [:read, :destroy, create: :*, update: :*]
     end
   end
 
@@ -547,7 +540,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
       Application.put_env(
         :ash_hooks,
         AshHooks.Test.RegistryRepo,
-        Application.fetch_env!(:ash_hooks, AshHooks.Test.Repo)
+        Application.fetch_env!(:ash_hooks, TestRepo)
       )
 
       {:ok, pid} = AshHooks.Test.RegistryRepo.start_link()
@@ -653,8 +646,8 @@ defmodule AshHooks.HostExtensionSeamsTest do
   end
 
   test "recording off admits facts without widening the schema and malformed facts fail closed" do
-    refute Ash.Resource.Info.attribute(LedgerOff, :verified_facts)
-    assert Ash.Resource.Info.attribute(Ledger, :verified_facts).sensitive?
+    refute ResourceInfo.attribute(LedgerOff, :verified_facts)
+    assert ResourceInfo.attribute(Ledger, :verified_facts).sensitive?
     body = Jason.encode!(%{"id" => unique()})
 
     assert {:ok, :created, row} =
@@ -912,7 +905,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
              )
 
     assert :ok =
-             AshHooks.KeyRegistry.Transitions.retire(
+             Transitions.retire(
                CustodyEndpoint,
                native.secret_ref,
                DateTime.utc_now(),
@@ -1072,7 +1065,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
     assert Task.await(receiver) =~ "webhook-signature: "
     assert only_attempt(native_row).signing_key_refs == ["standard-current"]
 
-    for adapter <- [AshHooks.Http.Httpc, &AshHooks.Http.Httpc.request/5] do
+    for adapter <- [Httpc, &Httpc.request/5] do
       refused = delivery!(native)
       assert :ok = Runtime.run(args(refused), config() |> Keyword.put(:http, adapter))
       refute_receive {:signing, _, _, _}
@@ -1207,10 +1200,10 @@ defmodule AshHooks.HostExtensionSeamsTest do
 
       attrs =
         Map.new(fields, fn field ->
-          definition = Ash.Resource.Info.attribute(Endpoint, field)
+          definition = ResourceInfo.attribute(Endpoint, field)
 
           {:ok, value} =
-            Ash.Type.dump_to_embedded(
+            Type.dump_to_embedded(
               definition.type,
               Map.get(endpoint, field),
               definition.constraints
@@ -1432,7 +1425,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
       route = AshHooks.OutboundBinding.named_route(worker, :enqueue)
       {:ok, bound} = AshHooks.Worker.bind_route(row, route, "tenant-a")
       receiver = receive_async(listener)
-      assert :ok = apply(worker, :perform, [%Oban.Job{args: args(bound)}])
+      assert :ok = worker.perform(%Oban.Job{args: args(bound)})
       Task.await(receiver)
 
       assert_receive {:signing, request, %{tenant: "tenant-a", event_id: event_id, attempt: 1},
@@ -1444,7 +1437,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
   end
 
   test "legacy map adapters and functions work with unchanged schemas and native wire signatures" do
-    for adapter <- [AshHooks.Http.Httpc, &AshHooks.Http.Httpc.request/5] do
+    for adapter <- [Httpc, &Httpc.request/5] do
       {listener, url} = listener()
 
       endpoint =
@@ -1667,53 +1660,30 @@ defmodule AshHooks.HostExtensionSeamsTest do
 
   defp table(resource) do
     section = if System.get_env("ASH_HOOKS_POSTGRES") == "1", do: :postgres, else: :sqlite
-    Spark.Dsl.Extension.get_opt(resource, [section], :table)
+    Extension.get_opt(resource, [section], :table)
   end
 
   defp create_table(resource) do
-    primary = Ash.Resource.Info.primary_key(resource)
-    attributes = Ash.Resource.Info.attributes(resource)
+    attributes = ResourceInfo.attributes(resource)
     additions = Enum.filter(attributes, &(&1.name in [:verified_facts, :signing_key_refs]))
     baseline = Enum.reject(attributes, &(&1.name in [:verified_facts, :signing_key_refs]))
-    optional? = Spark.Dsl.Extension.get_opt(resource, [:endpoint], :native_signing) == :optional
+    optional? = Extension.get_opt(resource, [:endpoint], :native_signing) == :optional
 
     original =
       Enum.map(baseline, fn attr ->
         if optional? and attr.name == :secret_ref, do: %{attr | allow_nil?: false}, else: attr
       end)
 
-    create = fn name, fields ->
-      columns =
-        Enum.map(fields, fn attr ->
-          "#{attr.name} #{sql_type(Ash.Type.storage_type(attr.type, attr.constraints))}" <>
-            if(attr.allow_nil?, do: "", else: " NOT NULL")
-        end)
-
-      repo().query!(
-        "CREATE TABLE #{name} (#{Enum.join(columns, ", ")}, PRIMARY KEY (#{Enum.join(primary, ", ")}))"
-      )
-    end
-
-    create.(table(resource), original)
+    create_table(resource, original)
 
     for attr <- additions do
-      type = sql_type(Ash.Type.storage_type(attr.type, attr.constraints))
+      type = sql_type(Type.storage_type(attr.type, attr.constraints))
       repo().query!("ALTER TABLE #{table(resource)} ADD COLUMN #{attr.name} #{type}")
     end
 
-    if optional? do
-      if System.get_env("ASH_HOOKS_POSTGRES") == "1" do
-        repo().query!("ALTER TABLE #{table(resource)} ALTER COLUMN secret_ref DROP NOT NULL")
-      else
-        prior = table(resource) <> "_before_optional"
-        repo().query!("ALTER TABLE #{table(resource)} RENAME TO #{prior}")
-        create.(table(resource), attributes)
-        repo().query!("INSERT INTO #{table(resource)} SELECT * FROM #{prior}")
-        repo().query!("DROP TABLE #{prior}")
-      end
-    end
+    if optional?, do: allow_null_native_ref(resource, attributes)
 
-    for identity <- Ash.Resource.Info.identities(resource) do
+    for identity <- ResourceInfo.identities(resource) do
       fields = Enum.uniq([:tenant_id | identity.keys])
 
       repo().query!(
@@ -1722,43 +1692,52 @@ defmodule AshHooks.HostExtensionSeamsTest do
     end
   end
 
-  defp sql_type(type) do
-    postgres? = System.get_env("ASH_HOOKS_POSTGRES") == "1"
+  defp create_table(resource, attributes) do
+    columns = Enum.map(attributes, &column/1)
+    primary = ResourceInfo.primary_key(resource)
 
-    case type do
-      {:array, item} ->
-        if(postgres?, do: sql_type(item) <> "[]", else: "TEXT")
+    repo().query!(
+      "CREATE TABLE #{table(resource)} (#{Enum.join(columns, ", ")}, PRIMARY KEY (#{Enum.join(primary, ", ")}))"
+    )
+  end
 
-      :uuid ->
-        if(postgres?, do: "UUID", else: "TEXT")
+  defp column(attr) do
+    "#{attr.name} #{sql_type(Type.storage_type(attr.type, attr.constraints))}" <>
+      if(attr.allow_nil?, do: "", else: " NOT NULL")
+  end
 
-      :binary_id ->
-        if(postgres?, do: "UUID", else: "TEXT")
-
-      :binary ->
-        if(postgres?, do: "BYTEA", else: "BLOB")
-
-      :boolean ->
-        if(postgres?, do: "BOOLEAN", else: "INTEGER")
-
-      :integer ->
-        "BIGINT"
-
-      :float ->
-        "DOUBLE PRECISION"
-
-      :decimal ->
-        "NUMERIC"
-
-      :map ->
-        if(postgres?, do: "JSONB", else: "TEXT")
-
-      datetime when datetime in [:utc_datetime, :utc_datetime_usec] ->
-        if(postgres?, do: "TIMESTAMPTZ", else: "TEXT")
-
-      _ ->
-        "TEXT"
+  defp allow_null_native_ref(resource, attributes) do
+    if System.get_env("ASH_HOOKS_POSTGRES") == "1" do
+      repo().query!("ALTER TABLE #{table(resource)} ALTER COLUMN secret_ref DROP NOT NULL")
+    else
+      prior = table(resource) <> "_before_optional"
+      repo().query!("ALTER TABLE #{table(resource)} RENAME TO #{prior}")
+      create_table(resource, attributes)
+      repo().query!("INSERT INTO #{table(resource)} SELECT * FROM #{prior}")
+      repo().query!("DROP TABLE #{prior}")
     end
+  end
+
+  defp sql_type({:array, item}) do
+    if System.get_env("ASH_HOOKS_POSTGRES") == "1", do: sql_type(item) <> "[]", else: "TEXT"
+  end
+
+  defp sql_type(type) do
+    types = %{
+      uuid: {"UUID", "TEXT"},
+      binary_id: {"UUID", "TEXT"},
+      binary: {"BYTEA", "BLOB"},
+      boolean: {"BOOLEAN", "INTEGER"},
+      integer: {"BIGINT", "BIGINT"},
+      float: {"DOUBLE PRECISION", "DOUBLE PRECISION"},
+      decimal: {"NUMERIC", "NUMERIC"},
+      map: {"JSONB", "TEXT"},
+      utc_datetime: {"TIMESTAMPTZ", "TEXT"},
+      utc_datetime_usec: {"TIMESTAMPTZ", "TEXT"}
+    }
+
+    {postgres, sqlite} = Map.get(types, type, {"TEXT", "TEXT"})
+    if System.get_env("ASH_HOOKS_POSTGRES") == "1", do: postgres, else: sqlite
   end
 
   defp update_machine(row, fields) do
@@ -1767,8 +1746,8 @@ defmodule AshHooks.HostExtensionSeamsTest do
 
     values =
       Enum.map(fields, fn {name, value} ->
-        attr = Ash.Resource.Info.attribute(row.__struct__, name)
-        {:ok, dumped} = Ash.Type.dump_to_native(attr.type, value, attr.constraints)
+        attr = ResourceInfo.attribute(row.__struct__, name)
+        {:ok, dumped} = Type.dump_to_native(attr.type, value, attr.constraints)
 
         cond do
           not postgres? and is_struct(dumped, DateTime) -> DateTime.to_iso8601(dumped)

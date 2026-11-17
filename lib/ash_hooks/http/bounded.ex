@@ -39,6 +39,7 @@ defmodule AshHooks.Http.Bounded do
   alias AshHooks.Http.CertificatePin
   alias AshHooks.Http.CertSan
   alias AshHooks.Http.Headers
+  alias AshHooks.Http.Request
   alias AshHooks.Http.Target
 
   @recv_slice 8 * 1024
@@ -95,13 +96,13 @@ defmodule AshHooks.Http.Bounded do
 
   @doc "Sends every prepared request line verbatim, with bounded response collection."
   @impl true
-  def send_prepared(%AshHooks.Http.Request{} = request, opts) do
+  def send_prepared(%Request{} = request, opts) do
     deadline = System.monotonic_time(:millisecond) + (opts[:timeout] || @default_timeout)
 
-    with :ok <- AshHooks.Http.Request.validate(request),
+    with :ok <- Request.validate(request),
          {:ok, target} <- Target.resolve(request.url, Keyword.put(opts, :deadline, deadline)),
          :ok <- CertificatePin.validate(opts[:certificate_pin], target.uri.scheme) do
-      send_bytes(target, AshHooks.Http.Request.to_iodata(request), opts, deadline)
+      send_bytes(target, Request.to_iodata(request), opts, deadline)
     end
   end
 

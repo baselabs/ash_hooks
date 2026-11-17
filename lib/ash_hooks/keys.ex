@@ -58,44 +58,47 @@ defmodule AshHooks.Keys do
          :ok <- require_custody(resource),
          :ok <- Phase.outside_transaction(resource),
          {:ok, tenant} <- Tenancy.resolve([resource, Storage.registry(resource)], opts[:tenant]) do
-      slots = [:secret_ref, :previous_secret_ref, :legacy_secret_ref, :legacy_previous_secret_ref]
-
-      fence =
-        Enum.map(slots, fn field ->
-          {field,
-           if(is_nil(Map.get(owner, field)), do: [is_nil: true], else: Map.get(owner, field))}
-        end)
-
-      values =
-        Map.new(Transitions.slots(resource), fn {ref, _kind} -> {ref, nil} end)
-        |> Map.merge(Map.new(Transitions.slots(resource), fn {_ref, kind} -> {kind, nil} end))
-        |> Map.merge(Map.new(slots, &{&1, nil}))
-
-      Storage.phase(Storage.registry(resource), resource, tenant, fn ->
-        with {:ok, updated} <- replace(owner, fence, values, tenant),
-             :ok <- retire_native(owner, Keyword.put(opts, :tenant, tenant)) do
-          {:ok, updated}
-        end
-      end)
+      disable_native_in_tenant(owner, opts, tenant)
     end
+  end
+
+  defp disable_native_in_tenant(%resource{} = owner, opts, tenant) do
+    slots = [:secret_ref, :previous_secret_ref, :legacy_secret_ref, :legacy_previous_secret_ref]
+
+    fence =
+      Enum.map(slots, fn field ->
+        {field,
+         if(is_nil(Map.get(owner, field)), do: [is_nil: true], else: Map.get(owner, field))}
+      end)
+
+    values =
+      Map.new(Transitions.slots(resource), fn {ref, _kind} -> {ref, nil} end)
+      |> Map.merge(Map.new(Transitions.slots(resource), fn {_ref, kind} -> {kind, nil} end))
+      |> Map.merge(Map.new(slots, &{&1, nil}))
+
+    Storage.phase(Storage.registry(resource), resource, tenant, fn ->
+      with {:ok, updated} <- replace(owner, fence, values, tenant),
+           :ok <- retire_native(owner, Keyword.put(opts, :tenant, tenant)) do
+        {:ok, updated}
+      end
+    end)
   end
 
   defp retire_native(owner, opts) do
     Enum.reduce_while(Transitions.slots(owner.__struct__), :ok, fn {field, kind}, :ok ->
-      if Map.get(owner, kind) && Map.get(owner, field) do
-        case Transitions.retire(
-               owner.__struct__,
-               Map.get(owner, field),
-               Transitions.now(opts),
-               opts
-             ) do
-          :ok -> {:cont, :ok}
-          error -> {:halt, error}
-        end
-      else
-        {:cont, :ok}
+      case retire_native_slot(owner, field, kind, opts) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
       end
     end)
+  end
+
+  defp retire_native_slot(owner, field, kind, opts) do
+    if Map.get(owner, kind) && Map.get(owner, field) do
+      Transitions.retire(owner.__struct__, Map.get(owner, field), Transitions.now(opts), opts)
+    else
+      :ok
+    end
   end
 
   defp optional_native(resource) do

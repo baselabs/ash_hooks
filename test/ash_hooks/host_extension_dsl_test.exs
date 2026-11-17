@@ -3,6 +3,9 @@ defmodule AshHooks.HostExtensionDslTest do
 
   require Spark.Test
 
+  alias Ash.Resource.Info, as: ResourceInfo
+  alias Spark.Error.DslError
+
   defmodule NoBehaviour do
     def sign(_, _), do: :skip
   end
@@ -80,11 +83,11 @@ defmodule AshHooks.HostExtensionDslTest do
         end
       )
 
-    refute Ash.Resource.Info.attribute(required, :secret_ref).allow_nil?
-    assert Ash.Resource.Info.attribute(optional, :secret_ref).allow_nil?
+    refute ResourceInfo.attribute(required, :secret_ref).allow_nil?
+    assert ResourceInfo.attribute(optional, :secret_ref).allow_nil?
 
-    assert Ash.Resource.Info.attribute(required, :url) ==
-             Ash.Resource.Info.attribute(optional, :url)
+    assert ResourceInfo.attribute(required, :url) ==
+             ResourceInfo.attribute(optional, :url)
 
     overridden =
       resource(
@@ -101,7 +104,7 @@ defmodule AshHooks.HostExtensionDslTest do
         end
       )
 
-    assert Ash.Resource.Info.attribute(overridden, :secret_ref).allow_nil?
+    assert ResourceInfo.attribute(overridden, :secret_ref).allow_nil?
   end
 
   test "new facts and provenance columns stay absent with defaults and facts is always reserved" do
@@ -112,7 +115,7 @@ defmodule AshHooks.HostExtensionDslTest do
         end
       )
 
-    refute Ash.Resource.Info.attribute(off, :verified_facts)
+    refute ResourceInfo.attribute(off, :verified_facts)
 
     on =
       resource(
@@ -125,13 +128,13 @@ defmodule AshHooks.HostExtensionDslTest do
       )
 
     assert %{sensitive?: true, allow_nil?: true} =
-             Ash.Resource.Info.attribute(on, :verified_facts)
+             ResourceInfo.attribute(on, :verified_facts)
 
-    assert :verified_facts in Ash.Resource.Info.action(on, :ingest).accept
-    refute :verified_facts in Ash.Resource.Info.action(off, :ingest).accept
+    assert :verified_facts in ResourceInfo.action(on, :ingest).accept
+    refute :verified_facts in ResourceInfo.action(off, :ingest).accept
 
     for mode <- [:on, :off] do
-      assert_raise Spark.Error.DslError, ~r/collides with an injected ledger field/, fn ->
+      assert_raise DslError, ~r/collides with an injected ledger field/, fn ->
         resource(
           AshHooks.InboundDelivery,
           quote do
@@ -151,7 +154,7 @@ defmodule AshHooks.HostExtensionDslTest do
         end
       )
 
-    refute Ash.Resource.Info.attribute(old_attempt, :signing_key_refs)
+    refute ResourceInfo.attribute(old_attempt, :signing_key_refs)
 
     new_attempt =
       resource(
@@ -163,9 +166,9 @@ defmodule AshHooks.HostExtensionDslTest do
         end
       )
 
-    assert %{allow_nil?: true} = Ash.Resource.Info.attribute(new_attempt, :signing_key_refs)
-    assert :signing_key_refs in Ash.Resource.Info.action(new_attempt, :record).accept
-    refute :signing_key_refs in Ash.Resource.Info.action(old_attempt, :record).accept
+    assert %{allow_nil?: true} = ResourceInfo.attribute(new_attempt, :signing_key_refs)
+    assert :signing_key_refs in ResourceInfo.action(new_attempt, :record).accept
+    refute :signing_key_refs in ResourceInfo.action(old_attempt, :record).accept
   end
 
   test "host extension guide additions contain no unexecuted Elixir blocks" do
@@ -186,7 +189,7 @@ defmodule AshHooks.HostExtensionDslTest do
         fun.()
       end
 
-    assert [{_module, [%Spark.Error.DslError{} = error]}] = errors
+    assert [{_module, [%DslError{} = error]}] = errors
     assert Exception.message(error) =~ pattern
   end
 

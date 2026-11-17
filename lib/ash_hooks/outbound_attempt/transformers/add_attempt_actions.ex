@@ -6,7 +6,7 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptActions do
   use Spark.Dsl.Transformer
 
   alias Ash.Resource.Builder
-  alias Spark.Dsl.Transformer
+  alias Spark.Dsl.{Extension, Transformer}
 
   def before?(Ash.Resource.Transformers.DefaultAccept), do: true
   def before?(Ash.Resource.Transformers.CacheActionInputs), do: true
@@ -29,8 +29,9 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptActions do
   # carries no :id (a consumer-named primary key compiles unchanged).
   defp build_record(state) do
     extra =
-      if Spark.Dsl.Extension.get_opt(state, [:outbound_attempt], :record_signing_provenance, :off) ==
-           :on, do: [:signing_key_refs], else: []
+      if Extension.get_opt(state, [:outbound_attempt], :record_signing_provenance, :off) == :on,
+        do: [:signing_key_refs],
+        else: []
 
     Builder.build_action(:create, :record,
       upsert?: true,

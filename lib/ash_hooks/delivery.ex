@@ -79,7 +79,7 @@ defmodule AshHooks.Delivery do
   alias AshHooks.Custody.Key
   alias AshHooks.Errors.Invalid.{InvalidSignature, KeyKindMismatch, UnknownKey}
   alias AshHooks.Errors.Unknown.{KeyUnavailable, UnknownError}
-  alias AshHooks.Http.Headers
+  alias AshHooks.Http.{Headers, Request}
   alias AshHooks.KeyRegistry.Transitions
   alias AshHooks.{OutboundBinding, PrimaryKey, Signing, Tenancy}
   alias Spark.Dsl.Extension
@@ -1535,8 +1535,7 @@ defmodule AshHooks.Delivery do
 
   defp prepare_and_sign(adapter, headers, row, endpoint, config, tenant) do
     if prepared_adapter?(adapter) do
-      with {:ok, request} <-
-             AshHooks.Http.Request.new(:post, endpoint.url, headers, payload_bytes(row)) do
+      with {:ok, request} <- Request.new(:post, endpoint.url, headers, payload_bytes(row)) do
         host_sign(request, row, endpoint, config, tenant)
       end
     else
@@ -2194,14 +2193,7 @@ defmodule AshHooks.Delivery do
       opts =
         sw_secret(secret)
         |> Keyword.merge(sw_previous(previous))
-        |> Keyword.merge(
-          legacy_secret(
-            if(optional?, do: legacy || legacy_previous, else: legacy),
-            if(optional? and is_nil(legacy), do: nil, else: legacy_previous)
-          )
-        )
-
-      mode = row.signing_mode || :standard
+        |> Keyword.merge(legacy_signing_options(optional?, legacy, legacy_previous))
 
       result =
         native_headers(
@@ -2215,18 +2207,7 @@ defmodule AshHooks.Delivery do
 
       fields = signing_fields(mode)
 
-      used_refs =
-        endpoint
-        |> Map.take(fields)
-        |> Map.replace(:previous_secret_ref, previous_ref)
-        |> Map.replace(:legacy_previous_secret_ref, legacy_previous_ref)
-        |> Map.reject(fn {slot, ref} ->
-          is_nil(ref) or
-            (slot in [:secret_ref, :previous_secret_ref] and
-               (not is_map(result) or not is_map_key(result, "webhook-signature"))) or
-            (slot in [:legacy_secret_ref, :legacy_previous_secret_ref] and
-               (not is_map(result) or not is_map_key(result, "x-webhook-signature")))
-        end)
+      used_refs = signing_refs(endpoint, fields, previous_ref, legacy_previous_ref, result)
 
       case result do
         {:error, _} = error -> error
@@ -2236,6 +2217,30 @@ defmodule AshHooks.Delivery do
   rescue
     ArgumentError -> {:error, :signing_failed}
   end
+
+  defp legacy_signing_options(false, legacy, previous), do: legacy_secret(legacy, previous)
+
+  defp legacy_signing_options(true, legacy, previous),
+    do: legacy_secret(legacy || previous, if(is_nil(legacy), do: nil, else: previous))
+
+  defp signing_refs(endpoint, fields, previous_ref, legacy_previous_ref, headers) do
+    endpoint
+    |> Map.take(fields)
+    |> Map.replace(:previous_secret_ref, previous_ref)
+    |> Map.replace(:legacy_previous_secret_ref, legacy_previous_ref)
+    |> Map.reject(fn {slot, ref} -> is_nil(ref) or not signed_slot?(slot, headers) end)
+  end
+
+  defp signed_slot?(slot, headers) when is_map(headers) do
+    header =
+      if slot in [:secret_ref, :previous_secret_ref],
+        do: "webhook-signature",
+        else: "x-webhook-signature"
+
+    Map.has_key?(headers, header)
+  end
+
+  defp signed_slot?(_slot, _headers), do: false
 
   defp signing_fields(:standard), do: [:secret_ref, :previous_secret_ref]
   defp signing_fields(:legacy), do: [:legacy_secret_ref, :legacy_previous_secret_ref]

@@ -18,13 +18,17 @@ defmodule AshHooks.Endpoint.Verifiers.Signer do
         error(state, "signer must implement AshHooks.Signer")
 
       true ->
-        Enum.reduce_while(attributes, :ok, fn name, :ok ->
-          case verify_attribute(state, name) do
-            :ok -> {:cont, :ok}
-            failure -> {:halt, failure}
-          end
-        end)
+        verify_attributes(state, attributes)
     end
+  end
+
+  defp verify_attributes(state, attributes) do
+    Enum.reduce_while(attributes, :ok, fn name, :ok ->
+      case verify_attribute(state, name) do
+        :ok -> {:cont, :ok}
+        failure -> {:halt, failure}
+      end
+    end)
   end
 
   defp signer?(module) do

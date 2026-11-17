@@ -51,7 +51,7 @@ defmodule AshHooks.LongTailTest do
   describe "top-level entry points" do
     test "AshHooks.dispatch/3 uses the default opts (delegate arity)" do
       assert_raise ArgumentError, ~r/not a Spark DSL module/, fn ->
-        AshHooks.dispatch(AshHooks.LongTailTest, :nope, :not_an_event)
+        AshHooks.dispatch(String, :nope, :not_an_event)
       end
     end
 

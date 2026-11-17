@@ -80,7 +80,7 @@ defmodule AshHooks.Ingress do
   alias AshHooks.Errors.Unknown.UnknownError
   alias AshHooks.Inbound.ResolvedSource
   alias AshHooks.KeyRegistry.Storage
-  alias AshHooks.Provider.DeliveryContext
+  alias AshHooks.Provider.{DeliveryContext, VerifiedFacts}
   alias Spark.Dsl.Extension
 
   @typedoc """
@@ -1495,10 +1495,7 @@ defmodule AshHooks.Ingress do
     Enum.reduce_while(source.keys, {:error, nil}, fn key, {:error, failure} ->
       case verify(source.provider, body, ctx, %{inbound | previous_secret: nil}, key, source.name) do
         {:ok, facts} ->
-          result =
-            with :ok <- stamp_source_used(source.record, key.ref, ctx[:tenant]), do: {:ok, facts}
-
-          {:halt, result}
+          {:halt, verified_source_facts(source.record, key.ref, ctx[:tenant], facts)}
 
         {:error, %UnknownError{}} = error ->
           {:halt, error}
@@ -1507,6 +1504,10 @@ defmodule AshHooks.Ingress do
           {:cont, {:error, source_key_failure(failure, reason, source.name)}}
       end
     end)
+  end
+
+  defp verified_source_facts(record, ref, tenant, facts) do
+    with :ok <- stamp_source_used(record, ref, tenant), do: {:ok, facts}
   end
 
   defp source_key_failure(nil, reason, _name), do: reason
@@ -1747,7 +1748,7 @@ defmodule AshHooks.Ingress do
         {:ok, nil}
 
       {:ok, facts} ->
-        if AshHooks.Provider.VerifiedFacts.valid?(facts),
+        if VerifiedFacts.valid?(facts),
           do: {:ok, facts},
           else: {:error, Errors.from_reason(:unknown_error, provider: name)}
 
