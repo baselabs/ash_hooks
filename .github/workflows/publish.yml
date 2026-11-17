@@ -1,8 +1,9 @@
 name: Publish to Hex
 
-# An owner dispatches this from main once the version commit has landed through
-# kimosabe-land, whose CI run on that exact commit passed. infra-1 pushes the
-# annotated v<version> tag on the published commit after the read-back below.
+# The release maintainer dispatches this from main after the owner approves.
+# main moves only after the CI run on that exact commit passes. The release
+# maintainer pushes the annotated v<version> tag on the published commit after
+# the read-back below.
 # ash_hooks is a public package on hex.pm, so there is no organization step.
 on:
   workflow_dispatch:

@@ -10,9 +10,10 @@ step that runs `mix hex.publish` receives it.
 
 ## Who does what
 
-1. **The project session cuts the version.** It chooses the version under the
-   [support policy](adr/0010-semver-and-support-policy.md) and makes one
-   commit that updates:
+1. **The maintainer who prepares the release cuts the version.** They choose
+   the version under the
+   [support policy](adr/0010-semver-and-support-policy.md) and make one commit
+   that updates:
    - `@version` in `mix.exs`;
    - the dated `CHANGELOG.md` heading and its comparison link;
    - the `UPGRADING.md` anchor and heading for the release;
@@ -22,22 +23,23 @@ step that runs `mix hex.publish` receives it.
    - the supported range in `SECURITY.md`, the version in `usage-rules.md`
      and the tenancy adoption checklist.
 
-   The commit lands on `main` through kimosabe-land. The CI run on that exact
-   commit passes every job, including `all-checks-pass`, which runs the
-   package, Livebook, documentation, confidentiality and dash checks. The
-   session then hands the release to infra-1 with the repository, the full
-   commit SHA, the version and anything the release needs first.
-2. **infra-1 asks the owner and dispatches.** After the owner approves,
-   infra-1 dispatches the workflow from `main`. The job runs only for the
-   owner's accounts, and the `publish` environment admits only `main`.
+   `main` moves to the commit only after the CI run on that exact commit
+   passes every job, including `all-checks-pass`, which runs the package,
+   Livebook, documentation, confidentiality and dash checks. They then hand
+   the release to the release maintainer with the full commit SHA, the
+   version and anything the release needs first.
+2. **The release maintainer asks the owner and dispatches.** After the owner
+   approves, the release maintainer dispatches the workflow from `main`. The
+   job runs only for the owner's accounts, and the `publish` environment
+   admits only `main`.
 3. **The workflow publishes and reads the release back.** See
    [What the workflow checks](#what-the-workflow-checks).
-4. **infra-1 tags and records the release.** infra-1 pushes the annotated tag
-   `v<version>` on the commit the run published, and creates the GitHub
-   Release from that tag. The Release carries the version's `CHANGELOG.md`
-   notes, plus the commit and archive SHA-256 from the run summary. infra-1
-   then confirms that the tag, the Release, `main` and Hex name the same
-   version. Earlier release notes may link forward, but they are not
+4. **The release maintainer tags and records the release.** They push the
+   annotated tag `v<version>` on the commit the run published, and create the
+   GitHub Release from that tag. The Release carries the version's
+   `CHANGELOG.md` notes, plus the commit and archive SHA-256 from the run
+   summary. They then confirm that the tag, the Release, `main` and Hex name
+   the same version. Earlier release notes may link forward, but they are not
    backfilled with changes they omitted.
 
 ## What the workflow checks
@@ -82,12 +84,12 @@ The run summary records the commit and the archive SHA-256.
 ## When a run fails
 
 - **A failure before `Publish to hex.pm`.** Nothing reached Hex. The fix lands
-  on `main` like any other change, and infra-1 dispatches again from the new
-  head.
+  on `main` like any other change, and the release maintainer dispatches again
+  from the new head.
 - **A failure in `Read back` that a retry can clear,** such as a registry or
-  HexDocs delay. infra-1 re-runs the failed job only. The `Publish` job has
-  already succeeded and does not run again.
+  HexDocs delay. The release maintainer re-runs the failed job only. The
+  `Publish` job has already succeeded and does not run again.
 - **A failure in `Read back` that persists.** The version is out, and Hex
-  archives are immutable. infra-1 reports it to the owner, who decides whether
-  to retire the version. The fix ships as the next patch version through this
-  same path.
+  archives are immutable. The release maintainer reports it to the owner, who
+  decides whether to retire the version. The fix ships as the next patch
+  version through this same path.
