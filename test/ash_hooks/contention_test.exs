@@ -81,6 +81,48 @@ defmodule AshHooks.ContentionTest do
     assert Enum.all?(attempts, &(&1 - started < 2_000))
   end
 
+  test "a delayed wakeup never starts another operation after the deadline" do
+    owner = self()
+    counter = :counters.new(1, [])
+    error = {:error, busy()}
+
+    task =
+      Task.async(fn ->
+        Contention.run(fn ->
+          :counters.add(counter, 1, 1)
+          send(owner, :attempted)
+          error
+        end)
+      end)
+
+    assert_receive :attempted, 5_000
+    :ok = suspend_during_sleep(task.pid, 100)
+    attempts = :counters.get(counter, 1)
+
+    try do
+      Process.sleep(2_100)
+    after
+      :erlang.resume_process(task.pid)
+    end
+
+    assert ^error = Task.await(task)
+    assert :counters.get(counter, 1) == attempts
+  end
+
+  defp suspend_during_sleep(_pid, 0), do: flunk("retry never entered its sleep")
+
+  defp suspend_during_sleep(pid, attempts) do
+    :erlang.suspend_process(pid)
+
+    if Process.info(pid, :current_function) == {:current_function, {Process, :sleep, 1}} do
+      :ok
+    else
+      :erlang.resume_process(pid)
+      Process.sleep(1)
+      suspend_during_sleep(pid, attempts - 1)
+    end
+  end
+
   defp drain_attempts(acc) do
     receive do
       {:attempt, time} -> drain_attempts([time | acc])
