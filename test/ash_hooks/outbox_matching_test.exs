@@ -709,7 +709,9 @@ for {test_module, namespace} <- [
                    )
         end
 
-        assert [%{status: :dead_letter, last_error: "unsafe_destination"}] = Cases.rows(f, :delivery)
+        assert [%{status: :dead_letter, last_error: "unsafe_destination"}] =
+                 Cases.rows(f, :delivery)
+
         refute_receive :unsafe_transport_entered
         refute_receive {:http_received, _request}
       end
