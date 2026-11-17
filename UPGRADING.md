@@ -27,6 +27,11 @@ and insertion/update timestamps. Add tenant-leading partial indexes on
 `failed`. Do not reuse the optional event-log table: its best-effort recording,
 pruning and endpoint-targeted replay retain their existing behavior.
 
+The PostgreSQL outbox `metadata` column uses native `json`, preserving integer
+and float kinds, including scientific notation. Do not change that column to
+`jsonb`, which normalizes numeric kinds. Subscription filters continue to use
+`jsonb`.
+
 Grant INSERT **and UPDATE** on the outbox to the producer role. Even a duplicate
 executes `ON CONFLICT DO UPDATE` on the conflict keys to return the existing
 row in one statement. Forced row security needs both INSERT and UPDATE

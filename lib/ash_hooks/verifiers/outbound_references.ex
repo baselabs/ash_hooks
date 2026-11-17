@@ -42,7 +42,6 @@ defmodule AshHooks.Verifiers.OutboundReferences do
           message:
             "Publish requires the same transactional data layer and write repository as its outbox"
       end
-
     end
   end
 

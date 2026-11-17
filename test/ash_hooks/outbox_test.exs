@@ -3,7 +3,6 @@ Code.require_file("outbox_resources.exs", __DIR__)
 defmodule AshHooks.OutboxAcceptance do
   @moduledoc false
   import ExUnit.Assertions
-  require Ash.Query
 
   def setup(namespace) do
     sqlite? = namespace == AshHooks.OutboxFixtures.SQLite
@@ -32,7 +31,9 @@ defmodule AshHooks.OutboxAcceptance do
 
       fields =
         Enum.map_join(Ash.Resource.Info.attributes(resource), ", ", fn attr ->
-          type = sql_type(Ash.Type.storage_type(attr.type, attr.constraints), sqlite?)
+          type = if not sqlite? and resource == resources.outbox and attr.name == :metadata,
+            do: "JSON",
+            else: sql_type(Ash.Type.storage_type(attr.type, attr.constraints), sqlite?)
           "\"#{attr.name}\" #{type}" <> if(attr.primary_key?, do: " PRIMARY KEY", else: "")
         end)
 
@@ -52,7 +53,7 @@ defmodule AshHooks.OutboxAcceptance do
         repo.query!("DROP TABLE #{table(resource)}")
       end)
 
-      Application.delete_env(:ash_hooks, {Module.concat(namespace, :Runtime), :trigger})
+      Application.delete_env(:ash_hooks, Module.concat(namespace, :Runtime))
 
       if sqlite? do
         Supervisor.stop(Process.whereis(repo))
@@ -68,7 +69,7 @@ defmodule AshHooks.OutboxAcceptance do
       fixture.repo.query!("DELETE FROM #{table(fixture[key])}")
     end
 
-    Application.delete_env(:ash_hooks, {Module.concat(fixture.namespace, :Runtime), :trigger})
+    Application.delete_env(:ash_hooks, Module.concat(fixture.namespace, :Runtime))
     :ok
   end
 
@@ -201,6 +202,7 @@ defmodule AshHooks.OutboxAcceptance do
       require Ash.Query
       alias AshHooks.OutboxAcceptance, as: Cases
       @namespace unquote(namespace)
+      if @namespace == AshHooks.OutboxFixtures.Postgres, do: @moduletag(:postgres)
       setup_all do
         {:ok, Cases.setup(@namespace)}
       end
@@ -263,10 +265,10 @@ defmodule AshHooks.OutboxAcceptance do
                    assert {:ok, :ok} =
                             Ash.transact(f.outbox, fn ->
                               assert {:ok, :accepted} = Cases.publish(f, event)
-                              {:ok, :ok}
+                              :ok
                             end)
 
-                   {:ok, :ok}
+                   :ok
                  end)
 
         assert [_] = Cases.rows(f, :outbox)
@@ -427,7 +429,7 @@ defmodule AshHooks.OutboxAcceptance do
 
       test "A11 notifications are after commit and trigger failures cannot fail publish", f do
         runtime = Module.concat(f.namespace, :Runtime)
-        Application.put_env(:ash_hooks, {runtime, :trigger}, self())
+        Application.put_env(:ash_hooks, runtime, self())
 
         for mode <- [:ignore, :warn, :raise] do
           previous = Application.get_env(:ash, :missed_notifications)
@@ -458,7 +460,7 @@ defmodule AshHooks.OutboxAcceptance do
                  Ash.transact(f.outbox, fn ->
                    assert {:ok, :accepted} = Cases.publish(f, event)
                    refute_receive {:triggered, _, _}
-                   {:ok, :ok}
+                   :ok
                  end)
 
         assert_receive {:triggered, id, "tenant-a"}
@@ -467,7 +469,7 @@ defmodule AshHooks.OutboxAcceptance do
         refute_receive {:triggered, _, _}
 
         for failure <- [:raise, :exit, :throw, :error] do
-          Application.put_env(:ash_hooks, {runtime, :trigger}, failure)
+          Application.put_env(:ash_hooks, runtime, failure)
           assert {:ok, :accepted} = Cases.publish(f, Cases.event())
         end
       end

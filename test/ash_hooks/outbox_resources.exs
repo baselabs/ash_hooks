@@ -12,7 +12,7 @@ defmodule AshHooks.OutboxFixtures.SQLite.Runtime do
   def variant(event), do: {:ok, "v2:" <> event.payload}
 
   def trigger(row, tenant) do
-    case Application.get_env(:ash_hooks, {__MODULE__, :trigger}) do
+    case Application.get_env(:ash_hooks, __MODULE__) do
       nil ->
         :ok
 
@@ -181,7 +181,7 @@ defmodule AshHooks.OutboxFixtures.SQLite.Emitter do
   attributes do
     attribute :org_id, :string, allow_nil?: false
     uuid_primary_key :id
-    attribute :value, :string, default: "body"
+    attribute :value, :string, default: "body", public?: true
   end
 
   multitenancy do
@@ -258,7 +258,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Runtime do
   def variant(event), do: {:ok, "v2:" <> event.payload}
 
   def trigger(row, tenant) do
-    case Application.get_env(:ash_hooks, {__MODULE__, :trigger}) do
+    case Application.get_env(:ash_hooks, __MODULE__) do
       nil ->
         :ok
 
@@ -427,7 +427,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Emitter do
   attributes do
     attribute :org_id, :string, allow_nil?: false
     uuid_primary_key :id
-    attribute :value, :string, default: "body"
+    attribute :value, :string, default: "body", public?: true
   end
 
   multitenancy do

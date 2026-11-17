@@ -20,6 +20,8 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
   def before?(_), do: false
 
   def transform(state) do
+    state = metadata_storage(state)
+
     with {:ok, state} <- fields(state),
          {:ok, state} <- identity(state) do
       Enum.reduce_while(actions(state), {:ok, state}, fn {type, name, opts}, {:ok, state} ->
@@ -28,6 +30,17 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
           {:error, error} -> {:halt, {:error, error}}
         end
       end)
+    end
+  end
+
+  # PostgreSQL json preserves number kinds in the JSON text. jsonb normalizes
+  # 1.0e20 into an integer, which would change strict membership after recovery.
+  defp metadata_storage(state) do
+    if Transformer.get_persisted(state, :data_layer) == AshPostgres.DataLayer do
+      types = Extension.get_opt(state, [:postgres], :migration_types, [])
+      Transformer.set_option(state, [:postgres], :migration_types, Keyword.put_new(types, :metadata, :json))
+    else
+      state
     end
   end
 

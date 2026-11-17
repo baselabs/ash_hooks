@@ -14,7 +14,7 @@ defmodule AshHooks.OutboundOutbox.Verifier do
     metadata = Enum.find(Verifier.get_entities(state, [:attributes]), &(&1.name == :metadata))
 
     cond do
-      identity.all_tenants? or identity.where or Enum.sort(identity.keys) != expected ->
+      identity.all_tenants? || identity.where || Enum.sort(identity.keys) != expected ->
         error(
           state,
           "unique_publication must contain exactly the tenant attribute and event_uuid, without all_tenants? or where"
@@ -26,6 +26,9 @@ defmodule AshHooks.OutboundOutbox.Verifier do
           "outbox metadata must use the unmodified :map type without a custom codec or fields constraint"
         )
 
+      not metadata_storage?(state) ->
+        error(state, "PostgreSQL outbox metadata requires the native :json migration type to preserve numeric kinds")
+
       option(state, :fanout_timeout) >= option(state, :fanout_lease_seconds) * 1_000 ->
         error(state, "fanout_timeout must be below fanout_lease_seconds")
 
@@ -35,6 +38,11 @@ defmodule AshHooks.OutboundOutbox.Verifier do
       true ->
         verify_routes(state)
     end
+  end
+
+  defp metadata_storage?(state) do
+    Verifier.get_persisted(state, :data_layer) != AshPostgres.DataLayer or
+      Keyword.get(Extension.get_opt(state, [:postgres], :migration_types, []), :metadata) == :json
   end
 
   defp verify_routes(state) do
