@@ -780,7 +780,7 @@ defmodule AshHooks.Ingress do
       :ok
     else
       {:error,
-       AshHooks.Errors.Unknown.UnknownError.exception(
+       UnknownError.exception(
          error:
            inspect(resource) <>
              " has no :inserted_at; add `timestamps()` to its attributes " <>
