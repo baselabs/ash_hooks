@@ -492,7 +492,14 @@ defmodule AshHooks.OutboxAcceptance do
 
   def set(f, id, values) do
     args =
-      Enum.map(values, fn {_, value} -> encode_value(value, f.sqlite?) end) ++ [id]
+      Enum.map(values, fn {name, value} ->
+        attribute = Ash.Resource.Info.attribute(f.outbox, name)
+        storage = Ash.Type.storage_type(attribute.type, attribute.constraints)
+
+        if not f.sqlite? and storage == :uuid and is_binary(value),
+          do: Ecto.UUID.dump!(value),
+          else: encode_value(value, f.sqlite?)
+      end) ++ [id]
 
     fields =
       values
