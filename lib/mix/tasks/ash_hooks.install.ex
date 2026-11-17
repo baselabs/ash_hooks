@@ -8,13 +8,16 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
     Installs ash_hooks into a host application:
 
     - adds `:ash_hooks` to `.formatter.exs` `import_deps` (DSL formatting);
-    - configures an endpoint's `Plug.Parsers` without replacing its existing body reader.
-      When absent, adds
-      `body_reader: {AshHooks.BodyReader, :read_body, []}` so inbound
-      verification sees the raw pre-parser bytes (a router plug cannot
-      capture them). Existing custom readers must call `AshHooks.BodyReader.put_raw_body/2`
-      with the complete body. The installer reports the manual step when it cannot
-      safely configure the endpoint.
+    - in each `lib/**/*endpoint.ex`, configures every `plug Plug.Parsers` call, in any
+      spelling that resolves to `Plug.Parsers`, without replacing an existing body
+      reader. When the options are a literal keyword list without `:body_reader`, it
+      adds `body_reader: {AshHooks.BodyReader, :read_body, []}` so inbound
+      verification sees the raw pre-parser bytes (a router plug cannot capture
+      them). An existing custom reader is kept and must call
+      `AshHooks.BodyReader.put_raw_body/2` with the complete body; the installer
+      emits a notice saying so. When it finds no `Plug.Parsers` call or cannot read
+      the options as a literal keyword list, it changes nothing and reports the
+      manual step.
 
     ## Usage
 
