@@ -192,6 +192,7 @@ defmodule AshHooks.Provider.Signature do
   end
 
   @doc "Compares binary values in constant time after checking equal lengths."
+  @spec compare(term(), term()) :: :ok | {:error, :invalid_signature}
   def compare(expected, actual) when is_binary(expected) and is_binary(actual) do
     result(byte_size(expected) == byte_size(actual) and :crypto.hash_equals(expected, actual))
   end
@@ -203,6 +204,7 @@ defmodule AshHooks.Provider.Signature do
   ordered `{name, value}` list such as `conn.req_headers`. Repeated lines in a
   list are joined with `", "`. Returns `nil` when the header is absent.
   """
+  @spec header(term(), String.t()) :: String.t() | nil
   def header(%{headers: headers}, name) when is_map(headers) and is_binary(name) do
     wanted = String.downcase(name, :ascii)
 
@@ -234,6 +236,8 @@ defmodule AshHooks.Provider.Signature do
   defp list_header(_improper, _wanted, _values), do: nil
 
   @doc "Checks nonnegative Unix seconds (integer or ASCII digit string) within a symmetric positive tolerance."
+  @spec check_timestamp(term(), map(), pos_integer()) ::
+          :ok | {:error, :invalid_signature | :stale_timestamp}
   def check_timestamp(timestamp, ctx, tolerance_seconds) do
     with {:ok, seconds} <- seconds(timestamp),
          true <- is_integer(tolerance_seconds) and tolerance_seconds > 0,

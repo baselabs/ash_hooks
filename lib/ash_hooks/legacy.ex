@@ -97,8 +97,9 @@ defmodule AshHooks.Legacy do
   # -- Verification (the oracle) -------------------------------------
 
   @doc """
-  Verifies a legacy header value: parses `t=`/`v1=`, checks the replay
-  window, compares hex digests in constant time.
+  Verifies a legacy header value: parses `t=`/`v1=`, compares hex digests
+  in constant time, then checks the replay window. An invalid signature takes
+  precedence over a stale timestamp.
 
   `window` defaults to 300 seconds, symmetric around `now_ts`.
   """
@@ -108,12 +109,11 @@ defmodule AshHooks.Legacy do
       when is_binary(secret) and is_binary(body) and is_binary(header) and is_integer(now_ts) and
              is_integer(window) and window >= 0 do
     with {:ok, unix_ts, signature_hex} <- parse_header(header),
+         true <-
+           signature_matches?(secret, body, unix_ts, signature_hex) ||
+             {:error, :invalid_signature},
          :ok <- check_replay_window(unix_ts, now_ts, window) do
-      if signature_matches?(secret, body, unix_ts, signature_hex) do
-        {:ok, %{unix_ts: unix_ts}}
-      else
-        {:error, :invalid_signature}
-      end
+      {:ok, %{unix_ts: unix_ts}}
     end
   end
 

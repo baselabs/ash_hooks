@@ -24,6 +24,19 @@ for optional <- [Oban, Plug] do
     do: raise("optional dependency present in minimal consumer")
 end
 
+unless :code.which(Igniter.Mix.Task) == :non_existing,
+  do: raise("Igniter must be absent from the production consumer")
+
+try do
+  Mix.Tasks.AshHooks.Install.run([])
+  raise "installer must refuse without Igniter"
+rescue
+  error in Mix.Error ->
+    unless error.message =~ "requires the :igniter package" and
+             error.message =~ "Manual steps",
+           do: reraise(error, __STACKTRACE__)
+end
+
 Code.ensure_loaded!(Ash.Resource.Info)
 
 unless function_exported?(Ash.Resource.Info, :multitenancy_tenant_from_attribute, 1),

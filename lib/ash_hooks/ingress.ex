@@ -111,11 +111,15 @@ defmodule AshHooks.Ingress do
   @prune_max_batch_size 1_000
 
   @doc "Builds the legacy provider-identity adoption audit without writing rows."
+  @spec plan_legacy_identity_adoption(module(), atom(), keyword()) ::
+          {:ok, AshHooks.InboundDelivery.LegacyAdoption.plan()} | {:error, term()}
   defdelegate plan_legacy_identity_adoption(resource, name, opts \\ []),
     to: AshHooks.InboundDelivery.LegacyAdoption,
     as: :plan
 
   @doc "Applies one reviewed, quiesced provider-identity adoption partition."
+  @spec adopt_legacy_identity(module(), atom(), keyword()) ::
+          {:ok, AshHooks.InboundDelivery.LegacyAdoption.plan()} | {:error, term()}
   defdelegate adopt_legacy_identity(resource, name, opts \\ []),
     to: AshHooks.InboundDelivery.LegacyAdoption,
     as: :apply
@@ -230,6 +234,9 @@ defmodule AshHooks.Ingress do
   and the payload-less `:failed_verification` rejection rows); without
   them both report 0. Paused sources, unavailable custody keys, and
   unrecognized callback failures are excluded from rejection rows and their count.
+  Window counts run as data-layer count and sum aggregates, without loading
+  ledger rows or payloads into application memory. A storage read failure returns `{:error, reason}`; zero counts mean the read
+  succeeded and found no matching observations.
   """
   @spec counts(module(), keyword()) ::
           {:ok,
@@ -245,19 +252,9 @@ defmodule AshHooks.Ingress do
     alias AshHooks.Tenancy
 
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
-         :ok <- require_timestamps(resource) do
-      rows = window_rows(resource, opts, tenant)
-      accepted = Enum.reject(rows, &(&1.status == :failed_verification))
-
-      {:ok,
-       %{
-         received: length(accepted),
-         processed: Enum.count(rows, &(&1.status == :processed)),
-         duplicates: sum_duplicates(rows),
-         failed_verification: Enum.count(rows, &(&1.status == :failed_verification)),
-         handler_failures:
-           Enum.count(rows, &(&1.status in [:failed_retryable, :failed_permanent]))
-       }}
+         :ok <- require_timestamps(resource),
+         {:ok, counts} <- window_counts(resource, opts, tenant) do
+      {:ok, Map.merge(%{duplicates: 0, failed_verification: 0}, counts)}
     end
   end
 
@@ -275,7 +272,7 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  defp window_rows(resource, opts, tenant) do
+  defp window_counts(resource, opts, tenant) do
     now = Keyword.get(opts, :now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
 
     from = Keyword.get(opts, :from) || DateTime.add(now, -86_400, :second)
@@ -288,16 +285,29 @@ defmodule AshHooks.Ingress do
         if opts[:source], do: ingress_eq(query, :provider, opts[:source]), else: query
       end),
       tenant,
-      &Ash.read(&1, authorize?: false, tenant: tenant)
+      &Ash.aggregate(&1, count_aggregates(resource), authorize?: false, tenant: tenant)
     )
-    |> case do
-      {:ok, rows} -> rows
-      {:error, _reason} -> []
-    end
+  rescue
+    error -> {:error, Ash.Error.to_error_class(error)}
   end
 
-  defp sum_duplicates(rows) do
-    rows |> Enum.map(&(Map.get(&1, :duplicates) || 0)) |> Enum.sum()
+  defp count_aggregates(resource) do
+    counts = [
+      {:received, :count, query: [filter: [status: [not_eq: :failed_verification]]]},
+      {:processed, :count, query: [filter: [status: :processed]]},
+      {:handler_failures, :count,
+       query: [filter: [status: [in: [:failed_retryable, :failed_permanent]]]]}
+    ]
+
+    if Extension.get_opt(resource, [:inbound_delivery], :ingress_tracking, :off) == :on do
+      [
+        {:failed_verification, :count, query: [filter: [status: :failed_verification]]},
+        {:duplicates, :sum, field: :duplicates, default: 0}
+        | counts
+      ]
+    else
+      counts
+    end
   end
 
   @doc """
@@ -1307,6 +1317,8 @@ defmodule AshHooks.Ingress do
   Options: `:tenant`, `:scope`. The returned struct can be passed as
   `:resolved_source` to ingest, as the HTTP entry point does.
   """
+  @spec resolve_source(module(), atom(), keyword()) ::
+          {:ok, AshHooks.Inbound.ResolvedSource.t()} | {:error, term()}
   def resolve_source(resource, name, opts \\ []) do
     with {:ok, inbound} <- fetch_inbound(resource, name),
          {:ok, scope} <- cast_scope(resource, opts[:scope]),

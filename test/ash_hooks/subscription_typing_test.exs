@@ -1,15 +1,8 @@
 defmodule AshHooks.SubscriptionTypingTest do
   @moduledoc """
-  Consumer scenario (H8, the first-serious-consumer integration): a
-  consumer redeclares `event_types` as a CLOSED ATOM enum (`{:array,
-  :atom}`, `one_of:` + `min_length: 1` — sirtify's register shape,
-  webhook_endpoint.ex:118-125). The package's binary matching
-  (`"*" in types or type in types`) silently delivered NOTHING for such
-  rows — zero deliveries, no error. Matching normalizes entries to the
-  event's canonical string, so atom-typed registers match exactly like
-  string-typed ones; the consumer's own attribute declaration replaces
-  the injected one, so the closed enum and its constraints still govern
-  the write path (no wildcard default is forced on them).
+  Hosts can constrain subscription event types to an array of atoms. Matching
+  normalizes atom and string entries to the event's canonical string while the
+  host's attribute constraints continue to govern writes.
   """
 
   defmodule Endpoint do

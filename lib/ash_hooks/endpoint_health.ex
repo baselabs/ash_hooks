@@ -11,7 +11,8 @@ defmodule AshHooks.EndpointHealth do
   Schedule `stats/2` per endpoint and `sweep/3` per endpoint resource. The
   application owns the sweep schedule. The persisted warning time prevents
   early or overlapping sweeps from shortening the warning interval.
-  The package does not re-enable disabled endpoints.
+  The package does not re-enable disabled endpoints. A failed history read makes
+  a sweep incomplete; it cannot be interpreted as evidence of endpoint health.
   """
 
   require Ash.Expr
@@ -70,10 +71,20 @@ defmodule AshHooks.EndpointHealth do
   `:sustained_failure`. Counts and telemetry reflect successful writes. A failed
   disable leaves its warning marker available for a later sweep to retry.
 
-  Options: `:now` and `:tenant`. Returns `{:ok, %{disabled: n, warned: n}}`.
+  Options: `:now` and `:tenant`. Returns
+  `{:ok, %{disabled: n, warned: n, unread: n}}`. Failed history reads do not
+  stop other endpoints from being considered. Each increments `unread` and emits
+  `[:ash_hooks, :endpoint_health, :read_failed]` with measurement `%{count: 1}`
+  and metadata `%{endpoint_id: id, reason: reason}`. That endpoint's status and
+  warning marker remain unchanged. A positive `unread` count means the sweep is
+  incomplete; repair storage and retry. Counts describe committed writes.
+  Endpoint-list read errors return `{:error, reason}` directly. Persisted warning
+  markers preserve timing across retries.
   """
   @spec sweep(module(), module(), keyword()) ::
-          {:ok, %{disabled: non_neg_integer(), warned: non_neg_integer()}} | {:error, term()}
+          {:ok,
+           %{disabled: non_neg_integer(), warned: non_neg_integer(), unread: non_neg_integer()}}
+          | {:error, term()}
   def sweep(endpoints_mod, attempts_mod, opts \\ []) do
     with {:ok, tenant} <- Tenancy.resolve([endpoints_mod, attempts_mod], opts[:tenant]),
          policy when policy != nil <- Endpoint.auto_disable_policy(endpoints_mod),
@@ -84,10 +95,12 @@ defmodule AshHooks.EndpointHealth do
              &Ash.read(&1, authorize?: false, tenant: tenant)
            ) do
       # the ONE enabled-check (mapped switch or injected status)
-      {disabled, warned} = sweep_endpoints(endpoints, attempts_mod, policy, now(opts), tenant)
-      {:ok, %{disabled: disabled, warned: warned}}
+      {disabled, warned, unread} =
+        sweep_endpoints(endpoints, attempts_mod, policy, now(opts), tenant)
+
+      {:ok, %{disabled: disabled, warned: warned, unread: unread}}
     else
-      nil -> {:ok, %{disabled: 0, warned: 0}}
+      nil -> {:ok, %{disabled: 0, warned: 0, unread: 0}}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -95,14 +108,14 @@ defmodule AshHooks.EndpointHealth do
   defp sweep_endpoints(endpoints, attempts_mod, policy, now, tenant) do
     endpoints
     |> Enum.filter(&Endpoint.enabled?/1)
-    |> Enum.reduce({0, 0}, fn endpoint, acc ->
+    |> Enum.reduce({0, 0, 0}, fn endpoint, acc ->
       sweep_one(endpoint, attempts_mod, policy, now, tenant, acc)
     end)
   end
 
   # The stored warning time starts the minimum interval. Recovery below
   # the warning band clears it so later failures start a new warning cycle.
-  defp sweep_one(endpoint, attempts_mod, policy, now, tenant, {disabled, warned}) do
+  defp sweep_one(endpoint, attempts_mod, policy, now, tenant, {disabled, warned, failed_reads}) do
     from = DateTime.add(now, -policy.failure_window_seconds, :second)
 
     case window_attempts(attempts_mod, endpoint_id_of(endpoint), [from: from, to: now], tenant) do
@@ -111,25 +124,33 @@ defmodule AshHooks.EndpointHealth do
         failed = count_failed(rows)
         share = share(failed, total)
 
-        cond do
-          total < policy.warning_min_attempts ->
-            clear_warned(endpoint, tenant)
-            {disabled, warned}
+        {disabled, warned} =
+          cond do
+            total < policy.warning_min_attempts ->
+              clear_warned(endpoint, tenant)
+              {disabled, warned}
 
-          total >= policy.min_attempts and share >= policy.failure_share ->
-            sustain_failure(endpoint, share, total, now, policy, tenant, {disabled, warned})
+            total >= policy.min_attempts and share >= policy.failure_share ->
+              sustain_failure(endpoint, share, total, now, policy, tenant, {disabled, warned})
 
-          share >= policy.warning_share ->
-            {disabled, warned + if(warn(endpoint, share, total, now, tenant), do: 1, else: 0)}
+            share >= policy.warning_share ->
+              {disabled, warned + if(warn(endpoint, share, total, now, tenant), do: 1, else: 0)}
 
-          true ->
-            clear_warned(endpoint, tenant)
-            {disabled, warned}
-        end
+            true ->
+              clear_warned(endpoint, tenant)
+              {disabled, warned}
+          end
 
-      {:error, _reason} ->
-        # one endpoint's history read failing never stops the sweep
-        {disabled, warned}
+        {disabled, warned, failed_reads}
+
+      {:error, reason} ->
+        :telemetry.execute(
+          [:ash_hooks, :endpoint_health, :read_failed],
+          %{count: 1},
+          %{endpoint_id: endpoint_id_of(endpoint), reason: reason}
+        )
+
+        {disabled, warned, failed_reads + 1}
     end
   end
 

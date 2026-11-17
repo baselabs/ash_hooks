@@ -31,6 +31,21 @@ defmodule AshHooks.SigningTest do
     }
   end
 
+  test "both schemes authenticate before enforcing the timestamp window" do
+    now = 1_800_000_000
+
+    for {options, key} <- [[whsec: @go_key], [whsk: @whsk]] |> Enum.zip([@go_key, @whpk]),
+        timestamp <- [now - 301, now + 301] do
+      headers = Signing.headers(@go_msg_id, timestamp, @go_payload, options)
+
+      assert {:error, :invalid_signature} =
+               Signing.verify(@go_payload <> "tampered", headers, key, now: now)
+
+      assert {:error, :timestamp_out_of_tolerance} =
+               Signing.verify(@go_payload, headers, key, now: now)
+    end
+  end
+
   describe "sign/4 — v1 foreign vector" do
     test "reproduces the Go reference signature byte-for-byte" do
       assert Signing.sign(@go_msg_id, @go_ts, @go_payload, @go_key) == @go_sig

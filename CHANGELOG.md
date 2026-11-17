@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## Unreleased
 
 ### Changed
 
@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The optional Oban dependency now requires `~> 2.24`, whose service options
   support the documented insert-only instance.
+
+- The Spark dependency floor is 2.7.6, matching Ash 3.37.2. Both exact versions
+  pass the fresh dependency-floor qualification.
 
 ### Fixed
 
@@ -36,6 +39,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   peers, least-privilege grants, and both instance configurations. PostgreSQL
   tests execute the guide's SQL and configurations as restricted login roles,
   exercise real queue transitions and notifications, and check tenant isolation.
+
+- Legacy verification authenticates the signature before checking the replay
+  window. A tampered stale request returns `:invalid_signature`; an authentic
+  stale request still returns `:stale_timestamp`.
+
+- Inbound observation counts use data-layer count and sum aggregates without
+  loading ledger rows. Storage read failures return errors instead of successful
+  zero counts. Endpoint health sweeps report unread histories in `unread` and
+  emit `[:ash_hooks, :endpoint_health, :read_failed]`, preserving the affected
+  endpoint's status and warning marker while considering other endpoints.
+
+- Standard Webhooks verification authenticates the signature before checking
+  the timestamp window for both HMAC and Ed25519. A bad signature with a stale
+  timestamp now returns `:invalid_signature`; an authentic stale request still
+  returns `:timestamp_out_of_tolerance`.
 
 ## [3.2.0] - 2026-11-15
 

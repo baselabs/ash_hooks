@@ -34,6 +34,34 @@ defmodule AshHooks.EndpointHealthTest do
     end
   end
 
+  defmodule CustomIntervalEndpoint do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.EndpointHealthTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.Endpoint]
+
+    sqlite do
+      table("health_endpoints")
+      repo(AshHooks.Test.Repo)
+    end
+
+    actions do
+      defaults([:read, :create, :update])
+      default_accept(:*)
+    end
+
+    endpoint do
+      auto_disable do
+        failure_window_seconds(3_600)
+        failure_share(0.5)
+        min_attempts(4)
+        warning_min_attempts(2)
+        warning_interval_seconds(120)
+      end
+    end
+  end
+
   defmodule PlainEndpoint do
     @moduledoc false
     # no auto_disable policy: the sweep never considers it
@@ -76,6 +104,7 @@ defmodule AshHooks.EndpointHealthTest do
 
     resources do
       resource(AshHooks.EndpointHealthTest.Endpoint)
+      resource(AshHooks.EndpointHealthTest.CustomIntervalEndpoint)
       resource(AshHooks.EndpointHealthTest.PlainEndpoint)
       resource(AshHooks.EndpointHealthTest.Attempt)
     end
@@ -386,11 +415,11 @@ defmodule AshHooks.EndpointHealthTest do
 
     assert error =~ ":endpoint_id"
 
-    # a history read failure never stops the sweep (counted as considered,
-    # neither disabled nor warned)
+    # All enabled endpoints are attempted and failed reads report incompleteness.
+    endpoint!()
     Repo.query!("DROP TABLE IF EXISTS #{@attempts}")
 
-    assert {:ok, %{disabled: 0, warned: 0}} =
+    assert {:ok, %{disabled: 0, warned: 0, unread: 2}} =
              AshHooks.EndpointHealth.sweep(Endpoint, Attempt, now: DateTime.utc_now())
 
     # and stats surfaces the read error
@@ -525,5 +554,28 @@ defmodule AshHooks.EndpointHealthTest do
 
     assert {:ok, %{disabled: 1}} =
              AshHooks.EndpointHealth.sweep(Endpoint, Attempt, now: DateTime.add(now, 60, :second))
+  end
+
+  test "a host warning interval is honored beyond the default boundary" do
+    endpoint = endpoint!()
+    for n <- 1..4, do: seed_attempt!(endpoint.id, n, :dead_letter, 10)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, %{warned: 1, disabled: 0}} =
+             AshHooks.EndpointHealth.sweep(CustomIntervalEndpoint, Attempt, now: now)
+
+    for elapsed <- [60, 119] do
+      assert {:ok, %{disabled: 0}} =
+               AshHooks.EndpointHealth.sweep(CustomIntervalEndpoint, Attempt,
+                 now: DateTime.add(now, elapsed, :second)
+               )
+
+      assert Ash.get!(Endpoint, endpoint.id, authorize?: false).status == :enabled
+    end
+
+    assert {:ok, %{disabled: 1}} =
+             AshHooks.EndpointHealth.sweep(CustomIntervalEndpoint, Attempt,
+               now: DateTime.add(now, 120, :second)
+             )
   end
 end

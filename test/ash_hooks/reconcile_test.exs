@@ -395,9 +395,8 @@ defmodule AshHooks.ReconcileTest do
   end
 
   test "a due failed_retryable row re-admitted by recovery KEEPS its last_error diagnostic" do
-    # The sirtify-routed finding (claude F8, 2026-10-06): recovery re-admission is a
-    # TRANSPORT event, not a delivery outcome — wiping the row's failure diagnostic on
-    # re-admission hides why the retry was scheduled until a new outcome lands.
+    # Recovery re-admission preserves the failure diagnostic until a new
+    # delivery outcome explains the next state.
     stranded_row!("org_a", "rec-diag-retry")
 
     past =

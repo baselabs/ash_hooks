@@ -10,7 +10,12 @@ defmodule AshHooks.ConsumerVerification.MixProject do
   defp deps do
     source = System.get_env("ASH_HOOKS_CONSUMER_SOURCE") || Path.expand("../..", __DIR__)
     minimum = System.get_env("ASH_HOOKS_MINIMUM_ASH") == "1"
-    ash = if minimum, do: [{:ash, "== 3.37.2", override: true}], else: []
-    [{:ash_hooks, path: source} | ash]
+
+    floors =
+      if minimum,
+        do: [{:ash, "== 3.37.2", override: true}, {:spark, "== 2.7.6", override: true}],
+        else: []
+
+    [{:ash_hooks, path: source} | floors]
   end
 end

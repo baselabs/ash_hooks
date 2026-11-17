@@ -74,10 +74,15 @@ dependencies =
   Mix.Project.in_project(:ash_hooks, root, [], fn project -> project.project()[:deps] end)
 
 unless List.keymember?(dependencies, :ash, 0), do: raise("root Ash dependency not found")
-dependencies = List.keyreplace(dependencies, :ash, 0, {:ash, "== 3.37.2"})
+
+dependencies =
+  dependencies
+  |> List.keyreplace(:ash, 0, {:ash, "== 3.37.2"})
+  |> List.keyreplace(:spark, 0, {:spark, "== 2.7.6"})
+
+File.rm_rf!(qualification)
 File.mkdir_p!(qualification)
 floor_lock = Path.join(qualification, "mix.lock")
-File.cp!(Path.join(root, "mix.lock"), floor_lock)
 
 post_config = [
   deps: dependencies,
@@ -96,9 +101,8 @@ try do
     )
 
     Mix.Task.run("loadconfig")
-    # Resolve the PostgreSQL test substrate for the exact Ash floor as well.
-    # The latest locked AshPostgres requires a newer Ash; the root lock stays current.
-    Mix.Task.run("deps.unlock", ["ash", "ash_postgres"])
+    # Resolve a fresh graph so transitive SQL requirements cannot retain a
+    # newer Ash floor from the development lock. Both direct floors are exact.
     Mix.Task.run("deps.get")
     Mix.Task.run("compile", ["--warnings-as-errors"])
     Mix.Task.run("app.start")
@@ -106,6 +110,9 @@ try do
     actual = to_string(Application.spec(:ash, :vsn))
     unless actual == "3.37.2", do: raise("expected loaded Ash 3.37.2, found #{actual}")
     IO.puts("LOADED ASH: #{actual}; #{:code.which(Ash.Resource.Info)}")
+    spark = to_string(Application.spec(:spark, :vsn))
+    unless spark == "2.7.6", do: raise("expected loaded Spark 2.7.6, found #{spark}")
+    IO.puts("LOADED SPARK: #{spark}; #{:code.which(Spark.Dsl.Extension)}")
 
     Mix.Task.run("test", [
       "test/ash_hooks/tenant_worker_postgres_test.exs",
@@ -115,9 +122,12 @@ try do
       "--raise"
     ])
 
-    IO.puts("FLOOR WORKER QUALIFICATION: exact Ash 3.37.2 focused case returned without failure")
+    IO.puts(
+      "FLOOR WORKER QUALIFICATION: exact Ash 3.37.2 and Spark 2.7.6 focused case returned without failure"
+    )
   end)
 after
+  File.rm_rf!(qualification)
   after_identity = fingerprint.()
   unless before == after_identity, do: raise("root lock/dependency/build identity changed")
   IO.puts("ROOT IDENTITY UNCHANGED: #{inspect(after_identity)}")

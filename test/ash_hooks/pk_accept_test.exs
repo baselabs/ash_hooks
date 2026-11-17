@@ -1,18 +1,9 @@
 defmodule AshHooks.PkAcceptTest do
   @moduledoc """
-  Consumer scenario (H2, the first-serious-consumer integration): a
-  consumer declares a time-ordered `uuid_v7_primary_key` (non-writable by
-  Ash's own definition — sirtify's webhook_delivery.ex:111 shape), and
-  the injected `:dispatch`/`:ingest` accept lists carried `:id`, so
-  Ash's ValidateAccept raised at compile on EXACTLY that shape —
-  adopting the extensions required replacing the PK. The accept lists
-  now carry `:id` only when the resource's PK is a writable `:id`
-  (the package-injected default — byte-identical classification), and
-  a non-writable-PK resource classifies created/duplicate by an
-  identity pre-read instead (exact in every sequential case; under a
-  true concurrent double-delivery the storage upsert, the inbound claim
-  fence, and Oban's endpoint_id+event_uuid job uniqueness keep every
-  effect exactly-once).
+  Resources can use non-writable UUIDv7 primary keys. Injected machine actions
+  accept only writable attributes. An identity pre-read classifies sequential
+  duplicates; concurrent arrivals still share the unique ledger row and fenced
+  claim. Handlers remain idempotent because a crash can repeat business effects.
   """
 
   defmodule Endpoint do

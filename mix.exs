@@ -108,7 +108,7 @@ defmodule AshHooks.MixProject do
       # graph and the graph a consumer resolves at this floor.
       {:ash, ">= 3.37.2 and < 4.0.0-0"},
       {:splode, "~> 0.3"},
-      {:spark, ">= 2.3.3 and < 3.0.0-0"},
+      {:spark, ">= 2.7.6 and < 3.0.0-0"},
       {:jason, "~> 1.2"},
       {:telemetry, "~> 1.3"}
       | optional_deps
@@ -157,11 +157,17 @@ defmodule AshHooks.MixProject do
           "SECURITY.md",
           "CONTRIBUTING.md"
         ] ++
-          Path.wildcard("documentation/tutorials/*.md") ++
+          Enum.map(Path.wildcard("documentation/tutorials/*.md"), fn
+            "documentation/tutorials/get-started.md" = path -> {path, filename: "get-started"}
+            path -> path
+          end) ++
           Path.wildcard("documentation/dsls/*.md") ++
-          Path.wildcard("documentation/livebooks/*.livemd"),
+          Enum.map(Path.wildcard("documentation/livebooks/*.livemd"), fn
+            "documentation/livebooks/get-started.livemd" = path -> {path, filename: "guided-tour"}
+            path -> path
+          end),
       groups_for_extras: [
-        Tutorials: ~r"documentation/tutorials/?",
+        Guides: ~r"documentation/tutorials/?",
         Livebooks: ~r"documentation/livebooks/?",
         DSLs: ~r"documentation/dsls/?"
       ],
@@ -169,6 +175,7 @@ defmodule AshHooks.MixProject do
         Core: [
           AshHooks,
           AshHooks.Info,
+          AshHooks.Errors,
           AshHooks.DestinationPolicy,
           AshHooks.Keyset,
           AshHooks.PrimaryKey,
@@ -180,7 +187,9 @@ defmodule AshHooks.MixProject do
           AshHooks.BodyReader,
           AshHooks.Plug,
           AshHooks.Ingress,
+          AshHooks.Inbound,
           AshHooks.InboundDelivery,
+          AshHooks.InboundDelivery.LegacyAdoption,
           AshHooks.InboundSource,
           AshHooks.Inbound.ResolvedSource,
           AshHooks.Provider.DeliveryContext,
@@ -190,6 +199,8 @@ defmodule AshHooks.MixProject do
           AshHooks.Event,
           AshHooks.Subscription,
           AshHooks.Endpoint,
+          AshHooks.Endpoint.SecretRef,
+          AshHooks.Endpoint.Url,
           AshHooks.OutboundDelivery,
           AshHooks.OutboundAttempt,
           AshHooks.OutboundEvent,
@@ -217,7 +228,8 @@ defmodule AshHooks.MixProject do
           AshHooks.Provider.Signature,
           AshHooks.Provider.Event,
           AshHooks.Provider.Hmac,
-          AshHooks.Provider.Mock
+          AshHooks.Provider.Mock,
+          AshHooks.Provider.Mock.Event
         ],
         "HTTP adapters": [
           AshHooks.Transport,

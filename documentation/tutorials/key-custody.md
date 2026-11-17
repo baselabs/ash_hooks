@@ -60,7 +60,7 @@ is `ref`, so do not add an `id` primary key. Owners and registry must share
 transactional AshPostgres or AshSqlite storage, the write repository, and matching
 attribute tenancy. SQLite repositories enable `write_transactions?/0`. Generate
 and apply migrations for all injected attributes before using the resources.
-[UPGRADING](../../UPGRADING.md#310--320) lists the columns and database types.
+[UPGRADING](../../UPGRADING.md#upgrade-3-2) lists the columns and database types.
 
 The registry injects `:read`, `:issue_key`, `:transition_key`, and `:prune_keys`
 when absent. Host replacements must preserve their documented inputs and state
@@ -232,7 +232,7 @@ Mixed slots keep working during the transition: kind markers select custody,
 null markers select bytes. Retain the resolver until every occupied slot is
 adopted. Then remove it and delete the original material from the host store
 under your application's retention policy. The
-[upgrade procedure](../../UPGRADING.md#310--320) covers the ordered migration.
+[upgrade procedure](../../UPGRADING.md#upgrade-3-2) covers the ordered migration.
 
 Set the application configuration `:ash_hooks, key_material: :custody_only`
 before compiling resources and providers to refuse endpoint and worker byte

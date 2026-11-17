@@ -387,7 +387,7 @@ defmodule AshHooks.DeliveryTest do
   end
 
   describe "408/429/5xx — Retry-After honored (bounded)" do
-    test "a 503 carrying an integer Retry-After is honored (the sirtify-routed finding)" do
+    test "a 503 carrying an integer Retry-After is honored" do
       # ONE captured timestamp drives both the run and the assertion — a live
       # clock read twice fails across a second boundary (the release review's
       # clock-dependency finding; the 429 test below shares the fix).
@@ -530,7 +530,7 @@ defmodule AshHooks.DeliveryTest do
   end
 
   describe "cross-vendor review regressions (2)" do
-    test "a PERCENT-ENCODED secret disguise is redacted (derisk review regression)" do
+    test "a PERCENT-ENCODED secret disguise is redacted" do
       HttpDouble.set_responses([
         {:ok,
          %{
@@ -552,7 +552,7 @@ defmodule AshHooks.DeliveryTest do
       assert snippet =~ "[redacted]"
     end
 
-    test "a JSON-\\u-ESCAPED secret disguise is redacted (derisk-2 regression)" do
+    test "a JSON-\\u-ESCAPED secret disguise is redacted" do
       with_escapes =
         "{\"e\": \"whsec_\\u0064\\u0054\\u0056\\u007a\\u0064\\u0048\\u004e\\u006c\\u0059\\u0033\\u004a\\u006c\\u0064\\u0044\\u0065\\u0079\\u004a\\u007a\\u0051\\u0033\\u004e\\u006a\\u0063\\u0034\\u004f\\u0054\\u0041\\u003d\", \"ok\": 1}"
 
@@ -570,7 +570,7 @@ defmodule AshHooks.DeliveryTest do
       assert snippet =~ "[redacted]"
     end
 
-    test "a DOUBLE-PERCENT-ENCODED secret disguise is redacted (derisk-2 regression)" do
+    test "a DOUBLE-PERCENT-ENCODED secret disguise is redacted" do
       # "%2577hsec_..." decodes twice to "%77hsec_..." then to "whsec_..."
       body = ~s({"e": "%2577hsec_) <> "c2VjcmV0LXNoaW0tdGVzdC1rZXkxMg" <> ~s(})
 

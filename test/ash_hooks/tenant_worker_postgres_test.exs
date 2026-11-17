@@ -2,7 +2,7 @@ if Code.ensure_loaded?(Oban) do
   defmodule AshHooks.TenantWorkerPostgresTest do
     @moduledoc """
     Opt-in qualification of the generated worker on a real PostgreSQL ledger,
-    Oban.Basic, and Httpbun's public HTTPS informational-response endpoint.
+    Oban.Basic, and Httpbun's public HTTPS POST endpoint.
     The persisted trigger is consumed in a fresh BEAM using the same checkout.
     """
 

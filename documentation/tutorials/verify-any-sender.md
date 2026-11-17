@@ -902,3 +902,108 @@ available at parsing, identity, and handling, including recovery. Tenant, source
 cast scope, and provider alias exist at every phase; persisted delivery and
 external event IDs exist only at handling. Headers are absent from this durable
 context. Recovery reconstructs it from the receipt.
+
+## Decide in the response
+
+Some senders wait for an answer: they post a request, such as an authorization
+check, and act on the decision in the response body. That answer cannot wait for
+a background handler, so this path does not use ingress or the ledger. The host
+verifies the signature in its own Plug, decides in its own code, and writes the
+decision into the response. No ledger row is written and nothing is retried.
+
+The plug below receives a Standard Webhooks request. It takes the exact raw bytes
+from `AshHooks.BodyReader` when the endpoint's parser has cached them, and
+otherwise reads the body itself up to a fixed limit. It passes exactly the three
+signed headers to `AshHooks.Signing.verify/4`; a missing or repeated header fails
+closed. The verification key belongs to the tenant: each tenant's key comes from
+the host, and the tenant was resolved by an earlier plug, exactly as for any other
+tenant-scoped route.
+
+<!-- tested: verify-sync-decision-plug -->
+```elixir
+defmodule MyAppWeb.DecisionPlug do
+  @behaviour Plug
+
+  import Plug.Conn
+
+  @max_body 64_000
+  @signed ["webhook-id", "webhook-timestamp", "webhook-signature"]
+
+  @impl true
+  def init(options), do: options
+
+  @impl true
+  def call(conn, _options) do
+    tenant = conn.assigns.tenant
+
+    with {:ok, raw, conn} <- raw_body(conn),
+         {:ok, headers} <- signed_headers(conn),
+         {:ok, key} <- MyApp.DecisionKeys.verification_key(tenant),
+         {:ok, %{id: webhook_id}} <- AshHooks.Signing.verify(raw, headers, key),
+         {:ok, request} <- Jason.decode(raw) do
+      decision = MyApp.Decisions.decide(tenant, webhook_id, request)
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(decision))
+      |> halt()
+    else
+      {:too_large, conn} -> conn |> send_resp(413, "") |> halt()
+      :unreadable -> conn |> send_resp(400, "") |> halt()
+      {:error, %Jason.DecodeError{}} -> conn |> send_resp(400, "") |> halt()
+      _refused -> conn |> send_resp(401, "") |> halt()
+    end
+  end
+
+  defp raw_body(conn) do
+    case AshHooks.BodyReader.raw_body(conn) do
+      nil -> read(conn)
+      raw when byte_size(raw) <= @max_body -> {:ok, raw, conn}
+      _oversized -> {:too_large, conn}
+    end
+  end
+
+  defp read(conn) do
+    case read_body(conn, length: @max_body) do
+      {:ok, raw, conn} -> {:ok, raw, conn}
+      {:more, _partial, conn} -> {:too_large, conn}
+      {:error, _reason} -> :unreadable
+    end
+  end
+
+  defp signed_headers(conn) do
+    Enum.reduce_while(@signed, {:ok, %{}}, fn name, {:ok, headers} ->
+      case get_req_header(conn, name) do
+        [value] -> {:cont, {:ok, Map.put(headers, name, value)}}
+        _none_or_repeated -> {:halt, {:error, :missing_header}}
+      end
+    end)
+  end
+end
+```
+
+`MyApp.DecisionKeys.verification_key/1` returns `{:ok, key}` for a tenant that
+has one and `:error` otherwise. The key is the tenant's `whsec_` secret, or the
+sender's `whpk_` public key for a sender that signs with ed25519; `verify/4`
+selects the scheme from the prefix. An unknown tenant, a bad signature and a stale
+timestamp all answer 401 with no decision. A body that cannot be read or is not
+JSON answers 400, and one over the limit answers 413. Mount the plug behind the same tenant
+resolution and the same `AshHooks.BodyReader` configuration as the
+[webhook plug](#receive-with-the-plug).
+
+The response is not authenticated. ash_hooks verifies the request; it does not
+sign the answer. The sender can trust the decision only as far as it trusts the
+TLS connection to your host. When the sender needs a signed answer, sign it with a
+scheme the sender verifies.
+
+Without the ledger there is no deduplication. `verify/4` refuses a timestamp
+outside its tolerance (300 seconds by default), but a request replayed inside
+that window verifies again. The plug therefore passes the `webhook-id` to the
+decision: make the decision the same for the same ID, or record the ID and refuse
+a second use.
+
+For a sender with another signature scheme, call `AshHooks.Provider.Scheme.verify/4`
+in place of `AshHooks.Signing.verify/4`. Pass it the exact body, a context with
+the request's headers, method and public URL, as in
+[Lower-level request context](#lower-level-request-context), the tenant's keys and
+the same scheme options a provider declares. It returns `:ok` or an error.

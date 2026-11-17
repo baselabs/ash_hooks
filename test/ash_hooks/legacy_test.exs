@@ -83,6 +83,19 @@ defmodule AshHooks.LegacyTest do
                Legacy.verify(@legacy_secret, @legacy_body, tampered_header, @legacy_ts + 10)
     end
 
+    test "a tampered signature takes precedence over a stale timestamp" do
+      tampered = String.replace(@expected_header, "v1=2", "v1=a")
+      assert tampered != @expected_header
+
+      assert {:error, :invalid_signature} =
+               Legacy.verify(@legacy_secret, @legacy_body, tampered, @legacy_ts + 301)
+    end
+
+    test "an authentic stale signature still returns the window error" do
+      assert {:error, :stale_timestamp} =
+               Legacy.verify(@legacy_secret, @legacy_body, @expected_header, @legacy_ts + 301)
+    end
+
     test "rejects timestamps outside the replay window (both directions)" do
       header =
         Legacy.header_value(Legacy.sign(@legacy_secret, @legacy_body, @legacy_ts), @legacy_ts)

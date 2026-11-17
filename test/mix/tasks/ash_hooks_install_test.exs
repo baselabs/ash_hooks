@@ -53,6 +53,9 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
 
       assert render(twice, "lib/my_app_web/endpoint.ex") ==
                render(once, "lib/my_app_web/endpoint.ex")
+
+      formatter = render(twice, ".formatter.exs")
+      assert length(Regex.scan(~r/:ash_hooks/, formatter)) == 1
     end
 
     test "an endpoint without Plug.Parsers is left unchanged" do
@@ -78,11 +81,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
              )
     end
 
-    defp install(source) do
-      Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source}) |> Install.igniter()
-    end
-
-    test "retains an existing custom body reader and explains the raw body handoff" do
+    test "preserves a host body reader and imports formatter configuration idempotently" do
       source =
         String.replace(
           @endpoint_source,
@@ -90,79 +89,97 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
           "body_reader: {MyApp.Reader, :read, []},\n    parsers: [:urlencoded"
         )
 
-      igniter = install(source)
-      content = render(igniter, "lib/my_app_web/endpoint.ex")
-      assert content =~ "body_reader: {MyApp.Reader, :read, []}"
-      refute content =~ "{AshHooks.BodyReader, :read_body, []}"
+      original =
+        Test.test_project(
+          files: %{
+            "lib/my_app_web/endpoint.ex" => source,
+            ".formatter.exs" => "[import_deps: [:ash]]"
+          }
+        )
+        |> Igniter.format("lib/my_app_web/endpoint.ex")
 
-      assert Enum.any?(
-               igniter.notices,
-               &String.contains?(
-                 &1,
-                 "must call AshHooks.BodyReader.put_raw_body/2 with the complete body"
-               )
-             )
+      once = Install.igniter(original)
+      twice = Install.igniter(once)
+      endpoint = render(once, "lib/my_app_web/endpoint.ex")
 
-      twice = Install.igniter(igniter)
-      assert render(twice, "lib/my_app_web/endpoint.ex") == content
-      assert twice.notices == igniter.notices
+      assert endpoint == render(original, "lib/my_app_web/endpoint.ex")
+      assert endpoint =~ "body_reader: {MyApp.Reader, :read, []}"
+      refute endpoint =~ "body_reader: {AshHooks.BodyReader"
+      assert render(twice, "lib/my_app_web/endpoint.ex") == endpoint
+      assert length(once.notices) == 1
+      assert twice.notices == once.notices
+
+      assert hd(twice.notices) =~
+               "must call AshHooks.BodyReader.put_raw_body/2 with the complete body"
+
+      {formatter, _} = Code.eval_string(render(twice, ".formatter.exs"))
+      assert Enum.count(formatter[:import_deps], &(&1 == :ash_hooks)) == 1
+      assert :ash in formatter[:import_deps]
     end
 
-    for reader <- ["AshHooks.BodyReader", "Elixir.AshHooks.BodyReader", "Reader"] do
-      test "retains the existing #{reader} reader without a notice" do
+    test "keeps existing AshHooks readers under every module spelling without a notice" do
+      for {declaration, reader} <- [
+            {"", "AshHooks.BodyReader"},
+            {"", "Elixir.AshHooks.BodyReader"},
+            {"alias AshHooks.BodyReader", "BodyReader"},
+            {"alias AshHooks.BodyReader, as: Reader", "Reader"},
+            {"alias AshHooks, as: Hooks", "Hooks.BodyReader"},
+            {"alias AshHooks.{BodyReader, Signing}", "BodyReader"},
+            {"", ~s(:"Elixir.AshHooks.BodyReader")}
+          ] do
         source =
           @endpoint_source
-          |> String.replace(
-            "plug Plug.RequestId",
-            "alias AshHooks.BodyReader, as: Reader\n  plug Plug.RequestId"
-          )
+          |> String.replace("  plug Plug.RequestId", "  #{declaration}\n  plug Plug.RequestId")
           |> String.replace(
             "parsers: [:urlencoded",
-            "body_reader: {" <> unquote(reader) <> ", :read_body, []},\n    parsers: [:urlencoded"
+            "body_reader: {#{reader}, :read_body, []},\n    parsers: [:urlencoded"
           )
 
-        igniter = install(source)
-        assert igniter.notices == []
+        original =
+          Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
+          |> Igniter.format("lib/my_app_web/endpoint.ex")
 
-        assert render(Install.igniter(igniter), "lib/my_app_web/endpoint.ex") ==
-                 render(igniter, "lib/my_app_web/endpoint.ex")
+        once = Install.igniter(original)
+        twice = Install.igniter(once)
+
+        assert render(once, "lib/my_app_web/endpoint.ex") ==
+                 render(original, "lib/my_app_web/endpoint.ex")
+
+        assert render(twice, "lib/my_app_web/endpoint.ex") ==
+                 render(once, "lib/my_app_web/endpoint.ex")
+
+        assert twice.notices == [], reader
       end
     end
 
     test "a missing endpoint emits the manual step" do
       igniter = Test.test_project() |> Install.igniter()
+      assert length(igniter.notices) == 1
+      assert hd(igniter.notices) =~ "No endpoint with Plug.Parsers was found"
 
-      assert Enum.any?(
-               igniter.notices,
-               &String.contains?(&1, "No endpoint with Plug.Parsers was found")
-             )
+      assert hd(igniter.notices) =~
+               "Configure Plug.Parsers with body_reader: {AshHooks.BodyReader, :read_body, []}"
     end
 
-    test "recognizes a body reader declared in a grouped alias" do
+    test "a reader supplied by a host expression is preserved with a notice" do
       source =
-        @endpoint_source
-        |> String.replace(
-          "plug Plug.RequestId",
-          "alias AshHooks.{BodyReader, Provider}\n  plug Plug.RequestId"
-        )
-        |> String.replace(
+        String.replace(
+          @endpoint_source,
           "parsers: [:urlencoded",
-          "body_reader: {BodyReader, :read_body, []},\n    parsers: [:urlencoded"
+          "body_reader: configured_reader(), parsers: [:urlencoded"
         )
 
-      igniter = install(source)
-      assert igniter.notices == []
+      original =
+        Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
+        |> Igniter.format("lib/my_app_web/endpoint.ex")
 
-      assert render(igniter, "lib/my_app_web/endpoint.ex") =~
-               "body_reader: {BodyReader, :read_body, []}"
-    end
+      igniter = Install.igniter(original)
 
-    test "adds the formatter import exactly once" do
-      igniter = install(@endpoint_source)
-      twice = Install.igniter(igniter)
-      formatter = render(twice, ".formatter.exs")
-      assert formatter =~ ":ash_hooks"
-      assert length(Regex.scan(~r/:ash_hooks/, formatter)) == 1
+      assert render(igniter, "lib/my_app_web/endpoint.ex") ==
+               render(original, "lib/my_app_web/endpoint.ex")
+
+      assert hd(igniter.notices) =~
+               "must call AshHooks.BodyReader.put_raw_body/2 with the complete body"
     end
 
     test "patches every parser call and leaves other files alone" do
@@ -183,6 +200,10 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
                2
 
       refute render(igniter, "lib/my_app_web/router.ex") =~ "body_reader:"
+    end
+
+    defp install(source) do
+      Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source}) |> Install.igniter()
     end
 
     defp render(igniter, path) do
@@ -230,6 +251,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
             {"", "Elixir.Plug.Parsers"},
             {"alias Plug.Parsers", "Parsers"},
             {"alias Plug.{Conn, Parsers}", "Parsers"},
+            {"alias Plug.{Parsers, Head}", "Parsers"},
             {"alias Plug.{Conn, Parsers}, warn: false", "Parsers"},
             {"alias Elixir.Plug.Parsers", "Parsers"},
             {"alias Plug.Parsers, as: X", "X"},
@@ -260,6 +282,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
       for options <- [
             "@parser_options",
             "Keyword.merge(@parser_options, parsers: [:json])",
+            "parser_options()",
             "[:json]"
           ] do
         test "leaves #{options} options untouched with the manual step" do
@@ -270,32 +293,53 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
           end
           """
 
-          igniter = install(source)
+          original =
+            Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
+            |> Igniter.format("lib/my_app_web/endpoint.ex")
+
+          igniter = Install.igniter(original)
+
+          assert render(igniter, "lib/my_app_web/endpoint.ex") ==
+                   render(original, "lib/my_app_web/endpoint.ex")
+
           refute render(igniter, "lib/my_app_web/endpoint.ex") =~ "body_reader"
-          assert Enum.any?(igniter.notices, &String.contains?(&1, "not a literal keyword list"))
+          assert hd(igniter.notices) =~ "not a literal keyword list"
+
+          assert hd(igniter.notices) =~
+                   "Configure Plug.Parsers with body_reader: {AshHooks.BodyReader, :read_body, []}"
         end
       end
 
-      test "does not confuse an unrelated alias named Parsers with Plug.Parsers" do
-        source =
-          @endpoint_source
-          |> String.replace("plug Plug.RequestId", "alias Other.Parsers\n  plug Plug.RequestId")
-          |> String.replace("plug Plug.Parsers,", "plug Parsers,")
+      for {declaration, spelling} <- [
+            {"", ~s(:"Plug.Parsers")},
+            {"alias Other.Parsers", "Parsers"},
+            {"alias MyApp.Parsers, as: Parsers", "Parsers"},
+            {"alias MyApp.Plug", "Plug.Parsers"}
+          ] do
+        test "leaves #{declaration} with #{spelling} unchanged with a manual notice" do
+          source =
+            @endpoint_source
+            |> String.replace(
+              "plug Plug.RequestId",
+              unquote(declaration) <> "\n  plug Plug.RequestId"
+            )
+            |> String.replace("plug Plug.Parsers,", "plug " <> unquote(spelling) <> ",")
 
-        igniter = install(source)
-        refute render(igniter, "lib/my_app_web/endpoint.ex") =~ "body_reader"
-        assert Enum.any?(igniter.notices, &String.contains?(&1, "No Plug.Parsers call was found"))
-      end
+          original =
+            Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => source})
+            |> Igniter.format("lib/my_app_web/endpoint.ex")
 
-      test "an atom with a different module name is left alone with a manual notice" do
-        source = String.replace(@endpoint_source, "plug Plug.Parsers,", ~s(plug :"Plug.Parsers",))
-        igniter = install(source)
-        refute render(igniter, "lib/my_app_web/endpoint.ex") =~ "body_reader"
+          igniter = Install.igniter(original)
 
-        assert Enum.any?(
-                 igniter.notices,
-                 &String.contains?(&1, "Configure Plug.Parsers with body_reader:")
-               )
+          assert render(igniter, "lib/my_app_web/endpoint.ex") ==
+                   render(original, "lib/my_app_web/endpoint.ex")
+
+          refute render(igniter, "lib/my_app_web/endpoint.ex") =~ "body_reader"
+          assert hd(igniter.notices) =~ "No Plug.Parsers call was found"
+
+          assert hd(igniter.notices) =~
+                   "Configure Plug.Parsers with body_reader: {AshHooks.BodyReader, :read_body, []}"
+        end
       end
 
       test "a Plug.Parsers whose options are not a keyword list is left alone" do

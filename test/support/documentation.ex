@@ -7,7 +7,12 @@ defmodule AshHooks.Test.Documentation do
 
   def guides do
     package = Mix.Project.config()[:package][:files]
-    extras = Mix.Project.config()[:docs][:extras]
+
+    extras =
+      Enum.map(Mix.Project.config()[:docs][:extras], fn
+        {path, _options} -> path
+        path -> path
+      end)
 
     (Enum.flat_map(package, &Path.wildcard/1) ++ extras)
     |> Enum.flat_map(fn path ->
