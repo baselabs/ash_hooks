@@ -224,7 +224,7 @@ defmodule AshHooks.DocumentationContractTest do
 
     for code <- [
           "plug(Plug.Parsers, parsers: [:json])\n",
-          ~s(forward("/webhooks/events", AshHooks.Plug, [])\n),
+          ~s|forward("/webhooks/events", AshHooks.Plug, [])\n|,
           "value=:ok\n"
         ] do
       assert_raise RuntimeError, fn -> Docs.validate_format!([block("elixir", code)]) end
