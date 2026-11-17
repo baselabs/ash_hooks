@@ -61,24 +61,31 @@ defmodule AshHooks.ContentionTest do
     refute_received {:attempt, _}
   end
 
-  test "the deadline preserves the final error without a sleep that would pass it" do
-    owner = self()
+  test "an operation near the deadline preserves the error without another sleep" do
     error = {:error, busy()}
-    started = System.monotonic_time(:millisecond)
+    session = :trace.session_create(:contention_deadline, self(), [])
+    on_exit(fn -> :trace.session_destroy(session) end)
+    assert 1 = :trace.function(session, {Process, :sleep, 1}, true, [])
 
-    assert ^error =
-             Contention.run(fn ->
-               send(owner, {:attempt, System.monotonic_time(:millisecond)})
-               error
-             end)
+    task =
+      Task.async(fn ->
+        receive do
+          :run ->
+            Contention.run(fn ->
+              Process.sleep(1_950)
+              error
+            end)
+        end
+      end)
 
-    elapsed = System.monotonic_time(:millisecond) - started
-    assert elapsed >= 1_850
-    assert elapsed < 2_100
-    attempts = drain_attempts([])
-    assert length(attempts) > 5
-    assert System.monotonic_time(:millisecond) - Enum.max(attempts) < 100
-    assert Enum.all?(attempts, &(&1 - started < 2_000))
+    assert 1 = :trace.process(session, task.pid, true, [:call])
+    send(task.pid, :run)
+    assert ^error = Task.await(task, 10_000)
+    delivered = :trace.delivered(session, :all)
+    assert_receive {:trace_delivered, :all, ^delivered}, 5_000
+    pid = task.pid
+    assert_received {:trace, ^pid, :call, {Process, :sleep, [1_950]}}
+    refute_received {:trace, ^pid, :call, {Process, :sleep, [_]}}
   end
 
   test "a delayed wakeup never starts another operation after the deadline" do
@@ -120,14 +127,6 @@ defmodule AshHooks.ContentionTest do
       :erlang.resume_process(pid)
       Process.sleep(1)
       suspend_during_sleep(pid, attempts - 1)
-    end
-  end
-
-  defp drain_attempts(acc) do
-    receive do
-      {:attempt, time} -> drain_attempts([time | acc])
-    after
-      0 -> acc
     end
   end
 end
