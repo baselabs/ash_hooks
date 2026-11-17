@@ -612,7 +612,7 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp match_subscriptions(subs_mod, endpoint_mod, event, tenant) do
-    with {:ok, subscriptions} <- read_subscriptions(subs_mod, tenant) do
+    with {:ok, subscriptions} <- read_subscriptions(subs_mod, event, tenant) do
       {matches, error_entries} =
         subscriptions
         |> Enum.filter(&matched?(&1, event))
@@ -633,9 +633,11 @@ defmodule AshHooks.Dispatcher do
       Subscription.matches_filters?(subscription, event.metadata)
   end
 
-  defp read_subscriptions(subs_mod, tenant) do
+  defp read_subscriptions(subs_mod, event, tenant) do
+    query = AshHooks.Subscription.Query.select(subs_mod, event)
+
     case AshHooks.Contention.run(fn ->
-           AshHooks.Phase.run(subs_mod, tenant, &Ash.read(&1, authorize?: false, tenant: tenant))
+           AshHooks.Phase.run(query, tenant, &Ash.read(&1, authorize?: false, tenant: tenant))
          end) do
       {:ok, subscriptions} -> collect_pages(subscriptions, [], subs_mod, tenant)
       {:error, error} -> {:error, error}

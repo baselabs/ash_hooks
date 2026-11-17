@@ -206,7 +206,8 @@ defmodule AshHooks.OutboxAcceptance do
   def start_peer(f) do
     {:ok, peer, _node} = :peer.start_link(%{connection: :standard_io,
       args: [~c"+S", ~c"2", ~c"-pa" | :code.get_path()], wait_boot: 30_000})
-    {:ok, _} = :peer.call(peer, Application, :ensure_all_started, [:elixir])
+    {:ok, _} = :peer.call(peer, Application, :ensure_all_started, [:mix])
+    :test = :peer.call(peer, Mix, :env, [:test])
     :peer.call(peer, Code, :require_file, [Path.expand("test/ash_hooks/outbox_process.exs")], 30_000)
     :peer.call(peer, Code, :require_file, [Path.expand("test/ash_hooks/outbox_resources.exs")], 30_000)
     :ok = :peer.call(peer, AshHooks.OutboxProcess, :boot,
@@ -362,6 +363,21 @@ defmodule AshHooks.OutboxAcceptance do
 
   defp parameter(%{sqlite?: true}, _), do: "?"
   defp parameter(_, n), do: "$#{n}"
+
+  def raw_subscription(f, endpoint, filters, opts \\ []) do
+    id = Ash.UUID.generate()
+    types = Keyword.get(opts, :types, ["changed"])
+    paused = Keyword.get(opts, :paused, false)
+    json = if filters == :sql_null, do: nil, else: Jason.encode!(filters)
+    if f.sqlite? do
+      f.owner.query!("INSERT INTO #{table(f.subscription)} (id, org_id, endpoint_id, event_types, event_filters, paused) VALUES (?, ?, ?, ?, ?, ?)",
+        [id, "tenant-a", endpoint.id, Jason.encode!(types), json, paused])
+    else
+      f.owner.query!("INSERT INTO #{table(f.subscription)} (id, org_id, endpoint_id, event_types, event_filters, paused) VALUES ($1, $2, $3, $4, $5::text::jsonb, $6)",
+        [Ecto.UUID.dump!(id), "tenant-a", Ecto.UUID.dump!(endpoint.id), types, json, paused])
+    end
+    id
+  end
 
   def count_queries(f, operation) do
     key = {__MODULE__, make_ref()}
@@ -906,6 +922,49 @@ defmodule AshHooks.OutboxAcceptance do
         for failure <- [:raise, :exit, :throw, :error] do
           Application.put_env(:ash_hooks, runtime, failure)
           assert {:ok, :accepted} = Cases.publish(f, Cases.event())
+        end
+      end
+
+      test "A12 both dispatch paths select types, pause and 5C filter candidates in SQL", f do
+        values = [
+          {:sql_null, true}, {nil, true}, {%{}, true},
+          {%{"region" => "west"}, true}, {%{"region" => "east"}, false},
+          {%{"region" => ["west", "south"]}, true},
+          {%{"flag" => true}, true}, {%{"flag" => 1}, false},
+          {%{"count" => 1}, true}, {%{"nested" => %{"value" => true}}, true},
+          {%{"region" => %{}}, false}, {%{"missing" => nil}, false},
+          {[], false}, {"malformed", false}, {true, false}, {42, false}
+        ]
+        expected = for {filters, matches?} <- values, reduce: [] do
+          ids ->
+            endpoint = Ash.create!(f.endpoint,
+              %{url: "https://receiver.example.test/hook", secret_ref: "key-reference"},
+              authorize?: false, tenant: "tenant-a")
+            Cases.raw_subscription(f, endpoint, filters)
+            if matches?, do: [endpoint.id | ids], else: ids
+        end
+        for options <- [[types: ["other"]], [paused: true]] do
+          endpoint = Ash.create!(f.endpoint,
+            %{url: "https://receiver.example.test/hook", secret_ref: "key-reference"},
+            authorize?: false, tenant: "tenant-a")
+          Cases.raw_subscription(f, endpoint, %{}, options)
+        end
+        metadata = %{"region" => "west", "flag" => true, "count" => 1.0,
+          "nested" => %{"value" => true}, "__invalid__" => true}
+        event = Cases.event(Ash.UUID.generate(), metadata)
+        assert {{:ok, results}, queries} = Cases.count_queries(f, fn ->
+          AshHooks.dispatch(f.emitter, :changed, event, tenant: "tenant-a")
+        end)
+        assert Enum.sort(Enum.map(results, & &1.endpoint_id)) == Enum.sort(expected)
+        subscription_sql = Enum.find(queries, &String.contains?(&1, "FROM \"#{Cases.table(f.subscription)}\""))
+        assert subscription_sql =~ if(f.sqlite?, do: "json_each", else: "jsonb_typeof")
+        assert subscription_sql =~ if(f.sqlite?, do: "json_each", else: "::text[] &&")
+        assert subscription_sql =~ "paused"
+        assert {:ok, :accepted} = Cases.publish(f, event)
+        assert :done = Cases.fanout(f, event.id)
+        assert Enum.sort(Enum.map(Cases.rows(f, :delivery), & &1.endpoint_id)) == Enum.sort(expected)
+        for malformed <- [[], "value", true, 1, :invalid] do
+          refute AshHooks.Subscription.matches_filters?(struct(f.subscription, event_filters: malformed), metadata)
         end
       end
 
