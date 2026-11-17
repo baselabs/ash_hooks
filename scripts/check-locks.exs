@@ -57,15 +57,22 @@ defmodule LockBytes do
       File.write!(Path.join(work, "mix.exs"), """
       defmodule LockBytesProof do
         use Mix.Project
-        def project, do: [app: :lock_bytes_proof, version: "0.0.0", deps: [{:jason, "1.4.5"}]]
+        def project, do: [app: :lock_bytes_proof, version: "0.0.0", deps: [{:jason, ">= 0.0.0"}]]
       end
       """)
 
-      command!("mix", ["deps.get"], work, 0)
+      # The committed development lock, which Mix wrote. Qualification resolves
+      # nothing: the proof fetches its locked jason and must leave the bytes alone.
       path = Path.join(work, "mix.lock")
+      File.cp!(Path.expand("../mix.lock", Path.dirname(script)), path)
       written = File.read!(path)
+      command!("mix", ["deps.get", "--check-locked"], work, 0)
+      if File.read!(path) != written, do: raise("--check-locked rewrote the committed lock")
       command!("elixir", [script, path], work, 0)
-      IO.puts("W25 GREEN: the public checker accepts a real Mix-written Hex resolution")
+
+      IO.puts(
+        "W25 GREEN: the public checker accepts the Mix-written lock that --check-locked keeps"
+      )
 
       edited = "\n" <> written
       File.write!(path, edited)

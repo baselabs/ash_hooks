@@ -33,7 +33,8 @@ defmodule AshHooks.ConfidentialityTest do
 
   test "rules never reach grep's arguments", %{tree: tree} do
     # A logging grep first on PATH records every argument list the scanner
-    # passes, then runs the real grep.
+    # passes, then runs the real grep. Paths reach it through its environment,
+    # so a temporary directory with spaces cannot break the wrapper.
     bin = Path.join(tree, "bin")
     log = Path.join(tree, "grep-arguments.log")
     File.mkdir_p!(bin)
@@ -41,8 +42,8 @@ defmodule AshHooks.ConfidentialityTest do
 
     File.write!(wrapper, """
     #!/usr/bin/env bash
-    printf '%s\\n' "$*" >> #{log}
-    exec #{System.find_executable("grep")} "$@"
+    printf '%s\\n' "$*" >> "$GREP_ARGUMENTS_LOG"
+    exec "$REAL_GREP" "$@"
     """)
 
     File.chmod!(wrapper, 0o755)
@@ -54,6 +55,8 @@ defmodule AshHooks.ConfidentialityTest do
       System.cmd("bash", [@script, "--tree", scanned],
         env: [
           {"PUBLIC_DOCS_DENYLIST", "invented-argument-token"},
+          {"GREP_ARGUMENTS_LOG", log},
+          {"REAL_GREP", System.find_executable("grep")},
           {"PATH", bin <> ":" <> System.get_env("PATH")}
         ],
         stderr_to_stdout: true

@@ -1,10 +1,20 @@
 # Run from this checkout with the real PostgreSQL and public Httpbun gates enabled:
 # ASH_HOOKS_POSTGRES=1 ASH_HOOKS_HTTPBUN=1 elixir scripts/check-ash-floor.exs
 # PostgreSQL connection environment is the same as test/test_helper.exs.
+#
+# After a floor or requirement change, refresh the committed floor graph
+# (resolution only, nothing compiles): elixir scripts/check-ash-floor.exs --update-lock
 Mix.start()
 Mix.env(:test)
 
-for flag <- ["ASH_HOOKS_POSTGRES", "ASH_HOOKS_HTTPBUN"] do
+update_lock? =
+  case System.argv() do
+    [] -> false
+    ["--update-lock"] -> true
+    _ -> raise("usage: check-ash-floor.exs [--update-lock]")
+  end
+
+for flag <- ["ASH_HOOKS_POSTGRES", "ASH_HOOKS_HTTPBUN"], not update_lock? do
   unless System.get_env(flag) == "1", do: raise("#{flag}=1 is required for real qualification")
 end
 
@@ -50,26 +60,6 @@ fingerprint = fn ->
   end
 end
 
-before = fingerprint.()
-IO.puts("ROOT IDENTITY BEFORE: #{inspect(before)}")
-
-source_paths =
-  [
-    "mix.exs",
-    ".tool-versions",
-    "test/test_helper.exs",
-    "test/consumer/mix.exs",
-    "test/consumer/verify.exs",
-    "test/ash_hooks/tenant_worker_postgres_test.exs",
-    "scripts/check-ash-floor.exs"
-  ] ++ Path.wildcard(Path.join(root, "lib/**/*.ex"))
-
-for path <- source_paths do
-  absolute = Path.expand(path, root)
-  hash = :crypto.hash(:sha256, File.read!(absolute)) |> Base.encode16(case: :lower)
-  IO.puts("SOURCE SHA256 #{Path.relative_to(absolute, root)} #{hash}")
-end
-
 dependencies =
   Mix.Project.in_project(:ash_hooks, root, [], fn project -> project.project()[:deps] end)
 
@@ -80,9 +70,58 @@ dependencies =
   |> List.keyreplace(:ash, 0, {:ash, "== 3.37.2"})
   |> List.keyreplace(:spark, 0, {:spark, "== 2.7.6"})
 
+committed_lock = Path.join(root, "test/floor/mix.lock")
+
+if update_lock? do
+  File.rm_rf!(qualification)
+
+  try do
+    Mix.Project.in_project(
+      :ash_hooks,
+      root,
+      [
+        deps: dependencies,
+        lockfile: committed_lock,
+        deps_path: Path.join(qualification, "deps"),
+        build_path: Path.join(qualification, "build")
+      ],
+      fn _project -> Mix.Task.run("deps.get") end
+    )
+
+    IO.puts("FLOOR LOCK UPDATED: #{Path.relative_to(committed_lock, root)}")
+  after
+    File.rm_rf!(qualification)
+  end
+
+  System.halt(0)
+end
+
+before = fingerprint.()
+IO.puts("ROOT IDENTITY BEFORE: #{inspect(before)}")
+
+source_paths =
+  [
+    "mix.exs",
+    ".tool-versions",
+    "test/test_helper.exs",
+    "test/consumer/mix.exs",
+    "test/consumer/verify.exs",
+    "test/floor/mix.lock",
+    "test/ash_hooks/tenant_worker_postgres_test.exs",
+    "scripts/check-ash-floor.exs"
+  ] ++ Path.wildcard(Path.join(root, "lib/**/*.ex"))
+
+for path <- source_paths do
+  absolute = Path.expand(path, root)
+  hash = :crypto.hash(:sha256, File.read!(absolute)) |> Base.encode16(case: :lower)
+  IO.puts("SOURCE SHA256 #{Path.relative_to(absolute, root)} #{hash}")
+end
+
 File.rm_rf!(qualification)
 File.mkdir_p!(qualification)
 floor_lock = Path.join(qualification, "mix.lock")
+# The committed floor graph, copied so the checkout's lock is never written.
+File.cp!(committed_lock, floor_lock)
 
 post_config = [
   deps: dependencies,
@@ -101,9 +140,10 @@ try do
     )
 
     Mix.Task.run("loadconfig")
-    # Resolve a fresh graph so transitive SQL requirements cannot retain a
-    # newer Ash floor from the development lock. Both direct floors are exact.
-    Mix.Task.run("deps.get")
+    # The committed floor graph, not the development lock, so transitive SQL
+    # requirements cannot retain a newer Ash. Both direct floors are exact, and
+    # --check-locked refuses a lock that no longer satisfies them.
+    Mix.Task.run("deps.get", ["--check-locked"])
     Mix.Task.run("compile", ["--warnings-as-errors"])
     Mix.Task.run("app.start")
 

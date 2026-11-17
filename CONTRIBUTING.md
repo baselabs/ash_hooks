@@ -66,12 +66,16 @@ Run focused checks while developing. Before a push, run:
 mix precommit
 ```
 
-A change to the package requirements or to a supported floor also refreshes the
-production consumer's lock, which CI compiles and scans:
+CI resolves nothing: every graph it fetches is a committed lock, fetched with
+`--check-locked`. A change to the package requirements or to a supported floor
+also refreshes the two floor locks. The production consumer's lock is the graph
+CI compiles and audits at the floor. The floor lock is the development graph at
+the floor, which the tenant worker qualification below runs on:
 
-<!-- not-run: This resolves the production consumer's dependencies. -->
+<!-- not-run: This resolves the floor graphs' dependencies. -->
 ```sh
-cd test/consumer && MIX_ENV=prod mix deps.get
+(cd test/consumer && MIX_ENV=prod mix deps.get)
+elixir scripts/check-ash-floor.exs --update-lock
 ```
 
 CI does not run on pull requests. A maintainer runs the full workflow on the
@@ -88,7 +92,8 @@ ASH_HOOKS_POSTGRES=1 ASH_HOOKS_HTTPBUN=1 elixir scripts/check-ash-floor.exs
 
 This opt-in check sends a real HTTPS request using the endpoint configured in
 `test/ash_hooks/tenant_worker_postgres_test.exs` and consumes a persisted Oban.Basic
-job in a fresh BEAM process. It keeps the main lock, dependencies, and build files
+job in a fresh BEAM process. It runs on the committed `test/floor/mix.lock`, fetched
+with `--check-locked`, and keeps the main lock, dependencies, and build files
 unchanged by using `_build/ash-floor` for the minimum supported graph and removing it
 on exit. Ash requires Spark 2.7.6 or later; older Spark versions cannot resolve
 with the supported Ash floor. Opt-in
