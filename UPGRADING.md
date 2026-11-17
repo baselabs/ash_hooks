@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Applications using HTTP ingress must update Plug to 1.20.4 or later in the 1.x
+series. Earlier versions are excluded because of CVE-2026-120287 in multipart
+parsing. Plug remains optional for applications that do not use HTTP ingress.
+
 The qualified Spark floor is 2.7.6, the minimum required by Ash 3.37.2.
 Update Spark alongside Ash if your lock contains an older version. The floor
 check resolves both exact versions against a fresh dependency graph.

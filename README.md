@@ -14,7 +14,7 @@ use the generated Oban worker or your own scheduler calling `AshHooks.Delivery.r
 
 Requires Elixir `~> 1.20`, Erlang/OTP 28 or 29, and Ash
 `>= 3.37.2 and < 4.0.0-0` and Spark `>= 2.7.6 and < 3.0.0-0`. Add `{:ash_hooks, "~> 3.2"}` to your dependencies.
-Oban `~> 2.24` is optional and required for the generated worker. Plug `~> 1.16`
+Oban `~> 2.24` is optional and required for the generated worker. Plug `>= 1.20.4 and < 2.0.0-0`
 is optional for HTTP receipt. Every supported Ash version requires your application
 to set `default_string_length_count`; see [UPGRADING.md](UPGRADING.md).
 
