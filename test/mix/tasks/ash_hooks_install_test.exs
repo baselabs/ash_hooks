@@ -34,6 +34,15 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
                "body_reader: {AshHooks.BodyReader, :read_body, []}"
     end
 
+    test "runs through Igniter's task composition" do
+      igniter =
+        Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => @endpoint_source})
+        |> Igniter.compose_task("ash_hooks.install", [])
+
+      assert render(igniter, "lib/my_app_web/endpoint.ex") =~
+               "body_reader: {AshHooks.BodyReader, :read_body, []}"
+    end
+
     test "does not touch a second plug's options" do
       igniter =
         Test.test_project(files: %{"lib/my_app_web/endpoint.ex" => @endpoint_source})
@@ -227,6 +236,24 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
                  "body_reader: {AshHooks.BodyReader, :read_body, []}"
 
         assert igniter.notices == []
+      end
+
+      for {name, source} <- [
+            {"a nested module",
+             "defmodule Plug do\n  defmodule Parsers do\n    plug __MODULE__, parsers: [:json]\n  end\nend\n"},
+            {"an absolute nested module",
+             "defmodule Outer do\n  defmodule Elixir.Plug.Parsers do\n    plug __MODULE__, parsers: [:json]\n  end\nend\n"},
+            {"a nested module named from __MODULE__",
+             "defmodule Plug do\n  defmodule __MODULE__.Parsers do\n    plug __MODULE__, parsers: [:json]\n  end\nend\n"}
+          ] do
+        test "resolves __MODULE__ inside #{name}" do
+          igniter = install(unquote(source))
+
+          assert render(igniter, "lib/my_app_web/endpoint.ex") =~
+                   "body_reader: {AshHooks.BodyReader, :read_body, []}"
+
+          assert igniter.notices == []
+        end
       end
 
       test "aliases from another module or later in the file do not match" do

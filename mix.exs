@@ -63,8 +63,7 @@ defmodule AshHooks.MixProject do
           ~r/^AshHooks\.Test\.BusyRepo$/,
           ~r/^AshHooks\.Endpoint\.Url/,
           ~r/^AshHooks\.Endpoint\.SecretRef/,
-          ~r/^AshHooks\.InboundDelivery\.Payload/,
-          ~r/Mix\.Tasks\.AshHooks\.Install/
+          ~r/^AshHooks\.InboundDelivery\.Payload/
         ]
       ]
     ]

@@ -127,13 +127,19 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
     end
 
     defp keyword_pair?({{:__block__, _, [key]}, _}) when is_atom(key), do: true
-    defp keyword_pair?({key, _}) when is_atom(key), do: true
     defp keyword_pair?(_), do: false
 
+    # A body reader is a literal `{module, function, args}` tuple; any other
+    # expression is the host's own reader.
     defp ash_hooks_reader?(reader) do
-      case Igniter.Code.Tuple.tuple_elem(reader, 0) do
-        {:ok, module} -> module_matches?(module, AshHooks.BodyReader)
-        :error -> false
+      reader = Common.maybe_move_to_single_child_block(reader)
+
+      case Zipper.node(reader) do
+        {:{}, _, [_module, _function, _args]} ->
+          reader |> Zipper.down() |> module_matches?(AshHooks.BodyReader)
+
+        _ ->
+          false
       end
     end
 
@@ -191,10 +197,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
       options = Keyword.take(options, [:as])
 
       options =
-        Enum.map(options, fn
-          {:as, {:__aliases__, _, parts}} -> {:as, Module.concat(parts)}
-          option -> option
-        end)
+        Enum.map(options, fn {:as, {:__aliases__, _, parts}} -> {:as, Module.concat(parts)} end)
 
       define_alias(env, meta, Macro.expand(module, env), options)
     end
