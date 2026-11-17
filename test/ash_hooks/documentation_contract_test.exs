@@ -165,6 +165,24 @@ defmodule AshHooks.DocumentationContractTest do
     end
   end
 
+  @tag skip: System.get_env("ASH_HOOKS_NO_OPTIONAL") == "1"
+  test "consumer formatting reads Phoenix exports from the dependency" do
+    path = Map.fetch!(Mix.Project.deps_paths(), :phoenix)
+    {phoenix, _} = Code.eval_file(Path.join(path, ".formatter.exs"))
+    exports = phoenix[:export][:locals_without_parens]
+    assert exports != []
+    assert exports -- Docs.formatter_options()[:locals_without_parens] == []
+  end
+
+  @tag skip: System.get_env("ASH_HOOKS_NO_OPTIONAL") == "1"
+  test "consumer DSL calls reject parentheses as well as spacing mutations" do
+    assert :ok = Docs.validate_format!([block("elixir", "plug Plug.Parsers, parsers: [:json]\n")])
+
+    for code <- ["plug(Plug.Parsers, parsers: [:json])\n", "value=:ok\n"] do
+      assert_raise RuntimeError, fn -> Docs.validate_format!([block("elixir", code)]) end
+    end
+  end
+
   test "dash policy covers the package manifest and excludes repository-only files" do
     shipped = Enum.map(Docs.package_files(), &{&1, File.read!(&1)})
     refute Enum.any?(shipped, fn {path, _} -> String.starts_with?(path, "test/") end)

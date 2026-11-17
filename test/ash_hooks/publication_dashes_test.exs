@@ -72,6 +72,40 @@ defmodule AshHooks.PublicationDashesTest do
     end
   end
 
+  test "only ExDoc's final project separator is exempt from generated HTML" do
+    tree = Path.join(System.tmp_dir!(), "publication_template_#{Ash.UUID.generate()}")
+    File.mkdir_p!(tree)
+    on_exit(fn -> File.rm_rf!(tree) end)
+    page = Path.join(tree, "page.html")
+    dash = <<0x2014::utf8>>
+    project = ~s(<meta name="project" content="AshHooks v3.2.0">)
+    title = "<title>Guide #{dash} AshHooks v3.2.0</title>"
+    File.write!(page, "#{project}\n#{title}\n<body>plain</body>")
+    assert {"", 0} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
+
+    for codepoint <- [0x2013, 0x2014], label <- ["AshHooks.Module", "An extra title"] do
+      authored = <<codepoint::utf8>>
+      title = "<title>#{label} #{authored} text #{dash} AshHooks v3.2.0</title>"
+      File.write!(page, "#{project}\n#{title}\n<body>#{authored}</body>")
+      {output, status} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
+      assert status == 1
+      assert output =~ "#{page}:2"
+      assert output =~ "#{page}:3"
+      refute output =~ authored
+    end
+
+    for title <- [
+          "<title>Guide #{dash} OtherProject v3.2.0</title>",
+          "<title>Guide #{dash} AshHooks v0.0.0</title>",
+          "<title>Guide #{dash} AshHooks v3.2.0 suffix</title>"
+        ] do
+      File.write!(page, "#{project}\n#{title}")
+      {output, status} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
+      assert status == 1
+      assert output =~ "#{page}:2"
+    end
+  end
+
   defp fixture do
     ~S"""
     import io, pathlib, sys, tarfile, zipfile
