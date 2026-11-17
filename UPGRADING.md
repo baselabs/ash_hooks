@@ -1,5 +1,131 @@
 # Upgrading
 
+## 3.3.0 → 3.4.0
+
+Transactional publication is opt-in. Existing hosts need no migration unless
+adopting `AshHooks.OutboundOutbox`. Immediate dispatch still persists deliveries
+and enqueues synchronously. Every dispatch now selects matching subscriptions
+in SQL and retains the Elixir guard. Malformed filter containers never match;
+this corrects the former `__invalid__` sentinel case for every host.
+
+### Add and migrate the outbox
+
+Define a separate resource using `AshHooks.OutboundOutbox`, a primary read
+and the same attribute tenancy as subscriptions, endpoints and deliveries.
+Declare the outbox's allowed `{resource, outbound_name}` pairs, named delivery
+routes, and required `deduplication_horizon_seconds`. Generate the migration
+with your data layer's migration generator and inspect it before applying it.
+The `unique_publication` index must cover `(tenant_attribute, event_uuid)`;
+there must be no global identity or partial identity predicate. Single-tenant
+resources use `event_uuid` alone. Keep the ordinary primary-key index too.
+
+The migration adds binary payload bytes, JSON metadata, version and format
+version, declaration and delivery-route identifiers, acceptance and claim
+UUIDs, state, attempts, lease, due time, bounded error and completion/failure
+and insertion/update timestamps. Add tenant-leading partial indexes on
+`next_attempt_at` where state is `pending`, and `failed_at` where state is
+`failed`. Do not reuse the optional event-log table: its best-effort recording,
+pruning and endpoint-targeted replay retain their existing behavior.
+
+Grant INSERT **and UPDATE** on the outbox to the producer role. Even a duplicate
+executes `ON CONFLICT DO UPDATE` on the conflict keys to return the existing
+row in one statement. Forced row security needs both INSERT and UPDATE
+policies, including their checks, plus SELECT visibility of the returned row.
+Give the fanout and sweep roles reads and the state-transition UPDATE grants.
+Scope all policies and package phases to the tenant. Pruning needs DELETE;
+it must not grant deletion of unfinished work through a host action.
+
+Publish is atomic with host work only when it shares the same connection,
+transactional data layer, write repository module and dynamic repository
+instance. SQLite write repositories must enable `write_transactions?/0`.
+The Ash change checks against its action resource. Direct callers supply
+`:caller_resource` and, when selecting a dynamic instance, `:dynamic_repo`.
+A successful acceptance inside a transaction is conditional on its commit.
+Host hooks, notifiers and database triggers are outside the one-statement
+package count. Outbox metadata has a JSON-only domain, described by
+`AshHooks.publish/4`; immediate dispatch's wider metadata domain is unchanged.
+
+### Configure both routes and both worker roles
+
+A delivery route queues one delivery; an outbox trigger queues one fanout.
+Declare them separately. For example, configure `delivery_routes` with
+`default: {MyApp.Worker, :enqueue}` and `polling: nil`, configure `trigger`
+with `{MyApp.Worker, :enqueue_fanout}`, and pass `outbox: MyApp.Publication`
+to `use AshHooks.Worker`. The trigger callback receives the publication and
+tenant. Route names are stored as opaque identifiers and resolved only through
+host configuration. Renaming or removing a pending route is a transient
+failure that eventually parks the publication at its attempt cap.
+
+Keep the two Oban roles from ADR 0022: tenant-bound insertion uses the ledger
+repository and PostgreSQL transactional notifier; the engine role must be
+able to fetch runnable jobs across tenants. The engine establishes a fresh
+tenant binding for each package phase. A fanout job carries `kind: "fanout"`,
+outbox identity, event ID and tenant. Existing delivery jobs keep their meaning.
+Oban remains optional. Without a trigger or Oban, polling and per-tenant
+sweeps are the documented operating mode.
+
+### Schedule recovery and retain identities
+
+Schedule `AshHooks.fanout_pending(outbox, batch_size, tenant: tenant)` for each
+tenant. The package does not discover tenants. The trigger is a latency hint;
+the sweep is required even when the trigger is configured. Each candidate is
+isolated. Inspect returned errors and failed rows rather than treating an
+unreadable candidate set as zero work. Claim leases fence completion, and the
+monitored runner is killed before lease expiry. Attempts use capped exponential
+backoff; the default attempt cap spans more than 24 hours and its 240-second
+backoff ceiling is below delivery reconciliation's default 300-second cutoff.
+
+The deduplication horizon is the minimum retention of completed publications.
+`AshHooks.OutboundOutbox.prune/2` and its injected prune action delete only done
+rows older than that horizon. Pending, leased and failed rows survive. Once a
+completed identity is pruned, the same event ID is a new publication. Delivery
+retention has its own identity horizon (ADR 0026); coordinate both policies.
+
+Inspect pending or failed rows with `AshHooks.OutboundOutbox.list/2`, selecting
+`:state` and `:tenant`. Repair the classified cause, restore a missing route
+or payload builder, then call `AshHooks.rearm/3`. Rearming only a failed row
+resets its attempts and clears its failure timestamp. Unsupported stored
+formats and invalid stored content park immediately; configuration failures
+retry until the cap. Result telemetry follows successful fenced transitions.
+
+### Versions, notifications and rollback
+
+While publications remain pending, declare a builder for every version an
+endpoint may pin, including the newly deployed version. Unpinned endpoints
+and pins equal to the stored payload version receive the stored bytes.
+Other pins run a declared builder; the deployed declaration version never
+relabels older bytes. Every retry observes the current subscriptions,
+pause flags, endpoints and builders, keeping earlier delivery rows.
+
+In a raw `Repo.transaction`, publish returns notifications without sending a
+hint or calling Ash's missed-notification warning path, even when configured
+as `:raise`. Let the per-tenant sweep find the committed row, or call `fanout/3`
+after commit. Never call fanout inside that transaction. Returned notifications,
+bulk notification suppression and writes outside the publish action also rely
+on the sweep. Ash-managed transactions delay the hint until physical commit;
+a trigger exception, exit or throw never reaches the publishing caller.
+
+Outbox re-admission carries the original metadata after process restarts.
+Delivery-only `reconcile_pending/3` remains the backstop and reconstructs an
+event with empty metadata. Routes must tolerate that delivery-only contract.
+Durable queue admission must be idempotent; transport remains at-least-once.
+
+Before rolling back to a library version without the outbox, stop new
+publications and drain or explicitly park and inspect all pending rows. Keep
+outbox tables, routes, builders and grants until every retained obligation is
+resolved. An older library cannot sweep new-format rows. A rollback must retain
+a compatible fanout deployment until those obligations finish; dropping the
+outbox would lose them. Re-enable publication only with a compatible reader.
+
+### Subscription index
+
+On PostgreSQL, add a GIN index on each subscription table's `event_types`
+column using the migration generator's custom-index support. Keep tenant
+indexes and the resource's primary-read filters and preparations. The type
+predicate casts both arrays to `text[]`; metadata selection widens numeric
+and structured values to the final Elixir predicate. The optimization applies
+to immediate dispatch and transactional fanout alike.
+
 ## Unreleased
 
 Applications using HTTP ingress must update Plug to 1.20.4 or later in the 1.x

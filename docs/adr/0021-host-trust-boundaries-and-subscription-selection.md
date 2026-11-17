@@ -56,7 +56,10 @@ event names or the bare wildcard, with atom and string names normalized for
 comparison. Optional attribute filters use a closed declared key set and event
 metadata: clauses combine with AND, list values match any member, and unknown
 keys, missing metadata, or malformed filter containers do not match. Selection
-occurs before creating delivery rows. Subscription pause is recorded in ADR-0020.
+occurs before creating delivery rows. Both dispatch paths now select candidates
+in SQL through the primary read, with type, pause and metadata-filter arms;
+unrecognized shapes widen to the Elixir final guard. Malformed containers
+never match, including the former sentinel collision. See ADR 0029. Subscription pause is recorded in ADR-0020.
 
 [Catalog](../../lib/ash_hooks/catalog.ex) exposes declared descriptions,
 schemas, examples, versions, and version builders. An endpoint without a pin,

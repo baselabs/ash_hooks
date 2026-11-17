@@ -46,11 +46,13 @@ defmodule AshHooks.OutboundOutbox do
       delivery_routes: [
         type: :keyword_list,
         required: true,
-        doc: "Named two-argument enqueue callbacks, or nil for a polling route. Names are persisted as strings."
+        doc:
+          "Named two-argument enqueue callbacks, or nil for a polling route. Names are persisted as strings."
       ],
       trigger: [
         type: {:tuple, [:atom, :atom]},
-        doc: "Optional callback receiving (outbox_row, tenant) after physical commit. Failures leave the publication pending."
+        doc:
+          "Optional callback receiving (outbox_row, tenant) after physical commit. Failures leave the publication pending."
       ],
       deduplication_horizon_seconds: [
         type: :pos_integer,
@@ -60,7 +62,8 @@ defmodule AshHooks.OutboundOutbox do
       fanout_timeout: [
         type: :pos_integer,
         default: 25_000,
-        doc: "Runner deadline in milliseconds. Must be below the lease; the runner is killed at this deadline."
+        doc:
+          "Runner deadline in milliseconds. Must be below the lease; the runner is killed at this deadline."
       ],
       fanout_lease_seconds: [
         type: :pos_integer,

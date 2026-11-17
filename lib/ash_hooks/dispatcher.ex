@@ -429,7 +429,7 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp enqueue(deliv_mod, row, event, opts, tenant) do
-    if opts[:outbox_admission?] and opts[:enqueue] do
+    if opts[:outbox_admission?] && opts[:enqueue] do
       readmit(deliv_mod, row, event, opts, tenant)
     else
       enqueue_dispatch(deliv_mod, row, event, opts, tenant)
@@ -465,22 +465,37 @@ defmodule AshHooks.Dispatcher do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     cond do
-      is_nil(opts[:enqueue]) -> %{status: :duplicate, error: nil}
-      row.status in [:succeeded, :dead_letter] -> %{status: :duplicate, error: nil}
-      is_nil(row.enqueue_token) and row.enqueue_lease_expires_at &&
+      is_nil(opts[:enqueue]) ->
+        %{status: :duplicate, error: nil}
+
+      row.status in [:succeeded, :dead_letter] ->
+        %{status: :duplicate, error: nil}
+
+      (is_nil(row.enqueue_token) and row.enqueue_lease_expires_at) &&
           DateTime.compare(row.enqueue_lease_expires_at, now) == :gt ->
         %{status: :duplicate, error: nil}
-      row.status == :sending and row.send_lease_expires_at &&
+
+      (row.status == :sending and row.send_lease_expires_at) &&
           DateTime.compare(row.send_lease_expires_at, now) == :gt ->
         %{status: :duplicate, error: nil}
+
       true ->
         cutoff = DateTime.add(now, 1, :second)
+
         case claim_enqueue(deliv_mod, row, cutoff, tenant) do
           {:ok, claimed} ->
-            result = reconcile_enqueue_result(deliv_mod, claimed,
-              enqueue_result(opts[:enqueue], claimed, event), tenant)
+            result =
+              reconcile_enqueue_result(
+                deliv_mod,
+                claimed,
+                enqueue_result(opts[:enqueue], claimed, event),
+                tenant
+              )
+
             Map.take(result, [:status, :error])
-          {:error, reason} -> %{status: :endpoint_error, error: reason}
+
+          {:error, reason} ->
+            %{status: :endpoint_error, error: reason}
         end
     end
   end

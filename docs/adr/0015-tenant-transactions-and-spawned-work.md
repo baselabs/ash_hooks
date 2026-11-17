@@ -49,7 +49,7 @@ do, while atoms arrive as strings. Custom parsing must round-trip through its
 inverse. Queue insertion occurs in a tenant phase after delivery persistence;
 the queue instance must share the ledger repository for that binding. An inline
 enqueue callback invoking the driver inside a host transaction is refused and
-reported as enqueue failure, leaving the pending row recoverable.
+reported as enqueue failure, leaving the row `enqueue_failed` and recoverable.
 
 A row-security setting belongs to one connection and transaction. A child process or a
 separately routed read does not inherit that transaction's binding; a monitored delivery
@@ -63,6 +63,21 @@ may join the host transaction; invoking the driver inside that transaction is re
 - Ambient process-context transfer of the tenant creates a second source of
   truth and cannot establish a new connection's transaction binding. Tenant data
   in arguments and transaction reasons supplies the binding explicitly.
+
+Transactional publish adds one outbox upsert to the producer's bound
+connection. Its notifier runs only after physical commit and hints a separately
+declared trigger route. Raw repository transactions return notifications and
+rely on a per-tenant sweep or an explicit fanout after commit. Trigger failures
+are contained. The trigger never replaces the sweep's correctness obligation.
+
+Fanout refuses an enclosing transaction. Claim, subscription and endpoint
+reads, event-log recording, delivery writes, admission fences and final outbox
+transitions each use bounded tenant phases. Payload builders and enqueue
+callbacks run outside those phases. The generated worker opens its own bounded
+tenant phase for durable queue insertion, as it does for immediate dispatch.
+The fanout runner has an owned monitor and a deadline below its lease; expiry
+kills it. Finish, release and park require the complete key, tenant, ownership,
+claim token and live lease. A stale runner emits no result event.
 
 ## Consequences
 

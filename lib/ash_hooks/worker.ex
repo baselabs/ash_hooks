@@ -758,13 +758,27 @@ defmodule AshHooks.Worker do
       @doc "Schedules one committed publication's fanout using the configured Oban instance."
       def enqueue_fanout(publication, tenant) do
         if publication.__struct__ == @ash_hooks_outbox do
-          args = %{"kind" => "fanout", "outbox_resource" => Atom.to_string(publication.__struct__),
-            "event_uuid" => publication.event_uuid, "tenant" => tenant,
-            "dispatch_source" => publication.dispatch_source, "dispatch_route" => publication.dispatch_route}
-            |> Enum.reject(fn {_key, value} -> is_nil(value) end) |> Map.new()
+          args =
+            %{
+              "kind" => "fanout",
+              "outbox_resource" => Atom.to_string(publication.__struct__),
+              "event_uuid" => publication.event_uuid,
+              "tenant" => tenant,
+              "dispatch_source" => publication.dispatch_source,
+              "dispatch_route" => publication.dispatch_route
+            }
+            |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+            |> Map.new()
 
-          changeset = __MODULE__.new(args, unique: [fields: [:args], period: :infinity,
-            states: [:available, :scheduled, :executing, :retryable]])
+          changeset =
+            __MODULE__.new(args,
+              unique: [
+                fields: [:args],
+                period: :infinity,
+                states: [:available, :scheduled, :executing, :retryable]
+              ]
+            )
+
           insert_durably(changeset, args, 20)
         else
           {:error, :unknown_source}
@@ -864,6 +878,7 @@ defmodule AshHooks.Worker do
 
   @doc false
   def perform_fanout(nil, _args), do: {:error, :unknown_source}
+
   def perform_fanout(outbox, %{"outbox_resource" => resource, "event_uuid" => id} = args) do
     if Atom.to_string(outbox) == resource do
       case AshHooks.fanout(outbox, id, tenant: args["tenant"]) do
@@ -875,6 +890,7 @@ defmodule AshHooks.Worker do
       {:error, :unknown_source}
     end
   end
+
   def perform_fanout(_outbox, _args), do: {:error, :invalid_event}
 
   defp retryable_statuses!(statuses) do

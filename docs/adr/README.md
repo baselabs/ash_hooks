@@ -39,3 +39,4 @@ Records are repository documentation and are not part of the Hex package.
 | [0026: Retention action injection](0026-retention-action-injection.md) | Accepted | Whether the package may delete delivery rows. |
 | [0027: Observation read failures](0027-observation-read-failures.md) | Accepted | Observation read failures are reported, never counted as zero. |
 | [0028: Host extension seams](0028-host-extension-seams.md) | Accepted | Verified facts, host signers, exact prepared requests and signing provenance. |
+| [0029: Transactional publication and query matching](0029-transactional-publish-and-query-matching.md) | Accepted | A dedicated outbox and query-side selection with an Elixir guard. |

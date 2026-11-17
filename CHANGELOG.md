@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- Transactional `publish/4` and `AshHooks.Changes.Publish` accept publications
+  with one upsert into a new `AshHooks.OutboundOutbox` resource. Committed
+  publications fan out through fenced, leased attempts outside the producer's
+  transaction. Per-tenant sweeps provide recovery; failed rows are inspectable
+  and rearmable. Completed rows retain their identities for a declared horizon.
+- Host-declared trigger and delivery routes, a distinct Oban fanout job kind,
+  and contents-free outbox lifecycle telemetry support every host and tenant.
+- Stored payload versions preserve original bytes and resolve endpoint pins
+  against explicit builders while publications remain pending.
+
+### Changed
+
+- All dispatch paths select subscriptions with type, pause and metadata-filter
+  predicates through the primary read, retaining the Elixir final guard.
+  Unrecognized storage shapes widen the query. A PostgreSQL GIN index on
+  `event_types` is recommended.
+
+### Fixed
+
+- Malformed filter containers never match, including the former
+  `__invalid__` sentinel collision. This correction also applies to hosts that
+  do not adopt the outbox. Existing dispatch, event-log and delivery resources
+  otherwise require no migration.
+
 ## Unreleased (3.3.0)
 
 ### Added

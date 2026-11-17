@@ -19,7 +19,9 @@ defmodule AshHooks.OutboundOutbox.Notifier do
 
   defp trigger(row) do
     case AshHooks.Outbox.option(row.__struct__, :trigger) do
-      nil -> :ok
+      nil ->
+        :ok
+
       {module, function} ->
         case apply(module, function, [row, AshHooks.Tenancy.from_row(row)]) do
           :ok -> :ok

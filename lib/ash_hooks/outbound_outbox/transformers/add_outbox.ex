@@ -43,7 +43,8 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
       {:dispatch_source, :string, [allow_nil?: false]},
       {:dispatch_route, :string, [allow_nil?: false]},
       {:acceptance_token, :uuid, [allow_nil?: false]},
-      {:state, :atom, [allow_nil?: false, default: :pending, constraints: [one_of: [:pending, :done, :failed]]]},
+      {:state, :atom,
+       [allow_nil?: false, default: :pending, constraints: [one_of: [:pending, :done, :failed]]]},
       {:claim_token, :uuid, []},
       {:lease_expires_at, :utc_datetime_usec, []},
       {:attempts, :integer, [allow_nil?: false, default: 0]},
@@ -52,7 +53,8 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
       {:completed_at, :utc_datetime_usec, []},
       {:failed_at, :utc_datetime_usec, []},
       {:inserted_at, :utc_datetime_usec, [allow_nil?: false, default: &DateTime.utc_now/0]},
-      {:updated_at, :utc_datetime_usec, [allow_nil?: false, default: &DateTime.utc_now/0, update_default: &DateTime.utc_now/0]}
+      {:updated_at, :utc_datetime_usec,
+       [allow_nil?: false, default: &DateTime.utc_now/0, update_default: &DateTime.utc_now/0]}
     ]
 
     Enum.reduce_while(specs, {:ok, state}, fn {name, type, opts}, {:ok, state} ->
@@ -65,7 +67,12 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
 
   defp identity(state) do
     tenant = Transformer.get_option(state, [:multitenancy], :attribute)
-    Builder.add_new_identity(state, :unique_publication, Enum.reject([tenant, :event_uuid], &is_nil/1))
+
+    Builder.add_new_identity(
+      state,
+      :unique_publication,
+      Enum.reject([tenant, :event_uuid], &is_nil/1)
+    )
   end
 
   defp actions(state) do
@@ -74,40 +81,83 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
 
     [
       {:create, :publish,
-       [upsert?: true, upsert_identity: :unique_publication, upsert_fields: [],
-        notifiers: [AshHooks.OutboundOutbox.Notifier],
-        accept: [:event_uuid, :event_type, :version, :payload, :metadata, :format_version,
-                 :dispatch_source, :dispatch_route, :acceptance_token, :next_attempt_at]]},
-      update(:claim, [claim_token: :uuid, lease_expires_at: :utc_datetime_usec],
+       [
+         upsert?: true,
+         upsert_identity: :unique_publication,
+         upsert_fields: [],
+         notifiers: [AshHooks.OutboundOutbox.Notifier],
+         accept: [
+           :event_uuid,
+           :event_type,
+           :version,
+           :payload,
+           :metadata,
+           :format_version,
+           :dispatch_source,
+           :dispatch_route,
+           :acceptance_token,
+           :next_attempt_at
+         ]
+       ]},
+      update(
+        :claim,
+        [claim_token: :uuid, lease_expires_at: :utc_datetime_usec],
         [increment(:attempts)],
-        Ash.Expr.expr(state == :pending)),
-      update(:finish, [claim_token: :uuid, completed_at: :utc_datetime_usec],
-        [set(:state, :done), set(:last_error, nil), set(:claim_token, nil), set(:lease_expires_at, nil)],
-        live_filter()),
-      update(:release, [claim_token: :uuid, next_attempt_at: :utc_datetime_usec, last_error: :string],
-        [set(:claim_token, nil), set(:lease_expires_at, nil)], live_filter()),
-      update(:park, [claim_token: :uuid, failed_at: :utc_datetime_usec, last_error: :string],
-        [set(:state, :failed), set(:claim_token, nil), set(:lease_expires_at, nil)], live_filter()),
-      update(:rearm, [next_attempt_at: :utc_datetime_usec],
+        Ash.Expr.expr(state == :pending)
+      ),
+      update(
+        :finish,
+        [claim_token: :uuid, completed_at: :utc_datetime_usec],
+        [
+          set(:state, :done),
+          set(:last_error, nil),
+          set(:claim_token, nil),
+          set(:lease_expires_at, nil)
+        ],
+        live_filter()
+      ),
+      update(
+        :release,
+        [claim_token: :uuid, next_attempt_at: :utc_datetime_usec, last_error: :string],
+        [set(:claim_token, nil), set(:lease_expires_at, nil)],
+        live_filter()
+      ),
+      update(
+        :park,
+        [claim_token: :uuid, failed_at: :utc_datetime_usec, last_error: :string],
+        [set(:state, :failed), set(:claim_token, nil), set(:lease_expires_at, nil)],
+        live_filter()
+      ),
+      update(
+        :rearm,
+        [next_attempt_at: :utc_datetime_usec],
         [set(:state, :pending), set(:attempts, 0), set(:failed_at, nil), set(:last_error, nil)],
-        Ash.Expr.expr(state == :failed)),
+        Ash.Expr.expr(state == :failed)
+      ),
       {:destroy, :prune, [accept: [], changes: [change(Builtins.filter(prune_filter))]]}
     ]
   end
 
   defp live_filter do
-    Ash.Expr.expr(state == :pending and claim_token == ^Ash.Expr.arg(:claim_token) and lease_expires_at > now())
+    Ash.Expr.expr(
+      state == :pending and claim_token == ^Ash.Expr.arg(:claim_token) and
+        lease_expires_at > now()
+    )
   end
 
   defp update(name, args, changes, filter) do
     # Claim tokens fence transitions, but are not overwritten by finish/release/park.
-    writes = if name in [:finish, :release, :park], do: Keyword.delete(args, :claim_token), else: args
+    writes =
+      if name in [:finish, :release, :park], do: Keyword.delete(args, :claim_token), else: args
 
     {:update, name,
-     [accept: [],
-      arguments: Enum.map(args, fn {name, type} -> argument(name, type) end),
-      changes: [change(Builtins.filter(filter)) | changes] ++
-        Enum.map(writes, fn {name, _} -> set(name, Ash.Expr.arg(name)) end)]}
+     [
+       accept: [],
+       arguments: Enum.map(args, fn {name, type} -> argument(name, type) end),
+       changes:
+         [change(Builtins.filter(filter)) | changes] ++
+           Enum.map(writes, fn {name, _} -> set(name, Ash.Expr.arg(name)) end)
+     ]}
   end
 
   defp argument(name, type) do

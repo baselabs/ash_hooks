@@ -33,9 +33,13 @@ defmodule AshHooks.Changes.Publish do
 
       with :ok <- AshHooks.Outbox.atomicity(opts[:outbox], changeset.resource),
            {:ok, event} <- apply(module, function, [result, changeset.context]),
-           {:ok, _disposition} <- AshHooks.publish(opts[:outbox], opts[:declaration], event,
-             tenant: changeset.tenant, context: changeset.context,
-             caller_resource: changeset.resource, route: Keyword.get(opts, :route, :default)) do
+           {:ok, _disposition} <-
+             AshHooks.publish(opts[:outbox], opts[:declaration], event,
+               tenant: changeset.tenant,
+               context: changeset.context,
+               caller_resource: changeset.resource,
+               route: Keyword.get(opts, :route, :default)
+             ) do
         {:ok, result}
       end
     end)

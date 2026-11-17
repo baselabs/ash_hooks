@@ -44,10 +44,11 @@ generated attribute, including its constraints and default. Atom and string
 entries match the same event names. The bare `"*"` or `:"*"` entry matches
 all event names.
 
-Matching is exact strings plus the bare wildcard entry, evaluated IN
-MEMORY by the dispatcher after reading through the consumer's primary
-read action. There is no array-containment SQL, so the semantics are identical
-on every data layer.
+Matching uses exact names plus the bare wildcard. The dispatcher selects
+candidates in SQL through the consumer's primary read action, then applies
+the Elixir predicate as its final guard. Unrecognized storage shapes widen
+the query and preserve that guard. A PostgreSQL GIN index on `event_types`
+speeds type selection. Malformed filter containers never match.
 
 The package injects NO read action and NO read policies: read surfaces
 are the consumer's to open through their own domain policies; internal

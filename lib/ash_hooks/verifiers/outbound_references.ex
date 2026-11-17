@@ -26,7 +26,6 @@ defmodule AshHooks.Verifiers.OutboundReferences do
       outbox = Keyword.fetch!(opts, :outbox)
       Code.ensure_compiled!(outbox)
       outbox_layer = Ash.DataLayer.data_layer(outbox)
-      info = Module.concat(layer, :Info)
 
       owner_repo =
         case layer do
@@ -37,11 +36,13 @@ defmodule AshHooks.Verifiers.OutboundReferences do
 
       if layer != outbox_layer or is_nil(owner_repo) or
            (is_atom(owner_repo) and owner_repo != AshHooks.Phase.repo(outbox)) do
-        raise DslError, module: owner, path: [:actions, action.name],
-          message: "Publish requires the same transactional data layer and write repository as its outbox"
+        raise DslError,
+          module: owner,
+          path: [:actions, action.name],
+          message:
+            "Publish requires the same transactional data layer and write repository as its outbox"
       end
 
-      _ = info
     end
   end
 

@@ -97,13 +97,17 @@ defmodule AshHooks.Subscription do
       |> MapSet.new(&to_string/1)
 
     case Map.get(subscription, :event_filters) do
-      nil -> true
+      nil ->
+        true
+
       filters when is_map(filters) ->
         Enum.all?(filters, fn {key, expected} ->
           Map.has_key?(metadata, to_string(key)) and to_string(key) in declared and
             value_matches?(Map.fetch!(metadata, to_string(key)), expected)
         end)
-      _not_a_map -> false
+
+      _not_a_map ->
+        false
     end
   end
 
