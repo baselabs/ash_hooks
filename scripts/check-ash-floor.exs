@@ -119,10 +119,7 @@ try do
       "--trace",
       "--seed",
       "0",
-      "--raise",
-      "--cover",
-      "--export-coverage",
-      "floor"
+      "--raise"
     ])
 
     IO.puts(
