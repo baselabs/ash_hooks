@@ -38,7 +38,13 @@ defmodule AshHooks.OutboundOutbox.Transformers.AddOutbox do
   defp metadata_storage(state) do
     if Transformer.get_persisted(state, :data_layer) == AshPostgres.DataLayer do
       types = Extension.get_opt(state, [:postgres], :migration_types, [])
-      Transformer.set_option(state, [:postgres], :migration_types, Keyword.put_new(types, :metadata, :json))
+
+      Transformer.set_option(
+        state,
+        [:postgres],
+        :migration_types,
+        Keyword.put_new(types, :metadata, :json)
+      )
     else
       state
     end

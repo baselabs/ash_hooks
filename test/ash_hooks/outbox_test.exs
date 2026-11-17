@@ -1,3 +1,4 @@
+Code.require_file("outbox_process.exs", __DIR__)
 Code.require_file("outbox_resources.exs", __DIR__)
 
 defmodule AshHooks.OutboxAcceptance do
@@ -31,9 +32,11 @@ defmodule AshHooks.OutboxAcceptance do
 
       fields =
         Enum.map_join(Ash.Resource.Info.attributes(resource), ", ", fn attr ->
-          type = if not sqlite? and resource == resources.outbox and attr.name == :metadata,
-            do: "JSON",
-            else: sql_type(Ash.Type.storage_type(attr.type, attr.constraints), sqlite?)
+          type =
+            if not sqlite? and resource == resources.outbox and attr.name == :metadata,
+              do: "JSON",
+              else: sql_type(Ash.Type.storage_type(attr.type, attr.constraints), sqlite?)
+
           "\"#{attr.name}\" #{type}" <> if(attr.primary_key?, do: " PRIMARY KEY", else: "")
         end)
 
@@ -48,7 +51,16 @@ defmodule AshHooks.OutboxAcceptance do
       "CREATE UNIQUE INDEX #{table(resources.delivery)}_unique_delivery_index ON #{table(resources.delivery)} (org_id, endpoint_id, event_uuid)"
     )
 
+    oban_options = setup_oban(namespace, repo, sqlite?)
+
     ExUnit.Callbacks.on_exit(fn ->
+      if oban_options do
+        name = Keyword.fetch!(oban_options, :name)
+        if pid = GenServer.whereis(name), do: Supervisor.stop(pid)
+        if sqlite?, do: repo.query!("DROP TABLE oban_jobs"),
+          else: repo.query!("DROP SCHEMA outbox_acceptance_oban CASCADE")
+      end
+
       Enum.each(resources, fn {_name, resource} ->
         repo.query!("DROP TABLE #{table(resource)}")
       end)
@@ -61,7 +73,7 @@ defmodule AshHooks.OutboxAcceptance do
       end
     end)
 
-    Map.merge(resources, %{repo: repo, namespace: namespace, sqlite?: sqlite?})
+    Map.merge(resources, %{repo: repo, namespace: namespace, sqlite?: sqlite?, oban_options: oban_options})
   end
 
   def clean(fixture) do
@@ -69,8 +81,110 @@ defmodule AshHooks.OutboxAcceptance do
       fixture.repo.query!("DELETE FROM #{table(fixture[key])}")
     end
 
+    if fixture.oban_options do
+      prefix = if fixture.sqlite?, do: "", else: "outbox_acceptance_oban."
+      fixture.repo.query!("DELETE FROM #{prefix}oban_jobs")
+    end
+
     Application.delete_env(:ash_hooks, Module.concat(fixture.namespace, :Runtime))
     :ok
+  end
+
+  defp setup_oban(namespace, repo, sqlite?) do
+    if Code.ensure_loaded?(Oban) do
+      if sqlite? do
+        repo.query!("""
+    CREATE TABLE oban_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      state TEXT NOT NULL DEFAULT 'available',
+      queue TEXT NOT NULL DEFAULT 'default',
+      worker TEXT NOT NULL,
+      args TEXT NOT NULL DEFAULT '{}',
+      meta TEXT NOT NULL DEFAULT '{}',
+      tags TEXT NOT NULL DEFAULT '[]',
+      errors TEXT NOT NULL DEFAULT '[]',
+      attempt INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 20,
+      priority INTEGER NOT NULL DEFAULT 0,
+      inserted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+      scheduled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+      attempted_at TEXT,
+      attempted_by TEXT NOT NULL DEFAULT '[]',
+      cancelled_at TEXT,
+      completed_at TEXT,
+      discarded_at TEXT
+    )
+        """)
+      else
+        repo.query!("CREATE SCHEMA outbox_acceptance_oban")
+        :ok = Ecto.Migrator.up(repo, 2_026_111_701,
+          AshHooks.OutboxFixtures.ObanMigration, prefix: "outbox_acceptance_oban", log: false)
+      end
+
+      options = [name: Module.concat(namespace, :Oban), repo: repo,
+        engine: if(sqlite?, do: Oban.Engines.Lite, else: Oban.Engines.Basic),
+        queues: false, plugins: [], peer: false, stage_interval: :infinity,
+        testing: :disabled]
+      options = if sqlite?, do: options,
+        else: Keyword.merge(options, prefix: "outbox_acceptance_oban", notifier: Oban.Notifiers.PG)
+      {:ok, pid} = Oban.start_link(options)
+      Process.unlink(pid)
+      options
+    end
+  end
+
+  def start_peer(f) do
+    {:ok, peer, _node} = :peer.start_link(%{connection: :standard_io,
+      args: [~c"+S", ~c"2", ~c"-pa" | :code.get_path()], wait_boot: 30_000})
+    :peer.call(peer, Code, :require_file, [Path.expand("test/ash_hooks/outbox_process.exs")], 30_000)
+    :peer.call(peer, Code, :require_file, [Path.expand("test/ash_hooks/outbox_resources.exs")], 30_000)
+    :ok = :peer.call(peer, AshHooks.OutboxProcess, :boot,
+      [f.repo, f.repo.config(), f.oban_options], 30_000)
+    ExUnit.Callbacks.on_exit(fn -> stop_peer(peer) end)
+    peer
+  end
+
+  defp stop_peer(peer) do
+    :peer.stop(peer)
+  catch
+    :exit, _reason -> :ok
+  end
+
+  def crash(f, stage, event, marker \\ nil) do
+    peer = start_peer(f)
+    path = Path.join(System.tmp_dir!(), "outbox_checkpoint_#{Ash.UUID.generate()}")
+    try do
+      :ok = :peer.call(peer, AshHooks.OutboxProcess, :execute,
+        [f.namespace, stage, event, path, marker])
+      pid = await_file(path, System.monotonic_time(:millisecond) + 20_000)
+      assert {"", 0} = System.cmd("kill", ["-KILL", pid])
+      stop_peer(peer)
+      pid
+    after
+      File.rm(path)
+      File.rm(path <> ".release")
+      stop_peer(peer)
+    end
+  end
+
+  defp await_file(path, deadline) do
+    case File.read(path) do
+      {:ok, pid} -> pid
+      {:error, :enoent} ->
+        assert System.monotonic_time(:millisecond) < deadline, "OS process did not reach checkpoint"
+        Process.sleep(10)
+        await_file(path, deadline)
+    end
+  end
+
+  def expire(f, event) do
+    set(f, event.id, lease_expires_at: DateTime.add(DateTime.utc_now(), -1, :second),
+      next_attempt_at: DateTime.add(DateTime.utc_now(), -1, :second))
+  end
+
+  def drain(f) do
+    Oban.drain_queue(Module.concat(f.namespace, :Oban), queue: :outbox_acceptance,
+      with_safety: false)
   end
 
   def table(resource) do
@@ -201,6 +315,7 @@ defmodule AshHooks.OutboxAcceptance do
       use ExUnit.Case, async: false
       require Ash.Query
       alias AshHooks.OutboxAcceptance, as: Cases
+      @moduletag timeout: 180_000
       @namespace unquote(namespace)
       if @namespace == AshHooks.OutboxFixtures.Postgres, do: @moduletag(:postgres)
       setup_all do
@@ -278,6 +393,86 @@ defmodule AshHooks.OutboxAcceptance do
 
         assert {:error, :inside_transaction} =
                  f.repo.transaction(fn -> Cases.fanout(f, event.id) end) |> elem(1)
+      end
+
+      test "A3 OS death before commit rolls back and death after commit needs no hint", f do
+        before = Cases.event()
+        Cases.crash(f, :before_commit, before)
+        assert [] = Cases.rows(f, :outbox)
+        committed = Cases.event()
+        Cases.crash(f, :after_commit, committed)
+        assert {:ok, %{done: 1, errors: []}} =
+          AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
+        assert Cases.publication(f, committed.id).state == :done
+      end
+
+      test "A3 OS death during builders preserves the delivery already written", f do
+        for _ <- 1..2, do: Cases.endpoint(f, pinned_payload_version: 1)
+        event = Cases.event()
+        assert {:ok, :accepted} = Cases.publish(f, event)
+        Cases.crash(f, :mid_fanout, event)
+        assert [surviving] = Cases.rows(f, :delivery)
+        Cases.expire(f, event)
+        assert {:ok, %{done: 1, errors: []}} =
+          AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
+        assert length(Cases.rows(f, :delivery)) == 2
+        assert Enum.any?(Cases.rows(f, :delivery), &(&1.id == surviving.id))
+      end
+
+      if Code.ensure_loaded?(Oban) do
+        test "A3 OS death around durable admission recovers without a second surviving send", f do
+          {server, port} = AshHooks.Test.HttpReceiver.start()
+          on_exit(fn -> :inets.stop(:httpd, server) end)
+          Cases.endpoint(f, url: "http://127.0.0.1:#{port}/200")
+
+          for stage <- [:before_admission, :after_admission] do
+            event = Cases.event()
+            assert {:ok, :accepted} = Cases.publish(f, event, route: :queued)
+            Cases.crash(f, stage, event)
+            assert [surviving] = Enum.filter(Cases.rows(f, :delivery), &(&1.event_uuid == event.id))
+            if stage == :after_admission do
+              assert %{success: 1} = Cases.drain(f)
+              assert_receive {:http_received, _request}, 5_000
+            else
+              # The killed claimant held the real 30-second enqueue lease.
+              Process.sleep(30_100)
+            end
+
+            Cases.expire(f, event)
+            assert {:ok, %{done: 1, errors: []}} =
+              AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
+            assert [%{id: id}] = Enum.filter(Cases.rows(f, :delivery), &(&1.event_uuid == event.id))
+            assert id == surviving.id
+            if stage == :before_admission do
+              assert %{success: 1} = Cases.drain(f)
+              assert_receive {:http_received, _request}, 5_000
+            else
+              assert %{success: 0} = Cases.drain(f)
+              refute_receive {:http_received, _request}
+            end
+          end
+        end
+
+        test "A14 a restarted process re-admits the original metadata to a named route", f do
+          {server, port} = AshHooks.Test.HttpReceiver.start()
+          on_exit(fn -> :inets.stop(:httpd, server) end)
+          Cases.endpoint(f, url: "http://127.0.0.1:#{port}/200")
+          marker = Path.join(System.tmp_dir!(), "outbox_admission_#{Ash.UUID.generate()}")
+          on_exit(fn -> File.rm(marker) end)
+          Application.put_env(:ash_hooks, :outbox_admission_marker, marker)
+          on_exit(fn -> Application.delete_env(:ash_hooks, :outbox_admission_marker) end)
+          event = Cases.event(Ash.UUID.generate(), %{"admission" => "fail", "region" => "west"})
+          assert {:ok, :accepted} = Cases.publish(f, event, route: :queued)
+          Cases.crash(f, :admission_failure, event, marker)
+          assert [%{status: :enqueue_failed} = surviving] = Cases.rows(f, :delivery)
+          assert File.read!(marker) == "refused"
+          Cases.expire(f, event)
+          assert :done = Cases.fanout(f, event.id)
+          assert [%{id: id}] = Cases.rows(f, :delivery)
+          assert id == surviving.id
+          assert %{success: 1} = Cases.drain(f)
+          assert_receive {:http_received, _request}, 5_000
+        end
       end
 
       test "A4 endpoint failures stay pending and recover without replacing surviving rows", f do

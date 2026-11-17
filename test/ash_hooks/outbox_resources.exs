@@ -9,7 +9,7 @@ defmodule AshHooks.OutboxFixtures.SQLite.Runtime do
     AshHooks.Event.new(id: "msg_record_" <> record.id, type: :changed, payload: record.value)
   end
 
-  def variant(event), do: {:ok, "v2:" <> event.payload}
+  def variant(event), do: AshHooks.OutboxProcess.variant(event)
 
   def trigger(row, tenant) do
     case Application.get_env(:ash_hooks, __MODULE__) do
@@ -34,14 +34,7 @@ defmodule AshHooks.OutboxFixtures.SQLite.Runtime do
     end
   end
 
-  def enqueue(row, event) do
-    worker = Module.concat(AshHooks.OutboxFixtures.SQLite, :Worker)
-
-    case event.metadata["admission"] do
-      "fail" -> {:error, :closed}
-      _ -> worker.enqueue(row, event)
-    end
-  end
+  def enqueue(row, event), do: AshHooks.OutboxProcess.admit(__MODULE__, row, event)
 end
 
 defmodule AshHooks.OutboxFixtures.SQLite.Endpoint do
@@ -161,6 +154,8 @@ defmodule AshHooks.OutboxFixtures.SQLite.Outbox do
     delivery_routes default: nil, queued: {AshHooks.OutboxFixtures.SQLite.Runtime, :enqueue}
     trigger {AshHooks.OutboxFixtures.SQLite.Runtime, :trigger}
     deduplication_horizon_seconds 3600
+    fanout_timeout 1_000
+    fanout_lease_seconds 2
     fanout_max_attempts 3
     fanout_base_backoff_seconds 1
     fanout_max_backoff_seconds 2
@@ -255,7 +250,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Runtime do
     AshHooks.Event.new(id: "msg_record_" <> record.id, type: :changed, payload: record.value)
   end
 
-  def variant(event), do: {:ok, "v2:" <> event.payload}
+  def variant(event), do: AshHooks.OutboxProcess.variant(event)
 
   def trigger(row, tenant) do
     case Application.get_env(:ash_hooks, __MODULE__) do
@@ -280,14 +275,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Runtime do
     end
   end
 
-  def enqueue(row, event) do
-    worker = Module.concat(AshHooks.OutboxFixtures.Postgres, :Worker)
-
-    case event.metadata["admission"] do
-      "fail" -> {:error, :closed}
-      _ -> worker.enqueue(row, event)
-    end
-  end
+  def enqueue(row, event), do: AshHooks.OutboxProcess.admit(__MODULE__, row, event)
 end
 
 defmodule AshHooks.OutboxFixtures.Postgres.Endpoint do
@@ -407,6 +395,8 @@ defmodule AshHooks.OutboxFixtures.Postgres.Outbox do
     delivery_routes default: nil, queued: {AshHooks.OutboxFixtures.Postgres.Runtime, :enqueue}
     trigger {AshHooks.OutboxFixtures.Postgres.Runtime, :trigger}
     deduplication_horizon_seconds 3600
+    fanout_timeout 1_000
+    fanout_lease_seconds 2
     fanout_max_attempts 3
     fanout_base_backoff_seconds 1
     fanout_max_backoff_seconds 2

@@ -27,7 +27,10 @@ defmodule AshHooks.OutboundOutbox.Verifier do
         )
 
       not metadata_storage?(state) ->
-        error(state, "PostgreSQL outbox metadata requires the native :json migration type to preserve numeric kinds")
+        error(
+          state,
+          "PostgreSQL outbox metadata requires the native :json migration type to preserve numeric kinds"
+        )
 
       option(state, :fanout_timeout) >= option(state, :fanout_lease_seconds) * 1_000 ->
         error(state, "fanout_timeout must be below fanout_lease_seconds")

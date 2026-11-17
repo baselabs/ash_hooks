@@ -25,7 +25,9 @@ data is never converted to atoms or executable terms.
     end
 
 Generate and apply a migration, including the tenant-leading
-`unique_publication` identity index, before publishing. Add tenant-leading
+`unique_publication` identity index, before publishing. PostgreSQL metadata
+uses native `json` to preserve integer and float kinds; keep that generated
+column type. Subscription filters still use `jsonb`. Add tenant-leading
 partial indexes on `next_attempt_at` for pending rows and `failed_at` for
 failed rows. The upsert requires both INSERT and UPDATE grants and row
 security policies. Host hooks, notifiers, and database triggers may issue

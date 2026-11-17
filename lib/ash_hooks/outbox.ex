@@ -166,7 +166,12 @@ defmodule AshHooks.Outbox do
   defp run(row, tenant) do
     owner = self()
     ref = make_ref()
-    resources = Enum.map(option(row.__struct__, :declarations), &elem(&1, 0))
+    resources =
+      Enum.flat_map(option(row.__struct__, :declarations), fn {emitter, name} ->
+        entity = Info.outbound(emitter, name)
+        endpoint = Extension.get_opt(entity.subscriptions, [:subscription], :endpoint_resource)
+        [emitter, entity.subscriptions, entity.deliveries, entity.events, endpoint]
+      end) |> Enum.reject(&is_nil/1) |> Enum.uniq()
 
     repositories =
       Enum.map([row.__struct__ | resources], &repository_binding/1) |> Enum.reject(&is_nil/1)
@@ -180,7 +185,7 @@ defmodule AshHooks.Outbox do
     timeout = option(row.__struct__, :fanout_timeout)
     # The guardian also kills the runner if the caller dies. No child can keep
     # writing after its owning invocation or its deadline has gone away.
-    guardian = spawn(fn -> guard(owner, pid, timeout) end)
+    guardian = spawn(fn -> guard(owner, pid) end)
 
     result =
       receive do
@@ -205,15 +210,13 @@ defmodule AshHooks.Outbox do
     complete(row, tenant, result)
   end
 
-  defp guard(owner, runner, timeout) do
+  defp guard(owner, runner) do
     owner_ref = Process.monitor(owner)
     runner_ref = Process.monitor(runner)
 
     receive do
       {:DOWN, ^owner_ref, :process, ^owner, _reason} -> Process.exit(runner, :kill)
       {:DOWN, ^runner_ref, :process, ^runner, _reason} -> :ok
-    after
-      timeout -> Process.exit(runner, :kill)
     end
   end
 
@@ -390,7 +393,7 @@ defmodule AshHooks.Outbox do
           do:
             Ash.Query.filter(
               query,
-              next_attempt_at <= ^time and (is_nil(lease_expires_at) or lease_expires_at <= ^time)
+              (is_nil(next_attempt_at) or next_attempt_at <= ^time) and (is_nil(lease_expires_at) or lease_expires_at <= ^time)
             ),
           else: query
 

@@ -112,6 +112,10 @@ defmodule AshHooks.Worker do
       use) disables the adapter's resolve-and-pin defense, leaving only the
       driver's send-time destination check. The macro refuses to compile a
       literal bypass outside `:test`; never ship it to production.
+    * `:outbox`: optional `AshHooks.OutboundOutbox` resource. Adds
+      `enqueue_fanout/2` and handles jobs with `kind: "fanout"` through
+      `AshHooks.fanout/3`, separately from delivery jobs. The host still
+      schedules per-tenant sweeps; this job is a latency hint.
     * `:oban`: the Oban instance name (default the unnamed instance).
     * `:queue` (default `:ash_hooks`), `:timeout` (35,000 ms), and
       `:max_attempts` (20): Oban Worker options. The job timeout must be
@@ -756,6 +760,7 @@ defmodule AshHooks.Worker do
       end
 
       @doc "Schedules one committed publication's fanout using the configured Oban instance."
+      @spec enqueue_fanout(Ash.Resource.Record.t(), term()) :: :ok | {:error, term()}
       def enqueue_fanout(publication, tenant) do
         if publication.__struct__ == @ash_hooks_outbox do
           args =
