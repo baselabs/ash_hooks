@@ -32,7 +32,7 @@ their existing contracts.
 | Subscription on SQLite | Term arrays are refused: Term binaries cannot be carried by the adapter's JSON array encoding | use string or atom arrays |
 | Subscription | map: `event_filters` under `filter_attributes` | either |
 | Subscription | atom: `signing_mode` | either |
-| Endpoint | `AshHooks.Endpoint.Url` or string: `url`; atom: `status`; `AshHooks.Endpoint.SecretRef` or string: `secret_ref` | required; optional native signing makes `secret_ref` nullable |
+| Endpoint | `AshHooks.Endpoint.Url` or string (send-time validation only): `url`; atom: `status`; `AshHooks.Endpoint.SecretRef` or string: `secret_ref` | required; optional native signing makes `secret_ref` nullable |
 | Endpoint | SecretRef or string: `previous_secret_ref`, `legacy_secret_ref`, `legacy_previous_secret_ref` | nullable |
 | Endpoint capture | Boolean: `response_capture`; integer: `response_capture_max_bytes`, `response_capture_retention_seconds`; string array: `response_header_allowlist` | required |
 | Endpoint lifecycle | UTC microsecond datetime: `secret_created_at`, `secret_first_used_at`, `secret_retired_at`, `previous_secret_created_at`, `previous_secret_first_used_at`, `previous_secret_retired_at`, `legacy_secret_created_at`, `legacy_secret_first_used_at`, `legacy_previous_secret_created_at`, `legacy_previous_secret_first_used_at`, `legacy_previous_secret_retired_at` | nullable |
@@ -76,6 +76,11 @@ UUID reference fields retain their UUID-storage compatibility check. The
 default primary key is added only when a host has no primary key; existing
 custom, composite and UUIDv7 primary keys retain their documented rules.
 A mapped endpoint `status_attribute` remains a host-owned switch of any type.
+A host `:string` or String NewType URL loses the injected URL type's
+registration-time SSRF validation. Destinations are then validated only at
+send time through the ordinary delivery guard, including retries, resends,
+test sends and delivery after fanout. Keep the default destination policy
+and transport validation unless the host intentionally owns that policy.
 Inbound source identity and provider constraints must also match their native
 specification. The outbox separately verifies the physical metadata codec and
 PostgreSQL `json` migration type.

@@ -528,6 +528,7 @@ for {test_module, namespace} <- [
   defmodule test_module do
     use ExUnit.Case, async: false
     alias Ash.DataLayer.{Ets, Simple}
+    alias AshHooks.Delivery
     alias AshHooks.OutboxAcceptance, as: Cases
     alias AshHooks.OutboxMatching.{Attempt, Outbox}
     alias AshHooks.OutboxTypeCases
@@ -619,13 +620,109 @@ for {test_module, namespace} <- [
       end
     end
 
+    for host <- ["127.0.0.1", "metadata.google.internal", "localhost"],
+        path <- [:dispatch, :retry, :resend, :test, :fanout] do
+      @unsafe_host host
+      @send_path path
+      test "host string URL refuses #{@unsafe_host} through #{@send_path} before transport", f do
+        {server, port} = HttpReceiver.start()
+        on_exit(fn -> :inets.stop(:httpd, server) end)
+        # The real listener proves the no-request assertion observes a live receiver.
+        control = String.to_charlist("http://127.0.0.1:#{port}/200")
+        assert {:ok, {{_, 200, _}, _, _}} = :httpc.request(control)
+        assert_receive {:http_received, _control_request}
+
+        if @unsafe_host == "localhost" do
+          assert {:ok, addresses} = :inet.getaddrs(~c"localhost", :inet)
+          assert {127, 0, 0, 1} in addresses
+        end
+
+        endpoint = Cases.endpoint(f, url: "http://#{@unsafe_host}:#{port}/200")
+        observer = {__MODULE__, make_ref()}
+
+        :ok =
+          :telemetry.attach(
+            observer,
+            [:ash_hooks, :delivery, :attempt],
+            fn _, _, _, pid -> send(pid, :unsafe_transport_entered) end,
+            self()
+          )
+
+        on_exit(fn -> :telemetry.detach(observer) end)
+
+        config = [
+          deliveries: f.delivery,
+          endpoints: f.endpoint,
+          tenant: "tenant-a",
+          secret_resolver: {AshHooks.OutboxProcess, :secret},
+          attempt_timeout: 3_000,
+          finalization_allowance: 1_000
+        ]
+
+        if @send_path == :test do
+          assert {:ok, %{status: :dead_letter}} =
+                   Delivery.test_send(endpoint, Keyword.put(config, :type, :changed))
+        else
+          event = Cases.event()
+
+          if @send_path == :fanout do
+            assert {:ok, :accepted} = Cases.publish(f, event)
+            assert :done = Cases.fanout(f, event.id)
+          else
+            assert {:ok, [_]} = AshHooks.dispatch(f.emitter, :changed, event, tenant: "tenant-a")
+          end
+
+          if @send_path in [:retry, :resend] do
+            status = if @send_path == :retry, do: "failed_retryable", else: "dead_letter"
+            parameter = if f.sqlite?, do: "?", else: "$1"
+
+            f.owner.query!(
+              "UPDATE #{Cases.table(f.delivery)} SET status = '#{status}', attempts = 1, next_attempt_at = NULL WHERE event_uuid = #{parameter}",
+              [event.id]
+            )
+          end
+
+          [row] = Cases.rows(f, :delivery)
+
+          row =
+            if @send_path == :resend do
+              assert {:ok, %{status: :resent, delivery: updated}} =
+                       Delivery.resend(row,
+                         endpoints: f.endpoint,
+                         tenant: "tenant-a",
+                         requested_by: "operator"
+                       )
+
+              updated
+            else
+              row
+            end
+
+          assert :ok =
+                   Delivery.run(
+                     %{
+                       "endpoint_id" => row.endpoint_id,
+                       "event_uuid" => row.event_uuid,
+                       "tenant" => "tenant-a"
+                     },
+                     config
+                   )
+        end
+
+        assert [%{status: :dead_letter, last_error: "unsafe_destination"}] = Cases.rows(f, :delivery)
+        refute_receive :unsafe_transport_entered
+        refute_receive {:http_received, _request}
+      end
+    end
+
     if @namespace == AshHooks.OutboxFixtures.SQLite do
       for resource <- [
             AshHooks.OutboxTypeCases.SQLite.PlainTerms,
             AshHooks.OutboxTypeCases.SQLite.PlainNewTerms
           ] do
         @plain_resource resource
-        test "SQLite cannot persist declared event names in #{inspect(resource)} without the extension", f do
+        test "SQLite cannot persist declared event names in #{inspect(resource)} without the extension",
+             f do
           OutboxTypeCases.create_table(f, @plain_resource)
 
           assert_raise Ash.Error.Unknown, ~r/Ecto.ChangeError.*does not match type/s, fn ->

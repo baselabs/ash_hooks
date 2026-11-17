@@ -20,6 +20,11 @@ defmodule AshHooks.Endpoint do
         disabled_value false
       end
 
+  The injected `url` uses `AshHooks.Endpoint.Url`, which validates destination
+  safety at registration. A host may declare `:string` or a String NewType
+  instead; this removes registration-time validation, so destinations are
+  validated only at send time by the ordinary delivery guard.
+
   The extension injects `url`, `status` (`:enabled | :disabled`), and four
   secret references (`secret_ref` required,
   `previous_secret_ref` / `legacy_secret_ref` / `legacy_previous_secret_ref`

@@ -132,6 +132,7 @@ defmodule AshHooks.InjectedAttributesTest do
       )
 
     assert :ok = InjectedAttributes.verify(replace(state, %{actual | type: Ash.Type.String}))
+
     assert {:ok, "https://example.com/events"} =
              Ash.Type.cast_input(:string, "https://example.com/events", [])
   end
@@ -234,6 +235,7 @@ defmodule AshHooks.InjectedAttributesTest do
 
   test "a scalar term admits a non-container that raises in event matching" do
     assert {:ok, "changed"} = Ash.Type.cast_input(:term, "changed", [])
+
     assert_raise Protocol.UndefinedError, fn ->
       Subscription.matches?(%{event_types: "changed"}, "changed")
     end

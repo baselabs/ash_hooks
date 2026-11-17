@@ -1,3 +1,7 @@
+defmodule AshHooks.OutboxFixtures.StringURL do
+  use Ash.Type.NewType, subtype_of: :string
+end
+
 defmodule AshHooks.OutboxFixtures.HostNotifier do
   use Ash.Notifier
 
@@ -123,6 +127,7 @@ defmodule AshHooks.OutboxFixtures.SQLite.Endpoint do
 
   attributes do
     attribute :org_id, :string, allow_nil?: false
+    attribute :url, :string, allow_nil?: false, public?: true
 
     attribute :status, :atom,
       allow_nil?: true,
@@ -213,6 +218,11 @@ defmodule AshHooks.OutboxFixtures.SQLite.Delivery do
 
   actions do
     defaults [:read]
+  end
+
+  outbound_delivery do
+    resend_tracking :on
+    test_tracking :on
   end
 end
 
@@ -413,6 +423,7 @@ defmodule AshHooks.OutboxFixtures.Postgres.Endpoint do
 
   attributes do
     attribute :org_id, :string, allow_nil?: false
+    attribute :url, AshHooks.OutboxFixtures.StringURL, allow_nil?: false, public?: true
 
     attribute :status, :atom,
       allow_nil?: true,
@@ -504,6 +515,11 @@ defmodule AshHooks.OutboxFixtures.Postgres.Delivery do
 
   actions do
     defaults [:read]
+  end
+
+  outbound_delivery do
+    resend_tracking :on
+    test_tracking :on
   end
 end
 
