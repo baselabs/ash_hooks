@@ -4,7 +4,7 @@ defmodule AshHooks.Test.Documentation do
   alias AshHooks.Test.DocumentationRuns
   alias Ecto.Adapters.SQL
 
-  @formatter_deps ~w(ash spark ecto ecto_sql plug oban ash_postgres ash_sqlite)a
+  @optional_formatter_deps ~w(plug phoenix oban)a
   @marker ~r/^[ \t]*(?:> )*<!-- (?:tested: ([a-z0-9-]+)|not-run: ([^\n]*)) -->[ \t]*$/
 
   def package_files do
@@ -219,47 +219,125 @@ defmodule AshHooks.Test.Documentation do
     validate_execution!(blocks, DocumentationRuns.completed_names())
   end
 
-  def formatter_options do
-    locals =
-      Mix.Project.deps_paths()
-      |> Map.take(@formatter_deps)
-      |> Enum.flat_map(fn {_dep, path} ->
-        {options, _} = Code.eval_file(Path.join(path, ".formatter.exs"))
-        options[:export][:locals_without_parens] || []
-      end)
-
-    {own, _} = Code.eval_file(".formatter.exs")
-
-    [
-      line_length: 98,
-      locals_without_parens: Enum.uniq(locals ++ own[:export][:locals_without_parens])
-    ]
+  def formatter_options(block \\ nil) do
+    exports = formatter_exports(Mix.Project.deps_paths())
+    dependencies = if block, do: formatter_dependencies(block, exports), else: Map.keys(exports)
+    consumer_options(dependencies, exports)
   end
 
-  def validate_format!(blocks) do
-    options = formatter_options()
+  def formatting_plan(blocks, paths \\ Mix.Project.deps_paths()) do
+    exports = formatter_exports(paths)
 
-    offenders =
+    {checked, skipped} =
       blocks
       |> Enum.filter(&(&1.language == "elixir"))
-      |> Enum.flat_map(fn block ->
-        try do
-          formatted = block.code |> Code.format_string!(options) |> IO.iodata_to_binary()
+      |> Enum.map(fn block ->
+        dependencies = formatter_dependencies(block, exports)
 
-          if formatted <> "\n" == block.code,
-            do: [],
-            else: [
-              "#{block.file}:#{block.line}: Elixir block is not consumer-formatted\n" <>
-                "BEGIN FORMATTED BLOCK\n#{formatted}\nEND FORMATTED BLOCK"
-            ]
-        rescue
-          error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
-            ["#{block.file}:#{block.line}: invalid Elixir block: #{Exception.message(error)}"]
-        end
+        %{
+          block: block,
+          missing: dependencies -- Map.keys(exports),
+          options: consumer_options(dependencies, exports)
+        }
+      end)
+      |> Enum.split_with(&(&1.missing == []))
+
+    %{checked: checked, skipped: skipped}
+  end
+
+  defp formatter_exports(paths) do
+    paths
+    |> Map.put(:ash_hooks, ".")
+    |> Map.new(fn {dependency, path} ->
+      file = Path.join(path, ".formatter.exs")
+      options = if File.regular?(file), do: file |> Code.eval_file() |> elem(0), else: []
+      {dependency, options[:export][:locals_without_parens] || []}
+    end)
+  end
+
+  defp formatter_dependencies(block, exports) do
+    ast = case Code.string_to_quoted(block.code) do
+      {:ok, ast} -> ast
+      {:error, _} -> nil
+    end
+
+    {_, dependencies} =
+      Macro.prewalk(ast, [:ash, :spark, :ash_hooks], fn
+        {:__aliases__, _, parts} = node, dependencies ->
+          {node, module_formatter_dependencies(parts, exports) ++ dependencies}
+
+        {name, _, arguments} = node, dependencies when is_atom(name) and is_list(arguments) ->
+          owners = for {dependency, locals} <- exports, {name, length(arguments)} in locals, do: dependency
+          {node, owners ++ dependencies}
+
+        node, dependencies ->
+          {node, dependencies}
       end)
 
+    Enum.uniq(dependencies)
+  end
+
+  defp module_formatter_dependencies([:AshHooks, module | _], _exports) when module in [:Plug, :BodyReader],
+    do: [:plug]
+
+  defp module_formatter_dependencies([:AshHooks, :Worker | _], _exports), do: [:oban]
+
+  defp module_formatter_dependencies([root | _] = parts, exports) do
+    candidates = Map.keys(exports) ++ @optional_formatter_deps
+    roots = Enum.filter(candidates, &(Macro.camelize(Atom.to_string(&1)) == Atom.to_string(root)))
+    owner = Application.get_application(Module.concat(parts))
+    Enum.uniq(roots ++ Enum.filter(List.wrap(owner), &Map.has_key?(exports, &1)))
+  end
+
+  defp consumer_options(dependencies, exports) do
+    locals = exports |> Map.take(dependencies) |> Map.values() |> List.flatten() |> Enum.uniq()
+    [line_length: 98, locals_without_parens: locals]
+  end
+
+  def validate_format!(blocks, paths \\ Mix.Project.deps_paths()) do
+    plan = formatting_plan(blocks, paths)
+
+    for %{block: block, missing: missing} <- plan.skipped do
+      IO.puts("#{block.file}:#{block.line}: skipped consumer formatting; missing dependencies: #{Enum.join(missing, ", ")}")
+    end
+
+    offenders = Enum.flat_map(plan.checked, &format_offenses/1)
     unless offenders == [], do: raise(Enum.join(offenders, "\n"))
     :ok
+  end
+
+  defp format_offenses(%{block: block, options: options}) do
+    try do
+      validate_exported_calls!(block, options)
+      formatted = block.code |> Code.format_string!(options) |> IO.iodata_to_binary()
+
+      if formatted <> "\n" == block.code,
+        do: [],
+        else: [
+          "#{block.file}:#{block.line}: Elixir block is not consumer-formatted\n" <>
+            "BEGIN FORMATTED BLOCK\n#{formatted}\nEND FORMATTED BLOCK"
+        ]
+    rescue
+      error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
+        ["#{block.file}:#{block.line}: invalid Elixir block: #{Exception.message(error)}"]
+    end
+  end
+
+  defp validate_exported_calls!(block, options) do
+    # Code.format_string! preserves explicit parentheses. The consumer's
+    # exported DSL convention still applies to those calls.
+    ast = Code.string_to_quoted!(block.code, token_metadata: true)
+
+    Macro.prewalk(ast, fn
+      {name, metadata, [_ | _] = arguments} = node when is_atom(name) ->
+        if metadata[:closing] && {name, length(arguments)} in options[:locals_without_parens],
+          do: fail!(block, "exported consumer DSL call #{name} must omit parentheses")
+
+        node
+
+      node ->
+        node
+    end)
   end
 
   def run!(%{language: "sql"} = block, repo) do

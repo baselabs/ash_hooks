@@ -9,6 +9,36 @@ defmodule AshHooks.DocumentationContractTest do
     assert :ok = Docs.validate_format!(blocks)
   end
 
+  test "full lanes skip no shipped Elixir block" do
+    blocks = Docs.validate_manifest!(Docs.documents())
+    plan = Docs.formatting_plan(blocks)
+    elixir = Enum.filter(blocks, &(&1.language == "elixir"))
+    assert length(plan.checked) + length(plan.skipped) == length(elixir)
+
+    if System.get_env("ASH_HOOKS_NO_OPTIONAL") == "1" do
+      assert plan.skipped != []
+      assert Enum.all?(plan.skipped, &Enum.all?(&1.missing, fn dep -> dep in [:plug, :phoenix, :oban] end))
+    else
+      assert plan.skipped == [], inspect(plan.skipped)
+      assert Enum.map(plan.checked, & &1.block) == elixir
+    end
+  end
+
+  test "absent block dependencies explain the formatter skip without skipping other blocks" do
+    paths = Map.drop(Mix.Project.deps_paths(), [:plug, :phoenix])
+    plain = block("elixir", ":ok\n")
+    endpoint = block("elixir", "plug Plug.Parsers, parsers: [:json]\n")
+    plan = Docs.formatting_plan([plain, endpoint], paths)
+    assert [%{block: ^plain}] = plan.checked
+    assert [%{block: ^endpoint, missing: [:plug]}] = plan.skipped
+
+    output = ExUnit.CaptureIO.capture_io(fn ->
+      assert :ok = Docs.validate_format!([plain, endpoint], paths)
+    end)
+
+    assert output =~ "guide:1: skipped consumer formatting; missing dependencies: plug"
+  end
+
   test "the disposition contract rejects missing, malformed, duplicate, and orphan markers" do
     tested = "<!-- tested: checked -->\n```elixir\n:ok\n```\n"
     assert [%{name: "checked", reason: nil}] = Docs.validate_manifest!([{"guide", tested}])
@@ -155,7 +185,7 @@ defmodule AshHooks.DocumentationContractTest do
   end
 
   test "the formatter uses dependency and package exports at the consumer line length" do
-    options = Docs.formatter_options()
+    options = Docs.formatter_options(block("elixir", ":ok\n"))
     assert options[:line_length] == 98
     assert {:inbound, 2} in options[:locals_without_parens]
     assert :ok = Docs.validate_format!([block("elixir", ":ok\n"), block("sql", "SELECT 1")])

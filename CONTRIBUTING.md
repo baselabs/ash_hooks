@@ -88,15 +88,18 @@ The required documentation run is enabled with `ASH_HOOKS_DOCS_REQUIRED=1`.
 It needs PostgreSQL, the real receiver, and `ASH_HOOKS_HTTPBUN=1` for the public
 HTTPS examples. Without those flags, optional service tests and the final
 execution-completeness check are excluded. Static dispositions and consumer
-formatting remain part of the ordinary tests.
+formatting remain part of the ordinary tests. Each block uses its dependencies'
+formatter exports. A lane without a block's dependency reports why its format
+check is skipped; full lanes must check every block.
 
 `scripts/check-confidentiality.sh` scans tracked files, the built archive, and
 generated HTML and EPUB docs using `PUBLIC_DOCS_DENYLIST` from the caller's
 environment. The live policy test is excluded when that variable is absent;
 the scanner itself refuses an empty policy. Synthetic scanner tests always run.
 `scripts/check-document-dashes.py` checks the archive and generated HTML and EPUB
-surfaces. `mix docs` uses an ASCII separator in ExDoc-generated HTML page titles;
-authored text remains subject to the independent dash check. Trusted push CI
+surfaces. Generated HTML is checked without rewriting it. Only ExDoc's final
+title separator before the project name and version is exempt; authored title
+and body text remain subject to the dash check. Trusted push CI
 runs the confidentiality scan, required-document
 qualification, and publication dash checks, and requires them in the aggregate.
 Local optional-service runs remain focused unless their flags are enabled.

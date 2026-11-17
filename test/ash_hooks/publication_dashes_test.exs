@@ -1,7 +1,6 @@
 defmodule AshHooks.PublicationDashesTest do
   use ExUnit.Case, async: false
 
-  @titles Path.expand("../../scripts/style-document-titles.py", __DIR__)
   @script Path.expand("../../scripts/check-document-dashes.py", __DIR__)
 
   test "both dashes fail in archives, HTML and EPUB but repository-only text passes" do
@@ -40,38 +39,6 @@ defmodule AshHooks.PublicationDashesTest do
     end
   end
 
-  test "generated title styling preserves authored text for the independent dash gate" do
-    tree = Path.join(System.tmp_dir!(), "publication_titles_#{Ash.UUID.generate()}")
-    File.mkdir_p!(tree)
-    on_exit(fn -> File.rm_rf!(tree) end)
-    dash = <<0x2014::utf8>>
-    page = Path.join(tree, "page.html")
-    redirect = Path.join(tree, "index.html")
-    File.write!(page, "<title>Guide #{dash} ash_hooks v3.2.0</title>\n<body>plain</body>")
-    File.write!(redirect, "<title>ash_hooks v3.2.0 #{dash} Documentation</title>")
-    assert {"", 0} = System.cmd("python3", [@titles, tree], stderr_to_stdout: true)
-    assert File.read!(page) == "<title>Guide - ash_hooks v3.2.0</title>\n<body>plain</body>"
-    assert File.read!(redirect) == "<title>ash_hooks v3.2.0 - Documentation</title>"
-    assert {"", 0} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
-
-    for codepoint <- [0x2013, 0x2014] do
-      authored = <<codepoint::utf8>>
-
-      File.write!(
-        page,
-        "<title>Authored #{authored} title #{dash} ash_hooks v3.2.0</title>\n<body>#{authored}</body>"
-      )
-
-      assert {"", 0} = System.cmd("python3", [@titles, tree], stderr_to_stdout: true)
-      assert File.read!(page) =~ "Authored #{authored} title - ash_hooks"
-      assert File.read!(page) =~ "<body>#{authored}</body>"
-      {output, status} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
-      assert status == 1
-      assert output =~ "#{page}:1"
-      assert output =~ "#{page}:2"
-    end
-  end
-
   test "only ExDoc's final project separator is exempt from generated HTML" do
     tree = Path.join(System.tmp_dir!(), "publication_template_#{Ash.UUID.generate()}")
     File.mkdir_p!(tree)
@@ -80,8 +47,11 @@ defmodule AshHooks.PublicationDashesTest do
     dash = <<0x2014::utf8>>
     project = ~s(<meta name="project" content="AshHooks v3.2.0">)
     title = "<title>Guide #{dash} AshHooks v3.2.0</title>"
-    File.write!(page, "#{project}\n#{title}\n<body>plain</body>")
+    original = "#{project}\n#{title}\n<body>plain</body>"
+    File.write!(page, original)
     assert {"", 0} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
+
+    assert File.read!(page) == original
 
     for codepoint <- [0x2013, 0x2014], label <- ["AshHooks.Module", "An extra title"] do
       authored = <<codepoint::utf8>>
@@ -97,13 +67,29 @@ defmodule AshHooks.PublicationDashesTest do
     for title <- [
           "<title>Guide #{dash} OtherProject v3.2.0</title>",
           "<title>Guide #{dash} AshHooks v0.0.0</title>",
-          "<title>Guide #{dash} AshHooks v3.2.0 suffix</title>"
+          "<title>Guide #{dash} AshHooks v3.2.0 suffix</title>",
+          "<title>AshHooks v3.2.0 #{dash} Documentation</title>"
         ] do
       File.write!(page, "#{project}\n#{title}")
       {output, status} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
       assert status == 1
       assert output =~ "#{page}:2"
     end
+  end
+
+  test "the HTML template exception does not exempt an EPUB member" do
+    tree = Path.join(System.tmp_dir!(), "publication_epub_#{Ash.UUID.generate()}")
+    File.mkdir_p!(tree)
+    on_exit(fn -> File.rm_rf!(tree) end)
+    archive = Path.join(tree, "guide.epub")
+    dash = <<0x2014::utf8>>
+    project = ~s(<meta name="project" content="AshHooks v3.2.0">)
+    title = "<title>Guide #{dash} AshHooks v3.2.0</title>"
+
+    assert {:ok, _} = :zip.create(String.to_charlist(archive), [{~c"chapter.xhtml", "#{project}\n#{title}"}])
+    {output, status} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
+    assert status == 1
+    assert output =~ "#{archive}/chapter.xhtml:2"
   end
 
   defp fixture do

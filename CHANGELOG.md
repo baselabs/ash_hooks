@@ -25,8 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Shipped examples have explicit execution dispositions and use the exported
   consumer formatter settings. Upgrade and contributor commands explain their
-  host project and service requirements. Generated HTML page titles use an ASCII
-  separator.
+  host project and service requirements. Phoenix mounting examples retain the
+  consumer DSL syntax; formatter checks use dependency exports and report
+  missing dependencies without changing the examples.
 
 - The installer resolves parser aliases and preserves existing body readers.
   It adds notices for custom readers and endpoint configurations that need

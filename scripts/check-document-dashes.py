@@ -2,6 +2,7 @@
 """Check only the Hex archive and generated HTML/EPUB publication surfaces."""
 import argparse
 import io
+import re
 from pathlib import Path
 import tarfile
 import zipfile
@@ -13,6 +14,23 @@ def lines(path, content):
         for number, line in enumerate(content.split(b"\n"), 1)
         if b"\xe2\x80\x93" in line or b"\xe2\x80\x94" in line
     ]
+
+
+def authored_html(content):
+    # ExDoc supplies the project identity and the final title separator. Only
+    # that exact separator is outside authored text; titles and bodies stay strict.
+    project = re.search(rb'<meta name="project" content="([^"<>]+ v[0-9][^"<>]*)">', content)
+    if not project:
+        return content
+    suffix = b" \xe2\x80\x94 " + project.group(1)
+
+    def title(match):
+        text = match.group(1)
+        if text.endswith(suffix):
+            text = text[:-len(suffix)] + b" " + project.group(1)
+        return b"<title>" + text + b"</title>"
+
+    return re.sub(rb"<title>([^<>\n]*)</title>", title, content)
 
 
 def check(package=None, docs=None):
@@ -29,7 +47,7 @@ def check(package=None, docs=None):
             if not path.is_file():
                 continue
             if path.suffix == ".html":
-                offenses.extend(lines(path, path.read_bytes()))
+                offenses.extend(lines(path, authored_html(path.read_bytes())))
             elif path.suffix == ".epub":
                 if path.name == ".build.epub":
                     offenses.extend(lines(path, path.read_bytes()))

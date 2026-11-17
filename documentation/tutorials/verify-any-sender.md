@@ -63,11 +63,10 @@ default `:header` signature source. Tell the plug which header carries it:
 
 <!-- tested: verify-any-sender-signature-header -->
 ```elixir
-forward("/webhooks/billing", AshHooks.Plug,
+forward "/webhooks/billing", AshHooks.Plug,
   resource: MyApp.WebhookLedger,
   source: :billing,
   signature_header: "x-billing-signature"
-)
 ```
 
 A resolver may instead return `:signature_header` with the source. Exactly one
