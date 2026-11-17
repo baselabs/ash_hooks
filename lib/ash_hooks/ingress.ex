@@ -117,6 +117,30 @@ defmodule AshHooks.Ingress do
   @transient_retry_jitter_ms 50
 
   @doc "Builds the legacy provider-identity adoption audit without writing rows."
+  defdelegate plan_legacy_identity_adoption(resource, name, opts \\ []),
+    to: AshHooks.InboundDelivery.LegacyAdoption,
+    as: :plan
+
+  @doc "Applies one reviewed, quiesced provider-identity adoption partition."
+  defdelegate adopt_legacy_identity(resource, name, opts \\ []),
+    to: AshHooks.InboundDelivery.LegacyAdoption,
+    as: :apply
+
+  # ────────────────────────── sync pipeline ──────────────────────────
+
+  @doc """
+  Lists inbound deliveries by filter with keyset pagination (newest
+  first), providing the inbound delivery log.
+
+  Options: `:source` (the inbound declaration's name, e.g. `:orders`),
+  `:status` (a list of `AshHooks.InboundDelivery.statuses/0`),
+  `:event_type`, `:from` / `:to` (`DateTime` bounds on `inserted_at`),
+  `:limit` (default 50, max 500), `:after` (the previous page's cursor),
+  and `:tenant`. The resource needs `timestamps()` and an `:id`.
+  Returns `{:ok, %{records:, next_cursor:}}`.
+  """
+  @spec list(module(), keyword()) ::
+          {:ok, %{records: [struct()], next_cursor: binary() | nil}} | {:error, term()}
   def list(resource, opts \\ []) do
     alias AshHooks.{Keyset, Tenancy}
 
@@ -276,7 +300,7 @@ defmodule AshHooks.Ingress do
        query: [filter: [status: [in: [:failed_retryable, :failed_permanent]]]]}
     ]
 
-    if Spark.Dsl.Extension.get_opt(resource, [:inbound_delivery], :ingress_tracking, :off) == :on do
+    if Extension.get_opt(resource, [:inbound_delivery], :ingress_tracking, :off) == :on do
       [
         {:received, :count, query: [filter: [status: [not_eq: :failed_verification]]]},
         {:failed_verification, :count, query: [filter: [status: :failed_verification]]},

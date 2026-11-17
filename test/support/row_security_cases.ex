@@ -841,6 +841,16 @@ defmodule AshHooks.Test.RowSecurityCases do
   end
 
   def observation_reads(ctx) do
+    assert {:ok,
+            %{
+              received: 0,
+              processed: 0,
+              duplicates: 0,
+              failed_verification: 0,
+              handler_failures: 0
+            }} =
+             Ingress.counts(ctx.source_inbound, tenant: "tenant_a")
+
     seeded = seed(ctx)
     tenant = "tenant_a"
     endpoint = seeded |> List.keyfind(tenant, 0) |> elem(1)
