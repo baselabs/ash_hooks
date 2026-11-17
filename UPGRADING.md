@@ -103,13 +103,21 @@ Other pins run a declared builder; the deployed declaration version never
 relabels older bytes. Every retry observes the current subscriptions,
 pause flags, endpoints and builders, keeping earlier delivery rows.
 
-In a raw `Repo.transaction`, publish creates with returned Ash notifications
-and suppresses them without calling Ash's missed-notification warning path, even when configured
-as `:raise`. Let the per-tenant sweep find the committed row, or call `fanout/3`
-after commit. Never call fanout inside that transaction. Returned notifications,
-bulk notification suppression and writes outside the publish action also rely
-on the sweep. Ash-managed transactions delay the hint until physical commit;
-a trigger exception, exit or throw never reaches the publishing caller.
+In a raw `Repo.transaction`, the package's notifier checks physical commit
+and gives no hint. Let the per-tenant sweep find the committed row, or call
+`fanout/3` after commit. Never call fanout inside that transaction. Host
+notifiers and host `after_action` notifications on the outbox resource follow
+Ash's ordinary rules, including `missed_notifications` warnings and errors.
+
+With `return_notifications?: true`, `publish/4` returns
+`{:ok, disposition, notifications}`. Send all returned notifications with
+`Ash.Notifier.notify/1` after commit to deliver the hint and host notifications.
+Returned notifications the caller never sends, bulk notification suppression,
+and writes outside the publish action rely on the sweep. Ash-managed
+transactions delay the hint until physical commit; a trigger exception, exit
+or throw never reaches the publishing caller. `AshHooks.Changes.Publish`
+returns its notifications through the native action hook, so the host action's
+notification mode governs.
 
 Outbox re-admission carries the original metadata after process restarts.
 Delivery-only `reconcile_pending/3` remains the backstop and reconstructs an

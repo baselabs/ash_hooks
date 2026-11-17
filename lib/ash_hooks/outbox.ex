@@ -41,11 +41,6 @@ defmodule AshHooks.Outbox do
   end
 
   defp persist(resource, input, tenant, opts) do
-    # Raw repo transactions cannot deliver after-commit Ash notifications. Return
-    # them so Ash never warns or raises about a notification it cannot send.
-    managed? = Process.get(:ash_started_transaction?, false)
-    raw? = Ash.DataLayer.in_transaction?(resource) and not managed?
-    suppressed? = raw? or Keyword.get(opts, :return_notifications?, false)
     context = Map.merge(opts[:context] || %{}, Phase.context(resource))
 
     result =
@@ -60,8 +55,14 @@ defmodule AshHooks.Outbox do
 
     case result do
       {:ok, row, notifications} ->
-        unless suppressed?, do: notify(resource, notifications, managed?)
-        disposition(row, input)
+        with {:ok, disposition} <- disposition(row, input) do
+          notifications =
+            Enum.flat_map(notifications, fn notification ->
+              route_notification(notification, resource, AshHooks.OutboundOutbox.Notifier)
+            end)
+
+          notify(resource, disposition, notifications, opts)
+        end
 
       {:error, reason} ->
         emit(:publish, %{event_uuid: input.event_uuid}, :refused, reason)
@@ -69,14 +70,23 @@ defmodule AshHooks.Outbox do
     end
   end
 
-  defp notify(resource, notifications, managed?) do
-    notifier = AshHooks.OutboundOutbox.Notifier
+  defp notify(resource, disposition, notifications, opts) do
+    # Mirror Ash's notification modes, including host notifications. These
+    # internal helpers are qualified at exact Ash 3.37.2 and in latest-Ash CI.
+    cond do
+      opts[:return_notifications?] ->
+        {:ok, disposition, notifications}
 
-    notifications = Enum.flat_map(notifications, &route_notification(&1, resource, notifier))
+      Process.get(:ash_started_transaction?) ->
+        Helpers.queue_notifications(notifications)
+        {:ok, disposition}
 
-    if managed?,
-      do: Helpers.queue_notifications(notifications),
-      else: Ash.Notifier.notify(notifications)
+      true ->
+        unsent = Ash.Notifier.notify(notifications)
+        action = Ash.Resource.Info.action(resource, :publish)
+        Helpers.warn_missed!(resource, action, %{resource_notifications: unsent})
+        {:ok, disposition}
+    end
   end
 
   defp route_notification(notification, resource, notifier) do

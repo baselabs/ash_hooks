@@ -36,14 +36,15 @@ defmodule AshHooks.Changes.Publish do
                context: changeset.context
              ),
            {:ok, event} <- apply(module, function, [result, changeset.context]),
-           {:ok, _disposition} <-
+           {:ok, _disposition, notifications} <-
              AshHooks.publish(opts[:outbox], opts[:declaration], event,
+               return_notifications?: true,
                tenant: changeset.tenant,
                context: changeset.context,
                caller_resource: changeset.resource,
                route: Keyword.get(opts, :route, :default)
              ) do
-        {:ok, result}
+        {:ok, result, notifications}
       end
     end)
   end

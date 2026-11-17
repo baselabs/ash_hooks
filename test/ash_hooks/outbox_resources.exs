@@ -217,16 +217,11 @@ defmodule AshHooks.OutboxFixtures.SQLite.Outbox do
   use Ash.Resource,
     domain: AshHooks.OutboxFixtures.SQLite.Domain,
     data_layer: AshSqlite.DataLayer,
-    extensions: [AshHooks.OutboundOutbox],
-    notifiers: [AshHooks.OutboxFixtures.HostNotifier]
+    extensions: [AshHooks.OutboundOutbox]
 
   sqlite do
     table "outbox_sqlite_publications"
     repo(AshHooks.OutboxFixtures.SQLiteRepo)
-  end
-
-  changes do
-    change AshHooks.OutboxFixtures.HostNotifications, on: [:create]
   end
 
   attributes do
@@ -499,16 +494,11 @@ defmodule AshHooks.OutboxFixtures.Postgres.Outbox do
   use Ash.Resource,
     domain: AshHooks.OutboxFixtures.Postgres.Domain,
     data_layer: AshPostgres.DataLayer,
-    extensions: [AshHooks.OutboundOutbox],
-    notifiers: [AshHooks.OutboxFixtures.HostNotifier]
+    extensions: [AshHooks.OutboundOutbox]
 
   postgres do
     table "outbox_postgres_publications"
     repo(AshHooks.OutboxFixtures.Postgres.Repo)
-  end
-
-  changes do
-    change AshHooks.OutboxFixtures.HostNotifications, on: [:create]
   end
 
   attributes do

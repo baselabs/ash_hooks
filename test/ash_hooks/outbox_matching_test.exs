@@ -150,14 +150,21 @@ end
 for {namespace, layer, repo, table} <- [
       {AshHooks.OutboxFixtures.SQLite, AshSqlite.DataLayer, AshHooks.OutboxFixtures.SQLiteRepo,
        "outbox_sqlite_subscriptions"},
-      {AshHooks.OutboxFixtures.Postgres, AshPostgres.DataLayer, AshHooks.OutboxFixtures.Postgres.Repo,
-       "outbox_postgres_subscriptions"}
+      {AshHooks.OutboxFixtures.Postgres, AshPostgres.DataLayer,
+       AshHooks.OutboxFixtures.Postgres.Repo, "outbox_postgres_subscriptions"}
     ] do
   subscription = Module.concat(namespace, :NullableSubscription)
   emitter = Module.concat(namespace, :NullableEmitter)
   endpoint = Module.concat(namespace, :Endpoint)
   delivery = Module.concat(namespace, :Delivery)
   path = if layer == AshSqlite.DataLayer, do: :sqlite, else: :postgres
+
+  configuration =
+    {path, [],
+     [[do: quote do
+       table(unquote(table))
+       repo(unquote(repo))
+     end]]}
 
   Code.eval_quoted(
     quote do
@@ -167,10 +174,7 @@ for {namespace, layer, repo, table} <- [
           data_layer: unquote(layer),
           extensions: [AshHooks.Subscription]
 
-        unquote(path) do
-          table(unquote(table))
-          repo(unquote(repo))
-        end
+        unquote(configuration)
 
         attributes do
           attribute :org_id, :string, allow_nil?: false

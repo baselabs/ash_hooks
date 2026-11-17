@@ -1459,8 +1459,6 @@ for {module, namespace} <- [
     test "A11 notifications are after commit and trigger failures cannot fail publish", f do
       runtime = Module.concat(f.namespace, :Runtime)
       Application.put_env(:ash_hooks, runtime, self())
-      Application.put_env(:ash_hooks, :outbox_host_observer, self())
-      on_exit(fn -> Application.delete_env(:ash_hooks, :outbox_host_observer) end)
 
       assert :ok = OutboxNotifier.notify(%Ash.Notifier.Notification{})
 
@@ -1514,10 +1512,12 @@ for {module, namespace} <- [
 
       assert_receive {:triggered, id, "tenant-a"}
       assert id == event.id
-      assert_receive {:host_notification, %{data: %{event_uuid: ^id}, metadata: %{host: true}}}
-      assert_receive {:host_notification, %{data: %{event_uuid: ^id}, action: %{name: :publish}}}
-      assert {:ok, :accepted} = Cases.publish(f, Cases.event(), return_notifications?: true)
+      assert {:ok, :accepted, notifications} =
+               Cases.publish(f, Cases.event(), return_notifications?: true)
+
       refute_receive {:triggered, _, _}
+      assert [] = Ash.Notifier.notify(notifications)
+      assert_receive {:triggered, _, "tenant-a"}
 
       for failure <- [:raise, :exit, :throw, :error] do
         Application.put_env(:ash_hooks, runtime, failure)

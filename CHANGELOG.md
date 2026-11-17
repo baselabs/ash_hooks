@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and rearmable. Completed rows retain their identities for a declared horizon.
 - Host-declared trigger and delivery routes, a distinct Oban fanout job kind,
   and contents-free outbox lifecycle telemetry support every host and tenant.
+- `publish/4` with `return_notifications?: true` returns
+  `{:ok, disposition, notifications}` for the caller to send after commit.
+  Host notifiers and host hook notifications follow Ash's ordinary rules.
 - Stored payload versions preserve original bytes and resolve endpoint pins
   against explicit builders while publications remain pending.
 

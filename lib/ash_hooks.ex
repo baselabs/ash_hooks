@@ -282,9 +282,16 @@ defmodule AshHooks do
   1 MiB encoded. Values may be nil, booleans, signed 64-bit integers, finite
   floats except negative zero, UTF-8 strings without NUL, lists, or maps.
   Immediate dispatch retains its wider metadata domain.
+
+  With `return_notifications?: true`, returns
+  `{:ok, :accepted | :duplicate, notifications}`. Send those notifications
+  after commit with `Ash.Notifier.notify/1` to deliver the hint. Host
+  notifiers and host hook notifications follow Ash's ordinary rules.
   """
   @spec publish(module(), {module(), atom()}, AshHooks.Event.t(), keyword()) ::
-          {:ok, :accepted | :duplicate} | {:error, term()}
+          {:ok, :accepted | :duplicate}
+          | {:ok, :accepted | :duplicate, [Ash.Notifier.Notification.t()]}
+          | {:error, term()}
   defdelegate publish(outbox, declaration, event, opts \\ []), to: AshHooks.Outbox
 
   @typedoc "The outcome of one leased publication fanout. Errors preserve storage failures."
