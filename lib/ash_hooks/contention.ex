@@ -12,10 +12,10 @@ defmodule AshHooks.Contention do
 
   defp attempt(operation, deadline) do
     result = operation.()
-    remaining = deadline - System.monotonic_time(:millisecond)
+    delay = @spacing_ms + :rand.uniform(@jitter_ms + 1) - 1
 
-    if retryable?(result) and remaining > 0 do
-      Process.sleep(@spacing_ms + :rand.uniform(@jitter_ms + 1) - 1)
+    if retryable?(result) and System.monotonic_time(:millisecond) + delay < deadline do
+      Process.sleep(delay)
 
       if System.monotonic_time(:millisecond) < deadline do
         attempt(operation, deadline)

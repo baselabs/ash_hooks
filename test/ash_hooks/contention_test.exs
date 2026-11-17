@@ -61,7 +61,7 @@ defmodule AshHooks.ContentionTest do
     refute_received {:attempt, _}
   end
 
-  test "a monotonic deadline bounds retries and preserves the final error" do
+  test "the deadline preserves the final error without a sleep that would pass it" do
     owner = self()
     error = {:error, busy()}
     started = System.monotonic_time(:millisecond)
@@ -73,10 +73,11 @@ defmodule AshHooks.ContentionTest do
              end)
 
     elapsed = System.monotonic_time(:millisecond) - started
-    assert elapsed >= 2_000
-    assert elapsed < 3_000
+    assert elapsed >= 1_850
+    assert elapsed < 2_100
     attempts = drain_attempts([])
     assert length(attempts) > 5
+    assert System.monotonic_time(:millisecond) - Enum.max(attempts) < 100
     assert Enum.all?(attempts, &(&1 - started < 2_000))
   end
 

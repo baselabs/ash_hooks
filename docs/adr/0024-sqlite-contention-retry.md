@@ -21,7 +21,8 @@ it.
   behavior.
 - **Retry.** The same operation runs again after 100 ms plus up to 50 ms of random
   jitter. Retries continue while less than 2 seconds have passed since the first
-  attempt, measured on the monotonic clock.
+  attempt, measured on the monotonic clock. If the next delay would reach or
+  pass the deadline, the last error returns without sleeping.
 - **Outcomes that end immediately.** Every other result returns at once: success,
   `:lease_held`, `:stale_token` and any other error.
 - **What it wraps.** The rule wraps fenced or idempotent writes: ingest, claim,
