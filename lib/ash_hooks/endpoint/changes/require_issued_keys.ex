@@ -40,8 +40,9 @@ defmodule AshHooks.Endpoint.Changes.RequireIssuedKeys do
   defp create(changeset, opts) do
     case changeset.context[:ash_hooks_issued_attributes] do
       nil ->
-        if opts[:native_optional?] and no_native_refs?(changeset),
-          do: changeset, else: require_resolver(changeset, opts)
+        if Keyword.get(opts, :native_optional?, false) == true and no_native_refs?(changeset),
+          do: changeset,
+          else: require_resolver(changeset, opts)
 
       attributes ->
         if Keyword.get(opts, :byte_resolver?, false) or not direct_ref_input?(changeset),
@@ -51,8 +52,10 @@ defmodule AshHooks.Endpoint.Changes.RequireIssuedKeys do
   end
 
   defp no_native_refs?(changeset) do
-    Enum.all?([:secret_ref, :previous_secret_ref, :legacy_secret_ref, :legacy_previous_secret_ref],
-      &is_nil(Ash.Changeset.get_attribute(changeset, &1)))
+    Enum.all?(
+      [:secret_ref, :previous_secret_ref, :legacy_secret_ref, :legacy_previous_secret_ref],
+      &is_nil(Ash.Changeset.get_attribute(changeset, &1))
+    )
   end
 
   defp direct_ref_input?(changeset) do
@@ -70,13 +73,13 @@ defmodule AshHooks.Endpoint.Changes.RequireIssuedKeys do
         Map.has_key?(changeset.params, Atom.to_string(field))
 
   defp require_resolver(changeset, opts) do
-    if opts[:byte_resolver?],
+    if Keyword.get(opts, :byte_resolver?, false) == true,
       do: changeset,
       else:
         Ash.Changeset.add_error(changeset,
           field: :secret_ref,
           message:
-            if(opts[:source?],
+            if(Keyword.get(opts, :source?, false) == true,
               do: "custody sources require create_source/3",
               else: "custody endpoints without a secret_resolver require create_with_key/3"
             )

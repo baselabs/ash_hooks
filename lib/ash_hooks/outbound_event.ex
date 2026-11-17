@@ -335,8 +335,9 @@ defmodule AshHooks.OutboundEvent do
            AshHooks.Phase.run(
              query,
              tenant,
-             &Ash.read(&1, authorize?: false, tenant: tenant, page: false)
-           ) do
+             &Ash.read(&1, authorize?: false, tenant: tenant)
+           ),
+         {:ok, subscriptions} <- replay_subscription_pages(subscriptions, [], resource, tenant) do
       matches = Enum.filter(subscriptions, &AshHooks.Subscription.matches?(&1, logged.event_type))
 
       modes =
@@ -349,6 +350,20 @@ defmodule AshHooks.OutboundEvent do
       end
     end
   end
+
+  defp replay_subscription_pages(%{results: results, more?: true} = page, acc, resource, tenant) do
+    with {:ok, next} <-
+           AshHooks.Phase.run(resource, tenant, fn -> Ash.page(page, :next) end) do
+      replay_subscription_pages(next, [results | acc], resource, tenant)
+    end
+  end
+
+  defp replay_subscription_pages(%{results: results}, acc, _resource, _tenant),
+    do: {:ok, acc |> Enum.reverse() |> Enum.concat() |> Kernel.++(results)}
+
+  defp replay_subscription_pages(subscriptions, [], _resource, _tenant)
+       when is_list(subscriptions),
+       do: {:ok, subscriptions}
 
   defp create_replay_row(deliveries, endpoint, logged, requested_by, opts, tenant) do
     with {:ok, subscription} <- replay_subscription(endpoint, logged, opts[:declaration], tenant) do
@@ -390,7 +405,8 @@ defmodule AshHooks.OutboundEvent do
   defp replay_signing_mode(nil, _declaration), do: :standard
 
   defp replay_signing_mode(subscription, {emitter, name}),
-    do: subscription.signing_mode || AshHooks.Info.outbound(emitter, name).signing_mode || :standard
+    do:
+      subscription.signing_mode || AshHooks.Info.outbound(emitter, name).signing_mode || :standard
 
   defp replay_source({emitter, name}, endpoints),
     do: AshHooks.OutboundBinding.source(emitter, name, endpoints)

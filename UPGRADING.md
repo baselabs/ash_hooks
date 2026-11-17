@@ -59,8 +59,8 @@ explicit tenant and run outside enclosing transactions. Do not clear custody
 references with an ordinary resource update.
 
 A host signer requires a prepared-capable HTTP adapter or transport. Bounded
-supports it. Httpc's prepared capability is withheld until its raw-listener
-qualification proves the exact lines and order on every supported OTP version.
+supports it. Httpc does not support it: raw-listener qualification found that
+`:httpc` normalizes percent escapes in the signed target even with `headers_as_is`.
 Custom adapters must send the supplied method, target, ordered complete header
 lines and body unchanged, without additional framing or headers. Keep their
 legacy `request/5` implementation for callers without prepared requests.
@@ -68,7 +68,9 @@ legacy `request/5` implementation for callers without prepared requests.
 Review observability consumers for the corrected singular signing reference in
 legacy mode, `signer_failed`, `unsigned`, `adapter_cannot_send_prepared`, and the
 `[:ash_hooks, :delivery, :sign]` event. New event-log replay rows use a matching
-subscription's signing mode. Older 410 snapshots without every declared signer
+subscription's signing mode across all read pages. With no match they retain
+`:standard`; only conflicting matching modes are skipped. Older 410 snapshots
+without every declared signer
 attribute finalize without disabling a reconfigured endpoint.
 
 ## Oban with forced row security

@@ -30,7 +30,9 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
         do: [:provider_alias | scope],
         else: scope
 
-    facts? = Extension.get_opt(dsl_state, [:inbound_delivery], :record_verified_facts, :off) == :on
+    facts? =
+      Extension.get_opt(dsl_state, [:inbound_delivery], :record_verified_facts, :off) == :on
+
     scope = if facts?, do: [:verified_facts | scope], else: scope
 
     with {:ok, ingest} <- build_ingest(scope, writable_id_pk?(dsl_state)),
@@ -148,7 +150,9 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
     Builder.build_action(:update, :redact_payload,
       accept: [],
       arguments: [payload_arg],
-      changes: [payload_set] ++ if(facts?, do: [change(Builtins.set_attribute(:verified_facts, nil))], else: [])
+      changes:
+        [payload_set] ++
+          if(facts?, do: [change(Builtins.set_attribute(:verified_facts, nil))], else: [])
     )
   end
 

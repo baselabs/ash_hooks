@@ -15,7 +15,15 @@ defmodule AshHooks.Provider.DeliveryContext do
   ledger by `delivery_id` under `tenant`.
   """
   @derive {Inspect, except: [:verified_facts]}
-  defstruct [:verified_facts, :tenant, :source, :provider_alias, :delivery_id, :external_event_id, scope: %{}]
+  defstruct [
+    :verified_facts,
+    :tenant,
+    :source,
+    :provider_alias,
+    :delivery_id,
+    :external_event_id,
+    scope: %{}
+  ]
 
   @type t :: %__MODULE__{
           verified_facts: map() | nil,

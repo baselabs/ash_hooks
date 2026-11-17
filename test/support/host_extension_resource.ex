@@ -12,7 +12,7 @@ defmodule AshHooks.Test.HostExtensionResource do
     data_layer_body =
       quote do
         table unquote(table)
-        repo unquote(repo)
+        repo(unquote(repo))
       end
 
     # `sqlite do ... end` or `postgres do ... end`, chosen at expansion.

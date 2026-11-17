@@ -1743,15 +1743,19 @@ defmodule AshHooks.Ingress do
   # Provider callbacks own admission. Opaque host context is never retained in errors.
   defp provider_verdict(provider, body, context, key, name) do
     case provider.verify_signature(body, context, key) do
-      :ok -> {:ok, nil}
+      :ok ->
+        {:ok, nil}
 
       {:ok, facts} ->
         if AshHooks.Provider.VerifiedFacts.valid?(facts),
           do: {:ok, facts},
           else: {:error, Errors.from_reason(:unknown_error, provider: name)}
 
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, Errors.from_reason(:unknown_error, provider: name)}
+      {:error, reason} ->
+        {:error, reason}
+
+      _ ->
+        {:error, Errors.from_reason(:unknown_error, provider: name)}
     end
   rescue
     _ -> {:error, Errors.from_reason(:unknown_error, provider: name)}
@@ -1830,11 +1834,8 @@ defmodule AshHooks.Ingress do
   defp overlap_failure(reason, previous_result, name) do
     current = Errors.from_reason(reason, provider: name)
 
-    previous =
-      case previous_result do
-        {:error, previous_reason} -> Errors.from_reason(previous_reason, provider: name)
-        _unknown -> Errors.from_reason(:unknown_error, provider: name)
-      end
+    {:error, previous_reason} = previous_result
+    previous = Errors.from_reason(previous_reason, provider: name)
 
     if is_struct(current, InvalidSignature) and not is_struct(previous, InvalidSignature),
       do: previous,

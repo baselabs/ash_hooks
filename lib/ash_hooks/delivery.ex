@@ -1529,8 +1529,8 @@ defmodule AshHooks.Delivery do
   defp prepared_capability(adapter, endpoint) do
     if Extension.get_opt(endpoint.__struct__, [:endpoint], :signer) &&
          not prepared_adapter?(adapter),
-      do: {:error, :adapter_cannot_send_prepared},
-      else: :ok
+       do: {:error, :adapter_cannot_send_prepared},
+       else: :ok
   end
 
   defp prepare_and_sign(adapter, headers, row, endpoint, config, tenant) do
@@ -1631,7 +1631,10 @@ defmodule AshHooks.Delivery do
         _ -> native[:secret_ref] || native[:legacy_secret_ref]
       end
 
-    %{signing_key_ref: current || List.first(refs) || List.first(host), signing_key_refs: refs ++ host}
+    %{
+      signing_key_ref: current || List.first(refs) || List.first(host),
+      signing_key_refs: refs ++ host
+    }
   end
 
   defp request_function(adapter, nil) when is_function(adapter, 5), do: adapter
@@ -1969,9 +1972,10 @@ defmodule AshHooks.Delivery do
       })
 
     input =
-      if Extension.get_opt(attempts_mod, [:outbound_attempt], :record_signing_provenance, :off) == :on,
-        do: Map.put(input, :signing_key_refs, history[:signing_key_refs]),
-        else: input
+      if Extension.get_opt(attempts_mod, [:outbound_attempt], :record_signing_provenance, :off) ==
+           :on,
+         do: Map.put(input, :signing_key_refs, history[:signing_key_refs]),
+         else: input
 
     case AshHooks.Phase.run(
            attempts_mod,
@@ -2147,13 +2151,20 @@ defmodule AshHooks.Delivery do
     # the worker macro's :tenant_aware_secrets switch: the resolver
     # contract becomes f(ref, tenant): explicit, no arity magic
     mode = row.signing_mode || :standard
+
     optional? =
       Extension.get_opt(endpoint.__struct__, [:endpoint], :native_signing, :required) == :optional
 
     selected = if optional?, do: Map.take(endpoint, signing_fields(mode)), else: endpoint
 
     with {:ok, secret} <-
-           resolve_native_current(endpoint, Map.get(selected, :secret_ref), optional?, config, tenant),
+           resolve_native_current(
+             endpoint,
+             Map.get(selected, :secret_ref),
+             optional?,
+             config,
+             tenant
+           ),
          previous_ref = previous_signing_ref(endpoint, :standard, config),
          legacy_previous_ref = previous_signing_ref(endpoint, :legacy, config),
          {:ok, previous} <-
@@ -2166,7 +2177,11 @@ defmodule AshHooks.Delivery do
            ),
          {:ok, legacy} <-
            resolve_slot(
-             endpoint, :legacy_secret_ref, Map.get(selected, :legacy_secret_ref), config, tenant
+             endpoint,
+             :legacy_secret_ref,
+             Map.get(selected, :legacy_secret_ref),
+             config,
+             tenant
            ),
          {:ok, legacy_previous} <-
            resolve_slot(
@@ -2241,10 +2256,15 @@ defmodule AshHooks.Delivery do
       Enum.any?([:whsec, :whsk, :previous_whsec, :previous_whsk], &Keyword.has_key?(opts, &1))
 
     with standard when is_map(standard) <-
-           if(mode in [:standard, :dual] and standard?, do: Signing.headers(id, timestamp, body, opts), else: base),
+           if(mode in [:standard, :dual] and standard?,
+             do: Signing.headers(id, timestamp, body, opts),
+             else: base
+           ),
          legacy when is_map(legacy) <-
            if(mode in [:legacy, :dual] and opts[:legacy_secret],
-             do: Signing.headers_for_mode(:legacy, id, timestamp, body, opts), else: %{}) do
+             do: Signing.headers_for_mode(:legacy, id, timestamp, body, opts),
+             else: %{}
+           ) do
       Map.merge(standard, legacy)
     end
   end
@@ -2457,11 +2477,14 @@ defmodule AshHooks.Delivery do
 
   defp signer_configuration_matches?(endpoint, snapshot) do
     values = snapshot["signer_attributes"] || %{}
+
     Enum.all?(signer_attributes(endpoint.__struct__), fn field ->
       definition = ResourceInfo.attribute(endpoint.__struct__, field)
+
       with {:ok, stored} <- Map.fetch(values, Atom.to_string(field)),
            {:ok, cast} <- Ash.Type.cast_input(definition.type, stored, definition.constraints),
-           {:ok, value} <- Ash.Type.apply_constraints(definition.type, cast, definition.constraints) do
+           {:ok, value} <-
+             Ash.Type.apply_constraints(definition.type, cast, definition.constraints) do
         Ash.Type.equal?(definition.type, Map.get(endpoint, field), value, definition.constraints)
       else
         _ -> false
@@ -2608,9 +2631,12 @@ defmodule AshHooks.Delivery do
   defp disable_attempt_history(snapshot) do
     history = (snapshot || %{})["attempt_history"] || %{}
 
-    Map.new([:latency_ms, :signing_key_ref, :signing_key_refs, :response_snippet, :response_headers], fn key ->
-      {key, Map.get(history, Atom.to_string(key), Map.get(history, key))}
-    end)
+    Map.new(
+      [:latency_ms, :signing_key_ref, :signing_key_refs, :response_snippet, :response_headers],
+      fn key ->
+        {key, Map.get(history, Atom.to_string(key), Map.get(history, key))}
+      end
+    )
   end
 
   defp endpoint_snapshot(endpoint) do
@@ -2625,11 +2651,19 @@ defmodule AshHooks.Delivery do
       "legacy_previous_secret_ref" => endpoint.legacy_previous_secret_ref,
       "status_attribute" => Atom.to_string(switch),
       "status_value" => Map.get(endpoint, switch),
-      "signer_attributes" => Map.new(signer_attributes(endpoint.__struct__), fn field ->
-        definition = ResourceInfo.attribute(endpoint.__struct__, field)
-        {:ok, value} = Ash.Type.dump_to_embedded(definition.type, Map.get(endpoint, field), definition.constraints)
-        {Atom.to_string(field), value}
-      end)
+      "signer_attributes" =>
+        Map.new(signer_attributes(endpoint.__struct__), fn field ->
+          definition = ResourceInfo.attribute(endpoint.__struct__, field)
+
+          {:ok, value} =
+            Ash.Type.dump_to_embedded(
+              definition.type,
+              Map.get(endpoint, field),
+              definition.constraints
+            )
+
+          {Atom.to_string(field), value}
+        end)
     }
     |> Jason.encode!()
     |> Jason.decode!()

@@ -18,7 +18,7 @@ defmodule AshHooks.Http.Headers do
 
   @doc false
   @spec validate_ordered(term()) :: {:ok, [{String.t(), String.t()}]} | {:error, atom()}
-  def validate_ordered(headers) when is_list(headers), do: ordered(headers, MapSet.new(), [])
+  def validate_ordered(headers) when is_list(headers), do: ordered(headers, %{}, [])
   def validate_ordered(_), do: {:error, :invalid_header_name}
 
   defp ordered([], _seen, acc), do: {:ok, Enum.reverse(acc)}
@@ -27,8 +27,8 @@ defmodule AshHooks.Http.Headers do
     cond do
       not valid_name?(name) -> {:error, :invalid_header_name}
       not valid_value?(value) -> {:error, :invalid_header_value}
-      MapSet.member?(seen, String.downcase(name, :ascii)) -> {:error, :duplicate_header}
-      true -> ordered(rest, MapSet.put(seen, String.downcase(name, :ascii)), [line | acc])
+      Map.has_key?(seen, String.downcase(name, :ascii)) -> {:error, :duplicate_header}
+      true -> ordered(rest, Map.put(seen, String.downcase(name, :ascii), true), [line | acc])
     end
   end
 

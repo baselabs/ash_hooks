@@ -442,17 +442,20 @@ defmodule AshHooks.Endpoint do
     schema: [
       signer: [
         type: :module,
-        doc: "Host module implementing AshHooks.Signer. Runs after native signing and delivery_headers with the complete prepared request and explicit delivery context. Requires a prepared-request adapter."
+        doc:
+          "Host module implementing AshHooks.Signer. Runs after native signing and delivery_headers with the complete prepared request and explicit delivery context. Requires a prepared-request adapter."
       ],
       signer_attributes: [
         type: {:list, :atom},
         default: [],
-        doc: "Non-sensitive endpoint attributes selecting host signing keys and scheme. Included in the typed 410 configuration fence. Store references only."
+        doc:
+          "Non-sensitive endpoint attributes selecting host signing keys and scheme. Included in the typed 410 configuration fence. Store references only."
       ],
       native_signing: [
         type: {:in, [:required, :optional]},
         default: :required,
-        doc: "With :optional, secret_ref is nullable and native signing uses the selected mode's occupied slots only. Requires signer. Relax the database NOT NULL before enabling. Nothing unsigned is sent."
+        doc:
+          "With :optional, secret_ref is nullable and native signing uses the selected mode's occupied slots only. Requires signer. Relax the database NOT NULL before enabling. Nothing unsigned is sent."
       ],
       custodian: [
         type: :module,

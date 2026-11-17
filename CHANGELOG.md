@@ -51,7 +51,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   consumer DSL syntax; formatter checks use dependency exports and report
   missing dependencies without changing the examples.
 - A legacy-only attempt records its legacy signing reference. New event-log
-  replay rows inherit their matching subscription's signing mode.
+  replay rows inherit their matching subscription's signing mode across all read
+  pages. No match retains `:standard`; conflicting matching modes are skipped.
+- Httpc does not advertise prepared-request transport: qualification found target
+  percent-escape normalization even with `headers_as_is`. Host signers use Bounded
+  or a custom adapter that fulfills the exact-byte contract.
 - Conditional 410 disablement handles nullable native references and compares
   declared host signer attributes through their Ash types. Missing attributes
   in older snapshots protect the endpoint from stale disablement.

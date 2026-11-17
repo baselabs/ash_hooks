@@ -146,8 +146,10 @@ defmodule AshHooks.OutboundAttempt do
     name: :outbound_attempt,
     schema: [
       record_signing_provenance: [
-        type: {:in, [:off, :on]}, default: :off,
-        doc: "Injects nullable signing_key_refs, every native and host key reference actually used by an attempt. Migrate before enabling."
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc:
+          "Injects nullable signing_key_refs, every native and host key reference actually used by an attempt. Migrate before enabling."
       ]
     ]
   }

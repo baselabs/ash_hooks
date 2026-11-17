@@ -56,6 +56,20 @@ defmodule AshHooks.Http.Request do
   def new(_, _, _, _), do: {:error, :invalid_prepared_request}
 
   @doc false
+  @spec to_iodata(t()) :: iodata()
+  def to_iodata(%__MODULE__{} = request) do
+    [
+      request.method,
+      " ",
+      request.target,
+      " HTTP/1.1\r\n",
+      Enum.map(request.headers, fn {name, value} -> [name, ": ", value, "\r\n"] end),
+      "\r\n",
+      request.body
+    ]
+  end
+
+  @doc false
   def target(uri) do
     path = if uri.path in [nil, ""], do: "/", else: uri.path
     if is_nil(uri.query), do: path, else: path <> "?" <> uri.query

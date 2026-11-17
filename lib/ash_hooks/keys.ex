@@ -62,7 +62,8 @@ defmodule AshHooks.Keys do
 
       fence =
         Enum.map(slots, fn field ->
-          {field, if(is_nil(Map.get(owner, field)), do: [is_nil: true], else: Map.get(owner, field))}
+          {field,
+           if(is_nil(Map.get(owner, field)), do: [is_nil: true], else: Map.get(owner, field))}
         end)
 
       values =
@@ -82,7 +83,12 @@ defmodule AshHooks.Keys do
   defp retire_native(owner, opts) do
     Enum.reduce_while(Transitions.slots(owner.__struct__), :ok, fn {field, kind}, :ok ->
       if Map.get(owner, kind) && Map.get(owner, field) do
-        case Transitions.retire(owner.__struct__, Map.get(owner, field), Transitions.now(opts), opts) do
+        case Transitions.retire(
+               owner.__struct__,
+               Map.get(owner, field),
+               Transitions.now(opts),
+               opts
+             ) do
           :ok -> {:cont, :ok}
           error -> {:halt, error}
         end

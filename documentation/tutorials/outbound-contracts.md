@@ -207,8 +207,9 @@ existing header. Header names are compared case-insensitively for collisions.
 `AshHooks.Http` and `AshHooks.Transport` expose optional `send_prepared/2`.
 Implementing it promises the exact request line, header lines in the supplied
 order and body, with no added headers or framing. Bounded implements this
-contract. Httpc's prepared capability remains withheld pending exact raw-listener
-qualification on every supported OTP version. A signer-configured endpoint using
+contract. Httpc does not implement it: raw-listener qualification found that
+`:httpc` rewrites percent escapes in the signed target even with `headers_as_is`.
+A signer-configured endpoint using
 an adapter without that callback dead-letters as `adapter_cannot_send_prepared`
 before the signer runs, including when the signer would return `:skip`.
 
@@ -228,5 +229,6 @@ host reference for host-only signing. Signing telemetry reports duration and a
 fixed outcome through `[:ash_hooks, :delivery, :sign]` without callback contents.
 
 New event-log replay rows select the endpoint's matching subscription signing
-mode under the same tenant. Conflicting matching modes do not create a row.
+mode under the same tenant, reading every page of the consumer's primary read
+action. Conflicting matching modes do not create a row.
 An endpoint with no matching subscription retains the standard-mode fallback.

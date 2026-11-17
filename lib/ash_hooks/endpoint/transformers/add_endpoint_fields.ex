@@ -307,8 +307,13 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
             Enum.find(Transformer.get_entities(dsl_state, [:attributes]), &(&1.name == name))} do
         {:secret_ref, true, %{} = attribute} ->
           {:cont,
-           {:ok, Transformer.replace_entity(dsl_state, [:attributes],
-             %{attribute | allow_nil?: true}, &(&1.name == :secret_ref))}}
+           {:ok,
+            Transformer.replace_entity(
+              dsl_state,
+              [:attributes],
+              %{attribute | allow_nil?: true},
+              &(&1.name == :secret_ref)
+            )}}
 
         _ ->
           {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}

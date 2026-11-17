@@ -19,9 +19,13 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptFields do
   end
 
   defp add_provenance(state) do
-    if Spark.Dsl.Extension.get_opt(state, [:outbound_attempt], :record_signing_provenance, :off) == :on,
-      do: Builder.add_new_attribute(state, :signing_key_refs, {:array, :string}, constraints: [items: [max_length: 255]]),
-      else: {:ok, state}
+    if Spark.Dsl.Extension.get_opt(state, [:outbound_attempt], :record_signing_provenance, :off) ==
+         :on,
+       do:
+         Builder.add_new_attribute(state, :signing_key_refs, {:array, :string},
+           constraints: [items: [max_length: 255]]
+         ),
+       else: {:ok, state}
   end
 
   defp add_primary_key(dsl_state) do

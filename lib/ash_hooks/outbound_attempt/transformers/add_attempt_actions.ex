@@ -28,27 +28,31 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptActions do
   # idempotency is the (delivery_pk, attempt) identity, so the accept list
   # carries no :id (a consumer-named primary key compiles unchanged).
   defp build_record(state) do
-    extra = if Spark.Dsl.Extension.get_opt(state, [:outbound_attempt], :record_signing_provenance, :off) == :on, do: [:signing_key_refs], else: []
+    extra =
+      if Spark.Dsl.Extension.get_opt(state, [:outbound_attempt], :record_signing_provenance, :off) ==
+           :on, do: [:signing_key_refs], else: []
+
     Builder.build_action(:create, :record,
       upsert?: true,
       upsert_identity: :unique_attempt,
       upsert_fields: [],
-      accept: [
-        :delivery_pk,
-        :endpoint_id,
-        :event_uuid,
-        :event_type,
-        :attempt,
-        :outcome,
-        :reason,
-        :response_status,
-        :response_snippet,
-        :response_headers,
-        :latency_ms,
-        :signing_key_ref,
-        :test,
-        :attempted_at
-      ] ++ extra
+      accept:
+        [
+          :delivery_pk,
+          :endpoint_id,
+          :event_uuid,
+          :event_type,
+          :attempt,
+          :outcome,
+          :reason,
+          :response_status,
+          :response_snippet,
+          :response_headers,
+          :latency_ms,
+          :signing_key_ref,
+          :test,
+          :attempted_at
+        ] ++ extra
     )
   end
 

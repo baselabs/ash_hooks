@@ -92,7 +92,8 @@ defmodule AshHooks.InboundDelivery do
       record_verified_facts: [
         type: {:in, [:off, :on]},
         default: :off,
-        doc: "Injects a nullable sensitive verified_facts map. Migrate before enabling. Provider projections are bounded JSON metadata; redaction clears them with the payload."
+        doc:
+          "Injects a nullable sensitive verified_facts map. Migrate before enabling. Provider projections are bounded JSON metadata; redaction clears them with the payload."
       ],
       record_provider_alias: [
         type: {:in, [:off, :on]},

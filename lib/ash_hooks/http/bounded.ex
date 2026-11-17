@@ -101,17 +101,7 @@ defmodule AshHooks.Http.Bounded do
     with :ok <- AshHooks.Http.Request.validate(request),
          {:ok, target} <- Target.resolve(request.url, Keyword.put(opts, :deadline, deadline)),
          :ok <- CertificatePin.validate(opts[:certificate_pin], target.uri.scheme) do
-      bytes = [
-        request.method,
-        " ",
-        request.target,
-        " HTTP/1.1\r\n",
-        Enum.map(request.headers, fn {name, value} -> [name, ": ", value, "\r\n"] end),
-        "\r\n",
-        request.body
-      ]
-
-      send_bytes(target, bytes, opts, deadline)
+      send_bytes(target, AshHooks.Http.Request.to_iodata(request), opts, deadline)
     end
   end
 

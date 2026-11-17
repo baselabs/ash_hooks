@@ -65,7 +65,10 @@ adapt to these seams.
   no reference.
 - Every entry path (dispatch, test send, resend and replay) signs at send time from the
   endpoint.
-- Replay rows take the signing mode of the endpoint's matching subscription.
+- Replay rows take the signing mode of the endpoint's matching subscription, reading all
+  pages of the consumer's primary read action under the explicit tenant. With no matching
+  subscription, replay retains the existing `:standard` fallback. Only conflicting matching
+  modes are skipped.
 
 **Prepared request.**
 - `%AshHooks.Http.Request{}` carries the method, the exact request target, the complete ordered
@@ -74,8 +77,11 @@ adapt to these seams.
 - Adapters and transports may implement the optional `send_prepared/2` callback, which sends
   exactly that request line, those lines in that order, and the body. `request/5` is unchanged.
 - `AshHooks.Http.Bounded` implements `send_prepared/2`.
-- `AshHooks.Http.Httpc` implements it through a package-owned profile with `headers_as_is` and
-  refuses a configured proxy.
+- `AshHooks.Http.Httpc` does not advertise `send_prepared/2`. Raw-listener qualification on
+  supported OTP found that `headers_as_is` still rewrites the request target's `x=%2f` to
+  `x=%2F`. It therefore cannot promise the exact signed bytes. Bounded remains the built-in
+  adapter for host signers. The contract test asserts the absent capability rather than
+  depending on this third-party behavior remaining unchanged.
 - When the endpoint resource declares a signer, an adapter without `send_prepared/2` is refused,
   terminally, before the signer runs, and never downgraded.
 

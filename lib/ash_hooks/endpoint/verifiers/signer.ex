@@ -29,8 +29,9 @@ defmodule AshHooks.Endpoint.Verifiers.Signer do
 
   defp signer?(module) do
     Code.ensure_loaded?(module) and function_exported?(module, :sign, 2) and
-      AshHooks.Signer in
-        (module.module_info(:attributes) |> Keyword.get_values(:behaviour) |> List.flatten())
+      AshHooks.Signer in (module.module_info(:attributes)
+                          |> Keyword.get_values(:behaviour)
+                          |> List.flatten())
   end
 
   defp verify_attribute(state, name) do
@@ -44,7 +45,10 @@ defmodule AshHooks.Endpoint.Verifiers.Signer do
         error(state, "signer_attributes must not be sensitive; store references only")
 
       not comparable?(attribute) ->
-        error(state, "signer_attributes require a JSON-readable stored type with Ash.Type equality")
+        error(
+          state,
+          "signer_attributes require a JSON-readable stored type with Ash.Type equality"
+        )
 
       true ->
         :ok
@@ -71,9 +75,22 @@ defmodule AshHooks.Endpoint.Verifiers.Signer do
   defp json_storage?(type),
     do:
       type in [
-        :string, :text, :integer, :float, :boolean, :map, :uuid, :binary_id,
-        :date, :time, :time_usec, :naive_datetime, :naive_datetime_usec,
-        :utc_datetime, :utc_datetime_usec, :decimal
+        :string,
+        :text,
+        :integer,
+        :float,
+        :boolean,
+        :map,
+        :uuid,
+        :binary_id,
+        :date,
+        :time,
+        :time_usec,
+        :naive_datetime,
+        :naive_datetime_usec,
+        :utc_datetime,
+        :utc_datetime_usec,
+        :decimal
       ]
 
   defp error(state, message) do
