@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## Unreleased (3.4.0)
 
 ### Added
 
@@ -32,7 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   do not adopt the outbox. Existing dispatch, event-log and delivery resources
   otherwise require no migration.
 
-## Unreleased (3.3.0)
+## [3.3.0] - 2026-11-17
 
 ### Added
 
@@ -49,6 +49,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   including durable 410 recovery. Signing telemetry reports duration and outcome.
 
 ### Changed
+
+- CI separates static checks from tests and enforces Mix-written lock bytes
+  and the repository secret-scan rules.
 
 - The optional Plug dependency requires 1.20.4 or later in the 1.x series,
   excluding versions affected by CVE-2026-120287. The development lock uses
@@ -68,6 +71,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pass the fresh dependency-floor qualification.
 
 ### Fixed
+
+- The 3.0 upgrade guide gives tested replacement configurations, event mappings,
+  and delivery identities for every removed vendor verifier module.
 
 - Generated HTML is checked without rewriting ExDoc output. Only the page-title
   and index redirect template separators are exempt, anchored to the build's
@@ -1589,6 +1595,7 @@ see migration notes in [UPGRADING.md](UPGRADING.md).
   either ledger at all, no response-body persistence by default,
   classified-only error strings.
 
+[3.3.0]: https://github.com/baselabs/ash_hooks/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/baselabs/ash_hooks/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/baselabs/ash_hooks/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/baselabs/ash_hooks/compare/v2.3.0...v3.0.0

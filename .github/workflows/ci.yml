@@ -49,7 +49,7 @@ jobs:
 
   # The default and compatibility lanes use the full development dependencies.
   # The no-optional lane proves Oban and Plug are optional (ADR-0004).
-  test:
+  checks:
     needs: toolchain
     runs-on: ubuntu-24.04
     strategy:
@@ -78,6 +78,33 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix format --check-formatted
       - run: mix credo --strict
+      - name: Prove the lock byte check rejects an edit admitted by --check-locked
+        run: elixir scripts/check-locks.exs --self-test
+      - name: Check every committed Mix lock and lock fixture
+        run: elixir scripts/check-locks.exs
+
+  test:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}
+    env:
+      MIX_ENV: test
+      ASH_HOOKS_NO_OPTIONAL: ${{ matrix.no_optional }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            deps
+            _build
+          key: test-${{ matrix.elixir }}-${{ matrix.otp }}-noopt-${{ matrix.no_optional }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
       - run: mix test
       - name: Assert optional deps never loaded (no-optional leg)
         if: matrix.no_optional == '1'
@@ -303,10 +330,28 @@ jobs:
     env:
       OSV_SCANNER_VERSION: "2.7.1"
       OSV_SCANNER_SHA256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     steps:
       - name: Require Linux (the scan's network namespace)
         run: test "$(uname -s)" = Linux
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install checksum-pinned gitleaks
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Prove the production secret scan rejects a runtime token and accepts clean commits
+        run: python3 scripts/check-secrets.py --self-test
+      - name: Scan the pushed commit range or PR range with the repository rules
+        run: python3 scripts/check-secrets.py
+      - name: Scan the checked-out head's full history with the repository rules
+        run: python3 scripts/check-secrets.py --full-history
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
@@ -357,11 +402,11 @@ jobs:
       - run: ./scripts/check-confidentiality.sh
 
   # The single branch-protection check name: require `all-checks-pass`
-  # on main and every leg (test matrix, floor, dialyzer, package,
+  # on main and every leg (checks, test matrix, floor, dialyzer, package,
   # postgres, livebook, security) gates through it — no per-job
   # check-name maintenance when the matrix grows.
   all-checks-pass:
-    needs: [toolchain, test, floor, postgres, dialyzer, package, livebook, security, confidentiality]
+    needs: [toolchain, checks, test, floor, postgres, dialyzer, package, livebook, security, confidentiality]
     if: always()
     runs-on: ubuntu-24.04
     steps:
