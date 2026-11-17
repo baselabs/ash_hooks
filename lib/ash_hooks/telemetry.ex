@@ -25,6 +25,22 @@ defmodule AshHooks.Telemetry do
       255 UTF-8 bytes, atoms use their names, other terms become `unclassified`,
       and invalid UTF-8 becomes `[binary]`. Hosts must not put secrets or payload
       data in this class; it is not restricted to the package's fixed vocabulary
+    * `[:ash_hooks, :outbox, :publish]`: `%{count: 1}`; `%{event_uuid,
+      outcome: :attempt | :accepted | :duplicate | :refused, reason}`.
+      Acceptance and duplicate notifications follow commit; raw repository
+      transactions suppress notifications and rely on the sweep
+    * `[:ash_hooks, :outbox, :trigger]`: `%{count: 1}`; `%{event_uuid,
+      outcome: :failed, reason: "trigger_failed"}`
+    * `[:ash_hooks, :outbox, :claim]`: `%{count: 1}`; `%{event_uuid,
+      outcome: :claimed | :busy | :stale, reason: nil}`
+    * `[:ash_hooks, :outbox, :result]`: `%{count: 1}`; `%{event_uuid,
+      outcome: :done | :pending | :failed, reason}`. Emitted only after the
+      matching fenced state transition succeeds
+    * `[:ash_hooks, :outbox, :rearm]`: `%{count: 1}`; `%{event_uuid,
+      outcome: :pending, reason: nil}`
+    * `[:ash_hooks, :outbox, :sweep]`: `%{count: 1}`; `%{event_uuid: nil,
+      outcome: :complete | :error, reason}`. Reasons use `classify_token/1`;
+      outbox events contain no payload or metadata contents
     * `[:ash_hooks, :dispatch, :enqueue_failed]`: `%{endpoint_id,
       event_uuid, reason}` (classified, contents-free)
     * `[:ash_hooks, :delivery, :attempt]`: `%{endpoint_id, event_uuid,
@@ -90,6 +106,12 @@ defmodule AshHooks.Telemetry do
           [:ash_hooks, :ingress, :dedup],
           [:ash_hooks, :ingress, :claim],
           [:ash_hooks, :ingress, :failure],
+          [:ash_hooks, :outbox, :publish],
+          [:ash_hooks, :outbox, :trigger],
+          [:ash_hooks, :outbox, :claim],
+          [:ash_hooks, :outbox, :result],
+          [:ash_hooks, :outbox, :rearm],
+          [:ash_hooks, :outbox, :sweep],
           [:ash_hooks, :dispatch, :enqueue_failed],
           [:ash_hooks, :delivery, :attempt],
           [:ash_hooks, :delivery, :result],

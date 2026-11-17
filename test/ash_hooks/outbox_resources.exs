@@ -6,7 +6,9 @@ defmodule AshHooks.OutboxFixtures.Postgres.Repo do
     if tenant = reason[:tenant] do
       query!(
         "SELECT set_config('outbox_acceptance.tenant', $1, true)",
-        [to_string(tenant)], log: false)
+        [to_string(tenant)],
+        log: false
+      )
     end
 
     :ok

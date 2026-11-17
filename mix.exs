@@ -24,7 +24,8 @@ defmodule AshHooks.MixProject do
       # and build output are outside this application's ExUnit source surface.
       test_ignore_filters: [
         ~r{\Atest/consumer/(deps|_build)/},
-        ~r{\Atest/consumer/(mix|verify)\.exs\z}
+        ~r{\Atest/consumer/(mix|verify)\.exs\z},
+        ~r{\Atest/ash_hooks/outbox_(process|resources)\.exs\z}
       ],
       deps: deps(),
       package: package(),

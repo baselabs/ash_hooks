@@ -142,7 +142,6 @@ defmodule AshHooks.Outbox do
         :busy
 
       {:ok, claimed} ->
-        emit(:publish, claimed, :accepted)
         emit(:claim, claimed, :claimed)
         run(claimed, tenant)
 

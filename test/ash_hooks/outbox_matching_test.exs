@@ -22,17 +22,20 @@ for {name, layer, atoms?} <- [
 ] do
   subscription = Module.concat([AshHooks.OutboxMatching, name, Subscription])
   emitter = Module.concat([AshHooks.OutboxMatching, name, Emitter])
+  ets_configuration = if layer == Ash.DataLayer.Ets do
+    quote do
+      ets do
+        private? false
+      end
+    end
+  end
   Code.eval_quoted(quote do
     defmodule unquote(subscription) do
       use Ash.Resource,
         domain: AshHooks.OutboxMatching.Domain,
         data_layer: unquote(layer),
         extensions: [AshHooks.Subscription]
-      if unquote(layer) == Ash.DataLayer.Ets do
-        ets do
-          private? false
-        end
-      end
+      unquote(ets_configuration)
       attributes do
         attribute :org_id, :string, allow_nil?: false
         if unquote(atoms?) do

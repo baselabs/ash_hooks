@@ -481,6 +481,14 @@ defmodule AshHooks.OutboxAcceptance do
     id
   end
 
+  def observed(acc) do
+    receive do
+      {:observed, name, measurements, metadata} -> observed([{name, measurements, metadata} | acc])
+    after
+      0 -> acc
+    end
+  end
+
   def count_queries(f, operation) do
     key = {__MODULE__, make_ref()}
     parent = self()
@@ -868,7 +876,6 @@ defmodule AshHooks.OutboxAcceptance do
                 end
               end)
             end)
-          end)
           assert_receive :locked
           Application.put_env(:ash_hooks, :outbox_observer, self())
           on_exit(fn -> Application.delete_env(:ash_hooks, :outbox_observer) end)
@@ -910,6 +917,7 @@ defmodule AshHooks.OutboxAcceptance do
                 )
               end)
 
+            Process.sleep(1_200)
             send(locked.pid, :release)
             Task.await(locked, 5_000)
             for task <- sweeps, do: assert({:ok, _summary} = Task.await(task, 10_000))
@@ -1175,6 +1183,54 @@ defmodule AshHooks.OutboxAcceptance do
                    struct(f.subscription, event_filters: malformed),
                    metadata
                  )
+        end
+      end
+
+      test "A13 every observable outbox outcome follows its real state transition", f do
+        owner = self()
+        handler = make_ref()
+        events = for event <- [:publish, :trigger, :claim, :result, :rearm, :sweep],
+          do: [:ash_hooks, :outbox, event]
+        :ok = :telemetry.attach_many(handler, events,
+          fn name, measurements, metadata, _ ->
+            send(owner, {:observed, List.last(name), measurements, metadata})
+          end, nil)
+        on_exit(fn -> :telemetry.detach(handler) end)
+        runtime = Module.concat(f.namespace, :Runtime)
+        Application.put_env(:ash_hooks, runtime, :raise)
+        event = Cases.event()
+        assert {:ok, :accepted} = Cases.publish(f, event)
+        assert_receive {:observed, :publish, %{count: 1}, %{outcome: :attempt}}
+        assert_receive {:observed, :publish, %{count: 1}, %{outcome: :accepted}}
+        assert_receive {:observed, :trigger, %{count: 1}, %{outcome: :failed, reason: "trigger_failed"}}
+        assert {:ok, :duplicate} = Cases.publish(f, event)
+        assert_receive {:observed, :publish, _, %{outcome: :duplicate}}
+        assert {:error, :publication_conflict} = Cases.publish(f, %{event | payload: "conflict"})
+        assert_receive {:observed, :publish, _, %{outcome: :refused, reason: "publication_conflict"}}
+        assert :done = Cases.fanout(f, event.id)
+        assert_receive {:observed, :claim, _, %{outcome: :claimed}}
+        assert_receive {:observed, :result, _, %{outcome: :done, reason: nil}}
+        pending = Cases.event()
+        assert {:ok, :accepted} = Cases.publish(f, pending)
+        Cases.set(f, pending.id, dispatch_route: "removed")
+        assert {:pending, :unresolved_route} = Cases.fanout(f, pending.id)
+        assert_receive {:observed, :result, _, %{outcome: :pending, reason: "unresolved_route"}}
+        assert :busy = Cases.fanout(f, pending.id)
+        assert_receive {:observed, :claim, _, %{outcome: :busy}}
+        Cases.set(f, pending.id, format_version: 99, next_attempt_at: DateTime.add(DateTime.utc_now(), -1))
+        assert :failed = Cases.fanout(f, pending.id)
+        assert_receive {:observed, :result, _, %{outcome: :failed, reason: "unsupported_publication_format"}}
+        assert {:ok, _} = AshHooks.rearm(f.outbox, pending.id, tenant: "tenant-a")
+        assert_receive {:observed, :rearm, _, %{outcome: :pending}}
+        assert {:ok, _} = AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
+        assert_receive {:observed, :sweep, _, %{outcome: :complete}}
+        assert {:error, :invalid_outbox_query} = AshHooks.fanout_pending(f.outbox, 0, tenant: "tenant-a")
+        assert_receive {:observed, :sweep, _, %{outcome: :error, reason: "invalid_outbox_query"}}
+        # The dedicated blocked-runner case asserts :stale and the absence of result telemetry.
+        observed = Cases.observed([])
+        for {_name, measurements, metadata} <- observed do
+          assert measurements == %{count: 1}
+          assert Enum.sort(Map.keys(metadata)) == [:event_uuid, :outcome, :reason]
         end
       end
 
