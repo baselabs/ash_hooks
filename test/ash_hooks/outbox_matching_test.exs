@@ -258,22 +258,23 @@ defmodule AshHooks.OutboxMatching.Outbox do
   end
 
   outbox do
-    declarations AshHooks.OutboxTypeCases.declarations() ++ [
-      {AshHooks.OutboxMatching.EtsStrings.Emitter, :changed},
-      {AshHooks.OutboxMatching.EtsAtoms.Emitter, :changed},
-      {AshHooks.OutboxMatching.SimpleStrings.Emitter, :changed},
-      {AshHooks.OutboxMatching.SimpleAtoms.Emitter, :changed},
-      {AshHooks.OutboxMatching.EtsOpenAtoms.Emitter, :changed},
-      {AshHooks.OutboxMatching.SimpleOpenAtoms.Emitter, :changed},
-      {AshHooks.OutboxMatching.EtsCustom.Emitter, :changed},
-      {AshHooks.OutboxMatching.SimpleCustom.Emitter, :changed},
-      {AshHooks.OutboxMatching.EtsEmptyAtoms.Emitter, :changed},
-      {AshHooks.OutboxMatching.SimpleEmptyAtoms.Emitter, :changed},
-      {AshHooks.OutboxMatching.EtsHostPause.Emitter, :changed},
-      {AshHooks.OutboxMatching.SimpleHostPause.Emitter, :changed},
-      {AshHooks.OutboxFixtures.SQLite.HostPauseEmitter, :changed},
-      {AshHooks.OutboxFixtures.Postgres.HostPauseEmitter, :changed}
-    ]
+    declarations AshHooks.OutboxTypeCases.declarations() ++
+                   [
+                     {AshHooks.OutboxMatching.EtsStrings.Emitter, :changed},
+                     {AshHooks.OutboxMatching.EtsAtoms.Emitter, :changed},
+                     {AshHooks.OutboxMatching.SimpleStrings.Emitter, :changed},
+                     {AshHooks.OutboxMatching.SimpleAtoms.Emitter, :changed},
+                     {AshHooks.OutboxMatching.EtsOpenAtoms.Emitter, :changed},
+                     {AshHooks.OutboxMatching.SimpleOpenAtoms.Emitter, :changed},
+                     {AshHooks.OutboxMatching.EtsCustom.Emitter, :changed},
+                     {AshHooks.OutboxMatching.SimpleCustom.Emitter, :changed},
+                     {AshHooks.OutboxMatching.EtsEmptyAtoms.Emitter, :changed},
+                     {AshHooks.OutboxMatching.SimpleEmptyAtoms.Emitter, :changed},
+                     {AshHooks.OutboxMatching.EtsHostPause.Emitter, :changed},
+                     {AshHooks.OutboxMatching.SimpleHostPause.Emitter, :changed},
+                     {AshHooks.OutboxFixtures.SQLite.HostPauseEmitter, :changed},
+                     {AshHooks.OutboxFixtures.Postgres.HostPauseEmitter, :changed}
+                   ]
 
     delivery_routes default: nil
     deduplication_horizon_seconds 3600
@@ -555,7 +556,7 @@ for {test_module, namespace} <- [
         endpoint = Cases.endpoint(f)
         # Remove the control subscription: only this variant participates.
         f.owner.query!("DELETE FROM #{Cases.table(f.subscription)}")
-        atoms? = variant.shape in [:ClosedAtoms, :OpenAtoms, :NewAtoms, :AtomArray]
+        atoms? = variant.shape in [:ClosedAtoms, :OpenAtoms, :NewAtoms]
 
         values = [
           if(atoms?, do: [:changed], else: ["changed"]),

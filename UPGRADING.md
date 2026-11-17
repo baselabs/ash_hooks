@@ -55,8 +55,10 @@ their existing contracts.
 
 The endpoint table shows generated nullability; the three nil-safe fields
 listed above also accept nullable host declarations. Native
-`Ash.Type.NewType` subtypes of the listed types are accepted, except
-outbox metadata, whose codec must remain unmodified. Event string, atom and term arrays can carry every declared event name.
+`Ash.Type.NewType` subtypes of the listed scalar types are accepted; event
+arrays may use String, Atom or Term element NewTypes. Outbox metadata is the
+exception; its codec must remain unmodified. Event string, atom and term
+arrays can carry every declared event name.
 Boolean, integer and map element arrays, and scalar containers, cannot carry
 those names and are refused; migrate their contents and column storage to a
 supported array type before updating the declaration. Event atom arrays may

@@ -1,17 +1,5 @@
 Code.require_file("outbox_resources.exs", __DIR__)
 
-defmodule AshHooks.OutboxTypeCases.StringArray do
-  use Ash.Type.NewType, subtype_of: {:array, :string}
-end
-
-defmodule AshHooks.OutboxTypeCases.AtomArray do
-  use Ash.Type.NewType, subtype_of: {:array, :atom}
-end
-
-defmodule AshHooks.OutboxTypeCases.TermArray do
-  use Ash.Type.NewType, subtype_of: {:array, :term}
-end
-
 defmodule AshHooks.OutboxTypeCases.String do
   use Ash.Type.NewType, subtype_of: :string
 end
@@ -35,10 +23,7 @@ defmodule AshHooks.OutboxTypeCases do
       {:Terms, {:array, :term}, []},
       {:NewStrings, {:array, AshHooks.OutboxTypeCases.String}, []},
       {:NewAtoms, {:array, AshHooks.OutboxTypeCases.Atom}, []},
-      {:NewTerms, {:array, AshHooks.OutboxTypeCases.Term}, []},
-      {:StringArray, AshHooks.OutboxTypeCases.StringArray, []},
-      {:AtomArray, AshHooks.OutboxTypeCases.AtomArray, []},
-      {:TermArray, AshHooks.OutboxTypeCases.TermArray, []}
+      {:NewTerms, {:array, AshHooks.OutboxTypeCases.Term}, []}
     ]
   end
 
@@ -51,6 +36,7 @@ defmodule AshHooks.OutboxTypeCases do
         ],
         {shape, type, constraints} <- types() do
       prefix = Module.concat([__MODULE__, name, shape])
+
       %{
         layer: layer,
         namespace: namespace,
@@ -72,6 +58,7 @@ defmodule AshHooks.OutboxTypeCases do
     columns =
       Enum.map_join(Ash.Resource.Info.attributes(resource), ", ", fn attribute ->
         storage = Ash.Type.storage_type(attribute.type, attribute.constraints)
+
         "\"#{attribute.name}\" #{sql_type(storage, f.sqlite?)}" <>
           if(attribute.primary_key?, do: " PRIMARY KEY", else: "")
       end)
@@ -98,7 +85,7 @@ for variant <- AshHooks.OutboxTypeCases.cases() do
         quote do
           sqlite do
             table unquote(variant.table)
-            repo AshHooks.OutboxFixtures.SQLiteRepo
+            repo(AshHooks.OutboxFixtures.SQLiteRepo)
           end
         end
 
@@ -106,7 +93,7 @@ for variant <- AshHooks.OutboxTypeCases.cases() do
         quote do
           postgres do
             table unquote(variant.table)
-            repo AshHooks.OutboxFixtures.Postgres.Repo
+            repo(AshHooks.OutboxFixtures.Postgres.Repo)
           end
         end
 
@@ -133,6 +120,7 @@ for variant <- AshHooks.OutboxTypeCases.cases() do
 
         attributes do
           attribute :org_id, :string, allow_nil?: false
+
           attribute :event_types, unquote(Macro.escape(variant.type)),
             allow_nil?: true,
             public?: true,

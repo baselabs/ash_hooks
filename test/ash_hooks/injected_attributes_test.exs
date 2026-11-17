@@ -168,10 +168,12 @@ defmodule AshHooks.InjectedAttributesTest do
           :string
         ] do
       {:ok, attribute} = Builder.build_attribute(:event_types, type, [])
+
       refute match?(
                {:ok, _},
                Ash.Type.cast_input(attribute.type, ["changed"], attribute.constraints)
              )
+
       errors =
         Spark.Test.dsl_errors do
           subscription(
