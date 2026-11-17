@@ -56,10 +56,12 @@ defmodule AshHooks.PublicationDashesTest do
 
     for codepoint <- [0x2013, 0x2014] do
       authored = <<codepoint::utf8>>
+
       File.write!(
         page,
         "<title>Authored #{authored} title #{dash} ash_hooks v3.2.0</title>\n<body>#{authored}</body>"
       )
+
       assert {"", 0} = System.cmd("python3", [@titles, tree], stderr_to_stdout: true)
       assert File.read!(page) =~ "Authored #{authored} title - ash_hooks"
       assert File.read!(page) =~ "<body>#{authored}</body>"

@@ -19,7 +19,7 @@ scan() {
     while IFS= read -r rule; do
       number=$((number + 1))
       status=0
-      grep -aFinw -- "$rule" "$path" > "$work/matches" || status=$?
+      grep -aFinw -- "$rule" "$path" > "$work/matches" 2>/dev/null || status=$?
       if [ "$status" -gt 1 ]; then return 2; fi
       if [ "$status" -eq 0 ]; then
         # Only line numbers leave the private match file.
@@ -66,7 +66,7 @@ fi
 
 # A compressed archive is a container, not searchable document bytes. ExDoc's
 # .build.epub is a text manifest, not an archive. Scan the extracted members.
-python3 - "$docs" "$work/epubs" <<'PYTHON'
+python3 - "$docs" "$work/epubs" 2>/dev/null <<'PYTHON' || exit 2
 from pathlib import Path
 import sys
 import zipfile
@@ -74,7 +74,7 @@ for number, path in enumerate(sorted(Path(sys.argv[1]).rglob("*.epub"))):
     if not path.is_file() or path.name == ".build.epub":
         continue
     if not zipfile.is_zipfile(path):
-        raise SystemExit(f"{path}: invalid EPUB archive ({path.stat().st_size} bytes)")
+        raise SystemExit(2)
     with zipfile.ZipFile(path) as book:
         target = Path(sys.argv[2]) / str(number)
         for name in book.namelist():

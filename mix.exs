@@ -225,8 +225,10 @@ defmodule AshHooks.MixProject do
 
   defp build_docs(args) do
     Mix.Task.run("docs", args)
+
     {options, _rest, _invalid} =
       OptionParser.parse(args, switches: [output: :string], aliases: [o: :output])
+
     output = Keyword.get(options, :output, "doc")
 
     {_output, status} = System.cmd("python3", ["scripts/style-document-titles.py", output])

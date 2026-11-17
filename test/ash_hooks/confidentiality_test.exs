@@ -82,9 +82,10 @@ defmodule AshHooks.ConfidentialityTest do
     refute output =~ "Unreleased"
   end
 
-  test "publication scanning reads HTML, unpacked package files and EPUB members, not container bytes", %{
-    tree: tree
-  } do
+  test "publication scanning reads HTML, unpacked package files and EPUB members, not container bytes",
+       %{
+         tree: tree
+       } do
     package = Path.join(tree, "package")
     docs = Path.join(tree, "docs")
     File.mkdir_p!(package)
@@ -97,7 +98,11 @@ defmodule AshHooks.ConfidentialityTest do
 
     for surface <- ["container", "epub", "html", "package"] do
       File.write!(html, if(surface == "html", do: "first\n#{token}", else: "plain HTML"))
-      File.write!(Path.join(package, "README.md"), if(surface == "package", do: token, else: "plain"))
+
+      File.write!(
+        Path.join(package, "README.md"),
+        if(surface == "package", do: token, else: "plain")
+      )
 
       {output, status} =
         System.cmd("python3", ["-c", publication_fixture(), docs, surface, token],
@@ -123,6 +128,13 @@ defmodule AshHooks.ConfidentialityTest do
         if surface == "package", do: assert(output =~ "README.md:1 rule-1")
       end
     end
+    File.write!(Path.join(docs, "broken.epub"), "invalid archive")
+
+    assert {"", 2} =
+             System.cmd("bash", [@script, "--publication", package, docs],
+               env: [{"PUBLIC_DOCS_DENYLIST", token}],
+               stderr_to_stdout: true
+             )
   end
 
   defp publication_fixture do
