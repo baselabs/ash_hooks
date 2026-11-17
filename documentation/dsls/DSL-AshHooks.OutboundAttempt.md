@@ -10,6 +10,8 @@ durable row per delivery attempt, written by the delivery runtime beside
 its fenced result transitions.
 
 
+<!-- not-run: This resource fragment requires host PostgreSQL configuration and a database migration. -->
+
     use Ash.Resource,
       data_layer: AshPostgres.DataLayer,
       extensions: [AshHooks.OutboundAttempt]
