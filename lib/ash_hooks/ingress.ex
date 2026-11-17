@@ -939,28 +939,7 @@ defmodule AshHooks.Ingress do
   defp handle_and_mark(resource, env, delivery_id, claimed) do
     tenant = env[:tenant]
 
-    outcome =
-      case env.parsed_type do
-        {:ok, type} when is_atom(type) ->
-          case invoke_handler(env.provider, type, env.payload, env.context) do
-            {:ok, event} when is_struct(event) ->
-              :processed
-
-            {:error, kind, term} when kind in [:retry, :permanent] ->
-              {:failed, error_class_string(term), kind == :permanent}
-
-            _ ->
-              {:failed, "invalid_handler_result", false}
-          end
-
-        {:error, reason} when reason in [:unknown_event_type, :malformed_payload] ->
-          {:failed, Atom.to_string(reason), true}
-
-        _ ->
-          {:failed, "invalid_handler_result", false}
-      end
-
-    case outcome do
+    case handling_outcome(env.parsed_type, env) do
       :processed ->
         gated_update(resource, delivery_id, claimed.fencing_token, :mark_processed, %{}, tenant)
 
@@ -980,6 +959,21 @@ defmodule AshHooks.Ingress do
       {:error, error} -> {:error, error}
     end
   end
+
+  defp handling_outcome({:ok, type}, env) when is_atom(type) do
+    case invoke_handler(env.provider, type, env.payload, env.context) do
+      {:ok, event} when is_struct(event) -> :processed
+      {:error, :retry, term} -> {:failed, error_class_string(term), false}
+      {:error, :permanent, term} -> {:failed, error_class_string(term), true}
+      _ -> {:failed, "invalid_handler_result", false}
+    end
+  end
+
+  defp handling_outcome({:error, reason}, _env)
+       when reason in [:unknown_event_type, :malformed_payload],
+       do: {:failed, Atom.to_string(reason), true}
+
+  defp handling_outcome(_parsed_type, _env), do: {:failed, "invalid_handler_result", false}
 
   # The handling env for a claimed row is rebuilt from the PERSISTED row:
   # payload, digest, and type come from the ledger of record, so a
@@ -1193,19 +1187,19 @@ defmodule AshHooks.Ingress do
           )
         end)
 
-      case result do
-        %Ash.BulkResult{status: :success, records: [row]} ->
-          if action == :mark_failed, do: emit_failure(row)
-          :ok
-
-        %Ash.BulkResult{status: :success, records: []} ->
-          {:error, :stale_token}
-
-        %Ash.BulkResult{errors: [error | _]} ->
-          {:error, error}
-      end
+      finalize_update(result, action)
     end
   end
+
+  defp finalize_update(%Ash.BulkResult{status: :success, records: [row]}, action) do
+    if action == :mark_failed, do: emit_failure(row)
+    :ok
+  end
+
+  defp finalize_update(%Ash.BulkResult{status: :success, records: []}, _action),
+    do: {:error, :stale_token}
+
+  defp finalize_update(%Ash.BulkResult{errors: [error | _]}, _action), do: {:error, error}
 
   defp read_by_key(resource, key, tenant) do
     AshHooks.Phase.run(

@@ -27,6 +27,8 @@ defmodule AshHooks.IngressTest do
   end
 
   defmodule ResultProvider do
+    alias AshHooks.Test.Repo
+
     use AshHooks.Provider, verify: [algorithm: :hmac_sha256, signature: {:header, "x-signature"}]
 
     @impl true
@@ -45,48 +47,26 @@ defmodule AshHooks.IngressTest do
     def parse_event_type(_), do: {:ok, :webhook}
 
     @impl true
-    def handle_event(type, %{"result" => result} = payload) do
-      case result do
-        "struct" ->
-          {:ok, %AshHooks.Provider.Event{type: type, payload: payload}}
+    def handle_event(type, %{"result" => "struct"} = payload),
+      do: {:ok, %AshHooks.Provider.Event{type: type, payload: payload}}
 
-        "permanent" ->
-          {:error, :permanent, :rejected}
+    def handle_event(_, %{"result" => "permanent"}), do: {:error, :permanent, :rejected}
+    def handle_event(_, %{"result" => "retry"}), do: {:error, :retry, :try_again}
+    def handle_event(_, %{"result" => "raise"}), do: raise("handler failed")
+    def handle_event(_, %{"result" => "exit"}), do: exit(:handler_failed)
+    def handle_event(_, %{"result" => "throw"}), do: throw(:handler_failed)
+    def handle_event(_, %{"result" => "bare"}), do: :ok
+    def handle_event(_, %{"result" => "error"}), do: {:error, :rejected}
+    def handle_event(type, %{"result" => "map"}), do: {:ok, %{type: type}}
+    def handle_event(_, %{"result" => "tuple"}), do: {:unexpected, :result}
+    def handle_event(_, %{"result" => "nil"}), do: nil
 
-        "retry" ->
-          {:error, :retry, :try_again}
+    def handle_event(_, %{"result" => "stale"}) do
+      Repo.query!(
+        "UPDATE ingress_test_ledgers SET fencing_token = fencing_token + 1 WHERE provider = 'results'"
+      )
 
-        "raise" ->
-          raise "handler failed"
-
-        "exit" ->
-          exit(:handler_failed)
-
-        "throw" ->
-          throw(:handler_failed)
-
-        "bare" ->
-          :ok
-
-        "error" ->
-          {:error, :rejected}
-
-        "map" ->
-          {:ok, %{type: type}}
-
-        "tuple" ->
-          {:unexpected, :result}
-
-        "nil" ->
-          nil
-
-        "stale" ->
-          AshHooks.Test.Repo.query!(
-            "UPDATE ingress_test_ledgers SET fencing_token = fencing_token + 1 WHERE provider = 'results'"
-          )
-
-          :ok
-      end
+      :ok
     end
   end
 
