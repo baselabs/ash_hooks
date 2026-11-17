@@ -9,6 +9,31 @@ defmodule AshHooks.OutboxConfigurationTest do
   alias Spark.Dsl.Transformer
   @resource AshHooks.OutboxFixtures.SQLite.Outbox
 
+  test "A17 generated attributes and actions precede Ash input and identity caches" do
+    for transformer <- [
+          Ash.Resource.Transformers.DefaultAccept,
+          Ash.Resource.Transformers.CacheActionInputs,
+          Ash.Resource.Transformers.SetPrimaryActions,
+          Ash.Resource.Transformers.RequireUniqueActionNames,
+          Ash.Resource.Transformers.CachePrimaryKey,
+          Ash.Resource.Transformers.AttributesByName,
+          Ash.Resource.Transformers.SetPreCheckWith,
+          Ash.Resource.Transformers.CacheUniqueKeys,
+          Ash.Resource.Transformers.SetEagerCheckWith
+        ] do
+      assert AddOutbox.before?(transformer)
+    end
+
+    refute AddOutbox.before?(__MODULE__)
+    assert :event_uuid in Ash.Resource.Info.action_inputs(@resource, :publish)
+    assert "acceptance_token" in Ash.Resource.Info.action_inputs(@resource, :publish)
+    assert %{name: :claim_token} = Ash.Resource.Info.attribute(@resource, :claim_token)
+
+    assert Enum.any?(Ash.Resource.Info.unique_keys(@resource), fn key ->
+             Enum.sort(key.keys) == [:event_uuid, :org_id]
+           end)
+  end
+
   test "A17 migration configuration includes tenant-leading recovery indexes" do
     for {resource, path} <- [
           {@resource, [:sqlite, :custom_indexes]},

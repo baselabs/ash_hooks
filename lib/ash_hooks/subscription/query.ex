@@ -6,6 +6,8 @@ defmodule AshHooks.Subscription.Query do
   alias Ash.Resource.Info
   alias Spark.Dsl.Extension
 
+  @layers [AshPostgres.DataLayer, AshSqlite.DataLayer, Ash.DataLayer.Ets, Ash.DataLayer.Simple]
+
   def select(resource, event) do
     layer = Ash.DataLayer.data_layer(resource)
     types = types(resource, event.type, layer)
@@ -20,7 +22,8 @@ defmodule AshHooks.Subscription.Query do
     values = attribute |> allowed_types(name) |> valid_type_names(layer)
 
     cond do
-      values == :unknown or not array_storage?(resource, attribute, layer) ->
+      values == :unknown or layer not in @layers or
+          not array_storage?(resource, attribute, layer) ->
         true
 
       values == [] ->
@@ -30,11 +33,8 @@ defmodule AshHooks.Subscription.Query do
         names = Enum.map(values, &to_string/1)
         expr(fragment("?::text[] && ?::text[]", event_types, ^names))
 
-      layer in [AshSqlite.DataLayer, Ash.DataLayer.Ets, Ash.DataLayer.Simple] ->
-        Enum.reduce(values, false, fn value, acc -> expr(^acc or ^value in event_types) end)
-
       true ->
-        true
+        Enum.reduce(values, false, fn value, acc -> expr(^acc or ^value in event_types) end)
     end
   end
 
@@ -74,12 +74,11 @@ defmodule AshHooks.Subscription.Query do
 
   defp filters(resource, metadata, layer) do
     attribute = Info.attribute(resource, :event_filters)
+    map? = match?(%{type: Ash.Type.Map}, attribute)
+    storage = if map?, do: storage(resource, attribute, layer)
 
     cond do
-      not match?(%{type: Ash.Type.Map}, attribute) ->
-        true
-
-      layer in [Ash.DataLayer.Ets, Ash.DataLayer.Simple] ->
+      map? and layer in [Ash.DataLayer.Ets, Ash.DataLayer.Simple] ->
         matcher = fn filters ->
           AshHooks.Subscription.matches_filters?(
             struct(resource, event_filters: filters),
@@ -90,11 +89,10 @@ defmodule AshHooks.Subscription.Query do
         fragment = %Ash.Query.Call{name: :fragment, args: [matcher, expr(event_filters)]}
         expr(is_nil(event_filters) or ^fragment)
 
-      layer == AshPostgres.DataLayer and storage(resource, attribute, layer) in [:map, :jsonb] ->
+      map? and layer == AshPostgres.DataLayer and storage in [:map, :jsonb] ->
         sql_filters(resource, metadata, :postgres)
 
-      layer == AshSqlite.DataLayer and
-          storage(resource, attribute, layer) in [:map, :text, :string] ->
+      map? and layer == AshSqlite.DataLayer and storage in [:map, :text, :string] ->
         sql_filters(resource, metadata, :sqlite)
 
       true ->
@@ -205,8 +203,6 @@ defmodule AshHooks.Subscription.Query do
       ]
 
   defp array_storage?(_resource, _attribute, _layer), do: true
-
-  defp storage(_resource, nil, _layer), do: nil
 
   defp storage(resource, attribute, layer) do
     path =

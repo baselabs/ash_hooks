@@ -115,7 +115,7 @@ defmodule AshHooks.Outbox do
     end
   end
 
-  def atomicity(resource, caller, opts \\ []) do
+  def atomicity(resource, caller, opts) do
     layer = Ash.DataLayer.data_layer(resource)
 
     cond do
@@ -188,9 +188,13 @@ defmodule AshHooks.Outbox do
 
     resources =
       Enum.flat_map(option(row.__struct__, :declarations), fn {emitter, name} ->
-        entity = Info.outbound(emitter, name)
-        endpoint = Extension.get_opt(entity.subscriptions, [:subscription], :endpoint_resource)
-        [emitter, entity.subscriptions, entity.deliveries, entity.events, endpoint]
+        case declaration(row.__struct__, {emitter, name}) do
+          {:ok, _, _, entity, endpoint} ->
+            [emitter, entity.subscriptions, entity.deliveries, entity.events, endpoint]
+
+          {:error, :unknown_declaration} ->
+            []
+        end
       end)
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()

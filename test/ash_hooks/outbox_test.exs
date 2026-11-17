@@ -898,6 +898,25 @@ for {module, namespace} <- [
                      "event_uuid" => event.id
                    }
                  })
+
+        pending = Cases.event()
+        assert {:ok, :accepted} = Cases.publish(f, pending)
+        Cases.set(f, pending.id, dispatch_route: "removed")
+
+        job = %Oban.Job{
+          args: %{
+            "kind" => "fanout",
+            "outbox_resource" => Atom.to_string(f.outbox),
+            "event_uuid" => pending.id,
+            "tenant" => "tenant-a"
+          }
+        }
+
+        assert :ok = worker.perform(job)
+        assert Cases.publication(f, pending.id).state == :pending
+
+        assert {:ok, {:error, :inside_transaction}} =
+                 Cases.transaction(f, fn -> worker.perform(job) end)
       end
 
       test "A14 a restarted process re-admits the original metadata to a named route", f do
@@ -1079,6 +1098,33 @@ for {module, namespace} <- [
         assert Cases.publication(f, done.id).state == :done
       end
 
+      test "A4 denied delivery admission keeps the publication recoverable", f do
+        Cases.endpoint(f)
+        event = Cases.event()
+        assert {:ok, :accepted} = Cases.publish(f, event, route: :queued)
+
+        assert {:ok, [%{status: :created}]} =
+                 AshHooks.dispatch(f.emitter, :changed, event,
+                   tenant: "tenant-a",
+                   enqueue: {Module.concat(f.namespace, :Runtime), :enqueue}
+                 )
+
+        relation = Cases.table(f.delivery)
+        role = f.roles.runtime
+        f.owner.query!("REVOKE UPDATE ON #{relation} FROM #{role}", [], log: false)
+
+        try do
+          assert {:pending, _error} = Cases.fanout(f, event.id)
+          assert [%{status: :pending}] = Cases.rows(f, :delivery)
+        after
+          f.owner.query!("GRANT UPDATE ON #{relation} TO #{role}", [], log: false)
+        end
+
+        Cases.expire(f, event)
+        assert :done = Cases.fanout(f, event.id)
+        assert length(Cases.rows(f, :delivery)) == 1
+      end
+
       test "A5 losing the fanout owner kills its blocked SQL runner", f do
         Cases.endpoint(f, pinned_payload_version: 1)
         event = Cases.event()
@@ -1108,6 +1154,13 @@ for {module, namespace} <- [
           Process.exit(owner, :kill)
           assert_receive {:DOWN, ^monitor, :process, ^runner, :killed}, 5_000
           assert Cases.publication(f, event.id).state == :pending
+
+          Cases.expire(f, event)
+          call = Task.async(fn -> Cases.fanout(f, event.id) end)
+          assert_receive {:outbox_builder, runner}, 5_000
+          Process.exit(runner, :kill)
+          assert {:pending, :fanout_crashed} = Task.await(call, 5_000)
+          assert Cases.publication(f, event.id).last_error == "fanout_crashed"
         after
           send(locked.pid, :release)
           Task.await(locked, 5_000)
@@ -1188,6 +1241,39 @@ for {module, namespace} <- [
           :telemetry.detach(handler)
           send(locked.pid, :release)
         end
+      end
+    end
+
+    if Code.ensure_loaded?(Oban) do
+      test "A3 replay preserves durable admission and a live send lease", f do
+        Cases.endpoint(f)
+        event = Cases.event()
+        assert {:ok, :accepted} = Cases.publish(f, event, route: :queued)
+        assert :done = Cases.fanout(f, event.id)
+        assert [original] = Cases.rows(f, :delivery)
+        assert DateTime.compare(original.enqueue_lease_expires_at, DateTime.utc_now()) == :gt
+
+        Cases.set(f, event.id, state: "pending", completed_at: nil)
+        assert :done = Cases.fanout(f, event.id)
+        assert [replayed] = Cases.rows(f, :delivery)
+        assert replayed.id == original.id
+        assert replayed.enqueue_lease_expires_at == original.enqueue_lease_expires_at
+
+        lease = DateTime.add(DateTime.utc_now(), 60, :second)
+        sql_lease = if f.sqlite?, do: DateTime.to_iso8601(lease), else: DateTime.to_naive(lease)
+
+        sql =
+          if f.sqlite?,
+            do: "UPDATE #{Cases.table(f.delivery)} SET status = 'sending', enqueue_lease_expires_at = NULL, send_lease_expires_at = ? WHERE event_uuid = ?",
+            else: "UPDATE #{Cases.table(f.delivery)} SET status = 'sending', enqueue_lease_expires_at = NULL, send_lease_expires_at = $1 WHERE event_uuid = $2"
+
+        f.owner.query!(sql, [sql_lease, event.id])
+        Cases.set(f, event.id, state: "pending", completed_at: nil)
+        assert :done = Cases.fanout(f, event.id)
+        assert [%{id: id, status: :sending, send_lease_expires_at: ^lease}] =
+                 Cases.rows(f, :delivery)
+
+        assert id == original.id
       end
     end
 
@@ -1369,6 +1455,10 @@ for {module, namespace} <- [
     test "A11 notifications are after commit and trigger failures cannot fail publish", f do
       runtime = Module.concat(f.namespace, :Runtime)
       Application.put_env(:ash_hooks, runtime, self())
+      Application.put_env(:ash_hooks, :outbox_host_observer, self())
+      on_exit(fn -> Application.delete_env(:ash_hooks, :outbox_host_observer) end)
+
+      assert :ok = AshHooks.OutboundOutbox.Notifier.notify(%Ash.Notifier.Notification{})
 
       for mode <- [:ignore, :warn, :raise] do
         previous = Application.get_env(:ash, :missed_notifications)
@@ -1420,6 +1510,8 @@ for {module, namespace} <- [
 
       assert_receive {:triggered, id, "tenant-a"}
       assert id == event.id
+      assert_receive {:host_notification, %{data: %{event_uuid: ^id}, metadata: %{host: true}}}
+      assert_receive {:host_notification, %{data: %{event_uuid: ^id}, action: %{name: :publish}}}
       assert {:ok, :accepted} = Cases.publish(f, Cases.event(), return_notifications?: true)
       refute_receive {:triggered, _, _}
 
@@ -1438,6 +1530,11 @@ for {module, namespace} <- [
         {%{"region" => "east"}, false},
         {%{"region" => ["west", "south"]}, true},
         {%{"flag" => true}, true},
+        {%{"__invalid__" => true}, true},
+        {%{"disabled" => false}, true},
+        {%{"nullable" => nil}, true},
+        {%{"disabled" => true}, false},
+        {%{"nullable" => false}, false},
         {%{"flag" => 1}, false},
         {%{"count" => 1}, true},
         {%{"nested" => %{"value" => true}}, true},
@@ -1479,6 +1576,8 @@ for {module, namespace} <- [
       metadata = %{
         "region" => "west",
         "flag" => true,
+        "disabled" => false,
+        "nullable" => nil,
         "count" => 1.0,
         "nested" => %{"value" => true},
         "__invalid__" => true
@@ -1608,6 +1707,24 @@ for {module, namespace} <- [
       Cases.set(f, event.id, dispatch_source: "removed")
       assert {:pending, :unknown_declaration} = Cases.fanout(f, event.id)
       assert Cases.publication(f, event.id).last_error == "unknown_declaration"
+    end
+
+    test "A13 raised and thrown subscription preparations release their claim for retry", f do
+      on_exit(fn -> Application.delete_env(:ash_hooks, :outbox_read_failure) end)
+
+      for failure <- [:raise, :throw] do
+        event = Cases.event()
+        assert {:ok, :accepted} = Cases.publish(f, event)
+        Application.put_env(:ash_hooks, :outbox_read_failure, failure)
+        assert {:pending, :fanout_crashed} = Cases.fanout(f, event.id)
+        row = Cases.publication(f, event.id)
+        assert row.state == :pending
+        assert row.last_error == "fanout_crashed"
+        assert is_nil(row.claim_token)
+        Application.delete_env(:ash_hooks, :outbox_read_failure)
+        Cases.expire(f, event)
+        assert :done = Cases.fanout(f, event.id)
+      end
     end
 
     test "A13 bounded sweeps isolate poison, park, list and rearm", f do

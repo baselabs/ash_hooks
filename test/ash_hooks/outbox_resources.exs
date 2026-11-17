@@ -1,3 +1,43 @@
+defmodule AshHooks.OutboxFixtures.HostNotifier do
+  use Ash.Notifier
+
+  def notify(notification) do
+    if observer = Application.get_env(:ash_hooks, :outbox_host_observer),
+      do: send(observer, {:host_notification, notification})
+
+    :ok
+  end
+end
+
+defmodule AshHooks.OutboxFixtures.HostNotifications do
+  use Ash.Resource.Change
+
+  def change(changeset, _opts, _context) do
+    Ash.Changeset.after_action(changeset, fn _changeset, row ->
+      notification = %Ash.Notifier.Notification{
+        resource: nil,
+        for: [AshHooks.OutboxFixtures.HostNotifier],
+        data: row,
+        metadata: %{host: true}
+      }
+
+      {:ok, row, [notification]}
+    end)
+  end
+end
+
+defmodule AshHooks.OutboxFixtures.SubscriptionPreparation do
+  use Ash.Resource.Preparation
+
+  def prepare(query, _opts, _context) do
+    case Application.get_env(:ash_hooks, :outbox_read_failure) do
+      :raise -> raise "subscription preparation failed"
+      :throw -> throw(:subscription_preparation_failed)
+      _other -> query
+    end
+  end
+end
+
 defmodule AshHooks.OutboxFixtures.Postgres.Repo do
   use AshPostgres.Repo, otp_app: :ash_hooks, warn_on_missing_ash_functions?: false
   def min_pg_version, do: %Version{major: 16, minor: 0, patch: 0}
@@ -124,9 +164,13 @@ defmodule AshHooks.OutboxFixtures.SQLite.Subscription do
     defaults [:read, :create, :update]
   end
 
+  preparations do
+    prepare AshHooks.OutboxFixtures.SubscriptionPreparation
+  end
+
   subscription do
     endpoint_resource AshHooks.OutboxFixtures.SQLite.Endpoint
-    filter_attributes [:region, :flag, :count, :nested, :__invalid__]
+    filter_attributes [:region, :flag, :disabled, :nullable, :count, :nested, :__invalid__]
     pausable :on
   end
 end
@@ -179,6 +223,14 @@ defmodule AshHooks.OutboxFixtures.SQLite.Outbox do
     repo(AshHooks.OutboxFixtures.SQLiteRepo)
   end
 
+  resource do
+    notifiers [AshHooks.OutboxFixtures.HostNotifier]
+  end
+
+  changes do
+    change AshHooks.OutboxFixtures.HostNotifications, on: [:create]
+  end
+
   attributes do
     attribute :org_id, :string, allow_nil?: false
   end
@@ -193,7 +245,10 @@ defmodule AshHooks.OutboxFixtures.SQLite.Outbox do
   end
 
   outbox do
-    declarations [{AshHooks.OutboxFixtures.SQLite.Emitter, :changed}]
+    declarations [
+      {AshHooks.OutboxFixtures.SQLite.Emitter, :removed},
+      {AshHooks.OutboxFixtures.SQLite.Emitter, :changed}
+    ]
     delivery_routes default: nil, queued: {AshHooks.OutboxFixtures.SQLite.Runtime, :enqueue}
     # Worker routes are exercised where Oban is installed.
     trigger {AshHooks.OutboxFixtures.SQLite.Runtime, :trigger}
@@ -392,9 +447,13 @@ defmodule AshHooks.OutboxFixtures.Postgres.Subscription do
     defaults [:read, :create, :update]
   end
 
+  preparations do
+    prepare AshHooks.OutboxFixtures.SubscriptionPreparation
+  end
+
   subscription do
     endpoint_resource AshHooks.OutboxFixtures.Postgres.Endpoint
-    filter_attributes [:region, :flag, :count, :nested, :__invalid__]
+    filter_attributes [:region, :flag, :disabled, :nullable, :count, :nested, :__invalid__]
     pausable :on
   end
 end
@@ -448,6 +507,14 @@ defmodule AshHooks.OutboxFixtures.Postgres.Outbox do
     repo(AshHooks.OutboxFixtures.Postgres.Repo)
   end
 
+  resource do
+    notifiers [AshHooks.OutboxFixtures.HostNotifier]
+  end
+
+  changes do
+    change AshHooks.OutboxFixtures.HostNotifications, on: [:create]
+  end
+
   attributes do
     attribute :org_id, :string, allow_nil?: false
   end
@@ -462,7 +529,10 @@ defmodule AshHooks.OutboxFixtures.Postgres.Outbox do
   end
 
   outbox do
-    declarations [{AshHooks.OutboxFixtures.Postgres.Emitter, :changed}]
+    declarations [
+      {AshHooks.OutboxFixtures.Postgres.Emitter, :removed},
+      {AshHooks.OutboxFixtures.Postgres.Emitter, :changed}
+    ]
     delivery_routes default: nil, queued: {AshHooks.OutboxFixtures.Postgres.Runtime, :enqueue}
     # Worker routes are exercised where Oban is installed.
     trigger {AshHooks.OutboxFixtures.Postgres.Runtime, :trigger}
