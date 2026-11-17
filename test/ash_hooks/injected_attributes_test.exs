@@ -36,11 +36,12 @@ defmodule AshHooks.InjectedAttributesTest do
   require Spark.Test
 
   alias Ash.Resource.{Builder, Info}
+  alias AshHooks.InboundSource.Transformers.AddSourceFields
   alias AshHooks.InjectedAttributeStates
   alias AshHooks.Subscription
-  alias Spark.Error.DslError
   alias AshHooks.Verifiers.InjectedAttributes
   alias Spark.Dsl.Transformer
+  alias Spark.Error.DslError
 
   @families [
     {AshHooks.Subscription, :subscription,
@@ -251,7 +252,7 @@ defmodule AshHooks.InjectedAttributesTest do
 
   test "source identity constraints and lossless outbox metadata remain native" do
     source = InjectedAttributeStates.state(AshHooks.InboundSource, :inbound_source)
-    specs = AshHooks.InboundSource.Transformers.AddSourceFields.attributes_spec(source)
+    specs = AddSourceFields.attributes_spec(source)
 
     source =
       Enum.reduce(specs, source, fn {name, type, opts}, state ->
