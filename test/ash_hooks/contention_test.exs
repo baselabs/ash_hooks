@@ -80,6 +80,9 @@ defmodule AshHooks.ContentionTest do
       end)
 
     try do
+      # Trace patterns match loaded modules only, and test order decides what is loaded.
+      Code.ensure_loaded!(Contention)
+      Code.ensure_loaded!(Process)
       assert :trace.process(session, task.pid, true, [:call]) == 1
       assert :trace.function(session, {Contention, :attempt, 2}, true, [:local]) == 1
       assert :trace.function(session, {Process, :sleep, 1}, true, []) == 1
