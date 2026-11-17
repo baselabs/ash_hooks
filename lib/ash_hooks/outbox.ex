@@ -5,7 +5,7 @@ defmodule AshHooks.Outbox do
 
   alias Ash.Actions.Helpers
   alias AshHooks.{Event, Info, OutboundBinding, Phase, PrimaryKey, Tenancy}
-  alias AshHooks.OutboundOutbox.Metadata
+  alias AshHooks.OutboundOutbox.{Metadata, Notifier}
   alias Spark.Dsl.Extension
 
   def option(resource, key), do: Extension.get_opt(resource, [:outbox], key)
@@ -56,10 +56,7 @@ defmodule AshHooks.Outbox do
     case result do
       {:ok, row, notifications} ->
         with {:ok, disposition} <- disposition(row, input) do
-          notifications =
-            Enum.flat_map(notifications, fn notification ->
-              route_notification(notification, resource, AshHooks.OutboundOutbox.Notifier)
-            end)
+          notifications = Enum.flat_map(notifications, &route_notification(&1, resource, Notifier))
 
           notify(resource, disposition, notifications, opts)
         end
