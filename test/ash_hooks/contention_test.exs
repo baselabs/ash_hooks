@@ -61,31 +61,45 @@ defmodule AshHooks.ContentionTest do
     refute_received {:attempt, _}
   end
 
-  test "an operation near the deadline preserves the error without another sleep" do
+  test "the deadline preserves the final error without sleeping after the last operation" do
+    owner = self()
     error = {:error, busy()}
-    session = :trace.session_create(:contention_deadline, self(), [])
-    on_exit(fn -> :trace.session_destroy(session) end)
-    assert 1 = :trace.function(session, {Process, :sleep, 1}, true, [])
+    session = :trace.session_create(__MODULE__, owner, [])
 
     task =
       Task.async(fn ->
         receive do
           :run ->
-            Contention.run(fn ->
-              Process.sleep(1_950)
-              error
-            end)
+            result = Contention.run(fn -> error end)
+            send(owner, {:retry_result, self(), result})
+
+            receive do
+              :finish -> result
+            end
         end
       end)
 
-    assert 1 = :trace.process(session, task.pid, true, [:call])
-    send(task.pid, :run)
-    assert ^error = Task.await(task, 10_000)
-    delivered = :trace.delivered(session, :all)
-    assert_receive {:trace_delivered, :all, ^delivered}, 5_000
-    pid = task.pid
-    assert_received {:trace, ^pid, :call, {Process, :sleep, [1_950]}}
-    refute_received {:trace, ^pid, :call, {Process, :sleep, [_]}}
+    try do
+      assert :trace.process(session, task.pid, true, [:call]) == 1
+      assert :trace.function(session, {Contention, :attempt, 2}, true, [:local]) == 1
+      assert :trace.function(session, {Process, :sleep, 1}, true, []) == 1
+      started = System.monotonic_time(:millisecond)
+      send(task.pid, :run)
+      pid = task.pid
+      assert_receive {:retry_result, ^pid, ^error}, 5_000
+      assert System.monotonic_time(:millisecond) - started >= 1_850
+      delivered = :trace.delivered(session, pid)
+      assert_receive {:trace_delivered, ^pid, ^delivered}, 5_000
+      events = retry_events(pid, [])
+      assert [:attempt | _] = events
+      assert :sleep in events
+      assert List.last(events) == :attempt
+      send(pid, :finish)
+      assert ^error = Task.await(task)
+    after
+      :trace.session_destroy(session)
+      if Process.alive?(task.pid), do: Task.shutdown(task, :brutal_kill)
+    end
   end
 
   test "a delayed wakeup never starts another operation after the deadline" do
@@ -127,6 +141,15 @@ defmodule AshHooks.ContentionTest do
       :erlang.resume_process(pid)
       Process.sleep(1)
       suspend_during_sleep(pid, attempts - 1)
+    end
+  end
+
+  defp retry_events(pid, acc) do
+    receive do
+      {:trace, ^pid, :call, {Contention, :attempt, _}} -> retry_events(pid, [:attempt | acc])
+      {:trace, ^pid, :call, {Process, :sleep, [_delay]}} -> retry_events(pid, [:sleep | acc])
+    after
+      0 -> Enum.reverse(acc)
     end
   end
 end
