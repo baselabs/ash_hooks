@@ -65,11 +65,12 @@ fragment is tested inside a complete endpoint and router with a real SQLite ledg
 
 <!-- tested: readme-install-endpoint -->
 ```elixir
-plug Plug.Parsers,
+plug(Plug.Parsers,
   parsers: [:json],
   pass: ["*/*"],
   body_reader: {AshHooks.BodyReader, :read_body, []},
   json_decoder: Phoenix.json_library()
+)
 ```
 
 `mix igniter.install ash_hooks` attempts to add this reader. Review the result.
@@ -83,17 +84,19 @@ Use a fixed source only for a single-tenant ledger without scope fields.
 <!-- tested: readme-fixed-source -->
 ```elixir
 # MyAppWeb.Endpoint, before the router
-plug Plug.Parsers,
+plug(Plug.Parsers,
   parsers: [:urlencoded, :multipart, :json],
   pass: ["*/*"],
   json_decoder: Jason,
   body_reader: {AshHooks.BodyReader, :read_body, [only: ["/webhooks"]]}
+)
 
 # MyAppWeb.Router
-forward "/webhooks/payments", AshHooks.Plug,
+forward("/webhooks/payments", AshHooks.Plug,
   resource: MyApp.WebhookLedger,
   source: :payments,
   request_uri: "https://hooks.example.com"
+)
 ```
 
 The plug verifies, stores the decoded payload and signed-byte digest, deduplicates,
