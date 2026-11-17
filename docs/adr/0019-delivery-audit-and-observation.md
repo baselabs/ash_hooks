@@ -1,6 +1,6 @@
 # 0019: Delivery audit and observation
 
-Status: Accepted November 15, 2026.
+Status: Accepted November 15, 2026; amended November 17, 2026.
 
 ## Context
 
@@ -67,3 +67,7 @@ Hosts opt into and migrate audit resources, govern payload and captured-response
 access, and schedule retention. Missing audit rows are observable but possible;
 health and replay can use only the history actually retained. Receiver-facing
 delivery remains at-least-once, and test sends reach real configured transports.
+
+## Amendment: November 17, 2026
+
+Optional signing provenance records all native and host key references used by an attempt, including HTTP failures and durable 410 recovery. The singular reference names the selected signing mode. Signer failures are pre-send failures with no request latency or key reference; signing telemetry reports duration and a fixed outcome. See [ADR 0028](0028-host-extension-seams.md).

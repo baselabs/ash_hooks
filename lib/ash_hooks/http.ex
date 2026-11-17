@@ -28,4 +28,16 @@ defmodule AshHooks.Http do
   @callback request(atom(), String.t(), map(), binary(), keyword()) ::
               {:ok, %{status: integer(), headers: list(), body: binary() | nil}}
               | {:error, term()}
+
+  @doc """
+  Sends the prepared method, target, ordered header lines and body unchanged.
+  Write `method target HTTP/1.1`, then exactly the supplied lines in order,
+  then the body. Add, remove, duplicate or reorder nothing. Custom adapters
+  and transports own this trusted boundary, including any downstream hop.
+  """
+  @callback send_prepared(AshHooks.Http.Request.t(), keyword()) ::
+              {:ok, %{status: integer(), headers: list(), body: binary() | nil}}
+              | {:error, term()}
+
+  @optional_callbacks send_prepared: 2
 end

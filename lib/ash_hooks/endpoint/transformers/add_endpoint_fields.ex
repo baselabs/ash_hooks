@@ -292,8 +292,27 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointFields do
     do: inject(dsl_state, mapped_attributes_spec())
 
   defp inject(dsl_state, spec) do
+    spec =
+      if Extension.get_opt(dsl_state, [:endpoint], :native_signing, :required) == :optional do
+        Enum.map(spec, fn
+          {:secret_ref, type, opts} -> {:secret_ref, type, Keyword.put(opts, :allow_nil?, true)}
+          other -> other
+        end)
+      else
+        spec
+      end
+
     Enum.reduce_while(spec, {:ok, dsl_state}, fn {name, type, opts}, {:ok, dsl_state} ->
-      {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
+      case {name, Keyword.get(opts, :allow_nil?),
+            Enum.find(Transformer.get_entities(dsl_state, [:attributes]), &(&1.name == name))} do
+        {:secret_ref, true, %{} = attribute} ->
+          {:cont,
+           {:ok, Transformer.replace_entity(dsl_state, [:attributes],
+             %{attribute | allow_nil?: true}, &(&1.name == :secret_ref))}}
+
+        _ ->
+          {:cont, Builder.add_new_attribute(dsl_state, name, type, opts)}
+      end
     end)
   end
 

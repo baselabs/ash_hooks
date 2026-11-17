@@ -1,6 +1,6 @@
 # 0012: Durable delivery ownership and recovery
 
-Status: Accepted October 6, 2026; amended November 15, 2026.
+Status: Accepted October 6, 2026; amended November 17, 2026.
 
 ## Context
 
@@ -71,3 +71,7 @@ Tenant transactions and renewed resend allowance follow
 [transaction ownership](0015-tenant-transactions-and-spawned-work.md) and
 [resend](0020-resend-replay-and-endpoint-health.md) while preserving identity
 and live result ownership.
+
+## Amendment: November 17, 2026
+
+The 410 recovery snapshot now includes the endpoint's declared signer attributes, compared through their Ash types. A nil native secret reference is a value in the disable fence, and a snapshot missing a declared signer attribute cannot disable an endpoint. See [ADR 0028](0028-host-extension-seams.md).

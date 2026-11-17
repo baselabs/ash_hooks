@@ -30,6 +30,9 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
         do: [:provider_alias | scope],
         else: scope
 
+    facts? = Extension.get_opt(dsl_state, [:inbound_delivery], :record_verified_facts, :off) == :on
+    scope = if facts?, do: [:verified_facts | scope], else: scope
+
     with {:ok, ingest} <- build_ingest(scope, writable_id_pk?(dsl_state)),
          {:ok, record_malformed} <-
            build_ingest(scope, writable_id_pk?(dsl_state), :record_malformed),
@@ -38,7 +41,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
          {:ok, mark_failed} <- build_mark_failed(),
          {:ok, renew} <- build_renew(),
          {:ok, adopt_legacy_identity} <- build_adopt_legacy_identity(),
-         {:ok, redact_payload} <- build_redact_payload(),
+         {:ok, redact_payload} <- build_redact_payload(facts?),
          {:ok, prune} <- build_prune() do
       # the accept-list decision is PERSISTED for the runtime: the
       # Ingress reads the SAME answer, never a re-derived predicate that
@@ -133,7 +136,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   # the retention field-redaction hook: replaces the stored payload
   # under the caller's claim fence (Ingress.redact_payload/4 gates the
   # WHERE; the action itself is a plain primitive, the fence pattern)
-  defp build_redact_payload do
+  defp build_redact_payload(facts?) do
     import Ash.Expr, only: [arg: 1]
 
     {:ok, payload_set} =
@@ -145,7 +148,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
     Builder.build_action(:update, :redact_payload,
       accept: [],
       arguments: [payload_arg],
-      changes: [payload_set]
+      changes: [payload_set] ++ if(facts?, do: [change(Builtins.set_attribute(:verified_facts, nil))], else: [])
     )
   end
 

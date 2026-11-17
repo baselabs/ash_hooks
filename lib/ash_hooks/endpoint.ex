@@ -259,6 +259,22 @@ defmodule AshHooks.Endpoint do
   end
 
   @doc """
+  Issues and attaches a native key to a host-only custody endpoint. Requires
+  `native_signing :optional`. Options: `:slot` (`:standard` or `:legacy`),
+  `:generate` or `:material`, and explicit `:tenant`. Returns the endpoint and
+  one-time disclosure for generated keys. An occupied slot is refused.
+  """
+  def enable_native_signing(endpoint, opts \\ []), do: Keys.enable_native(endpoint, opts)
+
+  @doc """
+  Removes native keys from an optional-native custody endpoint, atomically
+  retiring every custody-owned slot for durable registry disposal. Host signing
+  attributes remain on the row. Pass the explicit `:tenant`; authorize callers
+  before invoking this system operation. No key material is disclosed.
+  """
+  def disable_native_signing(endpoint, opts \\ []), do: Keys.disable_native(endpoint, opts)
+
+  @doc """
   Replaces the selected current custody key with a generated key of the same
   kind and returns `{:ok, endpoint, disclosure}`. Options: `:slot` (`:standard`
   or `:legacy`), `:tenant`, and `:now`. A byte slot returns `:byte_slot`;
@@ -424,6 +440,20 @@ defmodule AshHooks.Endpoint do
     Configuration of this resource as the outbound webhook endpoint.
     """,
     schema: [
+      signer: [
+        type: :module,
+        doc: "Host module implementing AshHooks.Signer. Runs after native signing and delivery_headers with the complete prepared request and explicit delivery context. Requires a prepared-request adapter."
+      ],
+      signer_attributes: [
+        type: {:list, :atom},
+        default: [],
+        doc: "Non-sensitive endpoint attributes selecting host signing keys and scheme. Included in the typed 410 configuration fence. Store references only."
+      ],
+      native_signing: [
+        type: {:in, [:required, :optional]},
+        default: :required,
+        doc: "With :optional, secret_ref is nullable and native signing uses the selected mode's occupied slots only. Requires signer. Relax the database NOT NULL before enabling. Nothing unsigned is sent."
+      ],
       custodian: [
         type: :module,
         doc:
@@ -621,6 +651,7 @@ defmodule AshHooks.Endpoint do
     ],
     verifiers: [
       AshHooks.Endpoint.Verifiers.Custody,
+      AshHooks.Endpoint.Verifiers.Signer,
       AshHooks.Endpoint.Verifiers.Overlap,
       AshHooks.Endpoint.Verifiers.LegacyLifecycle,
       AshHooks.Verifiers.MultitenancyNoBypass

@@ -1,6 +1,6 @@
 # 0021: Host trust boundaries and subscription selection
 
-Status: Accepted November 15, 2026.
+Status: Accepted November 15, 2026; amended November 17, 2026.
 
 ## Context
 
@@ -73,3 +73,7 @@ including destination validation where they replace it. Receiver input cannot
 select those overrides. The runtime preserves one delivery state machine while
 refusing policy errors at their defined boundaries. Catalog and filter changes
 require host coordination with endpoint expectations and subscription data.
+
+## Amendment: November 17, 2026
+
+Endpoint signers may append ordered headers after native signing and host delivery headers. Reserved names and existing names are refused. Adapters and transports that implement send_prepared/2 own the exact request target, header order and body contract. Host-signed deliveries refuse an adapter without that capability before invoking the signer. See [ADR 0028](0028-host-extension-seams.md).

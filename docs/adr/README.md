@@ -29,12 +29,13 @@ Records are repository documentation and are not part of the Hex package.
 | [0016: Inbound JSON decoding policy](0016-inbound-json-decoding-policy.md) | Accepted | Inbound JSON decoding policy. |
 | [0017: Generic providers and signature primitives](0017-generic-providers-and-signature-primitives.md) | Amended | Generic providers and signature primitives. |
 | [0018: Optional HTTP ingress and exact body bytes](0018-optional-http-ingress-and-exact-body-bytes.md) | Accepted | Optional HTTP ingress and exact body bytes. |
-| [0019: Delivery audit and observation](0019-delivery-audit-and-observation.md) | Accepted | Delivery audit history and observation. |
+| [0019: Delivery audit and observation](0019-delivery-audit-and-observation.md) | Amended | Delivery audit history and observation. |
 | [0020: Resend, replay, and endpoint health](0020-resend-replay-and-endpoint-health.md) | Accepted | Resend, replay and endpoint health. |
-| [0021: Host trust boundaries and subscription selection](0021-host-trust-boundaries-and-subscription-selection.md) | Accepted | Host trust boundaries and subscription selection. |
+| [0021: Host trust boundaries and subscription selection](0021-host-trust-boundaries-and-subscription-selection.md) | Amended | Host trust boundaries and subscription selection. |
 | [0022: Oban engine row security](0022-oban-engine-row-security.md) | Accepted | Separate tenant-bound insertion from queue execution under forced row security. |
 | [0023: Installer mutation scope](0023-installer-mutation-scope.md) | Accepted | What the installer may edit in a host application. |
 | [0024: SQLite contention retry](0024-sqlite-contention-retry.md) | Accepted | Bounded retry of SQLite write contention. |
 | [0025: Inbound handler results](0025-inbound-handler-results.md) | Accepted | How ingress records every handler result. |
 | [0026: Retention action injection](0026-retention-action-injection.md) | Accepted | Whether the package may delete delivery rows. |
 | [0027: Observation read failures](0027-observation-read-failures.md) | Accepted | Observation read failures are reported, never counted as zero. |
+| [0028: Host extension seams](0028-host-extension-seams.md) | Accepted | Verified facts, host signers, exact prepared requests and signing provenance. |

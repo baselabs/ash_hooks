@@ -29,6 +29,9 @@ defmodule AshHooks.Telemetry do
       event_uuid, reason}` (classified, contents-free)
     * `[:ash_hooks, :delivery, :attempt]`: `%{endpoint_id, event_uuid,
       attempts}`
+    * `[:ash_hooks, :delivery, :sign]`: measurement `%{duration: native_time}`;
+      metadata `%{outcome: :ok | :skip | :retry | :terminal | :invalid_result |
+      :callback_failed}`. Contains no callback terms or key material.
     * `[:ash_hooks, :delivery, :result]`: `%{endpoint_id, event_uuid,
       status: :succeeded | :failed_retryable | :dead_letter,
       response_status: integer | nil, reason: binary | nil}`
@@ -145,7 +148,7 @@ defmodule AshHooks.Telemetry do
     invalid_destination invalid_event invalid_enqueue_result invalid_enqueuer
     invalid_headers invalid_method invalid_response invalid_route invalid_url inside_transaction
     max_attempts no_secret nxdomain reconcile_pending resolve_timeout
-    secret_resolution signing_failed source_conflict stale_row timeout
+    secret_resolution signing_failed signer_failed adapter_cannot_send_prepared unsigned invalid_prepared_request source_conflict stale_row timeout
     tls_alert truncated_body unsafe_destination unresolved_host
     unresolved_route worker_route_mismatch unknown_source key_kind_mismatch
     unknown_key key_unavailable invalid_signature unknown_error kind_not_allowed)

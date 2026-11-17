@@ -25,6 +25,12 @@ defmodule AshHooks.OutboundAttempt do
   makes the runtime's history writes idempotent per attempt. Your
   migration carries the matching unique index.
 
+  `outbound_attempt do record_signing_provenance :on end` additionally injects
+  nullable `signing_key_refs`, the ordered native and host references that
+  actually signed the request. Migrate before enabling it. Pre-send failures
+  have no signing references or latency; recovered 410s retain the original
+  attempt's provenance rather than reading current endpoint configuration.
+
   Response bodies are never stored here unless the ENDPOINT opted in per
   row (`response_capture_attributes :on` on the endpoint resource and
   `response_capture: true` on the row): an opted-in capture bounds the
@@ -136,7 +142,18 @@ defmodule AshHooks.OutboundAttempt do
     if expression, do: Ash.Query.filter(query, ^expression), else: query
   end
 
+  @scope %Spark.Dsl.Section{
+    name: :outbound_attempt,
+    schema: [
+      record_signing_provenance: [
+        type: {:in, [:off, :on]}, default: :off,
+        doc: "Injects nullable signing_key_refs, every native and host key reference actually used by an attempt. Migrate before enabling."
+      ]
+    ]
+  }
+
   use Spark.Dsl.Extension,
+    sections: [@scope],
     transformers: [
       AshHooks.OutboundAttempt.Transformers.AddAttemptFields,
       AshHooks.OutboundAttempt.Transformers.AddAttemptIdentity,

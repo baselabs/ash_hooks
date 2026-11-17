@@ -6,6 +6,7 @@ defmodule AshHooks.Provider.DeliveryContext do
   | --- | --- | --- |
   | tenant, source, scope, provider_alias | Set at ingest | Rebuilt from the stored receipt on every claim |
   | delivery_id, external_event_id | nil | Set from the stored receipt |
+  | verified_facts | nil | Rebuilt from the stored receipt when recording is on |
 
   `provider_alias` is nil for declarations without `source_record`.
   A composite delivery key is a map; a single delivery key is its value.
@@ -13,9 +14,11 @@ defmodule AshHooks.Provider.DeliveryContext do
   reconstruct them. A handler needing host-owned receipt fields can read its
   ledger by `delivery_id` under `tenant`.
   """
-  defstruct [:tenant, :source, :provider_alias, :delivery_id, :external_event_id, scope: %{}]
+  @derive {Inspect, except: [:verified_facts]}
+  defstruct [:verified_facts, :tenant, :source, :provider_alias, :delivery_id, :external_event_id, scope: %{}]
 
   @type t :: %__MODULE__{
+          verified_facts: map() | nil,
           tenant: term(),
           source: atom(),
           scope: map(),

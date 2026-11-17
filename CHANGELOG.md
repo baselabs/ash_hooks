@@ -4,7 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## Unreleased (3.3.0)
+
+### Added
+
+- Providers may return bounded verified facts, stored with the receipt and
+  delivered to handlers when `record_verified_facts :on` is enabled. The Plug
+  resolver and direct ingress accept transient upstream `host_context`.
+- Endpoint signers receive the complete ordered HTTP request and delivery,
+  endpoint, attempt, event and tenant context. Optional native signing supports
+  host-only endpoints and custody-safe transitions between signing modes.
+- Prepared requests preserve the request target, header lines and body through
+  capable adapters. Bounded implements the contract; host signing refuses an
+  adapter without `send_prepared/2` before calling the signer.
+- Optional `record_signing_provenance :on` records every signing key reference,
+  including durable 410 recovery. Signing telemetry reports duration and outcome.
 
 ### Changed
 
@@ -36,6 +50,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   host project and service requirements. Phoenix mounting examples retain the
   consumer DSL syntax; formatter checks use dependency exports and report
   missing dependencies without changing the examples.
+- A legacy-only attempt records its legacy signing reference. New event-log
+  replay rows inherit their matching subscription's signing mode.
+- Conditional 410 disablement handles nullable native references and compares
+  declared host signer attributes through their Ash types. Missing attributes
+  in older snapshots protect the endpoint from stale disablement.
 
 - The installer resolves parser aliases and preserves existing body readers.
   It adds notices for custom readers and endpoint configurations that need

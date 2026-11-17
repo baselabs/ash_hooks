@@ -27,10 +27,17 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
          {:ok, dsl_state} <- add_primary_key(dsl_state),
          {:ok, dsl_state} <- add_attributes(dsl_state),
          {:ok, dsl_state} <- add_provider_alias(dsl_state),
+         {:ok, dsl_state} <- add_verified_facts(dsl_state),
          {:ok, dsl_state} <- add_tracking_attributes(dsl_state),
          :ok <- validate_primary_key_sources(dsl_state) do
       {:ok, dsl_state}
     end
+  end
+
+  defp add_verified_facts(state) do
+    if Extension.get_opt(state, [:inbound_delivery], :record_verified_facts, :off) == :on,
+      do: Builder.add_new_attribute(state, :verified_facts, :map, sensitive?: true),
+      else: {:ok, state}
   end
 
   defp add_provider_alias(state) do
@@ -130,7 +137,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
   end
 
   defp reserved_fields(state) do
-    fields = Enum.map(attributes_spec(), &elem(&1, 0))
+    fields = [:verified_facts | Enum.map(attributes_spec(), &elem(&1, 0))]
 
     if Extension.get_opt(state, [:inbound_delivery], :record_provider_alias, :off) == :on,
       do: [:provider_alias | fields],

@@ -9,6 +9,10 @@ defmodule AshHooks.Http.Httpc do
   bundle. The operation deadline covers DNS, connection, send, and response
   collection; connection also has a separate, shorter ceiling.
 
+  This adapter does not export `send_prepared/2`. Exact header lines and order
+  must first pass the raw-listener qualification on every supported OTP version.
+  Use `AshHooks.Http.Bounded` for endpoints declaring a host signer.
+
   Response retention is capped by `max_body_bytes` (64 KiB by default).
   OTP streams 200 and 206 responses, so this adapter cancels collection at
   that limit. Other statuses are buffered inside `:httpc` before the adapter

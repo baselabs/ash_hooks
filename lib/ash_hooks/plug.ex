@@ -18,7 +18,8 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     `:resolve` is called with the conn followed by its configured arguments.
     It must return `{:ok, %{source: atom}}`, optionally including `:tenant`,
-    `:scope`, and `:connection` for ingress, and `:signature_header`, which
+    `:scope`, `:connection`, and opaque `:host_context` for ingress, and
+    `:signature_header`, which
     overrides the plug option of that name for the resolved source. Look up stored endpoint records;
     never trust a path string as a module or tenant. `{:error, :not_found}`
     answers 404 and `{:error, :unavailable}` answers 503, with no ledger write.
@@ -242,7 +243,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     defp ingest(conn, raw, context, provider, options) do
       ctx =
         context
-        |> Map.take([:tenant, :scope, :connection, :resolved_source])
+        |> Map.take([:tenant, :scope, :connection, :resolved_source, :host_context])
         |> Map.merge(%{headers: conn.req_headers, method: conn.method})
         |> signature(conn, Map.get(context, :signature_header, options[:signature_header]))
         |> request_uri(conn, options[:request_uri])

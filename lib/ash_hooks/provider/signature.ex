@@ -92,7 +92,7 @@ defmodule AshHooks.Provider.Signature do
   @doc false
   def verification_result(results) do
     cond do
-      :ok in results -> :ok
+      success = Enum.find(results, &(&1 == :ok or match?({:ok, _}, &1))) -> success
       error = Enum.find(results, &configuration_error?/1) -> error
       error = Enum.find(results, &match?({:error, %InvalidSignature{}}, &1)) -> error
       true -> invalid()

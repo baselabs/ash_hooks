@@ -123,6 +123,10 @@ defmodule AshHooks.Provider do
       Ingress supplies the ledger's decoder on every request. Use it for
       protected JWS headers and claims, defaulting to `Jason.decode/1` for
       direct calls without the key.
+    * `:host_context`: an opaque, transient upstream result supplied by the
+      host. A provider reusing it must bind the proof to the raw body digest,
+      tenant and source policy, including the source key credited. It never
+      replaces the provider's admission decision and is never persisted.
 
   A provider whose scheme needs only the signature reads `:signature` and
   ignores the rest.
@@ -130,6 +134,7 @@ defmodule AshHooks.Provider do
   @type verify_context :: %{
           optional(:replay_window_seconds) => pos_integer(),
           optional(:json_decoder) => json_decoder(),
+          optional(:host_context) => term(),
           signature: signature_header_value() | nil,
           headers: %{optional(String.t()) => String.t()},
           header_list: [{String.t(), String.t()}],
@@ -147,8 +152,18 @@ defmodule AshHooks.Provider do
   """
   @type webhook_secret_scope :: :app_level | :per_connection
 
+  @doc """
+  Authenticates the exact body and request context.
+
+  Return `:ok` or `{:ok, facts}`. Facts are a string-keyed JSON map with depth
+  at most eight and an encoded size at most 8 KiB. Invalid facts fail closed
+  even when recording is off. With `record_verified_facts :on`, the first
+  authenticated receipt retains them and the handler receives them through
+  `AshHooks.Provider.DeliveryContext`. Otherwise ingress admits and drops them.
+  Project only bounded metadata, never credentials or signature material.
+  """
   @callback verify_signature(raw_body(), verify_context(), verification_keys()) ::
-              :ok | {:error, signature_error()}
+              :ok | {:ok, map()} | {:error, signature_error()}
 
   @doc """
   Resolves the signing secret used to verify an inbound webhook.

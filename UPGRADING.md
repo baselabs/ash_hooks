@@ -10,6 +10,67 @@ The qualified Spark floor is 2.7.6, the minimum required by Ash 3.37.2.
 Update Spark alongside Ash if your lock contains an older version. The floor
 check resolves both exact versions against a fresh dependency graph.
 
+### Host extension seams in 3.3.0
+
+Each schema change is opt-in. Apply the migration before enabling the matching
+option on the resource, and deploy every process that reads that resource with
+the same DSL declaration. Existing resources and adapters require no migration
+when all new options stay at their defaults.
+
+- For `inbound_delivery` with `record_verified_facts :on`, add nullable
+  `verified_facts` as an Ash map (PostgreSQL JSONB, SQLite JSON text). Keep it
+  sensitive in policies and exports. Existing receipts remain null; new valid
+  facts persist with the first authenticated receipt. Redaction clears them.
+- For `outbound_attempt` with `record_signing_provenance :on`, add nullable
+  `signing_key_refs` as an array of strings (PostgreSQL text array, SQLite JSON
+  text). Existing attempts remain null. The existing singular field stays.
+- Before `endpoint` with `native_signing :optional`, relax the endpoint table's
+  `secret_ref` NOT NULL constraint. PostgreSQL can drop that constraint with
+  `ALTER TABLE`; SQLite requires a table rebuild using the data layer's
+  migration generator. Preserve every index, foreign key and tenant constraint.
+  Keep `native_signing :required` on resources that need mandatory native keys.
+- Declare the host-owned signer reference and scheme attributes on the endpoint
+  resource and migrate them through the data layer normally. List all attributes
+  that determine signing in `signer_attributes`. These attributes cannot be
+  sensitive, and their stored values must round-trip through their Ash types.
+  Store references, never credentials. No package signer columns are injected.
+
+For PostgreSQL, the nullable-column changes have this shape; replace the table
+names with the tables declared by your resources:
+
+```sql
+ALTER TABLE inbound_deliveries ADD COLUMN verified_facts jsonb;
+ALTER TABLE outbound_attempts ADD COLUMN signing_key_refs text[];
+ALTER TABLE webhook_endpoints ALTER COLUMN secret_ref DROP NOT NULL;
+```
+
+For SQLite, add `verified_facts TEXT` and `signing_key_refs TEXT` to the
+corresponding tables. Generate the endpoint table rebuild from the resource's
+complete schema, changing only `secret_ref` nullability. A generic rebuild
+cannot name all host-owned columns, constraints and indexes, so use the
+application's migration generator and inspect its preservation of those fields.
+The extension's database tests apply both additive columns and the dialect's
+nullability migration before writing facts, provenance and host-only endpoints.
+
+Use `AshHooks.Endpoint.enable_native_signing/2` and `disable_native_signing/2`
+for custody endpoints that opted into optional native signing. These operations
+retain issuance and durable disposal through the key registry. They require the
+explicit tenant and run outside enclosing transactions. Do not clear custody
+references with an ordinary resource update.
+
+A host signer requires a prepared-capable HTTP adapter or transport. Bounded
+supports it. Httpc's prepared capability is withheld until its raw-listener
+qualification proves the exact lines and order on every supported OTP version.
+Custom adapters must send the supplied method, target, ordered complete header
+lines and body unchanged, without additional framing or headers. Keep their
+legacy `request/5` implementation for callers without prepared requests.
+
+Review observability consumers for the corrected singular signing reference in
+legacy mode, `signer_failed`, `unsigned`, `adapter_cannot_send_prepared`, and the
+`[:ash_hooks, :delivery, :sign]` event. New event-log replay rows use a matching
+subscription's signing mode. Older 410 snapshots without every declared signer
+attribute finalize without disabling a reconfigured endpoint.
+
 ## Oban with forced row security
 
 The optional Oban requirement is now `~> 2.24`. Upgrade Oban before using the

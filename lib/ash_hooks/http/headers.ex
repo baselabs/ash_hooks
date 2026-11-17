@@ -16,6 +16,24 @@ defmodule AshHooks.Http.Headers do
     end)
   end
 
+  @doc false
+  @spec validate_ordered(term()) :: {:ok, [{String.t(), String.t()}]} | {:error, atom()}
+  def validate_ordered(headers) when is_list(headers), do: ordered(headers, MapSet.new(), [])
+  def validate_ordered(_), do: {:error, :invalid_header_name}
+
+  defp ordered([], _seen, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp ordered([{name, value} = line | rest], seen, acc) do
+    cond do
+      not valid_name?(name) -> {:error, :invalid_header_name}
+      not valid_value?(value) -> {:error, :invalid_header_value}
+      MapSet.member?(seen, String.downcase(name, :ascii)) -> {:error, :duplicate_header}
+      true -> ordered(rest, MapSet.put(seen, String.downcase(name, :ascii)), [line | acc])
+    end
+  end
+
+  defp ordered(_, _, _), do: {:error, :invalid_header_name}
+
   defp valid_name?(name) when is_binary(name) and name != "" do
     name
     |> :binary.bin_to_list()

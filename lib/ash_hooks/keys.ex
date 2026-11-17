@@ -27,6 +27,77 @@ defmodule AshHooks.Keys do
     end
   end
 
+  def enable_native(%resource{} = owner, opts) do
+    slot = Keyword.get(opts, :slot, :standard)
+
+    with :ok <- optional_native(resource),
+         :ok <- require_custody(resource),
+         fields = KeyLifecycle.fields(slot),
+         nil <- Map.get(owner, fields.ref),
+         {:ok, spec, disclosure} <- input(opts, slot, resource) do
+      result =
+        KeyIssuing.run(resource, [spec], opts, fn issued ->
+          values =
+            issued
+            |> KeyIssuing.attributes()
+            |> Map.put(fields.created_at, Transitions.now(opts))
+            |> Map.put(fields.first_used_at, nil)
+
+          replace(owner, [{fields.ref, [is_nil: true]}], values, opts[:tenant])
+        end)
+
+      disclose(result, disclosure)
+    else
+      ref when is_binary(ref) -> {:error, :native_key_exists}
+      error -> error
+    end
+  end
+
+  def disable_native(%resource{} = owner, opts) do
+    with :ok <- optional_native(resource),
+         :ok <- require_custody(resource),
+         :ok <- Phase.outside_transaction(resource),
+         {:ok, tenant} <- Tenancy.resolve([resource, Storage.registry(resource)], opts[:tenant]) do
+      slots = [:secret_ref, :previous_secret_ref, :legacy_secret_ref, :legacy_previous_secret_ref]
+
+      fence =
+        Enum.map(slots, fn field ->
+          {field, if(is_nil(Map.get(owner, field)), do: [is_nil: true], else: Map.get(owner, field))}
+        end)
+
+      values =
+        Map.new(Transitions.slots(resource), fn {ref, _kind} -> {ref, nil} end)
+        |> Map.merge(Map.new(Transitions.slots(resource), fn {_ref, kind} -> {kind, nil} end))
+        |> Map.merge(Map.new(slots, &{&1, nil}))
+
+      Storage.phase(Storage.registry(resource), resource, tenant, fn ->
+        with {:ok, updated} <- replace(owner, fence, values, tenant),
+             :ok <- retire_native(owner, Keyword.put(opts, :tenant, tenant)) do
+          {:ok, updated}
+        end
+      end)
+    end
+  end
+
+  defp retire_native(owner, opts) do
+    Enum.reduce_while(Transitions.slots(owner.__struct__), :ok, fn {field, kind}, :ok ->
+      if Map.get(owner, kind) && Map.get(owner, field) do
+        case Transitions.retire(owner.__struct__, Map.get(owner, field), Transitions.now(opts), opts) do
+          :ok -> {:cont, :ok}
+          error -> {:halt, error}
+        end
+      else
+        {:cont, :ok}
+      end
+    end)
+  end
+
+  defp optional_native(resource) do
+    if Extension.get_opt(resource, [:endpoint], :native_signing, :required) == :optional,
+      do: :ok,
+      else: {:error, :native_signing_required}
+  end
+
   def reissue(%resource{} = owner, opts) do
     slot = Keyword.get(opts, :slot, :standard)
     fields = KeyLifecycle.fields(slot)

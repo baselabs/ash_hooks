@@ -40,13 +40,19 @@ defmodule AshHooks.Endpoint.Changes.RequireIssuedKeys do
   defp create(changeset, opts) do
     case changeset.context[:ash_hooks_issued_attributes] do
       nil ->
-        require_resolver(changeset, opts)
+        if opts[:native_optional?] and no_native_refs?(changeset),
+          do: changeset, else: require_resolver(changeset, opts)
 
       attributes ->
         if Keyword.get(opts, :byte_resolver?, false) or not direct_ref_input?(changeset),
           do: Ash.Changeset.force_change_attributes(changeset, attributes),
           else: require_resolver(changeset, opts)
     end
+  end
+
+  defp no_native_refs?(changeset) do
+    Enum.all?([:secret_ref, :previous_secret_ref, :legacy_secret_ref, :legacy_previous_secret_ref],
+      &is_nil(Ash.Changeset.get_attribute(changeset, &1)))
   end
 
   defp direct_ref_input?(changeset) do

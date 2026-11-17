@@ -93,6 +93,28 @@ defmodule AshHooks.Http.Bounded do
     end
   end
 
+  @doc "Sends every prepared request line verbatim, with bounded response collection."
+  @impl true
+  def send_prepared(%AshHooks.Http.Request{} = request, opts) do
+    deadline = System.monotonic_time(:millisecond) + (opts[:timeout] || @default_timeout)
+
+    with :ok <- AshHooks.Http.Request.validate(request),
+         {:ok, target} <- Target.resolve(request.url, Keyword.put(opts, :deadline, deadline)),
+         :ok <- CertificatePin.validate(opts[:certificate_pin], target.uri.scheme) do
+      bytes = [
+        request.method,
+        " ",
+        request.target,
+        " HTTP/1.1\r\n",
+        Enum.map(request.headers, fn {name, value} -> [name, ": ", value, "\r\n"] end),
+        "\r\n",
+        request.body
+      ]
+
+      send_bytes(target, bytes, opts, deadline)
+    end
+  end
+
   defp normalize_method(method) when is_atom(method) do
     if method in Map.values(@methods), do: {:ok, method}, else: {:error, :unsupported_method}
   end
@@ -127,6 +149,10 @@ defmodule AshHooks.Http.Bounded do
 
     request = [request_line, header_lines, "\r\n", body]
 
+    send_bytes(target, request, opts, deadline)
+  end
+
+  defp send_bytes(target, request, opts, deadline) do
     with {:ok, transport} <- connect(target, opts, deadline) do
       try do
         # A send failure needs no arm of its own: the Erlang inet/ssl

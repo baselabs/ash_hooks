@@ -1007,3 +1007,34 @@ in place of `AshHooks.Signing.verify/4`. Pass it the exact body, a context with
 the request's headers, method and public URL, as in
 [Lower-level request context](#lower-level-request-context), the tenant's keys and
 the same scheme options a provider declares. It returns `:ok` or an error.
+
+## Verified facts and upstream proof
+
+A provider's `verify_signature/3` may return `{:ok, facts}` instead of `:ok`.
+Facts are a projection chosen by the provider: use string keys and JSON values,
+with at most eight levels of nesting and 8 KiB encoded. Invalid facts fail closed
+as `unknown_error`, including when recording is off. Never include credentials,
+signatures, raw signature parameters or a complete upstream verification struct.
+Select bounded metadata such as the credited key reference, covered fields or
+a provider principal identifier.
+
+Set `record_verified_facts :on` in the ledger's `inbound_delivery` section after
+migrating its nullable sensitive map. The first authenticated receipt owns its
+facts across duplicate requests, key rotation and recovery. Handlers read them
+from `context.verified_facts`; inspection of that context hides the field.
+Retention deletes the facts with the receipt, and payload redaction clears them.
+When recording is off, valid facts still admit a request and are discarded.
+`verified_facts` is reserved and cannot be a scope identity component.
+
+An earlier verifier can pass an opaque result as `host_context` in the Plug
+resolver's returned map, or in the context passed to `Ingress.ingest/4`.
+It reaches only the provider's verification context. It is never persisted or
+included in a package error, telemetry event or inspection. The provider remains
+the admission authority: supplying a context term does not authenticate a request.
+
+A provider that reuses upstream proof must bind it to this exact body's digest,
+the resolved tenant and the source policy, including the source key it credits.
+It must refuse a proof for another body, tenant, source or key. The upstream
+verifier should consume a one-time nonce once; the provider checks the bound
+proof instead of repeating that operation. Treat request URI and forwarding
+headers as untrusted unless the host's ingress policy established them.

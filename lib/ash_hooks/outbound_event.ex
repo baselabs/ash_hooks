@@ -172,6 +172,11 @@ defmodule AshHooks.OutboundEvent do
 
   New deliveries store the declaration and enqueue route, and enqueue receives
   `(delivery, event)`, matching the generated worker and recovery contracts.
+  They inherit the signing mode of an endpoint subscription matching the
+  logged event type under that declaration, using the declaration's mode when
+  the subscription leaves it unset. With no match they use `:standard`.
+  Conflicting matching modes count as skipped. The log contains no original
+  event metadata, so this lookup selects by endpoint and event type.
   Enable `resend_tracking :on` to persist `last_resend_by` and `last_resend_at`.
   Existing terminal rows use `AshHooks.Delivery.resend/2` with the same tenant
   and requester. Nonterminal existing rows are skipped.
@@ -320,40 +325,72 @@ defmodule AshHooks.OutboundEvent do
     end
   end
 
-  defp create_replay_row(deliveries, endpoint, logged, requested_by, opts, tenant) do
-    input =
-      %{
-        event_uuid: logged.event_uuid,
-        event_type: logged.event_type,
-        endpoint_id: PrimaryKey.scalar!(endpoint),
-        subscription_id: nil,
-        signing_mode: :standard,
-        dispatch_source: replay_source(opts[:declaration], endpoint.__struct__),
-        dispatch_route: opts[:dispatch_route]
-      }
-      |> Map.put(AshHooks.Info.payload_attribute(deliveries), logged.payload)
+  defp replay_subscription(endpoint, logged, {emitter, name}, tenant) do
+    declaration = AshHooks.Info.outbound(emitter, name)
+    resource = declaration.subscriptions
+    endpoint_id = PrimaryKey.scalar!(endpoint)
+    query = resource |> Ash.Query.filter(endpoint_id == ^endpoint_id)
 
-    changeset =
-      Ash.Changeset.for_create(deliveries, :dispatch, input, authorize?: false, tenant: tenant)
+    with {:ok, subscriptions} <-
+           AshHooks.Phase.run(
+             query,
+             tenant,
+             &Ash.read(&1, authorize?: false, tenant: tenant, page: false)
+           ) do
+      matches = Enum.filter(subscriptions, &AshHooks.Subscription.matches?(&1, logged.event_type))
 
-    changeset =
-      if Ash.Resource.Info.attribute(deliveries, :last_resend_by) do
-        Ash.Changeset.force_change_attributes(changeset,
-          last_resend_by: requested_by,
-          last_resend_at: DateTime.utc_now()
-        )
+      modes =
+        Enum.uniq(Enum.map(matches, &(&1.signing_mode || declaration.signing_mode || :standard)))
+
+      if length(modes) > 1 do
+        {:error, :conflicting_subscriptions}
       else
-        changeset
+        {:ok, matches |> Enum.sort_by(&PrimaryKey.scalar!/1) |> List.first()}
       end
-
-    AshHooks.Phase.run(changeset.resource, tenant, fn ->
-      Ash.create(changeset,
-        context: AshHooks.Phase.context(changeset.resource),
-        authorize?: false,
-        tenant: tenant
-      )
-    end)
+    end
   end
+
+  defp create_replay_row(deliveries, endpoint, logged, requested_by, opts, tenant) do
+    with {:ok, subscription} <- replay_subscription(endpoint, logged, opts[:declaration], tenant) do
+      input =
+        %{
+          event_uuid: logged.event_uuid,
+          event_type: logged.event_type,
+          endpoint_id: PrimaryKey.scalar!(endpoint),
+          subscription_id: if(subscription, do: PrimaryKey.scalar!(subscription)),
+          signing_mode: replay_signing_mode(subscription, opts[:declaration]),
+          dispatch_source: replay_source(opts[:declaration], endpoint.__struct__),
+          dispatch_route: opts[:dispatch_route]
+        }
+        |> Map.put(AshHooks.Info.payload_attribute(deliveries), logged.payload)
+
+      changeset =
+        Ash.Changeset.for_create(deliveries, :dispatch, input, authorize?: false, tenant: tenant)
+
+      changeset =
+        if Ash.Resource.Info.attribute(deliveries, :last_resend_by) do
+          Ash.Changeset.force_change_attributes(changeset,
+            last_resend_by: requested_by,
+            last_resend_at: DateTime.utc_now()
+          )
+        else
+          changeset
+        end
+
+      AshHooks.Phase.run(changeset.resource, tenant, fn ->
+        Ash.create(changeset,
+          context: AshHooks.Phase.context(changeset.resource),
+          authorize?: false,
+          tenant: tenant
+        )
+      end)
+    end
+  end
+
+  defp replay_signing_mode(nil, _declaration), do: :standard
+
+  defp replay_signing_mode(subscription, {emitter, name}),
+    do: subscription.signing_mode || AshHooks.Info.outbound(emitter, name).signing_mode || :standard
 
   defp replay_source({emitter, name}, endpoints),
     do: AshHooks.OutboundBinding.source(emitter, name, endpoints)

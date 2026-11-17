@@ -1472,8 +1472,6 @@ defmodule AshHooks.Delivery do
 
     adapter = transport || config[:http] || AshHooks.Http.Bounded
 
-    request = if is_function(adapter, 5), do: adapter, else: &adapter.request/5
-
     # adapter opts seam (test listeners' validate_destination: false; real
     # consumers' timeout overrides and a pinned :cacerts trust bundle for
     # private-CA endpoints). Consumer-trusted config like :ssrf_check: it
@@ -1485,17 +1483,33 @@ defmodule AshHooks.Delivery do
            signing_headers_with_refresh(row, endpoint, config, tenant),
          {:ok, adapter_opts} <- endpoint_http_opts(adapter_opts, endpoint, config, tenant),
          :ok <- pin_adapter(adapter, adapter_opts),
-         {:ok, headers} <- delivery_headers(headers, row, endpoint, config, tenant) do
+         {:ok, headers} <- delivery_headers(headers, row, endpoint, config, tenant),
+         :ok <- prepared_capability(adapter, endpoint),
+         {:ok, prepared, host_refs} <-
+           prepare_and_sign(adapter, headers, row, endpoint, config, tenant),
+         :ok <- require_signature(used_refs, host_refs) do
       stamp_key_first_used(endpoint, used_refs, config, tenant)
-      send_signed(request, endpoint, headers, row, adapter_opts, config, tenant)
+      provenance = signing_provenance(row, used_refs, host_refs)
+      request = request_function(adapter, prepared)
+      send_signed(request, endpoint, headers, row, adapter_opts, config, tenant, provenance)
     else
       {:error, reason}
-      when reason in [:certificate_pin_resolution_failed, :certificate_pin_requires_bounded] ->
+      when reason in [
+             :certificate_pin_resolution_failed,
+             :certificate_pin_requires_bounded,
+             :adapter_cannot_send_prepared
+           ] ->
         dead_letter(row, error_string(reason), config, tenant)
 
       {:error, %error{} = reason}
       when error in [KeyKindMismatch, UnknownKey] ->
         dead_letter(row, error_string(reason), config, tenant)
+
+      {:error, {:signer_failed, :terminal}} ->
+        dead_letter(row, "signer_failed", config, tenant)
+
+      {:error, {:signer_failed, _classification}} ->
+        retry(row, "signer_failed", config, tenant, nil)
 
       {:error, :kind_not_allowed} ->
         dead_letter(row, "kind_not_allowed", config, tenant)
@@ -1506,6 +1520,125 @@ defmodule AshHooks.Delivery do
         retry(row, error_string(reason), config, tenant, nil)
     end
   end
+
+  defp prepared_adapter?(adapter) do
+    is_atom(adapter) and Code.ensure_loaded?(adapter) and
+      function_exported?(adapter, :send_prepared, 2)
+  end
+
+  defp prepared_capability(adapter, endpoint) do
+    if Extension.get_opt(endpoint.__struct__, [:endpoint], :signer) &&
+         not prepared_adapter?(adapter),
+      do: {:error, :adapter_cannot_send_prepared},
+      else: :ok
+  end
+
+  defp prepare_and_sign(adapter, headers, row, endpoint, config, tenant) do
+    if prepared_adapter?(adapter) do
+      with {:ok, request} <-
+             AshHooks.Http.Request.new(:post, endpoint.url, headers, payload_bytes(row)) do
+        host_sign(request, row, endpoint, config, tenant)
+      end
+    else
+      {:ok, nil, []}
+    end
+  end
+
+  defp host_sign(request, row, endpoint, config, tenant) do
+    case Extension.get_opt(endpoint.__struct__, [:endpoint], :signer) do
+      nil ->
+        {:ok, request, []}
+
+      signer ->
+        started = System.monotonic_time()
+
+        context = %{
+          delivery: row,
+          endpoint: endpoint,
+          attempt: row.attempts,
+          event_id: row.event_uuid,
+          tenant: tenant,
+          custody_tenant: config[:custody_tenant]
+        }
+
+        result = call_signer(signer, request, context)
+
+        outcome =
+          case result do
+            {:ok, _, []} -> :skip
+            {:ok, _, _} -> :ok
+            {:error, {:signer_failed, class}} -> class
+          end
+
+        :telemetry.execute(
+          [:ash_hooks, :delivery, :sign],
+          %{duration: System.monotonic_time() - started},
+          %{outcome: outcome}
+        )
+
+        result
+    end
+  end
+
+  defp call_signer(signer, request, context) do
+    case signer.sign(request, context) do
+      :skip -> {:ok, request, []}
+      {:error, class} when class in [:retry, :terminal] -> {:error, {:signer_failed, class}}
+      {:ok, headers, %{key_refs: refs}} -> signer_headers(request, headers, refs)
+      _ -> {:error, {:signer_failed, :invalid_result}}
+    end
+  rescue
+    _ -> {:error, {:signer_failed, :callback_failed}}
+  catch
+    _, _ -> {:error, {:signer_failed, :callback_failed}}
+  end
+
+  defp signer_headers(request, headers, refs) do
+    with true <- valid_signer_refs?(refs),
+         true <- is_list(headers) and headers != [],
+         {:ok, lines} <- Headers.validate_ordered(headers),
+         false <-
+           Enum.any?(lines, fn {name, _} ->
+             reserved_delivery_header?(String.downcase(name, :ascii))
+           end),
+         {:ok, all} <- Headers.validate_ordered(request.headers ++ lines) do
+      {:ok, %{request | headers: all}, refs}
+    else
+      _ -> {:error, {:signer_failed, :invalid_result}}
+    end
+  end
+
+  defp valid_signer_refs?(refs) when is_list(refs) do
+    length(refs) in 1..8 and
+      Enum.all?(refs, fn ref ->
+        is_binary(ref) and byte_size(ref) in 1..255 and String.valid?(ref)
+      end)
+  end
+
+  defp valid_signer_refs?(_), do: false
+
+  defp require_signature(native, host) do
+    if map_size(native) > 0 or host != [], do: :ok, else: {:error, :unsigned}
+  end
+
+  defp signing_provenance(row, native, host) do
+    slots = signing_fields(row.signing_mode || :standard)
+    refs = Enum.flat_map(slots, fn slot -> if native[slot], do: [native[slot]], else: [] end)
+
+    current =
+      case row.signing_mode || :standard do
+        :legacy -> native[:legacy_secret_ref]
+        _ -> native[:secret_ref] || native[:legacy_secret_ref]
+      end
+
+    %{signing_key_ref: current || List.first(refs) || List.first(host), signing_key_refs: refs ++ host}
+  end
+
+  defp request_function(adapter, nil) when is_function(adapter, 5), do: adapter
+  defp request_function(adapter, nil), do: &adapter.request/5
+
+  defp request_function(adapter, prepared),
+    do: fn _method, _url, _headers, _body, opts -> adapter.send_prepared(prepared, opts) end
 
   defp endpoint_http_opts(opts, endpoint, config, tenant) do
     case config[:certificate_pin] do
@@ -1567,10 +1700,10 @@ defmodule AshHooks.Delivery do
     name in @reserved_delivery_headers
   end
 
-  defp send_signed(request, endpoint, headers, row, adapter_opts, config, tenant) do
+  defp send_signed(request, endpoint, headers, row, adapter_opts, config, tenant, provenance) do
     case send_request(request, endpoint, headers, row, adapter_opts) do
       {:ok, response, started} ->
-        history = attempt_history(endpoint, response, started)
+        history = Map.merge(attempt_history(endpoint, response, started), provenance)
         record(row, endpoint, response, config, tenant, history)
 
       # a pin-time SSRF refusal is a caught rebinding flip, terminal per
@@ -1590,7 +1723,7 @@ defmodule AshHooks.Delivery do
           config,
           tenant,
           nil,
-          failed_request_history(endpoint, started)
+          Map.merge(failed_request_history(started), provenance)
         )
 
       {:error, reason, started} ->
@@ -1601,7 +1734,7 @@ defmodule AshHooks.Delivery do
           tenant,
           nil,
           nil,
-          failed_request_history(endpoint, started)
+          Map.merge(failed_request_history(started), provenance)
         )
     end
   end
@@ -1674,10 +1807,10 @@ defmodule AshHooks.Delivery do
   # summarize, so the response-derived fields stay nil. Pre-send failures
   # (destination policy, DNS at the gate, secret resolution) never reach
   # here and keep latency nil: no request, no duration.
-  defp failed_request_history(endpoint, started) do
+  defp failed_request_history(started) do
     %{
       latency_ms: max(System.monotonic_time(:millisecond) - started, 0),
-      signing_key_ref: endpoint.secret_ref,
+      signing_key_ref: nil,
       response_snippet: nil,
       response_headers: nil
     }
@@ -1736,7 +1869,7 @@ defmodule AshHooks.Delivery do
   defp attempt_history(endpoint, response, started) do
     %{
       latency_ms: max(System.monotonic_time(:millisecond) - started, 0),
-      signing_key_ref: endpoint.secret_ref,
+      signing_key_ref: nil,
       response_snippet: captured_attempt_snippet(endpoint, response),
       response_headers: captured_attempt_headers(endpoint, response)
     }
@@ -1834,6 +1967,11 @@ defmodule AshHooks.Delivery do
         latency_ms: history[:latency_ms],
         signing_key_ref: history[:signing_key_ref]
       })
+
+    input =
+      if Extension.get_opt(attempts_mod, [:outbound_attempt], :record_signing_provenance, :off) == :on,
+        do: Map.put(input, :signing_key_refs, history[:signing_key_refs]),
+        else: input
 
     case AshHooks.Phase.run(
            attempts_mod,
@@ -2008,30 +2146,51 @@ defmodule AshHooks.Delivery do
   defp signing_headers(row, endpoint, config, tenant) do
     # the worker macro's :tenant_aware_secrets switch: the resolver
     # contract becomes f(ref, tenant): explicit, no arity magic
-    with {:ok, secret} <- resolve_slot(endpoint, :secret_ref, endpoint.secret_ref, config, tenant),
+    mode = row.signing_mode || :standard
+    optional? =
+      Extension.get_opt(endpoint.__struct__, [:endpoint], :native_signing, :required) == :optional
+
+    selected = if optional?, do: Map.take(endpoint, signing_fields(mode)), else: endpoint
+
+    with {:ok, secret} <-
+           resolve_native_current(endpoint, Map.get(selected, :secret_ref), optional?, config, tenant),
          previous_ref = previous_signing_ref(endpoint, :standard, config),
          legacy_previous_ref = previous_signing_ref(endpoint, :legacy, config),
          {:ok, previous} <-
-           resolve_slot(endpoint, :previous_secret_ref, previous_ref, config, tenant),
+           resolve_slot(
+             endpoint,
+             :previous_secret_ref,
+             if(Map.has_key?(selected, :previous_secret_ref), do: previous_ref),
+             config,
+             tenant
+           ),
          {:ok, legacy} <-
-           resolve_slot(endpoint, :legacy_secret_ref, endpoint.legacy_secret_ref, config, tenant),
+           resolve_slot(
+             endpoint, :legacy_secret_ref, Map.get(selected, :legacy_secret_ref), config, tenant
+           ),
          {:ok, legacy_previous} <-
            resolve_slot(
              endpoint,
              :legacy_previous_secret_ref,
-             legacy_previous_ref,
+             if(Map.has_key?(selected, :legacy_previous_secret_ref), do: legacy_previous_ref),
              config,
              tenant
            ) do
       opts =
         sw_secret(secret)
         |> Keyword.merge(sw_previous(previous))
-        |> Keyword.merge(legacy_secret(legacy, legacy_previous))
+        |> Keyword.merge(
+          legacy_secret(
+            if(optional?, do: legacy || legacy_previous, else: legacy),
+            if(optional? and is_nil(legacy), do: nil, else: legacy_previous)
+          )
+        )
 
       mode = row.signing_mode || :standard
 
       result =
-        Signing.headers_for_mode(
+        native_headers(
+          optional?,
           mode,
           row.event_uuid,
           System.system_time(:second),
@@ -2039,24 +2198,20 @@ defmodule AshHooks.Delivery do
           opts
         )
 
-      fields =
-        case mode do
-          :standard ->
-            [:secret_ref, :previous_secret_ref]
-
-          :legacy ->
-            [:legacy_secret_ref, :legacy_previous_secret_ref]
-
-          :dual ->
-            [:secret_ref, :previous_secret_ref, :legacy_secret_ref, :legacy_previous_secret_ref]
-        end
+      fields = signing_fields(mode)
 
       used_refs =
         endpoint
         |> Map.take(fields)
         |> Map.replace(:previous_secret_ref, previous_ref)
         |> Map.replace(:legacy_previous_secret_ref, legacy_previous_ref)
-        |> Map.reject(fn {_slot, ref} -> is_nil(ref) end)
+        |> Map.reject(fn {slot, ref} ->
+          is_nil(ref) or
+            (slot in [:secret_ref, :previous_secret_ref] and
+               (not is_map(result) or not is_map_key(result, "webhook-signature"))) or
+            (slot in [:legacy_secret_ref, :legacy_previous_secret_ref] and
+               (not is_map(result) or not is_map_key(result, "x-webhook-signature")))
+        end)
 
       case result do
         {:error, _} = error -> error
@@ -2065,6 +2220,33 @@ defmodule AshHooks.Delivery do
     end
   rescue
     ArgumentError -> {:error, :signing_failed}
+  end
+
+  defp signing_fields(:standard), do: [:secret_ref, :previous_secret_ref]
+  defp signing_fields(:legacy), do: [:legacy_secret_ref, :legacy_previous_secret_ref]
+  defp signing_fields(:dual), do: signing_fields(:standard) ++ signing_fields(:legacy)
+
+  defp resolve_native_current(_endpoint, nil, true, _config, _tenant), do: {:ok, nil}
+
+  defp resolve_native_current(endpoint, ref, _optional?, config, tenant),
+    do: resolve_slot(endpoint, :secret_ref, ref, config, tenant)
+
+  defp native_headers(false, mode, id, timestamp, body, opts),
+    do: Signing.headers_for_mode(mode, id, timestamp, body, opts)
+
+  defp native_headers(true, mode, id, timestamp, body, opts) do
+    base = %{"webhook-id" => id, "webhook-timestamp" => Integer.to_string(timestamp)}
+
+    standard? =
+      Enum.any?([:whsec, :whsk, :previous_whsec, :previous_whsk], &Keyword.has_key?(opts, &1))
+
+    with standard when is_map(standard) <-
+           if(mode in [:standard, :dual] and standard?, do: Signing.headers(id, timestamp, body, opts), else: base),
+         legacy when is_map(legacy) <-
+           if(mode in [:legacy, :dual] and opts[:legacy_secret],
+             do: Signing.headers_for_mode(:legacy, id, timestamp, body, opts), else: %{}) do
+      Map.merge(standard, legacy)
+    end
   end
 
   # an empty optional slot signs nothing; an empty current slot reaches the
@@ -2158,6 +2340,7 @@ defmodule AshHooks.Delivery do
 
   # the resolved binary's prefix selects the SW option slot; unprefixed
   # material signs symmetric (v1), per the references' Signing contract
+  defp sw_secret(nil), do: []
   defp sw_secret(secret), do: sw_option(:base, secret)
 
   defp sw_previous(nil), do: []
@@ -2265,7 +2448,31 @@ defmodule AshHooks.Delivery do
     ]
 
     Enum.all?(fields, fn field -> Map.get(endpoint, field) == snapshot[Atom.to_string(field)] end) and
-      snapshot_status_matches?(endpoint, snapshot, switch)
+      snapshot_status_matches?(endpoint, snapshot, switch) and
+      signer_configuration_matches?(endpoint, snapshot)
+  end
+
+  defp signer_attributes(resource),
+    do: Extension.get_opt(resource, [:endpoint], :signer_attributes, [])
+
+  defp signer_configuration_matches?(endpoint, snapshot) do
+    values = snapshot["signer_attributes"] || %{}
+    Enum.all?(signer_attributes(endpoint.__struct__), fn field ->
+      definition = ResourceInfo.attribute(endpoint.__struct__, field)
+      with {:ok, stored} <- Map.fetch(values, Atom.to_string(field)),
+           {:ok, cast} <- Ash.Type.cast_input(definition.type, stored, definition.constraints),
+           {:ok, value} <- Ash.Type.apply_constraints(definition.type, cast, definition.constraints) do
+        Ash.Type.equal?(definition.type, Map.get(endpoint, field), value, definition.constraints)
+      else
+        _ -> false
+      end
+    end)
+  end
+
+  defp signer_snapshot_filter(query, endpoint) do
+    Enum.reduce(signer_attributes(endpoint.__struct__), query, fn field, query ->
+      optional_snapshot_filter(query, field, Map.get(endpoint, field))
+    end)
   end
 
   defp snapshot_status_matches?(endpoint, snapshot, switch) do
@@ -2285,13 +2492,15 @@ defmodule AshHooks.Delivery do
       AshHooks.Phase.bulk(
         config[:endpoints]
         |> Ash.Query.do_filter(PrimaryKey.filter(endpoint))
-        |> Ash.Query.filter(url == ^snapshot["url"] and secret_ref == ^snapshot["secret_ref"])
+        |> Ash.Query.filter(url == ^snapshot["url"])
+        |> optional_snapshot_filter(:secret_ref, snapshot["secret_ref"])
         |> optional_snapshot_filter(:previous_secret_ref, snapshot["previous_secret_ref"])
         |> optional_snapshot_filter(:legacy_secret_ref, snapshot["legacy_secret_ref"])
         |> optional_snapshot_filter(
           :legacy_previous_secret_ref,
           snapshot["legacy_previous_secret_ref"]
         )
+        |> signer_snapshot_filter(endpoint)
         |> Ash.Query.do_filter(%{switch => Map.get(endpoint, switch)}),
         tenant,
         &Ash.bulk_update(&1, :disable, %{},
@@ -2328,23 +2537,11 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  defp optional_snapshot_filter(query, :previous_secret_ref, nil),
-    do: Ash.Query.filter(query, is_nil(previous_secret_ref))
+  defp optional_snapshot_filter(query, field, nil),
+    do: Ash.Query.do_filter(query, %{field => [is_nil: true]})
 
-  defp optional_snapshot_filter(query, :previous_secret_ref, value),
-    do: Ash.Query.filter(query, previous_secret_ref == ^value)
-
-  defp optional_snapshot_filter(query, :legacy_secret_ref, nil),
-    do: Ash.Query.filter(query, is_nil(legacy_secret_ref))
-
-  defp optional_snapshot_filter(query, :legacy_secret_ref, value),
-    do: Ash.Query.filter(query, legacy_secret_ref == ^value)
-
-  defp optional_snapshot_filter(query, :legacy_previous_secret_ref, nil),
-    do: Ash.Query.filter(query, is_nil(legacy_previous_secret_ref))
-
-  defp optional_snapshot_filter(query, :legacy_previous_secret_ref, value),
-    do: Ash.Query.filter(query, legacy_previous_secret_ref == ^value)
+  defp optional_snapshot_filter(query, field, value),
+    do: Ash.Query.do_filter(query, %{field => [eq: value]})
 
   defp resolve_disable_endpoint(row, key, snapshot, switch, config, tenant) do
     with_endpoint(
@@ -2411,7 +2608,7 @@ defmodule AshHooks.Delivery do
   defp disable_attempt_history(snapshot) do
     history = (snapshot || %{})["attempt_history"] || %{}
 
-    Map.new([:latency_ms, :signing_key_ref, :response_snippet, :response_headers], fn key ->
+    Map.new([:latency_ms, :signing_key_ref, :signing_key_refs, :response_snippet, :response_headers], fn key ->
       {key, Map.get(history, Atom.to_string(key), Map.get(history, key))}
     end)
   end
@@ -2427,7 +2624,12 @@ defmodule AshHooks.Delivery do
       "legacy_secret_ref" => endpoint.legacy_secret_ref,
       "legacy_previous_secret_ref" => endpoint.legacy_previous_secret_ref,
       "status_attribute" => Atom.to_string(switch),
-      "status_value" => Map.get(endpoint, switch)
+      "status_value" => Map.get(endpoint, switch),
+      "signer_attributes" => Map.new(signer_attributes(endpoint.__struct__), fn field ->
+        definition = ResourceInfo.attribute(endpoint.__struct__, field)
+        {:ok, value} = Ash.Type.dump_to_embedded(definition.type, Map.get(endpoint, field), definition.constraints)
+        {Atom.to_string(field), value}
+      end)
     }
     |> Jason.encode!()
     |> Jason.decode!()

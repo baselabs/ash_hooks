@@ -15,7 +15,7 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptActions do
   def before?(_), do: false
 
   def transform(dsl_state) do
-    with {:ok, record} <- build_record(),
+    with {:ok, record} <- build_record(dsl_state),
          {:ok, prune} <- Builder.build_action(:destroy, :prune, accept: []),
          {:ok, dsl_state} <- add(dsl_state, record) do
       add(dsl_state, prune)
@@ -27,7 +27,8 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptActions do
   # dispatch :ingest/:dispatch mirror). The row id is never caller input:
   # idempotency is the (delivery_pk, attempt) identity, so the accept list
   # carries no :id (a consumer-named primary key compiles unchanged).
-  defp build_record do
+  defp build_record(state) do
+    extra = if Spark.Dsl.Extension.get_opt(state, [:outbound_attempt], :record_signing_provenance, :off) == :on, do: [:signing_key_refs], else: []
     Builder.build_action(:create, :record,
       upsert?: true,
       upsert_identity: :unique_attempt,
@@ -47,7 +48,7 @@ defmodule AshHooks.OutboundAttempt.Transformers.AddAttemptActions do
         :signing_key_ref,
         :test,
         :attempted_at
-      ]
+      ] ++ extra
     )
   end
 

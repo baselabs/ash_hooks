@@ -93,7 +93,9 @@ defmodule AshHooks.Ingress do
   `:connection` is the per-connection provider's secret source argument; and
   `:tenant` is required on multitenant ledgers. Ingress constructs the
   provider verification context from these known keys and never forwards an
-  input `:now_ms` clock override.
+  input `:now_ms` clock override. Optional `:host_context` is passed only to
+  verification, without persistence or inspection. The provider remains
+  responsible for binding any upstream proof to this body, tenant and source.
   """
   @type ctx :: %{
           optional(:signature) => String.t(),
@@ -102,6 +104,7 @@ defmodule AshHooks.Ingress do
           optional(:method) => String.t() | nil,
           optional(:request_uri) => String.t() | nil,
           optional(:connection) => term(),
+          optional(:host_context) => term(),
           optional(:scope) => %{optional(atom() | String.t()) => term()},
           optional(:tenant) => term()
         }
@@ -469,6 +472,11 @@ defmodule AshHooks.Ingress do
     input =
       if record_provider_alias?(resource),
         do: Map.put(input, :provider_alias, env[:provider_alias]),
+        else: input
+
+    input =
+      if Extension.get_opt(resource, [:inbound_delivery], :record_verified_facts, :off) == :on,
+        do: Map.put(input, :verified_facts, env[:verified_facts]),
         else: input
 
     if AshHooks.Info.writable_id?(resource) and Ash.Resource.Info.primary_key(resource) == [:id] do
@@ -1030,7 +1038,8 @@ defmodule AshHooks.Ingress do
         scope: scope,
         provider_alias: if(inbound.source_record, do: row.provider_alias),
         delivery_id: delivery_id,
-        external_event_id: row.external_event_id
+        external_event_id: row.external_event_id,
+        verified_facts: Map.get(row, :verified_facts)
       }
 
       {:ok,
@@ -1279,7 +1288,7 @@ defmodule AshHooks.Ingress do
          :ok <- resolved_pause(resolved),
          :ok <- check_replay_window(inbound, resolved.provider, name),
          :ok <- check_raw_body(raw_body, name),
-         {:ok, resolved} <- verify_resolved(resolved, raw_body, ctx, inbound) do
+         {:ok, resolved, facts} <- verify_resolved(resolved, raw_body, ctx, inbound) do
       digest = content_digest(raw_body)
 
       context = %DeliveryContext{
@@ -1299,6 +1308,7 @@ defmodule AshHooks.Ingress do
            name: name,
            provider: resolved.provider,
            provider_alias: resolved.provider_alias,
+           verified_facts: facts,
            inbound: inbound,
            payload: payload,
            digest: digest,
@@ -1438,8 +1448,8 @@ defmodule AshHooks.Ingress do
       when not is_nil(source.record) and is_binary(ref) ->
         refresh_source_keys(source, body, ctx, inbound, reason)
 
-      :ok ->
-        {:ok, source}
+      {:ok, facts} ->
+        {:ok, source, facts}
 
       error ->
         error
@@ -1454,8 +1464,8 @@ defmodule AshHooks.Ingress do
          false <- Enum.any?(fresh.keys, &(&1.ref == reason.ref)) do
       with :ok <- resolved_pause(fresh),
            :ok <- check_replay_window(inbound, fresh.provider, source.name),
-           :ok <- verify_source_keys(fresh, body, ctx, inbound),
-           do: {:ok, fresh}
+           {:ok, facts} <- verify_source_keys(fresh, body, ctx, inbound),
+           do: {:ok, fresh, facts}
     else
       true -> {:error, reason}
       error -> error
@@ -1484,8 +1494,14 @@ defmodule AshHooks.Ingress do
   defp verify_source_keys(source, body, ctx, inbound) do
     Enum.reduce_while(source.keys, {:error, nil}, fn key, {:error, failure} ->
       case verify(source.provider, body, ctx, %{inbound | previous_secret: nil}, key, source.name) do
-        :ok ->
-          {:halt, stamp_source_used(source.record, key.ref, ctx[:tenant])}
+        {:ok, facts} ->
+          result =
+            with :ok <- stamp_source_used(source.record, key.ref, ctx[:tenant]), do: {:ok, facts}
+
+          {:halt, result}
+
+        {:error, %UnknownError{}} = error ->
+          {:halt, error}
 
         {:error, reason} ->
           {:cont, {:error, source_key_failure(failure, reason, source.name)}}
@@ -1703,13 +1719,17 @@ defmodule AshHooks.Ingress do
             method: ctx[:method],
             request_uri: ctx[:request_uri],
             tenant: ctx[:tenant],
+            host_context: ctx[:host_context],
             json_decoder: ctx.json_decoder
           }
           |> maybe_put_replay_window(inbound)
 
-        case provider.verify_signature(raw_body, verify_ctx, secret) do
-          :ok ->
-            :ok
+        case provider_verdict(provider, raw_body, verify_ctx, secret, name) do
+          {:ok, facts} ->
+            {:ok, facts}
+
+          {:error, %UnknownError{}} = error ->
+            error
 
           {:error, reason} ->
             verify_with_previous(provider, raw_body, verify_ctx, inbound, reason, name)
@@ -1721,6 +1741,25 @@ defmodule AshHooks.Ingress do
       :error ->
         {:error, Errors.from_reason(:invalid_signature, provider: name)}
     end
+  end
+
+  # Provider callbacks own admission. Opaque host context is never retained in errors.
+  defp provider_verdict(provider, body, context, key, name) do
+    case provider.verify_signature(body, context, key) do
+      :ok -> {:ok, nil}
+
+      {:ok, facts} ->
+        if AshHooks.Provider.VerifiedFacts.valid?(facts),
+          do: {:ok, facts},
+          else: {:error, Errors.from_reason(:unknown_error, provider: name)}
+
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, Errors.from_reason(:unknown_error, provider: name)}
+    end
+  rescue
+    _ -> {:error, Errors.from_reason(:unknown_error, provider: name)}
+  catch
+    _, _ -> {:error, Errors.from_reason(:unknown_error, provider: name)}
   end
 
   # A host map passes through unchanged, as in 2.x (its own construction
@@ -1780,8 +1819,9 @@ defmodule AshHooks.Ingress do
   defp verify_with_previous(provider, raw_body, verify_ctx, inbound, reason, name) do
     case resolve_previous_secret(inbound, %{tenant: verify_ctx[:tenant]}) do
       {:ok, previous} ->
-        case provider.verify_signature(raw_body, verify_ctx, previous) do
-          :ok -> :ok
+        case provider_verdict(provider, raw_body, verify_ctx, previous, name) do
+          {:ok, facts} -> {:ok, facts}
+          {:error, %UnknownError{}} = error -> error
           previous_result -> {:error, overlap_failure(reason, previous_result, name)}
         end
 

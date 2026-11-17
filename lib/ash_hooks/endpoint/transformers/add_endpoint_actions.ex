@@ -116,7 +116,8 @@ defmodule AshHooks.Endpoint.Transformers.AddEndpointActions do
 
       Builder.add_change(
         state,
-        {AshHooks.Endpoint.Changes.RequireIssuedKeys, byte_resolver?: resolver?},
+        {AshHooks.Endpoint.Changes.RequireIssuedKeys, byte_resolver?: resolver?,
+          native_optional?: Extension.get_opt(state, [:endpoint], :native_signing, :required) == :optional},
         on: [:create, :update]
       )
     else
