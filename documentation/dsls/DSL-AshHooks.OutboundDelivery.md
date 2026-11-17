@@ -11,6 +11,7 @@ endpoint (the outbound twin of `AshHooks.InboundDelivery`). Sends remain
 at-least-once, and receivers deduplicate retries by webhook id.
 
 
+<!-- not-run: This ledger fragment requires host domain, data layer configuration, and endpoint resources. -->
     use Ash.Resource,
       data_layer: AshSqlite.DataLayer,
       extensions: [AshHooks.OutboundDelivery]

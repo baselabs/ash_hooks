@@ -9,6 +9,7 @@ Sign, deliver, retry, and track outgoing webhooks.
 Attach to a resource:
 
 
+<!-- not-run: This resource fragment requires host provider modules and configured secret storage. -->
     use Ash.Resource,
       extensions: [AshHooks]
 
@@ -49,6 +50,7 @@ resource.
 
 
 <h3 id="webhooks-inbound">webhooks.inbound</h3>
+<!-- not-run: This Spark DSL signature requires a named declaration in an enclosing host resource. -->
 ```elixir
 inbound name
 ```
@@ -78,6 +80,7 @@ resource receives, verifies, deduplicates, and handles.
 Target: `AshHooks.Inbound`
 
 <h3 id="webhooks-outbound">webhooks.outbound</h3>
+<!-- not-run: This Spark DSL signature requires a named declaration in an enclosing host resource. -->
 ```elixir
 outbound name
 ```

@@ -222,6 +222,8 @@ defmodule AshHooks.Ingress do
   `inserted_at`, inclusive; `:source` optional; `:tenant` applies):
 
 
+  <!-- not-run: These sample counts require a host ledger with stored receipts and a selected time range. -->
+
       {:ok,
        %{received: 120, processed: 100, duplicates: 18, failed_verification: 2, handler_failures: 3}} =
         AshHooks.Ingress.counts(MyApp.Ledger, from: an_hour_ago)

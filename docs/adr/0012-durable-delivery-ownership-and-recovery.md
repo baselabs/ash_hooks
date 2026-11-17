@@ -42,6 +42,9 @@ columns remain UUID-compatible and therefore require single UUID-compatible keys
 where declarations join resources. Typed status mappings are cast and constrained
 before execution, reject overlapping states, and cannot map a primary-key attribute.
 
+- Adding declaration ownership to dedup identity would create separate rows with
+  the same receiver-facing webhook ID at one endpoint.
+
 ## Consequences
 
 Hosts migrate ownership columns and states, drain incompatible jobs, backfill

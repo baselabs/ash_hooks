@@ -15,6 +15,11 @@ unique upserts and atomic conditional updates.
 Complete primary keys and identity adoption follow
 [the ownership decision](0012-durable-delivery-ownership-and-recovery.md).
 
+A uniqueness-only arrival audit cannot recover unfinished processing; an expired claim
+must be reclaimable after a crash. A separate deduplication dependency whose runtime
+graph requires PostgreSQL would impose a storage choice on adopters, so the ledger uses
+the host resource's Ash data layer.
+
 ## Consequences
 
 - Crashes leave unfinished work recoverable. Handlers must be idempotent because

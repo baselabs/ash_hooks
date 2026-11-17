@@ -6,6 +6,8 @@ defmodule AshHooks do
   Attach to a resource:
 
 
+  <!-- not-run: This resource fragment requires host provider modules and configured secret storage. -->
+
       use Ash.Resource,
         extensions: [AshHooks]
 
@@ -295,6 +297,8 @@ defmodule AshHooks do
   repository's shared connection pool.
 
 
+  <!-- not-run: This recovery call requires a host ledger and expired claims for the listed tenants. -->
+
       {:ok, %{results: %{"org_a" => {:ok, 3}, "org_b" => {:ok, 0}}, total: 3}} =
         AshHooks.reap_all(Ledger, tenants: ["org_a", "org_b"])
   """
@@ -311,6 +315,8 @@ defmodule AshHooks do
   outbound deliveries through `AshHooks.Delivery.prune/2`), with the same
   per-tenant isolation and sequencing as `reap_all/2`.
 
+
+  <!-- not-run: This pruning call requires a host delivery resource, persisted rows, and a chosen cutoff. -->
 
       {:ok, %{results: %{"org_a" => {:ok, 2}}, total: 2}} =
         AshHooks.prune_all(Delivery, older_than: cutoff, tenants: ["org_a"])

@@ -6,6 +6,8 @@ defmodule AshHooks.OutboundEvent do
   enabled (or existed), with its own retention.
 
 
+  <!-- not-run: These fragments require a host event resource and the enclosing producer declaration. -->
+
       use Ash.Resource,
         data_layer: AshPostgres.DataLayer,
         extensions: [AshHooks.OutboundEvent]

@@ -7,6 +7,8 @@ defmodule AshHooks.Endpoint do
   its enable/disable state and references to signing secrets.
 
 
+  <!-- not-run: This resource fragment requires a host resource with its own attributes and data layer configuration. -->
+
       use Ash.Resource,
         data_layer: AshSqlite.DataLayer,
         extensions: [AshHooks.Endpoint]
@@ -184,6 +186,8 @@ defmodule AshHooks.Endpoint do
   `schedule_previous_retirement/3` or remove it with `expire_previous_secret/2`
   before rolling.
 
+
+  <!-- not-run: This rotation requires a persisted endpoint and a new reference already present in host secret storage. -->
 
       {:ok, rolled} =
         AshHooks.Endpoint.roll_secret(endpoint,

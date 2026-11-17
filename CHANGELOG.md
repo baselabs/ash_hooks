@@ -23,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Shipped examples have explicit execution dispositions and use the exported
+  consumer formatter settings. Upgrade and contributor commands explain their
+  host project and service requirements.
+
 - The installer resolves parser aliases and preserves existing body readers.
   It adds notices for custom readers and endpoint configurations that need
   manual setup, and remains safe to rerun.

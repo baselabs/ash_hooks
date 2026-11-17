@@ -5,6 +5,8 @@ defmodule AshHooks.OutboundAttempt do
   its fenced result transitions.
 
 
+  <!-- not-run: This resource fragment requires host PostgreSQL configuration and a database migration. -->
+
       use Ash.Resource,
         data_layer: AshPostgres.DataLayer,
         extensions: [AshHooks.OutboundAttempt]

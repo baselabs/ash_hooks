@@ -16,3 +16,13 @@ first arrivals can both report `:created`. The unique row and fenced claim still
 deduplicate processing. Classification does not guarantee effect-once handling.
 See [Ingress](../../lib/ash_hooks/ingress.ex) and
 [delivery ownership](0012-durable-delivery-ownership-and-recovery.md).
+
+Claim, mark and renew put the status, token and expiry predicates in the update's WHERE
+clause, so the database checks the fence in the same atomic write. Injected actions
+remain write primitives. This avoids depending on action-level filter behavior on atomic
+updates and database-specific error expressions.
+
+For a sole writable `:id` primary key, submit a fresh caller-generated ID and compare it
+with the surviving upsert row. This classifies creation without a backend-specific
+inserted-versus-conflict return flag. Custom primary keys use the documented pre-read
+classification and its concurrent-race limit.

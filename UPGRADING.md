@@ -471,6 +471,7 @@ The Ash floor rises from 3.34.3 to 3.37.2, because three published advisories
 affect Ash releases the old floor admitted (EEF-CVE-2026-101028, -114214 and
 -96581). If your lock holds Ash below 3.37.2, update Ash first:
 
+<!-- not-run: This changes an adopter's project dependencies and lockfile. -->
 ```sh
 mix deps.update ash
 ```

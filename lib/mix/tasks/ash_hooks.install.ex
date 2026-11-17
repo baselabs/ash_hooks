@@ -21,6 +21,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
 
     ## Usage
 
+    <!-- not-run: This command mutates an adopter project through its installer and dependency graph. -->
     ```sh
     mix igniter.install ash_hooks
     ```

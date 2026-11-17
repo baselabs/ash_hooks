@@ -5,6 +5,8 @@ defmodule AshHooks.Worker do
   without Oban; use `AshHooks.Delivery.run/2` for direct delivery.
 
 
+  <!-- not-run: This worker requires host delivery and endpoint resources, a secret resolver, and an Oban instance. -->
+
       defmodule MyApp.WebhookDeliveryWorker do
         use AshHooks.Worker,
           deliveries: MyApp.OutboundDelivery,

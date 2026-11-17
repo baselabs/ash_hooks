@@ -37,6 +37,19 @@ must agree across all resources in that phase. Nontransactional layers supply
 no row-security transaction binding. See
 [transaction ownership](0015-tenant-transactions-and-spawned-work.md).
 
+RLS alone can hide an endpoint in the same way as a deleted endpoint, causing the normal
+not-found path to skip delivery. Native attribute tenancy and explicit tenant validation
+are required; host RLS adds defense in depth rather than replacing that contract.
+
+Multitenant operations require an explicit tenant and pass it through Ash calls, stored
+jobs and child execution. An ambient fallback could disagree with the caller's options
+or a stored job's tenant, creating a second source of truth.
+
+A package-owned tenant column with manual filters would have to separately reproduce
+Ash's tenant-aware identities, upsert keys and missing-tenant behavior. Use native
+attribute tenancy and reject bypassing actions so those guarantees remain integrated
+with the resource model.
+
 ## Consequences and boundaries
 
 - Single-tenant resources retain their ordinary behavior.

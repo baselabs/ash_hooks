@@ -46,6 +46,14 @@ and matching GitHub source and release notes.
    Inspect the version, package name, file list, and optional `oban`/`plug` flags.
    Confirm that the Hex package belongs to the maintainer account.
 
+6. Select the commit on `main` whose complete CI run passed, including the
+   `all-checks-pass` aggregate job. Tag that same commit as `v<version>`.
+   Record its full source SHA and the archive SHA-256 printed by
+   `check-package.sh` together in the GitHub Release notes.
+7. Use a clean checkout of that same SHA for publication. Verify that its
+   `HEAD` matches the recorded SHA and that its worktree is clean before
+   running `mix hex.publish`.
+
 ## Publish and verify
 
 Supply `HEX_API_KEY` from the maintainer's secret store, scoped to this command.

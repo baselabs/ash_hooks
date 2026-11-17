@@ -922,6 +922,7 @@ defmodule AshHooks.Delivery do
   dedup suppression), the chosen type verbatim, and the `:signing_mode`
   option, defaulting to `:standard`. The default payload marks itself:
 
+  <!-- not-run: This is sample diagnostic event data; a real send supplies its own time and event type. -->
   ```json
   {"test": true, "type": "invoice.paid", "timestamp": "2026-11-14T12:00:00Z"}
   ```
@@ -2922,6 +2923,8 @@ defmodule AshHooks.Delivery do
   never body bytes or a body-derived digest (a hash is correlation
   material that explains nothing).
 
+
+  <!-- not-run: These strings illustrate response summaries, not executable delivery operations. -->
 
       # the type was allowlisted
       "200 json token=application/json"

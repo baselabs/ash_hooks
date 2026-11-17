@@ -45,6 +45,8 @@ defmodule AshHooks.EndpointHealth do
   is optional. Supplying `:to` alone returns `{:error, :from_required}`.
 
 
+  <!-- not-run: These sample statistics require a host attempt resource and stored delivery history. -->
+
       {:ok, %{attempts: 40, success_rate: 0.925, latency_p50_ms: 120}} =
         AshHooks.EndpointHealth.stats(MyApp.Attempt, endpoint_id: endpoint.id)
   """

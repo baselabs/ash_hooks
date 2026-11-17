@@ -12,6 +12,10 @@ keep `ash_hooks` rather than renaming it to `ash_webhooks`.
 Durable names carry no version or phase suffixes. Verify ownership of the
 existing Hex package before publication.
 
+The short package name does not spell out both delivery directions. Retain the name and
+make verified inbound webhooks and signed outbound delivery explicit in the package
+description.
+
 ## Consequences
 
 - Discoverability depends on the Hex description and the repository topics.

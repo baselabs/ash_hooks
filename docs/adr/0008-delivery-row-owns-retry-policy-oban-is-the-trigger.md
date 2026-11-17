@@ -33,6 +33,15 @@ monotonic lifetime attempts while advancing the baseline to renew allowance.
 Exponential backoff uses lifetime attempts. See
 [resend and replay](0020-resend-replay-and-endpoint-health.md).
 
+Independent Oban backoff and ledger backoff can disagree about Retry-After and the next
+due time. The delivery row therefore owns retry policy, the attempt ceiling and the
+durable next-attempt schedule; the worker executes that policy and returns its result to
+Oban.
+
+A host driving recovery through periodic scans must supply durable scheduling and
+bounded concurrency. Optional Oban supplies a durable queue and worker concurrency
+control; direct delivery remains supported, with retry state still on the delivery row.
+
 ## Consequences
 
 - The ledger exposes retry state independently of the queue.

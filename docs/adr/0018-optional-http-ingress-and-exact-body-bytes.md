@@ -44,6 +44,12 @@ method, size, and consumed-body errors. A host refusal policy can shape headers
 and bodies but cannot change required status or headers. Custom ingest response
 policies own their headers. Every response is sent and the connection halted.
 
+Lower-level controller integration remains available, but repeating it repeats body
+capture and acknowledgment rules. Keep the HTTP dependency optional for non-HTTP
+consumers. Verify captured body bytes rather than reconstructed parsed parameters.
+Automatic 202 acknowledgment requires host-owned asynchronous orchestration; the
+provided adapter returns the synchronous ingress result.
+
 ## Consequences
 
 Hosts mount the adapter outside browser-session pipelines, configure the

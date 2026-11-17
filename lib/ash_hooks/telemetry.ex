@@ -78,6 +78,8 @@ defmodule AshHooks.Telemetry do
   whole surface with one `attach_many`:
 
 
+  <!-- not-run: This integration requires the host metrics callback to forward the supplied event data. -->
+
       :telemetry.attach_many(
         "my-ash-hooks",
         [

@@ -43,6 +43,10 @@ extractors retain precedence; provider identity errors fail closed. ADR-0012
 records canonical payload identity. ADR-0016 owns
 the shared JSON policy and decoder precedence.
 
+- Requiring every provider to reimplement cryptography duplicates validation and
+  encoding rules. Public primitives support protocols that need custom input
+  construction without duplicating those mechanisms.
+
 ## Consequences
 
 Moving from removed modules is a major-version migration. Hosts supply provider

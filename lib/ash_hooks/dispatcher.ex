@@ -5,6 +5,8 @@ defmodule AshHooks.Dispatcher do
   the others.
 
 
+  <!-- not-run: This dispatch fragment requires a host order, producer resource, and enqueue implementation. -->
+
       {:ok, event} =
         AshHooks.Event.new(
           type: :order_paid,

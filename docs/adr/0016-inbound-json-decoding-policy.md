@@ -48,6 +48,11 @@ supplied decoder for the exercised input. It does not prove every envelope path;
 hosts must exercise their supported shapes. Only consumer tests require the
 test framework.
 
+Independent header and payload decoder choices can bypass one configured policy.
+Process-local decoder state would hide that choice from callbacks. Pass the decoder
+explicitly and require the compatible host callback shape when policy is configured;
+generated callbacks preserve their direct-call contract.
+
 ## Consequences
 
 Custom providers must decode all JSON through the supplied function when using

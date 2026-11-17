@@ -13,6 +13,10 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
     #
     use ExUnit.Case, async: false
 
+    setup context do
+      AshHooks.Test.Documentation.track_test(context)
+    end
+
     alias AshHooks.Test.Repo
 
     alias AshHooks.Test.Documentation, as: Docs
@@ -41,6 +45,7 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
                ])
 
       assert [%{status: :processed}] = rows(ReadmeFixed)
+      Docs.completed!(["readme-fixed-source", "readme-payments-provider"])
     end
 
     test "verify-any-sender: a header-source provider named by signature_header" do
@@ -55,6 +60,7 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
       assert {200, _} = post(port, "/webhooks/billing", raw, [{"x-billing-signature", sign(raw)}])
       assert {400, _} = post(port, "/webhooks/billing", raw, [])
       assert [%{status: :processed}] = rows(VerifyAnySender)
+      Docs.completed!(["readme-install-endpoint", "verify-any-sender-signature-header"])
     end
 
     # ── the documents ──
@@ -385,6 +391,7 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
       assert byte_size(oversized) == 64_001
       {_id, headers} = signed.(oversized, whsec: hmac)
       assert {413, _, ""} = decide(raw_port.(), "/tenant-a", oversized, headers)
+      Docs.completed!(["verify-sync-decision-plug"])
     end
 
     defp decide(port, path, raw, headers) do
@@ -429,6 +436,10 @@ end
 
 defmodule AshHooks.DocumentationContentTest do
   use ExUnit.Case, async: false
+
+  setup context do
+    AshHooks.Test.Documentation.track_test(context)
+  end
 
   alias AshHooks.Test.Documentation, as: Docs
   alias AshHooks.Test.RowSecurityCases
@@ -530,6 +541,7 @@ defmodule AshHooks.DocumentationContentTest do
     stop_supervised!(Module.concat(namespace, :Oban))
     RowSecurityCases.clean(ctx)
     RowSecurityCases.oban_engine_delivery(ctx)
+    Docs.completed!(["row-security-oban-roles", "row-security-oban-policies", "row-security-oban-instances"])
   end
 
   for name <- @providers do
@@ -651,6 +663,7 @@ defmodule AshHooks.DocumentationContentTest do
     on_exit(fn -> restore_env(:public_webhook_base_url, previous) end)
     conn = %{request_path: "/hooks/orders", query_string: "account=1"}
     assert namespace.public_url(conn) == "https://hooks.example.com/hooks/orders?account=1"
+    Docs.completed!(["verify-public-url-in-application"])
   end
 
   test "upgrade constraints and both string-counting configurations evaluate as written" do
@@ -664,6 +677,7 @@ defmodule AshHooks.DocumentationContentTest do
     code = "import Config\n" <> Docs.block("upgrade-string-config-in-application").code
     assert [ash: [default_string_length_count: :mixed]] = Config.Reader.eval!("config.exs", code)
     assert Enum.count(Regex.scan(~r/default_string_length_count:/, code)) == 2
+    Docs.completed!(["upgrade-dependency-1-0", "upgrade-dependency-1-0-4", "upgrade-string-config-in-application"])
   end
 
   test "upgrade source and adoption fragments run against a scoped tenant ledger" do
@@ -793,6 +807,7 @@ defmodule AshHooks.DocumentationContentTest do
 
     assert [%{external_event_id: "canonical-1"}] =
              Ash.read!(ledger, tenant: tenant, authorize?: false)
+    Docs.completed!(["upgrade-source-in-application"])
   end
 
   test "the inbound source lifecycle example issues and verifies with a real custodian" do
@@ -930,6 +945,7 @@ defmodule AshHooks.DocumentationContentTest do
     assert :ok = worker.enqueue(binding[:delivery], binding[:event])
     assert [[1]] = repo.query!("SELECT count(*) FROM #{oban_prefix}.oban_jobs").rows
     assert {:ok, _binding} = Docs.eval("get-started-telemetry-in-application", namespace)
+    Docs.completed!(["get-started-resources-in-application", "get-started-worker-in-application", "get-started-migration-in-application"])
   end
 
   @tag :postgres
@@ -1075,6 +1091,7 @@ defmodule AshHooks.DocumentationContentTest do
     assert binding[:sweep_result] == {:ok, %{disabled: 0, warned: 0, unread: 0}}
     {_, binding} = Docs.eval("recovery-retention", namespace, binding)
     assert binding[:deleted_events] == 0
+    Docs.completed!(["contracts-endpoint-options", "contracts-subscription-options", "contracts-outbound-options", "contracts-payload-builder", "contracts-migration", "recovery-event-resource", "recovery-delivery-options", "recovery-migration", "operations-transport", "operations-health-options", "operations-migration"])
   end
 
   test "dependency and config fragments execute in their project and configuration contexts" do
@@ -1092,6 +1109,7 @@ defmodule AshHooks.DocumentationContentTest do
 
     assert [ash: [default_string_length_count: :codepoints]] =
              Config.Reader.eval!("config.exs", code)
+    Docs.completed!(["get-started-dependencies-in-project", "get-started-config-in-application"])
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:my_app, key)
@@ -1103,9 +1121,11 @@ end
 defmodule AshHooks.DocumentationGateTest do
   use ExUnit.Case, async: false
 
-  alias AshHooks.Test.Documentation, as: Docs
+  setup context do
+    AshHooks.Test.Documentation.track_test(context)
+  end
 
-  @moduletag skip: not Code.ensure_loaded?(Phoenix.Endpoint)
+  alias AshHooks.Test.Documentation, as: Docs
 
   test "the parser extracts fenced, indented, nested, and quoted code blocks" do
     for {opening, closing} <- [{"```sql", "```"}, {"~~~sh", "~~~"}, {"```", "```"}] do
@@ -1133,6 +1153,7 @@ defmodule AshHooks.DocumentationGateTest do
 
     assert [ash: [default_string_length_count: :codepoints]] =
              Config.Reader.eval!("config.exs", code)
+    Docs.completed!(["contributing-string-config"])
   end
 
   @tag :real_receiver
@@ -1162,6 +1183,7 @@ defmodule AshHooks.DocumentationGateTest do
     assert status == 0, output
     assert output =~ "NOTEBOOK INSTALLED THE CANDIDATE"
     assert output =~ "NOTEBOOK OK:"
+    Docs.completed!(for block <- Docs.blocks("documentation/livebooks/get-started.livemd"), is_nil(block.reason), do: block.name)
   end
 
   test "SQL splitting preserves quoted semicolons and discards comment-only tails" do
@@ -1187,6 +1209,27 @@ defmodule AshHooks.DocumentationGateTest do
     @tag tags
     test "the tenancy backfill runs unchanged and leaves zero NULL tenants on #{label}" do
       repo = unquote(repo)
+      assert_backfill!(repo, &Function.identity/1)
+    end
+
+    @tag tags
+    test "SQL backfill mutations fail against the real #{label} adapter" do
+      repo = unquote(repo)
+      mutate = fn code -> fn block ->
+        if block.name == "tenancy-backfill", do: %{block | name: nil, code: code}, else: %{block | name: nil}
+      end end
+
+      error = catch_error(assert_backfill!(repo, mutate.("UPDATE webhook_endpoints SET org_id = <derived per row>;")))
+      assert Exception.message(error) =~ "syntax"
+
+      wrong_tenant = Regex.replace(~r/SET org_id = \(.*?\);/s, Docs.block("tenancy-backfill").code, "SET org_id = 'wrong-tenant';")
+      for code <- ["SELECT 1;", wrong_tenant] do
+        assert_raise ExUnit.AssertionError, fn -> assert_backfill!(repo, mutate.(code)) end
+      end
+    end
+  end
+
+  defp assert_backfill!(repo, mutate) do
       tables = ~w(webhook_endpoints webhook_subscriptions inbound_deliveries outbound_deliveries)
 
       repo.transaction(fn ->
@@ -1212,6 +1255,7 @@ defmodule AshHooks.DocumentationGateTest do
         )
 
         blocks = Docs.blocks("documentation/tutorials/tenancy-adoption-checklist.md")
+        blocks = Enum.map(blocks, mutate)
         for block <- blocks, do: Docs.run!(block, repo)
         [result] = blocks |> List.last() |> Docs.run!(repo)
 
@@ -1225,18 +1269,31 @@ defmodule AshHooks.DocumentationGateTest do
 
         repo.rollback(:documentation_complete)
       end)
-    end
   end
+
 end
 
 if Code.ensure_loaded?(AshHooks.Provider) do
   namespace = AshHooks.Test.Documentation.namespace("verify-provider-test-in-application")
   provider = AshHooks.Test.Documentation.ast("verify-orders-provider")
-  example = AshHooks.Test.Documentation.ast("verify-provider-test-in-application")
+  example =
+    "verify-provider-test-in-application"
+    |> AshHooks.Test.Documentation.ast()
+    |> Macro.postwalk(fn
+      {:test, meta, [name, [do: body]]} ->
+        {:test, meta, [name, [do: quote do
+          unquote(body)
+          AshHooks.Test.Documentation.completed!(["verify-provider-test-in-application"])
+          end]]}
+      node -> node
+    end)
 
   quote do
     defmodule unquote(namespace) do
       use ExUnit.Case, async: false
+      setup context do
+        AshHooks.Test.Documentation.track_test(context)
+      end
       unquote(provider)
       unquote(example)
     end

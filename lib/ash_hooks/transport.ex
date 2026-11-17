@@ -5,6 +5,8 @@ defmodule AshHooks.Transport do
   contract as an HTTP adapter.
 
 
+  <!-- not-run: This transport requires the host forwarding protocol implementation. -->
+
       defmodule MyApp.CliForwarderTransport do
         @behaviour AshHooks.Transport
 

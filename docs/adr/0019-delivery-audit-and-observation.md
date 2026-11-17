@@ -55,6 +55,12 @@ type and signing mode, defaults to standard signing and one attempt, and drives
 the normal runtime and optional history. Delivery test tracking is opt-in;
 history carries the test marker. ADR-0020 owns resend, replay, and health policy.
 
+Optional attempt and event-history failures must not change the authoritative delivery
+outcome or block fanout. Telemetry alone does not retain queryable per-attempt history
+or replayable event bytes. Counts describe stored rows, not every refusal callback.
+Diagnostic sends target the selected endpoint directly rather than depend on
+subscriptions.
+
 ## Consequences
 
 Hosts opt into and migrate audit resources, govern payload and captured-response

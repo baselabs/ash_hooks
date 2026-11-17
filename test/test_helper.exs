@@ -50,6 +50,7 @@ if postgres? do
 end
 
 ExUnit.start(
+  formatters: [ExUnit.CLIFormatter, AshHooks.Test.DocumentationRuns],
   exclude:
     if(postgres?, do: [], else: [:postgres]) ++
       if(httpbun?, do: [], else: [:httpbun]) ++
@@ -61,3 +62,11 @@ ExUnit.start(
     end
   ]
 )
+
+# Only successful tests in this run can contribute executed documentation names.
+ExUnit.after_suite(fn _stats ->
+  if System.get_env("ASH_HOOKS_DOCS_REQUIRED") == "1" do
+    blocks = AshHooks.Test.Documentation.validate_manifest!(AshHooks.Test.Documentation.documents())
+    AshHooks.Test.Documentation.validate_run!(blocks)
+  end
+end)

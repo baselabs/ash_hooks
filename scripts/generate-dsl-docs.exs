@@ -34,6 +34,35 @@ for name <- String.split(extensions, ",") do
       end)
     end)
 
+  # Spark descriptions carry their fragment dispositions into both API and
+  # generated reference docs. Spark's own declaration signatures need a host too.
+  {nodes, _} = EarmarkParser.Parser.parse_markdown(text, %EarmarkParser.Options{})
+  code_nodes = fn walk, nodes ->
+    Enum.flat_map(nodes, fn
+      %EarmarkParser.Block.Code{} = code -> [code]
+      %{blocks: children} -> walk.(walk, children)
+      _ -> []
+    end)
+  end
+
+  lines = String.split(text, "\n")
+  unmarked =
+    for node <- code_nodes.(code_nodes, nodes),
+        previous = lines |> Enum.take(node.lnb - 1) |> Enum.reverse() |> Enum.find(&(String.trim(&1) != "")),
+        not String.contains?(previous || "", ["<!-- tested:", "<!-- not-run:"]),
+        do: node.lnb
+
+  text =
+    lines
+    |> Enum.with_index(1)
+    |> Enum.map_join("\n", fn {line, number} ->
+      if number in unmarked do
+        "<!-- not-run: This Spark DSL signature requires a named declaration in an enclosing host resource. -->\n" <> line
+      else
+        line
+      end
+    end)
+
   path = "documentation/dsls/DSL-#{name}.md"
 
   if "--check" in flags do

@@ -5,6 +5,8 @@ defmodule AshHooks.Catalog do
   for event pickers, doc generation, and payload-version negotiation.
 
 
+  <!-- not-run: This declaration fragment requires host schema and payload builder modules. -->
+
       webhooks do
         outbound :order_paid do
           description "An order reached the paid state."

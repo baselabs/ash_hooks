@@ -51,6 +51,19 @@ the queue instance must share the ledger repository for that binding. An inline
 enqueue callback invoking the driver inside a host transaction is refused and
 reported as enqueue failure, leaving the pending row recoverable.
 
+A row-security setting belongs to one connection and transaction. A child process or a
+separately routed read does not inherit that transaction's binding; a monitored delivery
+child cannot rely on the parent's uncommitted rows and may wait on its locks.
+
+Inline network delivery can expose external effects before a host transaction commits
+and cannot depend on the monitored child seeing uncommitted state. Persist the delivery
+and enqueue durably; execute the network driver after commit. Compatible job insertion
+may join the host transaction; invoking the driver inside that transaction is refused.
+
+- Ambient process-context transfer of the tenant creates a second source of
+  truth and cannot establish a new connection's transaction binding. Tenant data
+  in arguments and transaction reasons supplies the binding explicitly.
+
 ## Consequences
 
 Row security is host-bound defense in depth alongside required attribute

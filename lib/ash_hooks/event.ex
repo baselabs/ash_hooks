@@ -3,6 +3,8 @@ defmodule AshHooks.Event do
   An outbound event: its identity, type, exact payload bytes, and optional context.
 
 
+  <!-- not-run: This dispatch fragment requires a host order and configured producer resource. -->
+
       {:ok, event} =
         AshHooks.Event.new(
           id: "msg_order-" <> to_string(order.id),

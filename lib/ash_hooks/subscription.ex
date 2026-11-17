@@ -4,6 +4,8 @@ defmodule AshHooks.Subscription do
   events go to which endpoint, and with which signature envelope.
 
 
+  <!-- not-run: This subscription fragment requires a host endpoint resource and data layer configuration. -->
+
       use Ash.Resource,
         data_layer: AshSqlite.DataLayer,
         extensions: [AshHooks.Subscription]

@@ -50,6 +50,10 @@ atomically in bounded tenant phases, and commits before running the handler.
 It refuses enclosing transactions. Terminal nil-alias receipts stay unchanged;
 live claims remain counted for a later bounded adoption call.
 
+- Resolving a source independently at every HTTP and ingress step can select
+  different provider or pause snapshots during one request. A reusable typed
+  resolution makes the request boundary explicit.
+
 ## Consequences
 
 Hosts migrate and authorize the source resource and manage its provider

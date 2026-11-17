@@ -95,3 +95,5 @@ print(f'PACKAGE OK: {len(names)} archive entries; {checked_links} relative docum
 print(f'ARCHIVE: {archive}')
 print(f'SHA256: {hashlib.sha256(archive.read_bytes()).hexdigest()}')
 PY
+
+python3 scripts/check-document-dashes.py --package "$archive"

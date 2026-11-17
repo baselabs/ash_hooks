@@ -3,18 +3,27 @@ defmodule AshHooks.Test.Documentation do
 
   alias Ecto.Adapters.SQL
 
-  @marker ~r/^[ \t]*(?:> )*<!-- tested: ([a-z0-9-]+) -->[ \t]*$/m
+  @formatter_deps ~w(ash spark ecto ecto_sql plug oban ash_postgres ash_sqlite)a
+  @marker ~r/^[ \t]*(?:> )*<!-- (?:tested: ([a-z0-9-]+)|not-run: ([^\n]*)) -->[ \t]*$/
+
+  def package_files do
+    Mix.Project.config()[:package][:files]
+    |> Enum.flat_map(&Path.wildcard/1)
+    |> Enum.flat_map(fn path ->
+      if File.dir?(path), do: Path.wildcard(Path.join(path, "**/*")), else: [path]
+    end)
+    |> Enum.filter(&File.regular?/1)
+    |> Enum.sort()
+  end
 
   def guides do
-    package = Mix.Project.config()[:package][:files]
-
     extras =
       Enum.map(Mix.Project.config()[:docs][:extras], fn
         {path, _options} -> path
         path -> path
       end)
 
-    (Enum.flat_map(package, &Path.wildcard/1) ++ extras)
+    (package_files() ++ extras)
     |> Enum.flat_map(fn path ->
       if File.dir?(path), do: Path.wildcard(Path.join(path, "**/*")), else: [path]
     end)
@@ -55,19 +64,36 @@ defmodule AshHooks.Test.Documentation do
     code_nodes(nodes)
     |> Enum.map(fn node ->
       previous =
-        lines |> Enum.take(node.lnb - 1) |> Enum.reverse() |> Enum.find(&(String.trim(&1) != ""))
+        lines
+        |> Enum.take(node.lnb - 1)
+        |> Enum.with_index(1)
+        |> Enum.reverse()
+        |> Enum.find(fn {line, _} -> String.trim(line) != "" end)
 
-      marker = Regex.run(@marker, previous || "")
-      name = if marker, do: Enum.at(marker, 1)
+      {marker, marker_line} = previous || {"", 0}
+      {name, reason} = disposition(marker)
+      opening = lines |> Enum.at(node.lnb - 1) |> String.trim_leading() |> String.trim_leading("> ")
+      fenced? = String.starts_with?(opening, ["```", "~~~"])
 
       %{
         file: file,
         line: node.lnb,
+        last_line: node.lnb + length(node.lines) + if(fenced?, do: 1, else: -1),
+        marker_line: if(Regex.match?(@marker, marker), do: marker_line),
         name: name,
+        reason: reason,
         language: if(node.language in [nil, ""], do: "elixir", else: node.language),
         code: Enum.join(node.lines, "\n") <> "\n"
       }
     end)
+  end
+
+  defp disposition(line) do
+    case Regex.run(@marker, line, capture: :all_but_first) do
+      [name] -> {name, nil}
+      ["", reason] -> {nil, String.trim(reason)}
+      _ -> {nil, nil}
+    end
   end
 
   defp code_nodes(nodes) do
@@ -85,12 +111,152 @@ defmodule AshHooks.Test.Documentation do
     block
   end
 
+  def validate_manifest!(documents) do
+    blocks = Enum.flat_map(documents, fn {file, text} -> parse(text, file) end)
+    Enum.each(blocks, &validate_block!/1)
+
+    for {name, copies} <- Enum.group_by(Enum.filter(blocks, & &1.name), & &1.name),
+        length(copies) != 1 do
+      raise "duplicate tested marker: #{name}"
+    end
+
+    for {file, text} <- documents,
+        {line, number} <- Enum.with_index(String.split(text, "\n"), 1),
+        Regex.match?(~r/<!--\s*(?:tested|not-run)\b/, line),
+        not Enum.any?(blocks, &(&1.file == file and number in &1.line..&1.last_line)) do
+      unless Regex.match?(@marker, line), do: raise("#{file}:#{number}: malformed disposition")
+
+      unless Enum.count(blocks, &(&1.file == file and &1.marker_line == number)) == 1,
+        do: raise("#{file}:#{number}: orphan disposition")
+    end
+
+    blocks
+  end
+
+  defp validate_block!(block) do
+    unless block.marker_line, do: fail!(block, "unmarked #{block.language} block")
+
+    if block.reason in ["", "example"],
+      do: fail!(block, "not-run needs a specific nonempty reason")
+
+    if is_nil(block.reason) do
+      unless block.language in ["elixir", "sql", "sh"],
+        do: fail!(block, "no runner for #{block.language}; supply a not-run reason")
+
+      validate_placeholders!(block)
+    end
+  end
+
+  def validate_execution!(blocks, completed) do
+    required = for block <- blocks, is_nil(block.reason), do: block.name
+    missing = required -- completed
+    unexpected = completed -- required
+
+    unless missing == [] and unexpected == [],
+      do: raise("executed examples differ: missing #{inspect(missing)}, unexpected #{inspect(unexpected)}")
+
+    :ok
+  end
+
+  def validate_placeholders!(%{language: "elixir"} = block) do
+    case Code.string_to_quoted(block.code) do
+      {:ok, _} -> :ok
+      {:error, _} -> fail!(block, "invalid executable Elixir or template syntax")
+    end
+  end
+
+  def validate_placeholders!(block) do
+    # Remove language literals and comments before looking for template operands.
+    literals =
+      case block.language do
+        "sql" -> ~r/'(?:[^']|'')*'|"(?:[^"]|"")*"|\$([a-zA-Z_]\w*)?\$.*?\$\1\$|--[^\n]*|\/\*.*?\*\//s
+        "sh" -> ~r/'[^']*'|"(?:[^"\\]|\\.)*"|\#[^\n]*/s
+      end
+
+    executable = Regex.replace(literals, block.code, " ")
+
+    if Regex.match?(~r/<(?:[a-zA-Z_][a-zA-Z0-9_ .-]*|\.\.\.)>/, executable),
+      do: fail!(block, "template syntax in executable position")
+
+    :ok
+  end
+
+  def validate_dashes!(documents) do
+    offenses =
+      for {path, text} <- documents,
+          {line, number} <- Enum.with_index(String.split(text, "\n"), 1),
+          String.contains?(line, [<<0x2013::utf8>>, <<0x2014::utf8>>]),
+          do: "#{path}:#{number}"
+
+    unless offenses == [], do: raise(Enum.join(offenses, "\n"))
+    :ok
+  end
+
+  def track_test(context) do
+    Process.put({__MODULE__, :test}, {context.module, context.test})
+    :ok
+  end
+
+  def completed!(names) do
+    if test = Process.get({__MODULE__, :test}) do
+      AshHooks.Test.DocumentationRuns.completed(test, Enum.reject(names, &is_nil/1))
+    end
+
+    :ok
+  end
+
+  def validate_run!(blocks) do
+    validate_execution!(blocks, AshHooks.Test.DocumentationRuns.completed_names())
+  end
+
+  def formatter_options do
+    locals =
+      Enum.flat_map(@formatter_deps, fn dep ->
+        case Mix.Project.deps_paths()[dep] do
+          nil -> []
+          path ->
+            {options, _} = Code.eval_file(Path.join(path, ".formatter.exs"))
+            options[:export][:locals_without_parens] || []
+        end
+      end)
+
+    {own, _} = Code.eval_file(".formatter.exs")
+
+    [
+      line_length: 98,
+      locals_without_parens: Enum.uniq(locals ++ own[:export][:locals_without_parens])
+    ]
+  end
+
+  def validate_format!(blocks) do
+    options = formatter_options()
+
+    offenders =
+      blocks
+      |> Enum.filter(&(&1.language == "elixir"))
+      |> Enum.flat_map(fn block ->
+        try do
+          formatted = block.code |> Code.format_string!(options) |> IO.iodata_to_binary()
+
+          if formatted <> "\n" == block.code,
+            do: [],
+            else: ["#{block.file}:#{block.line}: Elixir block is not consumer-formatted"]
+        rescue
+          error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
+            ["#{block.file}:#{block.line}: invalid Elixir block: #{Exception.message(error)}"]
+        end
+      end)
+
+    unless offenders == [], do: raise(Enum.join(offenders, "\n"))
+    :ok
+  end
+
   def run!(%{language: "sql"} = block, repo) do
     # Each shipped statement is sent unchanged to the real adapter. Statements
     # are separated only at semicolons, outside quoted strings and SQL comments.
-    block.code
-    |> sql_statements()
-    |> Enum.map(&SQL.query!(repo, &1, []))
+    results = block.code |> sql_statements() |> Enum.map(&SQL.query!(repo, &1, []))
+    completed!([block[:name]])
+    results
   end
 
   def run!(%{language: "sh"} = block, directory) do
@@ -98,6 +264,7 @@ defmodule AshHooks.Test.Documentation do
       System.cmd("sh", ["-eu", "-c", block.code], cd: directory, stderr_to_stdout: true)
 
     unless status == 0, do: fail!(block, "shell command exited #{status}: #{output}")
+    completed!([block[:name]])
     :ok
   end
 
@@ -149,6 +316,7 @@ defmodule AshHooks.Test.Documentation do
       |> Code.compile_quoted(block(name).file)
       |> Enum.map(&elem(&1, 0))
 
+    completed!([name])
     Enum.find(modules, &function_exported?(&1, :verify_signature, 3)) || namespace
   end
 
@@ -165,7 +333,9 @@ defmodule AshHooks.Test.Documentation do
         ast
       end
 
-    code |> lexical() |> Code.eval_quoted(binding)
+    result = code |> lexical() |> Code.eval_quoted(binding)
+    completed!([name])
+    result
   end
 
   # Independent signed messages for the application-defined contracts in the

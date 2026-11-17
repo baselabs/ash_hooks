@@ -50,20 +50,9 @@ defmodule AshHooks.MixProject do
       test_coverage: [
         summary: [threshold: 100],
         ignore_modules: [
-          ~r/^AshHooks\.Webhooks\.Inbound$/,
-          ~r/^AshHooks\.Webhooks\.Outbound$/,
-          ~r/AshHooks\.Webhooks\.(Inbound|Outbound)\.Options/,
-          ~r/^AshHooks\.CountingProvider/,
-          ~r/^AshHooks\.TestAstTripwire/,
-          ~r/^AshHooks\.TestPerConnectionProvider/,
-          ~r/^AshHooks\.TestPostgres\.Repo/,
-          # The sqlite test repos: AshSqlite reads min_sqlite_version/0
-          # only on paths these tests never take.
-          ~r/^AshHooks\.Test\.Repo$/,
-          ~r/^AshHooks\.Test\.BusyRepo$/,
-          ~r/^AshHooks\.Endpoint\.Url/,
-          ~r/^AshHooks\.Endpoint\.SecretRef/,
-          ~r/^AshHooks\.InboundDelivery\.Payload/
+          # Spark's generated Options modules contain types only, with no
+          # exported functions or executable code that a test can reach.
+          ~r/^AshHooks\.Webhooks\.(Inbound|Outbound)\.Options$/
         ]
       ]
     ]
@@ -261,6 +250,7 @@ defmodule AshHooks.MixProject do
         "credo --strict",
         "spark.check",
         "docs --warnings-as-errors",
+        "cmd python3 scripts/check-document-dashes.py --docs doc",
         "cmd ./scripts/check-package.sh",
         # The documentation's mounting examples, compiled and run as written.
         "test test/ash_hooks/documentation_examples_test.exs"

@@ -35,7 +35,9 @@ trap cleanup EXIT
   [notebook, cells, install] = System.argv()
   alias AshHooks.Test.Documentation, as: Docs
   blocks = Docs.blocks(notebook)
-  runnable = Enum.filter(blocks, &(&1.language == "elixir"))
+  Docs.validate_manifest!([{notebook, File.read!(notebook)}])
+  Docs.validate_format!(blocks)
+  runnable = Enum.filter(blocks, &(&1.language == "elixir" and is_nil(&1.reason)))
   [setup] = Enum.filter(runnable, &String.contains?(&1.code, "Mix.install("))
   File.write!(cells, Enum.map_join(runnable, "\n", & &1.code))
   File.write!(install, setup.code)

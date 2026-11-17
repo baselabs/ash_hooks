@@ -19,6 +19,7 @@ config :ash, default_string_length_count: :codepoints
 
 Install dependencies and run the default suite (SQLite):
 
+<!-- not-run: These commands install dependencies and run the contributor project checks. -->
 ```sh
 mix deps.get
 mix compile --warnings-as-errors
@@ -34,6 +35,7 @@ connection with `ASH_HOOKS_TEST_PG_HOST`, `ASH_HOOKS_TEST_PG_PORT`,
 The PostgreSQL delivery qualification also uses a real WebHook Tester receiver.
 For first-time setup, start the receiver from the repository root:
 
+<!-- not-run: This starts a persistent receiver service and requires an available local port. -->
 ```sh
 docker compose -f ops/local/webhook-tester.compose.yaml up -d
 curl -fsS http://127.0.0.1:52871/api/version
@@ -53,8 +55,13 @@ the receiver alongside PostgreSQL.
   tenancy, renamed or composite ledger keys, UUIDv7 endpoint/subscription keys, and
   optional Oban/Plug absence where relevant.
 
+Coverage is 100% of the surface declared in `mix.exs`; whole-module exclusions are
+outside that denominator. Do not add an exclusion to hide reachable runtime behavior.
+Add a meaningful test for reachable behavior or remove an unreachable branch.
+
 Run focused checks while developing. Before a push, run:
 
+<!-- not-run: This runs the contributor project qualification and changes generated build artifacts. -->
 ```sh
 mix precommit
 ```
@@ -62,6 +69,7 @@ mix precommit
 To qualify a persisted tenant worker on exact Ash 3.37.2 and Spark 2.7.6, configure PostgreSQL
 as above and run:
 
+<!-- not-run: This requires a configured PostgreSQL service and sends a request to a public HTTPS receiver. -->
 ```sh
 ASH_HOOKS_POSTGRES=1 ASH_HOOKS_HTTPBUN=1 elixir scripts/check-ash-floor.exs
 ```
