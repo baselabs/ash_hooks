@@ -10,7 +10,7 @@ and its change is in the `CHANGELOG.md` section of the release that ships it.
 
 | Outcome | Acceptance | Waits on |
 |---|---|---|
-| W27: Publish transactionally and select subscriptions in the query for every host and tenant. | One-statement outbox acceptance, fenced fanout, per-tenant recovery, SQL type/pause/filter selection with an Elixir guard, and the ADR 0029 acceptance matrix pass in hosted CI. | 3.3.0 ships first; implementation for 3.4.0. |
+| W27: Publish transactionally and select subscriptions in the query for every host and tenant. | One-statement outbox acceptance, fenced fanout, per-tenant recovery, SQL type/pause/filter selection with an Elixir guard, and the ADR 0029 acceptance matrix pass in hosted CI. | 3.4.0. |
 | The synchronous-decision tutorial links a signed authorization recipe. | The "Decide in the response" section of `documentation/tutorials/verify-any-sender.md` links `request_seal`'s signed authorization hook recipe. | `request_seal` 2.0.0, which publishes that recipe. |
 
 ## Not planned

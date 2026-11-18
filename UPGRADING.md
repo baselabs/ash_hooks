@@ -1,6 +1,8 @@
 # Upgrading
 
-## Unreleased
+<a id="upgrade-3-4"></a>
+
+## 3.3.0 → 3.4.0
 
 Transactional publication is opt-in. Existing hosts need no migration unless
 adopting `AshHooks.OutboundOutbox`. Immediate dispatch still persists deliveries
@@ -1913,7 +1915,7 @@ as the error class.
 
 ## Required `default_string_length_count` configuration
 
-Every Ash version supported by ash_hooks 3.3.0 requires this configuration
+Every Ash version supported by ash_hooks 3.4.0 requires this configuration
 before compiling resources. ash_hooks writes no `:ash` configuration for you. Set it
 in your application's `config/config.exs`:
 
