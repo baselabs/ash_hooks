@@ -5,6 +5,29 @@ defmodule AshHooks.EndpointOverlapVerifierTest do
 
   require Spark.Test
 
+  test "the compiler reports verifier refusals without a test collector" do
+    for {options, refused?} <- [
+          {[max_overlap_seconds: 86_399], true},
+          {[max_overlap_seconds: 86_400], false}
+        ] do
+      module = fixture_module()
+
+      warning =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          Code.compile_quoted(
+            quote do
+              defmodule unquote(module) do
+                unquote(endpoint_body(options))
+              end
+            end
+          )
+        end)
+
+      assert String.contains?(warning, "max_overlap_seconds") == refused?
+      assert String.contains?(warning, "default_overlap_seconds (86400)") == refused?
+    end
+  end
+
   test "a maximum below the built-in effective default is rejected" do
     module = fixture_module()
 
@@ -134,34 +157,37 @@ defmodule AshHooks.EndpointOverlapVerifierTest do
   end
 
   defp compile_endpoint(module, opts) do
+    # Module.create runs verification in the defining process, where every
+    # supported Spark version can find Spark.Test's collector. Compiler-built
+    # modules only gained collector propagation in Spark 2.7.9.
+    Module.create(module, endpoint_body(opts), Macro.Env.location(__ENV__))
+  end
+
+  defp endpoint_body(opts) do
     {lifecycle, opts} = Keyword.pop(opts, :key_lifecycle, :on)
     options = Enum.map(opts, fn {name, value} -> {name, [], [value]} end)
 
-    Code.compile_quoted(
-      quote do
-        defmodule unquote(module) do
-          @moduledoc false
-          use Ash.Resource,
-            domain: nil,
-            validate_domain_inclusion?: false,
-            data_layer: AshSqlite.DataLayer,
-            extensions: [AshHooks.Endpoint]
+    quote do
+      @moduledoc false
+      use Ash.Resource,
+        domain: nil,
+        validate_domain_inclusion?: false,
+        data_layer: AshSqlite.DataLayer,
+        extensions: [AshHooks.Endpoint]
 
-          sqlite do
-            table("endpoint_overlap_verifier")
-            repo(AshHooks.Test.Repo)
-          end
-
-          endpoint do
-            key_lifecycle(unquote(lifecycle))
-            unquote_splicing(options)
-          end
-
-          actions do
-            defaults([:read])
-          end
-        end
+      sqlite do
+        table("endpoint_overlap_verifier")
+        repo(AshHooks.Test.Repo)
       end
-    )
+
+      endpoint do
+        key_lifecycle(unquote(lifecycle))
+        unquote_splicing(options)
+      end
+
+      actions do
+        defaults([:read])
+      end
+    end
   end
 end

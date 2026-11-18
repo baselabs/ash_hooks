@@ -48,14 +48,17 @@ defmodule AshHooks.CoverageSurfaceTest do
   test "a declaration without an option block reaches native DSL validation" do
     errors =
       Spark.Test.dsl_errors do
-        Code.compile_string("""
-        defmodule AshHooks.CoverageSurfaceTest.BareInbound do
-          use Ash.Resource, data_layer: Ash.DataLayer.Ets, extensions: [AshHooks]
-          webhooks do
-            inbound :incoming
-          end
-        end
-        """)
+        Module.create(
+          AshHooks.CoverageSurfaceTest.BareInbound,
+          quote do
+            use Ash.Resource, data_layer: Ash.DataLayer.Ets, extensions: [AshHooks]
+
+            webhooks do
+              inbound :incoming
+            end
+          end,
+          Macro.Env.location(__ENV__)
+        )
       end
 
     assert [{AshHooks.CoverageSurfaceTest.BareInbound, errors}] = errors
@@ -63,14 +66,17 @@ defmodule AshHooks.CoverageSurfaceTest do
 
     errors =
       Spark.Test.dsl_errors do
-        Code.compile_string("""
-        defmodule AshHooks.CoverageSurfaceTest.BareOutbound do
-          use Ash.Resource, data_layer: Ash.DataLayer.Ets, extensions: [AshHooks]
-          webhooks do
-            outbound :outgoing
-          end
-        end
-        """)
+        Module.create(
+          AshHooks.CoverageSurfaceTest.BareOutbound,
+          quote do
+            use Ash.Resource, data_layer: Ash.DataLayer.Ets, extensions: [AshHooks]
+
+            webhooks do
+              outbound :outgoing
+            end
+          end,
+          Macro.Env.location(__ENV__)
+        )
       end
 
     assert errors == []

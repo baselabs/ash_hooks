@@ -233,13 +233,7 @@ defmodule AshHooks.CustodyOnlyTest do
 
     capture_log(fn ->
       try do
-        Code.compile_quoted(
-          quote do
-            defmodule unquote(module) do
-              unquote(body)
-            end
-          end
-        )
+        Module.create(module, body, Macro.Env.location(__ENV__))
       after
         :code.purge(module)
         :code.delete(module)

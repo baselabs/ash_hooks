@@ -502,6 +502,6 @@ defmodule AshHooks.InboundSourceExtensionTest do
   end
 
   defp compile(module, body) do
-    Code.compile_quoted(quote(do: defmodule(unquote(module), do: unquote(body))))
+    Module.create(module, body, Macro.Env.location(__ENV__))
   end
 end

@@ -97,16 +97,16 @@ defmodule AshHooks.Test.KeyRegistryCases do
       endpoint_table: prefix <> "_endpoints"
     }
 
-    Code.compile_quoted(
+    Module.create(
+      domain,
       quote do
-        defmodule unquote(domain) do
-          use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
+        use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
 
-          resources do
-            allow_unregistered? true
-          end
+        resources do
+          allow_unregistered? true
         end
-      end
+      end,
+      Macro.Env.location(__ENV__)
     )
 
     compile_registry(ctx)
@@ -678,12 +678,12 @@ defmodule AshHooks.Test.KeyRegistryCases do
         Spark.Test.dsl_errors do
           name = unique(ctx, "InvalidRegistry")
 
-          Code.compile_quoted(
+          Module.create(
+            name,
             quote do
-              defmodule unquote(name) do
-                use Ash.Resource, data_layer: unquote(layer), extensions: [AshHooks.KeyRegistry]
-              end
-            end
+              use Ash.Resource, data_layer: unquote(layer), extensions: [AshHooks.KeyRegistry]
+            end,
+            Macro.Env.location(__ENV__)
           )
         end
 
@@ -1266,27 +1266,27 @@ defmodule AshHooks.Test.KeyRegistryCases do
 
       errors =
         Spark.Test.dsl_errors do
-          Code.compile_quoted(
+          Module.create(
+            name,
             quote do
-              defmodule unquote(name) do
-                use Ash.Resource, data_layer: unquote(layer), extensions: [AshHooks.Endpoint]
+              use Ash.Resource, data_layer: unquote(layer), extensions: [AshHooks.Endpoint]
 
-                endpoint do
-                  key_lifecycle(:on)
-                  key_registry unquote(ctx.registry)
-                  custodian AshHooks.Test.RegistryCustodian
-                end
-
-                attributes do
-                  attribute :tenant_id, :integer
-                end
-
-                multitenancy do
-                  strategy :attribute
-                  attribute :tenant_id
-                end
+              endpoint do
+                key_lifecycle(:on)
+                key_registry unquote(ctx.registry)
+                custodian AshHooks.Test.RegistryCustodian
               end
-            end
+
+              attributes do
+                attribute :tenant_id, :integer
+              end
+
+              multitenancy do
+                strategy :attribute
+                attribute :tenant_id
+              end
+            end,
+            Macro.Env.location(__ENV__)
           )
         end
 
@@ -1480,36 +1480,36 @@ defmodule AshHooks.Test.KeyRegistryCases do
     timeout = Map.get(ctx, :issue_timeout)
     issue_timeout = if timeout, do: quote(do: issue_timeout(unquote(timeout)))
 
-    Code.compile_quoted(
+    Module.create(
+      ctx.registry,
       quote do
-        defmodule unquote(ctx.registry) do
-          use Ash.Resource,
-            domain: unquote(ctx.domain),
-            data_layer: unquote(ctx.layer),
-            extensions: [AshHooks.KeyRegistry]
+        use Ash.Resource,
+          domain: unquote(ctx.domain),
+          data_layer: unquote(ctx.layer),
+          extensions: [AshHooks.KeyRegistry]
 
-          unquote(storage)
+        unquote(storage)
 
-          key_registry do
-            unquote(issue_timeout)
-          end
-
-          attributes do
-            unquote(primary_key)
-
-            attribute :tenant_id, unquote(Map.get(ctx, :tenant_type, :integer)),
-              allow_nil?: false,
-              default: 17,
-              public?: true
-          end
-
-          unquote(tenancy(Map.get(ctx, :tenancy?, true), ctx))
-
-          actions do
-            defaults [:read]
-          end
+        key_registry do
+          unquote(issue_timeout)
         end
-      end
+
+        attributes do
+          unquote(primary_key)
+
+          attribute :tenant_id, unquote(Map.get(ctx, :tenant_type, :integer)),
+            allow_nil?: false,
+            default: 17,
+            public?: true
+        end
+
+        unquote(tenancy(Map.get(ctx, :tenancy?, true), ctx))
+
+        actions do
+          defaults [:read]
+        end
+      end,
+      Macro.Env.location(__ENV__)
     )
   end
 
@@ -1570,41 +1570,40 @@ defmodule AshHooks.Test.KeyRegistryCases do
     extra_changes = Map.get(ctx, :endpoint_changes)
     identities = Map.get(ctx, :endpoint_identities)
 
-    definitions =
-      Code.compile_quoted(
-        quote do
-          defmodule unquote(name) do
-            use Ash.Resource,
-              domain: unquote(ctx.domain),
-              data_layer: unquote(ctx.layer),
-              primary_read_warning?: false,
-              extensions: [AshHooks.Endpoint]
+    Module.create(
+      name,
+      quote do
+        use Ash.Resource,
+          domain: unquote(ctx.domain),
+          data_layer: unquote(ctx.layer),
+          primary_read_warning?: false,
+          extensions: [AshHooks.Endpoint]
 
-            unquote(storage)
+        unquote(storage)
 
-            endpoint do
-              (unquote_splicing(options))
-            end
-
-            attributes do
-              unquote(attributes)
-            end
-
-            unquote(tenancy(tenancy?, ctx))
-            unquote(owner_changes)
-            unquote(extra_changes)
-            unquote(identities)
-            unquote(resource_filter)
-
-            actions do
-              defaults unquote(defaults)
-              unquote(primary_read)
-            end
-          end
+        endpoint do
+          (unquote_splicing(options))
         end
-      )
 
-    if name != ctx.endpoint, do: on_exit(fn -> purge(Enum.map(definitions, &elem(&1, 0))) end)
+        attributes do
+          unquote(attributes)
+        end
+
+        unquote(tenancy(tenancy?, ctx))
+        unquote(owner_changes)
+        unquote(extra_changes)
+        unquote(identities)
+        unquote(resource_filter)
+
+        actions do
+          defaults unquote(defaults)
+          unquote(primary_read)
+        end
+      end,
+      Macro.Env.location(__ENV__)
+    )
+
+    if name != ctx.endpoint, do: on_exit(fn -> purge([name]) end)
     name
   end
 
