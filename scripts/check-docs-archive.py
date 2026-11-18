@@ -18,11 +18,13 @@ SEMVER = re.compile(
 def check(archive, directory):
     if not directory.is_dir():
         raise ValueError("Documentation source directory is missing.")
-    source = {
-        path.relative_to(directory).as_posix(): path
-        for path in directory.rglob("*")
-        if path.is_file()
-    }
+    # mix hex.publish lists the tree with Path.wildcard/1, which matches no
+    # file or directory whose name starts with a dot.
+    source = {}
+    for path in directory.rglob("*"):
+        relative = path.relative_to(directory)
+        if path.is_file() and not any(part.startswith(".") for part in relative.parts):
+            source[relative.as_posix()] = path
     names = set()
     with tarfile.open(archive, "r:gz") as packed:
         for member in packed:

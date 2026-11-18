@@ -12,16 +12,8 @@ end
 Hex.start()
 Code.ensure_loaded!(:mix_hex_tarball)
 
-# Hex omits dotfiles. Remove ExDoc's transient build manifests so the source
-# tree contains exactly the files the publisher archives, without omitting docs.
-for name <- [".build", ".build.epub", ".build.markdown"] do
-  case File.rm(Path.join(directory, name)) do
-    :ok -> :ok
-    {:error, :enoent} -> :ok
-    {:error, reason} -> Mix.raise("Cannot remove ExDoc manifest: #{reason}")
-  end
-end
-
+# The same listing mix hex.publish makes: Path.wildcard/1 matches no file or
+# directory whose name starts with a dot, so ExDoc's .build manifests stay out.
 files =
   directory
   |> Path.join("**")

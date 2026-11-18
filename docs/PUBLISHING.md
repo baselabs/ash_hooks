@@ -74,9 +74,9 @@ The build also runs `mix docs --warnings-as-errors` with optional dependencies,
 checks the rendered documentation's dash rule, and builds the docs archive
 with Hex's own archive builder. Inspection requires safe relative paths,
 regular files only, no semantic-version top-level name, top-level `index.html`
-and `readme.html`, and exactly the generated tree's file set and bytes.
-ExDoc's transient hidden build manifests are removed before archiving; Hex
-does not publish them. Other source files cannot be silently omitted.
+and `readme.html`, and exactly the generated tree's file set and bytes. The
+file set is the one `mix hex.publish` uses: every regular file except names
+that start with a dot, such as ExDoc's build manifests.
 Qualification builds and inspects the same docs archive. The build refuses a
 checkout that differs from the commit.
 
