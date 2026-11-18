@@ -25,7 +25,7 @@ jobs:
   toolchain:
     name: Read runtime toolchains
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; the slowest green was 16s on run 44165315179
+    timeout-minutes: 5 # the five-minute floor; the slowest cold green was 13s on run 44211163274
     outputs:
       elixir: ${{ steps.toolchain.outputs.elixir }}
       otp: ${{ steps.toolchain.outputs.otp }}
@@ -43,7 +43,7 @@ jobs:
   checks:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 6 # twice the slowest green, 158s on run 44187378503
+    timeout-minutes: 6 # twice the slowest cold green, 158s on run 44213063258
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}
@@ -76,7 +76,7 @@ jobs:
   test:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 13 # twice the slowest green, 368s on run 44187378503
+    timeout-minutes: 12 # twice the slowest cold green, 334s on run 44211163274
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}
@@ -110,7 +110,7 @@ jobs:
   # unavailable APIs in that consumer graph.
   floor:
     runs-on: ubuntu-24.04
-    timeout-minutes: 16 # twice the slowest green, 468s on run 44172722505
+    timeout-minutes: 12 # twice the slowest cold green, 350s on run 44211163274
     env:
       MIX_ENV: test
     steps:
@@ -141,7 +141,7 @@ jobs:
   postgres:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 54 # twice the slowest green, 1608s on run 44171238927
+    timeout-minutes: 33 # twice the slowest cold green, 984s on run 44213063258
     strategy:
       fail-fast: false
       matrix:
@@ -222,7 +222,7 @@ jobs:
   dialyzer:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 15 # twice the slowest green (cold PLT), 441s on run 44211163274
+    timeout-minutes: 15 # twice the slowest cold green, 441s on run 44211163274
     env:
       MIX_ENV: test
     steps:
@@ -246,7 +246,7 @@ jobs:
   package:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # twice the slowest green, 130s on run 44139506655
+    timeout-minutes: 5 # the five-minute floor; the slowest cold green was 107s on run 44211163274
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -284,6 +284,11 @@ jobs:
         run: ./scripts/check-package.sh
       - run: mix docs --warnings-as-errors
       - run: python3 scripts/check-document-dashes.py --docs doc
+      - name: Build and inspect the docs archive
+        run: |
+          (cd "$RUNNER_TEMP" && mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/build-docs-archive.exs" \
+            "$GITHUB_WORKSPACE/doc" "$RUNNER_TEMP/ash_hooks-docs.tar.gz")
+          python3 -I scripts/check-docs-archive.py "$RUNNER_TEMP/ash_hooks-docs.tar.gz" doc
 
   # The get-started Livebook, verified headless on one leg: the elixir
   # cells are extracted in order and run outside any mix project
@@ -327,7 +332,7 @@ jobs:
   security:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; the slowest green was 114s on run 44190445327
+    timeout-minutes: 5 # the five-minute floor; the slowest cold green was 116s on run 44213063258
     env:
       OSV_SCANNER_VERSION: "2.7.1"
       OSV_SCANNER_SHA256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
@@ -418,7 +423,7 @@ jobs:
   confidentiality:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 8 # twice the slowest green, 223s on run 44187378503
+    timeout-minutes: 7 # twice the slowest cold green, 201s on run 44211163274
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -444,7 +449,7 @@ jobs:
     needs: [toolchain, checks, test, floor, postgres, dialyzer, package, livebook, security, confidentiality]
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; the slowest green was 7s on run 44144689313
+    timeout-minutes: 5 # the five-minute floor; the slowest cold green was 6s on run 44211163274
     steps:
       - name: Require every needed job green
         env:
