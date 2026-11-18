@@ -26,7 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - All dispatch paths select subscriptions with type, pause and metadata-filter
   predicates through the primary read, retaining the Elixir final guard.
   Unrecognized storage shapes widen the query. A PostgreSQL GIN index on
-  `event_types` is recommended.
+  `event_types` is recommended. The selected key-set metadata-filter arm (5C)
+  measured up to 3.4 times the p95 of type and pause matching alone.
 
 ### Fixed
 

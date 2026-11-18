@@ -8,6 +8,15 @@ and enqueues synchronously. Every dispatch now selects matching subscriptions
 in SQL and retains the Elixir guard. Malformed filter containers never match;
 this corrects the former `__invalid__` sentinel case for every host.
 
+The non-recursive key-set metadata-filter arm (5C) ships under the fallback
+rule. The [final probe run](https://github.com/baselabs/ash_hooks/actions/runs/44224659651)
+found zero false negatives across 152,379,216 pairs and no JIT in 810 plans
+per PostgreSQL version. Its p95 exceeded the allowance in 90, 86 and 85 of
+810 cells on PostgreSQL 16, 17 and 18, respectively. Its worst p95 ratios to
+the type-and-pause baseline B were 3.37, 3.22 and 2.28, or up to 3.4 times B's
+p95. The recursive walk triggered JIT and measured a worst p95 of at least
+174 times B, so the key-set arm was selected.
+
 ### Check host declarations of injected attributes
 
 Every resource extension now verifies host overrides against its native field

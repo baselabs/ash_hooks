@@ -25,6 +25,9 @@ matching read every tenant subscription and matched in memory (ADR 0021).
    widen to true on any unrecognized shape, keeping the Elixir predicate as the final guard. A
    malformed filter container never matches, as ADR 0021 states; 3.2.0 matched it in one case,
    and that is corrected.
+   The metadata-filter arm is the non-recursive key-set test (5C). It was chosen over a recursive
+   walk because the walk triggered PostgreSQL JIT. The filter arm costs up to 3.4 times the p95 of
+   type and pause matching alone; the probe measured this on PostgreSQL 16 to 18.
 
 ## Consequences
 
