@@ -72,6 +72,7 @@ defmodule AshHooks.DocsArchiveTest do
     path = Path.join(tree, "docs-#{System.unique_integer([:positive])}.tar.gz")
 
     args = Enum.flat_map(entries, fn {name, bytes} -> [name, Base.encode64(bytes)] end)
+
     {output, status} =
       System.cmd("python3", ["-I", "-c", @writer, path | args], stderr_to_stdout: true)
 
