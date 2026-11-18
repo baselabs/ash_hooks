@@ -67,29 +67,11 @@ else
   tracked=1
 fi
 
-# A compressed archive is a container, not searchable document bytes. ExDoc's
-# .build.epub is a text manifest, not an archive. Scan the extracted members.
-python3 - "$docs" "$work/epubs" 2>/dev/null <<'PYTHON' || exit 2
-from pathlib import Path
-import sys
-import zipfile
-for number, path in enumerate(sorted(Path(sys.argv[1]).rglob("*.epub"))):
-    if not path.is_file() or path.name == ".build.epub":
-        continue
-    if not zipfile.is_zipfile(path):
-        raise SystemExit(2)
-    with zipfile.ZipFile(path) as book:
-        target = Path(sys.argv[2]) / str(number)
-        for name in book.namelist():
-            destination = target / name
-            if not destination.resolve().is_relative_to(target.resolve()):
-                raise SystemExit(2)
-        book.extractall(target)
-PYTHON
-mkdir -p "$work/epubs"
+# ExDoc's scripts, fonts and stylesheets are containers for its own code, not
+# authored text. Scan the pages it renders from the docs: HTML, Markdown and
+# llms.txt.
 {
   if [ "$tracked" -eq 1 ]; then git ls-files -z; fi
   find "$package" -type f -print0
-  find "$docs" -type f -name '*.html' -print0
-  find "$work/epubs" -type f -print0
+  find "$docs" -type f \( -name '*.html' -o -name '*.md' -o -name '*.txt' \) -print0
 } | scan

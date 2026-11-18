@@ -119,7 +119,7 @@ defmodule AshHooks.ConfidentialityTest do
     refute output =~ "Unreleased"
   end
 
-  test "publication scanning reads HTML, unpacked package files and EPUB members, not container bytes",
+  test "publication scanning reads HTML, Markdown and unpacked package files, not ExDoc assets",
        %{
          tree: tree
        } do
@@ -131,9 +131,8 @@ defmodule AshHooks.ConfidentialityTest do
     token = "invented-publication-token"
     File.write!(html, "plain HTML")
     File.write!(Path.join(docs, "asset.js"), token)
-    File.write!(Path.join(docs, ".build.epub"), "reference.epub\n")
 
-    for surface <- ["container", "epub", "html", "package"] do
+    for surface <- ["container", "markdown", "html", "package"] do
       File.write!(html, if(surface == "html", do: "first\n#{token}", else: "plain HTML"))
 
       File.write!(
@@ -160,28 +159,19 @@ defmodule AshHooks.ConfidentialityTest do
         assert status == 1
         assert output =~ " rule-1"
         refute output =~ token
-        if surface == "epub", do: assert(output =~ "chapter.xhtml:2 rule-1")
+        if surface == "markdown", do: assert(output =~ "reference.md:2 rule-1")
         if surface == "html", do: assert(output =~ "index.html:2 rule-1")
         if surface == "package", do: assert(output =~ "README.md:1 rule-1")
       end
     end
-
-    File.write!(Path.join(docs, "broken.epub"), "invalid archive")
-
-    assert {"", 2} =
-             System.cmd("bash", [@script, "--publication", package, docs],
-               env: [{"PUBLIC_DOCS_DENYLIST", token}],
-               stderr_to_stdout: true
-             )
   end
 
   defp publication_fixture do
     ~S"""
-    import pathlib, sys, zipfile
+    import pathlib, sys
     docs, surface, token = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-    with zipfile.ZipFile(docs / "reference.epub", "w") as book:
-        book.comment = token.encode()
-        book.writestr("EPUB/chapter.xhtml", "first\n" + (token if surface == "epub" else "plain"))
+    page = docs / "reference.md"
+    page.write_text("first\n" + (token if surface == "markdown" else "plain"))
     """
   end
 

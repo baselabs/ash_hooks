@@ -34,6 +34,8 @@ def check(archive, directory):
                 raise ValueError(f"Unsafe docs archive member: {member.name!r}")
             if SEMVER.fullmatch(path.parts[0]):
                 raise ValueError("Top-level documentation filenames cannot be semantic versions.")
+            if path.suffix == ".epub":
+                raise ValueError("EPUB embeds the build time; the docs archive must be reproducible.")
             if member.name in names:
                 raise ValueError(f"Duplicate docs archive member: {member.name!r}")
             names.add(member.name)
