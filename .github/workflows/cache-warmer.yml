@@ -50,7 +50,7 @@ jobs:
   test:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 11 # twice the slowest green, 314s (default lane, PLTs) on run 44196835879
+    timeout-minutes: 12 # twice the slowest green, 340s (default lane, PLTs) on run 44230368459
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}
