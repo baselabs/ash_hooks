@@ -532,6 +532,7 @@ for {test_module, namespace} <- [
     alias AshHooks.OutboxAcceptance, as: Cases
     alias AshHooks.OutboxMatching.{Attempt, Outbox}
     alias AshHooks.OutboxTypeCases
+    alias AshHooks.Phase
     alias AshHooks.Subscription
     alias AshHooks.Subscription.Query
     alias AshHooks.Test.HttpReceiver
@@ -601,7 +602,11 @@ for {test_module, namespace} <- [
             do: Simple.set_data(query, rows),
             else: query
 
-        selected = Ash.read!(query, tenant: "tenant-a", authorize?: false)
+        assert {:ok, selected} =
+                 Phase.run(resource, "tenant-a", fn ->
+                   Ash.read(query, tenant: "tenant-a", authorize?: false)
+                 end)
+
         refute List.last(rows).id in Enum.map(selected, & &1.id)
         guarded = Enum.filter(selected, &Subscription.matches?(&1, event.type))
         assert Enum.sort(Enum.map(guarded, & &1.id)) == Enum.sort(expected)
@@ -782,8 +787,16 @@ for {test_module, namespace} <- [
       emitter = Module.concat(@namespace, :HostPauseEmitter)
       resource = Module.concat(@namespace, :HostPauseSubscription)
       nil_id = Cases.raw_subscription(f, endpoint, %{}, types: nil)
+
+      if f.sqlite? do
+        # Migrated SQLite columns can retain a different physical storage class.
+        f.owner.query!(
+          "UPDATE #{Cases.table(resource)} SET event_types = CAST(event_types AS BLOB) WHERE event_types IS NOT NULL"
+        )
+      end
+
       event = Cases.event()
-      rows = Ash.read!(resource, tenant: "tenant-a", authorize?: false)
+      rows = Cases.rows(Map.put(f, :subscription, resource), :subscription)
 
       expected =
         rows
@@ -791,12 +804,15 @@ for {test_module, namespace} <- [
         |> Enum.map(& &1.id)
         |> Enum.sort()
 
+      assert [_] = expected
       refute nil_id in expected
 
-      selected =
-        resource
-        |> Query.select(event)
-        |> Ash.read!(tenant: "tenant-a", authorize?: false)
+      assert {:ok, selected} =
+               Phase.run(resource, "tenant-a", fn ->
+                 resource
+                 |> Query.select(event)
+                 |> Ash.read(tenant: "tenant-a", authorize?: false)
+               end)
 
       assert Enum.sort(Enum.map(selected, & &1.id)) == expected
 
