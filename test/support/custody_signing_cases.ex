@@ -142,9 +142,8 @@ defmodule AshHooks.Test.CustodySigningCases do
   alias AshHooks.Legacy
   alias AshHooks.Provider.{Hmac, Scheme, Signature}
   alias AshHooks.Signing
-  alias AshHooks.Test.{AnswerCustodian, CustodyHmacProvider, KeyRegistryCases, RealReceiver}
+  alias AshHooks.Test.{AnswerCustodian, CustodyHmacProvider, Dsl, KeyRegistryCases, RealReceiver}
   @compile {:no_warn_undefined, [AshHooks.Plug, Plug.Conn, Plug.Test]}
-  require Spark.Test
 
   @body ~s({"event":"checked"})
   @kind {:standard_webhooks, :v1}
@@ -644,11 +643,11 @@ defmodule AshHooks.Test.CustodySigningCases do
     on_exit(fn -> purge([registry]) end)
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         KeyRegistryCases.compile_endpoint(ctx, Module.concat(module, Unsupported),
           tenant_type: AshHooks.Test.CustodyTenantType
         )
-      end
+      end)
 
     assert [{_, [error]}] = errors
     assert Exception.message(error) =~ "custody_tenant_key"

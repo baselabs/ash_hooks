@@ -1,10 +1,10 @@
 defmodule AshHooks.Provider.SchemeIngressTest do
   use ExUnit.Case, async: false
   @moduletag capture_log: true
-  require Spark.Test
   alias AshHooks.InboundDelivery.LegacyAdoption
   alias AshHooks.Ingress
   alias AshHooks.Provider.Scheme
+  alias AshHooks.Test.Dsl
 
   defmodule HeaderProvider do
     use AshHooks.Provider, verify: [algorithm: :hmac_sha256, signature: {:header, "x-signature"}]
@@ -396,21 +396,25 @@ defmodule AshHooks.Provider.SchemeIngressTest do
 
   test "an inbound without an explicit provider has an actionable compile-time error" do
     errors =
-      Spark.Test.dsl_errors do
-        defmodule MissingProvider do
-          use Ash.Resource, domain: nil, data_layer: Ash.DataLayer.Simple, extensions: [AshHooks]
+      Dsl.errors(fn ->
+        Module.create(
+          Module.concat(__MODULE__, "MissingProvider"),
+          quote do
+            use Ash.Resource, domain: nil, data_layer: Ash.DataLayer.Simple, extensions: [AshHooks]
 
-          attributes do
-            uuid_primary_key :id
-          end
-
-          webhooks do
-            inbound :orders do
-              secret {AshHooks.Provider.SchemeIngressTest, :current_key, []}
+            attributes do
+              uuid_primary_key :id
             end
-          end
-        end
-      end
+
+            webhooks do
+              inbound :orders do
+                secret {AshHooks.Provider.SchemeIngressTest, :current_key, []}
+              end
+            end
+          end,
+          Macro.Env.location(__ENV__)
+        )
+      end)
 
     assert [{_, [%Spark.Error.DslError{} = error]}] = errors
     assert error.message =~ "inbound :orders has no provider"

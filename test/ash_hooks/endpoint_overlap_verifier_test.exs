@@ -2,10 +2,11 @@ defmodule AshHooks.EndpointOverlapVerifierTest do
   use ExUnit.Case, async: false
 
   alias Ash.Resource.Info, as: ResourceInfo
-
-  require Spark.Test
+  alias AshHooks.Test.Dsl
 
   test "the compiler reports verifier refusals without a test collector" do
+    assert is_nil(Process.get({Spark.Dsl, :test_collector}))
+
     for {options, refused?} <- [
           {[max_overlap_seconds: 86_399], true},
           {[max_overlap_seconds: 86_400], false}
@@ -25,16 +26,22 @@ defmodule AshHooks.EndpointOverlapVerifierTest do
 
       assert String.contains?(warning, "max_overlap_seconds") == refused?
       assert String.contains?(warning, "default_overlap_seconds (86400)") == refused?
+      assert String.contains?(warning, "Spark.Error.DslError") == refused?
     end
+
+    IO.puts(
+      "VERIFIER COMPILE PROOF: Spark #{Application.spec(:spark, :vsn)}; " <>
+        "Code.compile_quoted reported the refused endpoint and accepted the valid control"
+    )
   end
 
   test "a maximum below the built-in effective default is rejected" do
     module = fixture_module()
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         compile_endpoint(module, max_overlap_seconds: 86_399)
-      end
+      end)
 
     assert [{^module, [%Spark.Error.DslError{} = error]}] = errors
     assert error.path == [:endpoint, :max_overlap_seconds]
@@ -45,9 +52,9 @@ defmodule AshHooks.EndpointOverlapVerifierTest do
     module = fixture_module()
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         compile_endpoint(module, max_overlap_seconds: 60, default_overlap_seconds: 61)
-      end
+      end)
 
     assert [{^module, [%Spark.Error.DslError{} = error]}] = errors
     assert error.path == [:endpoint, :max_overlap_seconds]
@@ -79,9 +86,9 @@ defmodule AshHooks.EndpointOverlapVerifierTest do
           [default_overlap_seconds: 120]
         ] do
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           compile_endpoint(fixture_module(), opts)
-        end
+        end)
 
       assert errors == []
     end
@@ -91,9 +98,9 @@ defmodule AshHooks.EndpointOverlapVerifierTest do
     module = fixture_module()
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         compile_endpoint(module, key_lifecycle: :off, legacy_key_lifecycle: :on)
-      end
+      end)
 
     assert [{^module, [%Spark.Error.DslError{} = error]}] = errors
     assert error.path == [:endpoint, :legacy_key_lifecycle]

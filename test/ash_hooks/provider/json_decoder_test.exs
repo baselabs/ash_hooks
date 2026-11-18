@@ -1,10 +1,9 @@
 defmodule AshHooks.Provider.JsonDecoderTest do
   use ExUnit.Case, async: false
-  require Spark.Test
 
   alias AshHooks.{Ingress, Provider}
   alias AshHooks.Provider.{Scheme, Signature}
-  alias AshHooks.Test.Repo
+  alias AshHooks.Test.{Dsl, Repo}
 
   @moduletag capture_log: true
 
@@ -352,9 +351,9 @@ defmodule AshHooks.Provider.JsonDecoderTest do
         ] do
       for decoder <- [:strict, {Jason, :decode, []}] do
         errors =
-          Spark.Test.dsl_errors do
+          Dsl.errors(fn ->
             ledger(provider, decoder)
-          end
+          end)
 
         assert [{_, [%Spark.Error.DslError{} = error]}] = errors,
                "expected decoder guard for #{inspect(provider)} with #{inspect(decoder)}"
@@ -379,9 +378,9 @@ defmodule AshHooks.Provider.JsonDecoderTest do
 
     try do
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           ledger(Legacy, {Jason, :decode, []})
-        end
+        end)
 
       assert [{_, [%Spark.Error.DslError{} = error]}] = errors
       assert error.message =~ "decode_payload/2"

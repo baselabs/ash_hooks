@@ -5,9 +5,14 @@ defmodule AshHooks.Test.KeyRegistryCases do
   alias Ash.Resource.Info
   alias AshHooks.KeyRegistry
   alias AshHooks.KeyRegistry.{Storage, Transitions}
-  alias AshHooks.Test.{AnswerCustodian, CustodySigningCases, RegistryCustodian, RegistryOtherRepo}
+  alias AshHooks.Test.{
+    AnswerCustodian,
+    CustodySigningCases,
+    Dsl,
+    RegistryCustodian,
+    RegistryOtherRepo
+  }
   alias Spark.Dsl.Extension
-  require Spark.Test
   require Ash.Query
 
   @clock ~U[2026-11-14 12:00:00.000000Z]
@@ -665,9 +670,9 @@ defmodule AshHooks.Test.KeyRegistryCases do
   def configuration_guards(ctx) do
     for opts <- [[key_lifecycle: :off], [key_registry: nil]] do
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           compile_endpoint(ctx, unique(ctx, "Invalid"), opts)
-        end
+        end)
 
       assert [{_, errors}] = errors
       assert Enum.any?(errors, &(Exception.message(&1) =~ "requires"))
@@ -675,7 +680,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
 
     for layer <- [Ash.DataLayer.Ets, Ash.DataLayer.Simple] do
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           name = unique(ctx, "InvalidRegistry")
 
           Module.create(
@@ -685,7 +690,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
             end,
             Macro.Env.location(__ENV__)
           )
-        end
+        end)
 
       assert [{_, [%Spark.Error.DslError{} = error]}] = errors
       assert Exception.message(error) =~ "AshPostgres or AshSqlite"
@@ -878,9 +883,9 @@ defmodule AshHooks.Test.KeyRegistryCases do
           ]
         ] do
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           compile_endpoint(ctx, unique(ctx, "StorageGuard"), opts)
-        end
+        end)
 
       assert [{_, [_ | _]}] = errors
     end
@@ -955,9 +960,9 @@ defmodule AshHooks.Test.KeyRegistryCases do
     on_exit(fn -> purge([registry]) end)
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         compile_registry(%{ctx | registry: registry} |> Map.put(:extra_pk?, true))
-      end
+      end)
 
     assert [{^registry, [%Spark.Error.DslError{} = error]}] = errors
     assert Exception.message(error) =~ "sole primary key"
@@ -1265,7 +1270,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
       on_exit(fn -> purge([name]) end)
 
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           Module.create(
             name,
             quote do
@@ -1288,7 +1293,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
             end,
             Macro.Env.location(__ENV__)
           )
-        end
+        end)
 
       assert [{^name, errors}] = errors
 

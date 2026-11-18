@@ -1,6 +1,7 @@
 defmodule AshHooksTest do
   use ExUnit.Case, async: true
-  require Spark.Test
+
+  alias AshHooks.Test.Dsl
 
   defmodule Subject do
     use Ash.Resource,
@@ -70,26 +71,30 @@ defmodule AshHooksTest do
   describe "replay-window-requires-timestamp verifier (fail-closed)" do
     test "a replay window on a provider with no trustworthy timestamp is rejected" do
       errors =
-        Spark.Test.dsl_errors do
-          defmodule WindowedNoTimestamp do
-            use Ash.Resource,
-              domain: nil,
-              data_layer: Ash.DataLayer.Simple,
-              extensions: [AshHooks]
+        Dsl.errors(fn ->
+          Module.create(
+            Module.concat(__MODULE__, "WindowedNoTimestamp"),
+            quote do
+              use Ash.Resource,
+                domain: nil,
+                data_layer: Ash.DataLayer.Simple,
+                extensions: [AshHooks]
 
-            attributes do
-              uuid_primary_key :id
-            end
-
-            webhooks do
-              inbound :mock do
-                provider(AshHooks.Provider.Mock)
-                secret {AshHooksTest, :secret, []}
-                replay_window_seconds 300
+              attributes do
+                uuid_primary_key :id
               end
-            end
-          end
-        end
+
+              webhooks do
+                inbound :mock do
+                  provider(AshHooks.Provider.Mock)
+                  secret {AshHooksTest, :secret, []}
+                  replay_window_seconds 300
+                end
+              end
+            end,
+            Macro.Env.location(__ENV__)
+          )
+        end)
 
       assert [{_module, [%Spark.Error.DslError{} = error]}] = errors
       assert error.message =~ "trustworthy timestamp"

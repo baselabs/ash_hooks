@@ -1,9 +1,8 @@
 defmodule AshHooks.HostExtensionDslTest do
   use ExUnit.Case, async: false
 
-  require Spark.Test
-
   alias Ash.Resource.Info, as: ResourceInfo
+  alias AshHooks.Test.Dsl
   alias Spark.Error.DslError
 
   defmodule NoBehaviour do
@@ -172,10 +171,7 @@ defmodule AshHooks.HostExtensionDslTest do
   end
 
   defp assert_dsl_error(pattern, fun) do
-    errors =
-      Spark.Test.dsl_errors do
-        fun.()
-      end
+    errors = Dsl.errors(fun)
 
     assert [{_module, [%DslError{} = error]}] = errors
     assert Exception.message(error) =~ pattern

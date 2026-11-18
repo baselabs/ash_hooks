@@ -2,8 +2,8 @@ defmodule AshHooks.InboundSourceExtensionTest do
   use ExUnit.Case, async: false
   alias Ash.Resource.Info
   alias AshHooks.InboundSource.Transformers.AddSourceFields
+  alias AshHooks.Test.Dsl
   alias Spark.Dsl.Extension
-  require Spark.Test
 
   defmodule ByteProvider do
     def webhook_signing_secret(_), do: {:ok, "declaration-key"}
@@ -107,9 +107,9 @@ defmodule AshHooks.InboundSourceExtensionTest do
     assert compile_source()
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         compile_source(source_tenancy: false, ledger_tenancy: false, registry_tenancy: false)
-      end
+      end)
 
     assert errors == []
   end
@@ -201,7 +201,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
     source = compile_source()
     declaration = quote(do: inbound(:checked, source_record: unquote(source)))
 
-    errors = Spark.Test.dsl_errors(do: compile_inbound(declaration))
+    errors = Dsl.errors(fn -> compile_inbound(declaration) end)
     assert [{_, errors}] = errors
     assert Enum.any?(errors, &(Exception.message(&1) =~ "record_provider_alias :on"))
 
@@ -233,7 +233,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
       declaration = quote(do: inbound(:checked, source_record: unquote(source)))
 
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           compile_inbound(
             declaration,
             quote do
@@ -242,7 +242,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
             end,
             ledger
           )
-        end
+        end)
 
       assert [{_, [%Spark.Error.DslError{} = error]}] = errors
       assert error.message =~ "decode_payload/2"
@@ -271,12 +271,12 @@ defmodule AshHooks.InboundSourceExtensionTest do
     source = compile_source()
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         compile_inbound(
           quote(do: inbound(:checked, source_record: unquote(source))),
           quote(do: record_provider_alias(:on))
         )
-      end
+      end)
 
     assert [{_, errors}] = errors
     assert Enum.any?(errors, &(Exception.message(&1) =~ "source_record ledger"))
@@ -286,7 +286,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
     declaration =
       quote(do: inbound(:checked, provider: AshHooks.Test.CustodySchemeProvider))
 
-    errors = Spark.Test.dsl_errors(do: compile_inbound(declaration))
+    errors = Dsl.errors(fn -> compile_inbound(declaration) end)
     assert [{_, errors}] = errors
     assert Enum.any?(errors, &(Exception.message(&1) =~ "requires secret"))
   end
@@ -345,7 +345,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
   end
 
   defp assert_source_error(opts, message) do
-    errors = Spark.Test.dsl_errors(do: compile_source(opts))
+    errors = Dsl.errors(fn -> compile_source(opts) end)
     assert [{_, errors}] = errors
     assert Enum.any?(errors, &(Exception.message(&1) =~ message))
   end

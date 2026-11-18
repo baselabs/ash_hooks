@@ -34,11 +34,11 @@ defmodule AshHooks.OutboundDeliveryTest do
   end
 
   use ExUnit.Case, async: false
-  require Spark.Test
 
   alias Ash.Resource.Info
 
   alias AshHooks.OutboundDeliveryTest.Delivery
+  alias AshHooks.Test.Dsl
 
   describe "injected delivery attributes" do
     test "the machine fields are present with their constraints" do
@@ -204,22 +204,26 @@ defmodule AshHooks.OutboundDeliveryTest do
   describe "ownership-field verifier" do
     test "rejects a host-defined dispatch route with incompatible storage" do
       errors =
-        Spark.Test.dsl_errors do
-          defmodule Elixir.AshHooks.OutboundDeliveryTest.BadRouteDelivery do
-            use Ash.Resource,
-              domain: nil,
-              data_layer: Ash.DataLayer.Simple,
-              extensions: [Elixir.AshHooks.OutboundDelivery]
+        Dsl.errors(fn ->
+          Module.create(
+            Elixir.AshHooks.OutboundDeliveryTest.BadRouteDelivery,
+            quote do
+              use Ash.Resource,
+                domain: nil,
+                data_layer: Ash.DataLayer.Simple,
+                extensions: [Elixir.AshHooks.OutboundDelivery]
 
-            attributes do
-              attribute(:dispatch_route, :integer, allow_nil?: false)
-            end
+              attributes do
+                attribute(:dispatch_route, :integer, allow_nil?: false)
+              end
 
-            actions do
-              defaults([:read])
-            end
-          end
-        end
+              actions do
+                defaults([:read])
+              end
+            end,
+            Macro.Env.location(__ENV__)
+          )
+        end)
 
       assert Enum.any?(errors, fn
                {AshHooks.OutboundDeliveryTest.BadRouteDelivery, module_errors} ->
@@ -238,22 +242,26 @@ defmodule AshHooks.OutboundDeliveryTest do
 
     test "rejects a nullable host-defined dispatch source" do
       errors =
-        Spark.Test.dsl_errors do
-          defmodule Elixir.AshHooks.OutboundDeliveryTest.NullableSourceDelivery do
-            use Ash.Resource,
-              domain: nil,
-              data_layer: Ash.DataLayer.Simple,
-              extensions: [Elixir.AshHooks.OutboundDelivery]
+        Dsl.errors(fn ->
+          Module.create(
+            Elixir.AshHooks.OutboundDeliveryTest.NullableSourceDelivery,
+            quote do
+              use Ash.Resource,
+                domain: nil,
+                data_layer: Ash.DataLayer.Simple,
+                extensions: [Elixir.AshHooks.OutboundDelivery]
 
-            attributes do
-              attribute(:dispatch_source, :string, allow_nil?: true)
-            end
+              attributes do
+                attribute(:dispatch_source, :string, allow_nil?: true)
+              end
 
-            actions do
-              defaults([:read])
-            end
-          end
-        end
+              actions do
+                defaults([:read])
+              end
+            end,
+            Macro.Env.location(__ENV__)
+          )
+        end)
 
       assert Enum.any?(errors, fn
                {AshHooks.OutboundDeliveryTest.NullableSourceDelivery, module_errors} ->
@@ -272,26 +280,30 @@ defmodule AshHooks.OutboundDeliveryTest do
 
     test "rejects a route column too short for an opaque route identifier" do
       errors =
-        Spark.Test.dsl_errors do
-          defmodule Elixir.AshHooks.OutboundDeliveryTest.ShortRouteDelivery do
-            use Ash.Resource,
-              domain: nil,
-              data_layer: Ash.DataLayer.Simple,
-              extensions: [Elixir.AshHooks.OutboundDelivery]
+        Dsl.errors(fn ->
+          Module.create(
+            Elixir.AshHooks.OutboundDeliveryTest.ShortRouteDelivery,
+            quote do
+              use Ash.Resource,
+                domain: nil,
+                data_layer: Ash.DataLayer.Simple,
+                extensions: [Elixir.AshHooks.OutboundDelivery]
 
-            attributes do
-              attribute(:dispatch_route, :string,
-                allow_nil?: false,
-                default: "v1:route:unbound",
-                constraints: [max_length: 255]
-              )
-            end
+              attributes do
+                attribute(:dispatch_route, :string,
+                  allow_nil?: false,
+                  default: "v1:route:unbound",
+                  constraints: [max_length: 255]
+                )
+              end
 
-            actions do
-              defaults([:read])
-            end
-          end
-        end
+              actions do
+                defaults([:read])
+              end
+            end,
+            Macro.Env.location(__ENV__)
+          )
+        end)
 
       assert Enum.any?(errors, fn
                {AshHooks.OutboundDeliveryTest.ShortRouteDelivery, module_errors} ->
@@ -310,18 +322,22 @@ defmodule AshHooks.OutboundDeliveryTest do
 
     test "accepts the exact generated ownership-field contract" do
       errors =
-        Spark.Test.dsl_errors do
-          defmodule Elixir.AshHooks.OutboundDeliveryTest.ValidOwnershipDelivery do
-            use Ash.Resource,
-              domain: nil,
-              data_layer: Ash.DataLayer.Simple,
-              extensions: [Elixir.AshHooks.OutboundDelivery]
+        Dsl.errors(fn ->
+          Module.create(
+            Elixir.AshHooks.OutboundDeliveryTest.ValidOwnershipDelivery,
+            quote do
+              use Ash.Resource,
+                domain: nil,
+                data_layer: Ash.DataLayer.Simple,
+                extensions: [Elixir.AshHooks.OutboundDelivery]
 
-            actions do
-              defaults([:read])
-            end
-          end
-        end
+              actions do
+                defaults([:read])
+              end
+            end,
+            Macro.Env.location(__ENV__)
+          )
+        end)
 
       refute Enum.any?(errors, fn
                {AshHooks.OutboundDeliveryTest.ValidOwnershipDelivery, module_errors} ->

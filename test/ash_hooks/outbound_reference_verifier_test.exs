@@ -1,5 +1,5 @@
 defmodule AshHooks.OutboundReferenceVerifierFixtures do
-  defmacro define_resources(suffix, endpoint_kind, subscription_kind, delivery_kind, emitter?) do
+  def define_resources(suffix, endpoint_kind, subscription_kind, delivery_kind, emitter?) do
     base = Module.concat(AshHooks.OutboundReferenceVerifierTest, suffix)
 
     modules = %{
@@ -12,10 +12,10 @@ defmodule AshHooks.OutboundReferenceVerifierFixtures do
     endpoint_attributes = endpoint_attributes(endpoint_kind)
     subscription_attributes = subscription_attributes(subscription_kind)
     delivery_attributes = delivery_attributes(delivery_kind)
-    emitter = emitter_definition(modules, emitter?)
 
-    quote do
-      defmodule unquote(modules.endpoint) do
+    Module.create(
+      modules.endpoint,
+      quote do
         use Ash.Resource,
           domain: nil,
           data_layer: AshSqlite.DataLayer,
@@ -34,9 +34,13 @@ defmodule AshHooks.OutboundReferenceVerifierFixtures do
         actions do
           defaults([:read])
         end
-      end
+      end,
+      Macro.Env.location(__ENV__)
+    )
 
-      defmodule unquote(modules.subscription) do
+    Module.create(
+      modules.subscription,
+      quote do
         use Ash.Resource,
           domain: nil,
           data_layer: AshSqlite.DataLayer,
@@ -59,9 +63,13 @@ defmodule AshHooks.OutboundReferenceVerifierFixtures do
         actions do
           defaults([:read])
         end
-      end
+      end,
+      Macro.Env.location(__ENV__)
+    )
 
-      defmodule unquote(modules.delivery) do
+    Module.create(
+      modules.delivery,
+      quote do
         use Ash.Resource,
           domain: nil,
           data_layer: AshSqlite.DataLayer,
@@ -80,10 +88,11 @@ defmodule AshHooks.OutboundReferenceVerifierFixtures do
         actions do
           defaults([:read])
         end
-      end
+      end,
+      Macro.Env.location(__ENV__)
+    )
 
-      unquote(emitter)
-    end
+    emitter_definition(modules, emitter?)
   end
 
   defp endpoint_attributes(:uuid), do: quote(do: uuid_primary_key(:endpoint_key))
@@ -141,8 +150,9 @@ defmodule AshHooks.OutboundReferenceVerifierFixtures do
   defp emitter_definition(_modules, false), do: nil
 
   defp emitter_definition(modules, true) do
-    quote do
-      defmodule unquote(modules.emitter) do
+    Module.create(
+      modules.emitter,
+      quote do
         use Ash.Resource,
           domain: nil,
           data_layer: AshSqlite.DataLayer,
@@ -168,28 +178,27 @@ defmodule AshHooks.OutboundReferenceVerifierFixtures do
             deliveries(unquote(modules.delivery))
           end
         end
-      end
-    end
+      end,
+      Macro.Env.location(__ENV__)
+    )
   end
 end
 
 defmodule AshHooks.OutboundReferenceVerifierTest do
   use ExUnit.Case, async: false
 
-  require Spark.Test
-  require AshHooks.OutboundReferenceVerifierFixtures
-
   import AshHooks.OutboundReferenceVerifierFixtures, only: [define_resources: 5]
 
   alias Ash.Resource.Info, as: ResourceInfo
+  alias AshHooks.Test.Dsl
 
   test "renamed UUIDv7 endpoint and subscription keys compile with compatible redeclared references" do
     modules = modules("ValidV7")
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         define_resources("ValidV7", :v7, :v7_compatible, :v7_compatible, true)
-      end
+      end)
 
     try do
       assert errors == []
@@ -204,9 +213,9 @@ defmodule AshHooks.OutboundReferenceVerifierTest do
     modules = modules("IntegerEndpoint")
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         define_resources("IntegerEndpoint", :integer, :uuid, :uuid, false)
-      end
+      end)
 
     assert_compile_error(
       errors,
@@ -221,9 +230,9 @@ defmodule AshHooks.OutboundReferenceVerifierTest do
     modules = modules("CompositeEndpoint")
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         define_resources("CompositeEndpoint", :composite, :uuid, :uuid, false)
-      end
+      end)
 
     assert_compile_error(
       errors,
@@ -238,9 +247,9 @@ defmodule AshHooks.OutboundReferenceVerifierTest do
     modules = modules("IntegerSubscription")
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         define_resources("IntegerSubscription", :uuid, :integer, :uuid, false)
-      end
+      end)
 
     assert_compile_error(
       errors,
@@ -255,9 +264,9 @@ defmodule AshHooks.OutboundReferenceVerifierTest do
     modules = modules("BadSubscriptionReference")
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         define_resources("BadSubscriptionReference", :uuid, :bad_ref, :uuid, false)
-      end
+      end)
 
     assert_compile_error(
       errors,
@@ -272,9 +281,9 @@ defmodule AshHooks.OutboundReferenceVerifierTest do
     modules = modules("BadDeliveryEndpointReference")
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         define_resources("BadDeliveryEndpointReference", :uuid, :uuid, :bad_endpoint, true)
-      end
+      end)
 
     assert_compile_error(
       errors,
@@ -289,7 +298,7 @@ defmodule AshHooks.OutboundReferenceVerifierTest do
     modules = modules("BadDeliverySubscriptionReference")
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         define_resources(
           "BadDeliverySubscriptionReference",
           :uuid,
@@ -297,7 +306,7 @@ defmodule AshHooks.OutboundReferenceVerifierTest do
           :bad_subscription,
           true
         )
-      end
+      end)
 
     assert_compile_error(
       errors,
@@ -312,32 +321,36 @@ defmodule AshHooks.OutboundReferenceVerifierTest do
     resource = AshHooks.OutboundReferenceVerifierTest.NonResourceEndpoint.Subscription
 
     errors =
-      Spark.Test.dsl_errors do
-        defmodule Elixir.AshHooks.OutboundReferenceVerifierTest.NonResourceEndpoint.Subscription do
-          use Ash.Resource,
-            domain: nil,
-            data_layer: AshSqlite.DataLayer,
-            validate_domain_inclusion?: false,
-            extensions: [AshHooks.Subscription]
+      Dsl.errors(fn ->
+        Module.create(
+          Elixir.AshHooks.OutboundReferenceVerifierTest.NonResourceEndpoint.Subscription,
+          quote do
+            use Ash.Resource,
+              domain: nil,
+              data_layer: AshSqlite.DataLayer,
+              validate_domain_inclusion?: false,
+              extensions: [AshHooks.Subscription]
 
-          sqlite do
-            table("outbound_reference_verifier_subscriptions")
-            repo(AshHooks.Test.Repo)
-          end
+            sqlite do
+              table("outbound_reference_verifier_subscriptions")
+              repo(AshHooks.Test.Repo)
+            end
 
-          attributes do
-            uuid_primary_key(:subscription_key)
-          end
+            attributes do
+              uuid_primary_key(:subscription_key)
+            end
 
-          subscription do
-            endpoint_resource(String)
-          end
+            subscription do
+              endpoint_resource(String)
+            end
 
-          actions do
-            defaults([:read])
-          end
-        end
-      end
+            actions do
+              defaults([:read])
+            end
+          end,
+          Macro.Env.location(__ENV__)
+        )
+      end)
 
     assert [{^resource, [%Spark.Error.DslError{} = error]}] = errors
 

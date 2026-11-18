@@ -33,12 +33,12 @@ end
 
 defmodule AshHooks.InjectedAttributesTest do
   use ExUnit.Case, async: false
-  require Spark.Test
 
   alias Ash.Resource.{Builder, Info}
   alias AshHooks.InboundSource.Transformers.AddSourceFields
   alias AshHooks.InjectedAttributeStates
   alias AshHooks.Subscription
+  alias AshHooks.Test.Dsl
   alias AshHooks.Verifiers.InjectedAttributes
   alias Spark.Dsl.Transformer
   alias Spark.Error.DslError
@@ -151,13 +151,13 @@ defmodule AshHooks.InjectedAttributesTest do
 
     for {name, type} <- [{:paused, :boolean}] do
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           subscription(
             quote do
               attribute unquote(name), unquote(type), allow_nil?: true
             end
           )
-        end
+        end)
 
       assert [{_, [error]}] = errors
       assert Exception.message(error) =~ ~r/allow_nil\?: true.*required/s
@@ -199,13 +199,13 @@ defmodule AshHooks.InjectedAttributesTest do
              )
 
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           subscription(
             quote do
               attribute :event_types, unquote(Macro.escape(type)), allow_nil?: false
             end
           )
-        end
+        end)
 
       assert [{_, [error]}] = errors
       assert Exception.message(error) =~ "accepted shapes"
@@ -218,14 +218,14 @@ defmodule AshHooks.InjectedAttributesTest do
       element = @element
 
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           subscription(
             quote do
               attribute :event_types, {:array, unquote(element)}, allow_nil?: true
             end,
             AshSqlite.DataLayer
           )
-        end
+        end)
 
       assert [{_, [error]}] = errors
       assert Exception.message(error) =~ ":erlang.term_to_binary"
@@ -242,9 +242,9 @@ defmodule AshHooks.InjectedAttributesTest do
     end
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         subscription(quote do: attribute(:event_types, :term, allow_nil?: true))
-      end
+      end)
 
     assert [{_, [error]}] = errors
     assert Exception.message(error) =~ "accepted shapes"

@@ -684,10 +684,9 @@ defmodule AshHooks.TenancyTest do
   use ExUnit.Case, async: false
 
   require Ash.Query
-  require Spark.Test
 
   alias AshHooks.{Dispatcher, Event, Ingress}
-  alias AshHooks.Test.Repo
+  alias AshHooks.Test.{Dsl, Repo}
 
   @endpoints "tenancy_test_endpoints"
   @subscriptions "tenancy_test_subscriptions"
@@ -1016,37 +1015,41 @@ defmodule AshHooks.TenancyTest do
 
   test "pausable subscriptions reject tenant-bypassing update actions" do
     errors =
-      Spark.Test.dsl_errors do
-        defmodule Elixir.AshHooks.TenancyTest.PauseBypassProbe do
-          @moduledoc false
-          use Ash.Resource,
-            data_layer: Ash.DataLayer.Simple,
-            extensions: [AshHooks.Subscription]
+      Dsl.errors(fn ->
+        Module.create(
+          Elixir.AshHooks.TenancyTest.PauseBypassProbe,
+          quote do
+            @moduledoc false
+            use Ash.Resource,
+              data_layer: Ash.DataLayer.Simple,
+              extensions: [AshHooks.Subscription]
 
-          attributes do
-            attribute(:org_id, :string, allow_nil?: false)
-          end
-
-          multitenancy do
-            strategy(:attribute)
-            attribute(:org_id)
-          end
-
-          subscription do
-            endpoint_resource(AshHooks.TenancyTest.Endpoint)
-            pausable(:on)
-          end
-
-          actions do
-            defaults([:read])
-
-            update :pause_all do
-              multitenancy(:bypass)
-              accept([:paused])
+            attributes do
+              attribute(:org_id, :string, allow_nil?: false)
             end
-          end
-        end
-      end
+
+            multitenancy do
+              strategy(:attribute)
+              attribute(:org_id)
+            end
+
+            subscription do
+              endpoint_resource(AshHooks.TenancyTest.Endpoint)
+              pausable(:on)
+            end
+
+            actions do
+              defaults([:read])
+
+              update :pause_all do
+                multitenancy(:bypass)
+                accept([:paused])
+              end
+            end
+          end,
+          Macro.Env.location(__ENV__)
+        )
+      end)
 
     assert [{AshHooks.TenancyTest.PauseBypassProbe, [%Spark.Error.DslError{} = error]}] = errors
     assert Exception.message(error) =~ "multitenancy :bypass"
@@ -1768,21 +1771,25 @@ defmodule AshHooks.TenancyTest do
 
   test "the use form compiles for an app-level provider (neither secret callback) and its default /2 fails closed" do
     errors =
-      Spark.Test.dsl_errors do
-        defmodule Elixir.AshHooks.TenancyTest.AppScopeProbeProvider do
-          @moduledoc false
-          use AshHooks.Provider
+      Dsl.errors(fn ->
+        Module.create(
+          Elixir.AshHooks.TenancyTest.AppScopeProbeProvider,
+          quote do
+            @moduledoc false
+            use AshHooks.Provider
 
-          @impl AshHooks.Provider
-          def verify_signature(_raw, _ctx, _secret), do: :ok
+            @impl AshHooks.Provider
+            def verify_signature(_raw, _ctx, _secret), do: :ok
 
-          @impl AshHooks.Provider
-          def parse_event_type(_p), do: {:ok, :counted}
+            @impl AshHooks.Provider
+            def parse_event_type(_p), do: {:ok, :counted}
 
-          @impl AshHooks.Provider
-          def handle_event(t, p), do: {:ok, %AshHooks.Event{type: t, payload: p}}
-        end
-      end
+            @impl AshHooks.Provider
+            def handle_event(t, p), do: {:ok, %AshHooks.Event{type: t, payload: p}}
+          end,
+          Macro.Env.location(__ENV__)
+        )
+      end)
 
     # compiles clean with NO webhook_signing_secret clause at all — the
     # overridable /2 default must not force a local /1 (cross-vendor
@@ -1905,32 +1912,36 @@ defmodule AshHooks.TenancyTest do
 
   test "a multitenant package resource with a bypass-marked action fails verification" do
     errors =
-      Spark.Test.dsl_errors do
-        defmodule Elixir.AshHooks.TenancyTest.BypassProbe do
-          @moduledoc false
-          use Ash.Resource,
-            data_layer: Ash.DataLayer.Simple,
-            extensions: [AshHooks.InboundDelivery]
+      Dsl.errors(fn ->
+        Module.create(
+          Elixir.AshHooks.TenancyTest.BypassProbe,
+          quote do
+            @moduledoc false
+            use Ash.Resource,
+              data_layer: Ash.DataLayer.Simple,
+              extensions: [AshHooks.InboundDelivery]
 
-          attributes do
-            attribute(:org_id, :string, allow_nil?: false)
-          end
-
-          multitenancy do
-            strategy(:attribute)
-            attribute(:org_id)
-          end
-
-          actions do
-            defaults([:read])
-
-            update :flip_global do
-              multitenancy(:bypass)
-              accept([])
+            attributes do
+              attribute(:org_id, :string, allow_nil?: false)
             end
-          end
-        end
-      end
+
+            multitenancy do
+              strategy(:attribute)
+              attribute(:org_id)
+            end
+
+            actions do
+              defaults([:read])
+
+              update :flip_global do
+                multitenancy(:bypass)
+                accept([])
+              end
+            end
+          end,
+          Macro.Env.location(__ENV__)
+        )
+      end)
 
     assert [{AshHooks.TenancyTest.BypassProbe, [%Spark.Error.DslError{} = error]}] = errors
     assert Exception.message(error) =~ "multitenancy :bypass"
@@ -1942,31 +1953,35 @@ defmodule AshHooks.TenancyTest do
 
   test "a GENERIC action on a multitenant package resource verifies clean (the guard Map.gets, never struct-accesses)" do
     errors =
-      Spark.Test.dsl_errors do
-        defmodule Elixir.AshHooks.TenancyTest.GenericActionProbe do
-          @moduledoc false
-          use Ash.Resource,
-            data_layer: Ash.DataLayer.Simple,
-            extensions: [AshHooks.OutboundDelivery]
+      Dsl.errors(fn ->
+        Module.create(
+          Elixir.AshHooks.TenancyTest.GenericActionProbe,
+          quote do
+            @moduledoc false
+            use Ash.Resource,
+              data_layer: Ash.DataLayer.Simple,
+              extensions: [AshHooks.OutboundDelivery]
 
-          attributes do
-            attribute(:org_id, :string, allow_nil?: false)
-          end
-
-          multitenancy do
-            strategy(:attribute)
-            attribute(:org_id)
-          end
-
-          actions do
-            defaults([:read])
-
-            action :pending_count, :integer do
-              run(fn _input, _ctx -> {:ok, 0} end)
+            attributes do
+              attribute(:org_id, :string, allow_nil?: false)
             end
-          end
-        end
-      end
+
+            multitenancy do
+              strategy(:attribute)
+              attribute(:org_id)
+            end
+
+            actions do
+              defaults([:read])
+
+              action :pending_count, :integer do
+                run(fn _input, _ctx -> {:ok, 0} end)
+              end
+            end
+          end,
+          Macro.Env.location(__ENV__)
+        )
+      end)
 
     # the generic action entity carries no :multitenancy key — struct
     # access raised KeyError here (cross-vendor finding, both peers)
@@ -1978,31 +1993,35 @@ defmodule AshHooks.TenancyTest do
 
   test "an :allow_global action on a multitenant package resource is rejected — the per-action twin of global?: true" do
     errors =
-      Spark.Test.dsl_errors do
-        defmodule Elixir.AshHooks.TenancyTest.AllowGlobalProbe do
-          @moduledoc false
-          use Ash.Resource,
-            data_layer: Ash.DataLayer.Simple,
-            extensions: [AshHooks.InboundDelivery]
+      Dsl.errors(fn ->
+        Module.create(
+          Elixir.AshHooks.TenancyTest.AllowGlobalProbe,
+          quote do
+            @moduledoc false
+            use Ash.Resource,
+              data_layer: Ash.DataLayer.Simple,
+              extensions: [AshHooks.InboundDelivery]
 
-          attributes do
-            attribute(:org_id, :string, allow_nil?: false)
-          end
-
-          multitenancy do
-            strategy(:attribute)
-            attribute(:org_id)
-          end
-
-          actions do
-            defaults([:read])
-
-            read :all_rows do
-              multitenancy(:allow_global)
+            attributes do
+              attribute(:org_id, :string, allow_nil?: false)
             end
-          end
-        end
-      end
+
+            multitenancy do
+              strategy(:attribute)
+              attribute(:org_id)
+            end
+
+            actions do
+              defaults([:read])
+
+              read :all_rows do
+                multitenancy(:allow_global)
+              end
+            end
+          end,
+          Macro.Env.location(__ENV__)
+        )
+      end)
 
     assert [{AshHooks.TenancyTest.AllowGlobalProbe, [%Spark.Error.DslError{} = error]}] = errors
     assert Exception.message(error) =~ ":allow_global"
@@ -2013,23 +2032,27 @@ defmodule AshHooks.TenancyTest do
 
   test "a single-tenant package resource with a bypass-marked action verifies clean (bypass is meaningless there)" do
     errors =
-      Spark.Test.dsl_errors do
-        defmodule Elixir.AshHooks.TenancyTest.BypassPlainProbe do
-          @moduledoc false
-          use Ash.Resource,
-            data_layer: Ash.DataLayer.Simple,
-            extensions: [AshHooks.InboundDelivery]
+      Dsl.errors(fn ->
+        Module.create(
+          Elixir.AshHooks.TenancyTest.BypassPlainProbe,
+          quote do
+            @moduledoc false
+            use Ash.Resource,
+              data_layer: Ash.DataLayer.Simple,
+              extensions: [AshHooks.InboundDelivery]
 
-          actions do
-            defaults([:read])
+            actions do
+              defaults([:read])
 
-            update :flip_global do
-              multitenancy(:bypass)
-              accept([])
+              update :flip_global do
+                multitenancy(:bypass)
+                accept([])
+              end
             end
-          end
-        end
-      end
+          end,
+          Macro.Env.location(__ENV__)
+        )
+      end)
 
     assert errors == []
   after

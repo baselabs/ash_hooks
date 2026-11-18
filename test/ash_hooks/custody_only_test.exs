@@ -2,7 +2,7 @@ defmodule AshHooks.CustodyOnlyTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
   alias AshHooks.Provider.Signature
-  require Spark.Test
+  alias AshHooks.Test.Dsl
 
   setup do
     previous = Application.fetch_env(:ash_hooks, :key_material)
@@ -157,9 +157,9 @@ defmodule AshHooks.CustodyOnlyTest do
       assert AshHooks.Provider.byte_secret_callback?(provider)
 
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           compile(declaration)
-        end
+        end)
 
       assert [{_, [error]}] = errors
       assert Exception.message(error) =~ "custody_only"
@@ -217,9 +217,9 @@ defmodule AshHooks.CustodyOnlyTest do
 
     if error_module == Spark.Error.DslError do
       errors =
-        Spark.Test.dsl_errors do
+        Dsl.errors(fn ->
           compile(body)
-        end
+        end)
 
       assert [{_, [error]}] = errors
       assert Exception.message(error) =~ "custody_only"

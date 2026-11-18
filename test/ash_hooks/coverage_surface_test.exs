@@ -3,8 +3,7 @@ defmodule AshHooks.CoverageSurfaceTest do
 
   alias AshHooks.Endpoint.{SecretRef, Url}
   alias AshHooks.InboundDelivery.Payload
-
-  require Spark.Test
+  alias AshHooks.Test.Dsl
 
   test "public storage types cast, load and dump their complete supported shapes" do
     assert Url.storage_type([]) == :text
@@ -47,7 +46,7 @@ defmodule AshHooks.CoverageSurfaceTest do
 
   test "a declaration without an option block reaches native DSL validation" do
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         Module.create(
           AshHooks.CoverageSurfaceTest.BareInbound,
           quote do
@@ -59,13 +58,13 @@ defmodule AshHooks.CoverageSurfaceTest do
           end,
           Macro.Env.location(__ENV__)
         )
-      end
+      end)
 
     assert [{AshHooks.CoverageSurfaceTest.BareInbound, errors}] = errors
     assert Enum.any?(errors, &(Exception.message(&1) =~ "has no provider"))
 
     errors =
-      Spark.Test.dsl_errors do
+      Dsl.errors(fn ->
         Module.create(
           AshHooks.CoverageSurfaceTest.BareOutbound,
           quote do
@@ -77,7 +76,7 @@ defmodule AshHooks.CoverageSurfaceTest do
           end,
           Macro.Env.location(__ENV__)
         )
-      end
+      end)
 
     assert errors == []
 
