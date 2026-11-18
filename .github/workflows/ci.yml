@@ -222,7 +222,7 @@ jobs:
   dialyzer:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 13 # twice the slowest green (cold PLT), 377s on run 44139506655
+    timeout-minutes: 15 # twice the slowest green (cold PLT), 441s on run 44211163274
     env:
       MIX_ENV: test
     steps:
