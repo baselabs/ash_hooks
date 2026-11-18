@@ -25,7 +25,7 @@ jobs:
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     environment: publish
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 114s on keyless rehearsal run 44380961139
     env:
       MIX_ENV: dev
     outputs:
@@ -147,7 +147,7 @@ jobs:
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     environment: publish
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 21s on keyless rehearsal run 44380961139
     env:
       VERSION: ${{ needs.build.outputs.version }}
       PACKAGE_SHA256: ${{ needs.build.outputs.package_sha256 }}
@@ -209,10 +209,10 @@ jobs:
     needs: [build, upload]
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     runs-on: ubuntu-24.04
-    # Twice 164s on run 44264953552 is 5.5 minutes, plus bounded propagation:
-    # 2.5 minutes package archive, 5 docs archive, 5 HexDocs and 5 registry.
-    # 23 minutes rounds up 5.5 + 2.5 + 5 + 5 + 5.
-    timeout-minutes: 23
+    # Twice 170s on keyless rehearsal run 44380961139 is 5.7 minutes, plus
+    # bounded propagation: 2.5 minutes package archive, 5 docs archive,
+    # 5 HexDocs and 5 registry. 24 minutes rounds up 5.7 + 2.5 + 5 + 5 + 5.
+    timeout-minutes: 24
     services:
       receiver:
         image: ghcr.io/tarampampam/webhook-tester@sha256:85818267b450d3d386cad6510c561e09b974183ed2832c373bc83b125fc1b221
