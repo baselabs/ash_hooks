@@ -400,7 +400,10 @@ defmodule AshHooks.Provider.SchemeIngressTest do
         Module.create(
           Module.concat(__MODULE__, "MissingProvider"),
           quote do
-            use Ash.Resource, domain: nil, data_layer: Ash.DataLayer.Simple, extensions: [AshHooks]
+            use Ash.Resource,
+              domain: nil,
+              data_layer: Ash.DataLayer.Simple,
+              extensions: [AshHooks]
 
             attributes do
               uuid_primary_key :id

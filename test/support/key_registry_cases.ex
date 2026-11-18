@@ -5,6 +5,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
   alias Ash.Resource.Info
   alias AshHooks.KeyRegistry
   alias AshHooks.KeyRegistry.{Storage, Transitions}
+
   alias AshHooks.Test.{
     AnswerCustodian,
     CustodySigningCases,
@@ -12,6 +13,7 @@ defmodule AshHooks.Test.KeyRegistryCases do
     RegistryCustodian,
     RegistryOtherRepo
   }
+
   alias Spark.Dsl.Extension
   require Ash.Query
 
