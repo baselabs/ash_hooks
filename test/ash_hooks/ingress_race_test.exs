@@ -100,12 +100,11 @@ if Code.ensure_loaded?(AshSqlite) do
         busy_timeout: 5_000
       )
 
-      # another busy-repo module's repo can still hold the name while
-      # ExUnit's lazy module teardown finishes — stop any survivor so this
-      # module starts on ITS OWN pool config (CI flake: already_started
-      # crashed setup_all and invalidated the module's tests)
-      if Process.whereis(BusyRepo), do: :ok = BusyRepo.stop(30_000)
-      {:ok, _boot} = BusyRepo.start_link()
+      # The repo runs under this module's setup_all supervisor, never linked
+      # to the setup_all process: ExUnit stops it synchronously before this
+      # module's on_exit callbacks and before the next module starts, so the
+      # name is free here and every stop below waits for the process to go.
+      start_supervised!(BusyRepo)
 
       columns = """
         id TEXT PRIMARY KEY,
@@ -130,7 +129,7 @@ if Code.ensure_loaded?(AshSqlite) do
       # the hazard substrate: same shape, NO storage unique index
       BusyRepo.query!("CREATE TABLE #{@no_index} (#{columns})")
 
-      :ok = BusyRepo.stop(30_000)
+      :ok = stop_supervised!(BusyRepo)
       Process.sleep(200)
 
       # normal busy_timeout: race losers WAIT for the write lock and then
@@ -142,9 +141,13 @@ if Code.ensure_loaded?(AshSqlite) do
         busy_timeout: 5_000
       )
 
-      {:ok, _} = BusyRepo.start_link()
+      start_supervised!(BusyRepo)
 
-      on_exit(fn -> File.rm(db_path) end)
+      on_exit(fn ->
+        Application.delete_env(:ash_hooks, BusyRepo)
+        for suffix <- ["", "-wal", "-shm"], do: File.rm(db_path <> suffix)
+      end)
+
       :ok
     end
 
