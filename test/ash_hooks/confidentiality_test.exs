@@ -31,6 +31,43 @@ defmodule AshHooks.ConfidentialityTest do
         do: refute(String.contains?(output, token))
   end
 
+  test "rules never reach grep's arguments", %{tree: tree} do
+    # A logging grep first on PATH records every argument list the scanner
+    # passes, then runs the real grep. Paths reach it through its environment,
+    # so a temporary directory with spaces cannot break the wrapper.
+    bin = Path.join(tree, "bin")
+    log = Path.join(tree, "grep-arguments.log")
+    File.mkdir_p!(bin)
+    wrapper = Path.join(bin, "grep")
+
+    File.write!(wrapper, """
+    #!/usr/bin/env bash
+    printf '%s\\n' "$*" >> "$GREP_ARGUMENTS_LOG"
+    exec "$REAL_GREP" "$@"
+    """)
+
+    File.chmod!(wrapper, 0o755)
+    scanned = Path.join(tree, "scanned")
+    File.mkdir_p!(scanned)
+    File.write!(Path.join(scanned, "document.txt"), "plain\ninvented-argument-token\n")
+
+    {output, status} =
+      System.cmd("bash", [@script, "--tree", scanned],
+        env: [
+          {"PUBLIC_DOCS_DENYLIST", "invented-argument-token"},
+          {"GREP_ARGUMENTS_LOG", log},
+          {"REAL_GREP", System.find_executable("grep")},
+          {"PATH", bin <> ":" <> System.get_env("PATH")}
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert {output, status} == {"#{Path.join(scanned, "document.txt")}:2 rule-1\n", 1}
+    arguments = File.read!(log)
+    assert arguments =~ "-aFinw -f "
+    refute arguments =~ "invented-argument-token"
+  end
+
   test "a clean tree passes, including near matches", %{tree: tree} do
     File.write!(Path.join(tree, "document.txt"), "typel-7 cedarhost_suffix cedarhost2\n")
     assert {"", 0} = run(tree, "l-7\ncedarhost")

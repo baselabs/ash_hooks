@@ -1,15 +1,21 @@
 name: CI
 
+# One run qualifies a commit: the candidate is pushed to kci/<sha>, and main
+# moves only when `qualified` passes on it. A push to main, a tag, a pull
+# request or a dispatch starts no qualification.
 on:
   push:
-    branches: [main, 'kci/**']
-    tags: ['v*']
-  workflow_dispatch:
-  pull_request:
+    branches: ['kci/**']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+# Caches are restore-only. A cache saved on a kci/<sha> ref can be restored
+# only by that ref, so the one writer is cache-warmer.yml on the default
+# branch. Each key names one build: a test lane (on the default lane also the
+# PostgreSQL and Dialyzer build, PLTs included), the floor, or dev. The warmer
+# builds exactly these keys, on the same paths.
 
 jobs:
   # Runtime versions live only in .tool-versions files. The root file
@@ -19,39 +25,25 @@ jobs:
   toolchain:
     name: Read runtime toolchains
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 16s on run 44165315179
     outputs:
-      elixir: ${{ steps.versions.outputs.elixir }}
-      otp: ${{ steps.versions.outputs.otp }}
-      beam_lanes: ${{ steps.versions.outputs.beam_lanes }}
-      test_matrix: ${{ steps.matrix.outputs.test_matrix }}
+      elixir: ${{ steps.toolchain.outputs.elixir }}
+      otp: ${{ steps.toolchain.outputs.otp }}
+      beam_lanes: ${{ steps.toolchain.outputs.beam_lanes }}
+      test_matrix: ${{ steps.toolchain.outputs.test_matrix }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Test the version-file parser
-        run: sh scripts/toolchain.sh --self-test
-      - name: Read defaults and compatibility lanes
-        id: versions
-        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
-      - name: Compose the default, no-optional and compatibility legs
-        id: matrix
-        env:
-          ELIXIR_VERSION: ${{ steps.versions.outputs.elixir }}
-          OTP_VERSION: ${{ steps.versions.outputs.otp }}
-          BEAM_LANES: ${{ steps.versions.outputs.beam_lanes }}
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os
-          default = {"elixir": os.environ["ELIXIR_VERSION"], "otp": os.environ["OTP_VERSION"]}
-          lanes = [default, {**default, "no_optional": "1"}]
-          lanes.extend(json.loads(os.environ["BEAM_LANES"]))
-          print("test_matrix=" + json.dumps({"include": lanes}, separators=(",", ":")))
-          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+        id: toolchain
 
   # The default and compatibility lanes use the full development dependencies.
   # The no-optional lane proves Oban and Plug are optional (ADR-0004).
   checks:
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 6 # twice the slowest green, 158s on run 44187378503
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}
@@ -59,22 +51,20 @@ jobs:
       MIX_ENV: test
       ASH_HOOKS_NO_OPTIONAL: ${{ matrix.no_optional }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          elixir-version: ${{ matrix.elixir }}
-          otp-version: ${{ matrix.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+          persist-credentials: false
+      - uses: ./.github/actions/beam
+        with:
+          elixir: ${{ matrix.elixir }}
+          otp: ${{ matrix.otp }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: mix-${{ matrix.elixir }}-${{ matrix.otp }}-noopt-${{ matrix.no_optional }}-${{ hashFiles('mix.lock') }}
-      - run: mix deps.get
-      # Check dependency retirement and advisories.
-      # Fresh disclosures can precede registry updates; inspect the published
-      # ranges for directly affected dependencies.
-      - run: mix hex.audit
+          key: test-${{ matrix.elixir }}-${{ matrix.otp }}-noopt-${{ matrix.no_optional }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get --check-locked
       - run: mix compile --warnings-as-errors
       - run: mix format --check-formatted
       - run: mix credo --strict
@@ -86,6 +76,7 @@ jobs:
   test:
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 13 # twice the slowest green, 368s on run 44187378503
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}
@@ -93,51 +84,56 @@ jobs:
       MIX_ENV: test
       ASH_HOOKS_NO_OPTIONAL: ${{ matrix.no_optional }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          elixir-version: ${{ matrix.elixir }}
-          otp-version: ${{ matrix.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+          persist-credentials: false
+      - uses: ./.github/actions/beam
+        with:
+          elixir: ${{ matrix.elixir }}
+          otp: ${{ matrix.otp }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
           key: test-${{ matrix.elixir }}-${{ matrix.otp }}-noopt-${{ matrix.no_optional }}-${{ hashFiles('mix.lock') }}
-      - run: mix deps.get
+      - run: mix deps.get --check-locked
       - run: mix test
       - name: Assert optional deps never loaded (no-optional leg)
         if: matrix.no_optional == '1'
         run: |
           mix run --no-start -e 'if :code.which(Oban) != :non_existing or :code.which(Plug) != :non_existing, do: (IO.puts("optional dep loaded"); System.halt(1))'
 
-  # A minimal production consumer pins the actual Ash floor, 3.37.2,
-  # on Elixir 1.20. Dev/test and optional dependencies cannot mask OTP
-  # startup requirements or unavailable APIs in this consumer graph.
+  # The suite on the floor toolchain from the committed lock, then a minimal
+  # production consumer locked at the actual Ash floor, 3.37.2, on Elixir 1.20.
+  # Dev/test and optional dependencies cannot mask OTP startup requirements or
+  # unavailable APIs in that consumer graph.
   floor:
     runs-on: ubuntu-24.04
+    timeout-minutes: 16 # twice the slowest green, 468s on run 44172722505
     env:
       MIX_ENV: test
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Read the floor toolchain
         id: versions
         run: sh scripts/toolchain.sh ci/floor/.tool-versions >> "$GITHUB_OUTPUT"
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+      - uses: ./.github/actions/beam
         with:
-          elixir-version: ${{ steps.versions.outputs.elixir }}
-          otp-version: ${{ steps.versions.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+          elixir: ${{ steps.versions.outputs.elixir }}
+          otp: ${{ steps.versions.outputs.otp }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: mix-floor-${{ steps.versions.outputs.elixir }}-${{ steps.versions.outputs.otp }}-${{ hashFiles('mix.exs') }}
-      - run: rm mix.lock
-      - run: mix deps.get
+          key: floor-${{ steps.versions.outputs.elixir }}-${{ steps.versions.outputs.otp }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get --check-locked
       - run: mix compile --warnings-as-errors
       - run: mix test
-      - run: env ASH_HOOKS_MINIMUM_ASH=1 scripts/check-consumer.sh
+      - run: scripts/check-consumer.sh
 
   # Qualify real PostgreSQL consumers, persisted workers, and delivery.
   # ASH_HOOKS_POSTGRES=1 enables the PostgreSQL resources.
@@ -145,6 +141,7 @@ jobs:
   postgres:
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 62 # twice the slowest green including the exact floor, 1841s on run 44211072814
     strategy:
       fail-fast: false
       matrix:
@@ -190,19 +187,20 @@ jobs:
         ports:
           - 52871:8080
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          elixir-version: ${{ needs.toolchain.outputs.elixir }}
-          otp-version: ${{ needs.toolchain.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+          persist-credentials: false
+      - uses: ./.github/actions/beam
+        with:
+          elixir: ${{ needs.toolchain.outputs.elixir }}
+          otp: ${{ needs.toolchain.outputs.otp }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: mix-pg-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
-      - run: mix deps.get
-      - run: mix hex.audit
+          key: test-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-noopt--${{ hashFiles('mix.lock') }}
+      - run: mix deps.get --check-locked
       - run: mix compile --warnings-as-errors
       - name: Wait for the real receiver
         run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version
@@ -216,7 +214,7 @@ jobs:
         run: env ASH_HOOKS_HTTPBUN=1 elixir scripts/check-ash-floor.exs
       - name: Upload coverage HTML on a gate miss
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cover-html-postgres-${{ matrix.postgres }}
           path: cover/
@@ -226,41 +224,46 @@ jobs:
   dialyzer:
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 13 # twice the slowest green (cold PLT), 377s on run 44139506655
     env:
       MIX_ENV: test
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          elixir-version: ${{ needs.toolchain.outputs.elixir }}
-          otp-version: ${{ needs.toolchain.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+          persist-credentials: false
+      - uses: ./.github/actions/beam
+        with:
+          elixir: ${{ needs.toolchain.outputs.elixir }}
+          otp: ${{ needs.toolchain.outputs.otp }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-            ~/.mix
-          key: dialyzer-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
-      - run: mix deps.get
+          key: test-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-noopt--${{ hashFiles('mix.lock') }}
+      - run: mix deps.get --check-locked
       - run: mix dialyzer
 
   # Verify the package archive and build HexDocs.
   package:
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 5 # twice the slowest green, 130s on run 44139506655
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          elixir-version: ${{ needs.toolchain.outputs.elixir }}
-          otp-version: ${{ needs.toolchain.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+          persist-credentials: false
+      - uses: ./.github/actions/beam
+        with:
+          elixir: ${{ needs.toolchain.outputs.elixir }}
+          otp: ${{ needs.toolchain.outputs.otp }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: package-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
-      - run: mix deps.get
+          key: dev-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get --check-locked
       - name: Regenerate formatter and DSL references
         run: |
           mix format
@@ -268,7 +271,7 @@ jobs:
           git diff --exit-code -- .formatter.exs mix.exs lib test scripts/generate-dsl-docs.exs documentation/dsls
       - name: Upload generated references and formatting on drift
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: generated-references-and-formatting
           path: |
@@ -290,6 +293,7 @@ jobs:
   livebook:
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 9 # twice the slowest green, 259s on run 43689655434
     services:
       receiver:
         image: ghcr.io/tarampampam/webhook-tester@sha256:85818267b450d3d386cad6510c561e09b974183ed2832c373bc83b125fc1b221
@@ -300,18 +304,14 @@ jobs:
         ports:
           - 52871:8080
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          elixir-version: ${{ needs.toolchain.outputs.elixir }}
-          otp-version: ${{ needs.toolchain.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+          persist-credentials: false
+      - uses: ./.github/actions/beam
         with:
-          path: |
-            ~/.mix
-            ~/.cache
-          key: livebook-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
-      - run: mix deps.get
+          elixir: ${{ needs.toolchain.outputs.elixir }}
+          otp: ${{ needs.toolchain.outputs.otp }}
+      - run: mix deps.get --check-locked
       - run: ./scripts/check-package.sh
       - name: Wait for the real receiver
         run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version
@@ -320,15 +320,16 @@ jobs:
           archive="_build/release/ash_hooks-$(grep -m1 '@version' mix.exs | sed -E 's/.*@version "([^"]+)".*/\1/').tar"
           ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive "$archive"
 
-  # Scan the development, declared-floor consumer, and hex-and-git fixture locks.
-  # Download OSV's Hex database before scanning offline in a network namespace.
-  # No lock data leaves the runner.
-  # check-advisories.sh verifies Mix lock encoding and complete entry counts.
-  # Unread dependencies and advisories fail closed.
-  # hex.audit rejects retired packages.
+  # Both dependency audits: hex.audit (retirements and the advisories Hex
+  # carries) and deps.audit (the Elixir security advisory database). OSV then
+  # scans the development, floor consumer and hex-and-git fixture locks offline
+  # in a network namespace, so no lock data leaves the runner.
+  # check-advisories.sh verifies Mix lock encoding and complete entry counts;
+  # unread dependencies and advisories fail closed.
   security:
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 114s on run 44190445327
     env:
       OSV_SCANNER_VERSION: "2.7.1"
       OSV_SCANNER_SHA256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
@@ -337,10 +338,10 @@ jobs:
     steps:
       - name: Require Linux (the scan's network namespace)
         run: test "$(uname -s)" = Linux
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Install checksum-pinned gitleaks
         run: |
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/gitleaks.tar.gz" \
@@ -350,14 +351,20 @@ jobs:
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: Prove the production secret scan rejects a runtime token and accepts clean commits
         run: python3 scripts/check-secrets.py --self-test
-      - name: Scan the pushed commit range or PR range with the repository rules
+      - name: Scan the pushed commit range with the repository rules
         run: python3 scripts/check-secrets.py
       - name: Scan the checked-out head's full history with the repository rules
         run: python3 scripts/check-secrets.py --full-history
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+      - uses: ./.github/actions/beam
         with:
-          elixir-version: ${{ needs.toolchain.outputs.elixir }}
-          otp-version: ${{ needs.toolchain.outputs.otp }}
+          elixir: ${{ needs.toolchain.outputs.elixir }}
+          otp: ${{ needs.toolchain.outputs.otp }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: dev-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
       - name: Install checksum-pinned osv-scanner
         run: |
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/osv-scanner" \
@@ -376,58 +383,80 @@ jobs:
           echo "OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=$db" >> "$GITHUB_ENV"
       - name: Fetch exactly the locked dependencies
         run: mix deps.get --check-locked
-      - name: Retired packages
+      - name: Retirements and the advisories Hex carries
         run: mix hex.audit
-      - name: Advisories in the development, fresh floor consumer and hex-and-git fixture locks
-        run: env ASH_HOOKS_MINIMUM_ASH=1 scripts/check-consumer.sh --advisories mix.lock scripts/fixtures/hex-and-git.mix.lock.fixture
+      - name: Fetch exactly the locked floor consumer dependencies
+        working-directory: test/consumer
+        env:
+          MIX_ENV: prod
+        run: mix deps.get --check-locked
+      - name: Retirements and the advisories Hex carries, floor consumer
+        working-directory: test/consumer
+        env:
+          MIX_ENV: prod
+        run: mix hex.audit
+      # mix_audit ignores a failed clone or pull of its database and would then
+      # pass every graph against no advisories. The clone happens here, where a
+      # failure fails the job, and the audit runs only on a populated snapshot.
+      - name: Clone the Elixir security advisory database
+        run: |
+          db="$HOME/.local/share/elixir-security-advisories-mirego"
+          git clone --quiet https://github.com/mirego/elixir-security-advisories.git "$db"
+          count=$(find "$db/packages" -name '*.yml' -type f | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::The Elixir security advisory database has no advisories."
+            exit 1
+          fi
+          echo "Elixir security advisory database at $(git -C "$db" rev-parse HEAD): $count advisories"
+      - name: Advisories in the Elixir security advisory database
+        run: |
+          mix deps.audit
+          mix deps.audit --path test/consumer
+          mix deps.audit --path test/floor
+      - name: Advisories in every committed lock
+        run: scripts/check-advisories.sh mix.lock test/consumer/mix.lock test/floor/mix.lock scripts/fixtures/hex-and-git.mix.lock.fixture
 
-  # The private policy is available only to trusted push qualification.
+  # The private policy reaches only the scan step, through its environment.
   confidentiality:
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/kci/') || startsWith(github.ref, 'refs/tags/v'))
     needs: toolchain
     runs-on: ubuntu-24.04
-    env:
-      PUBLIC_DOCS_DENYLIST: ${{ secrets.PUBLIC_DOCS_DENYLIST }}
+    timeout-minutes: 8 # twice the slowest green, 223s on run 44187378503
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          elixir-version: ${{ needs.toolchain.outputs.elixir }}
-          otp-version: ${{ needs.toolchain.outputs.otp }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+          persist-credentials: false
+      - uses: ./.github/actions/beam
+        with:
+          elixir: ${{ needs.toolchain.outputs.elixir }}
+          otp: ${{ needs.toolchain.outputs.otp }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: confidentiality-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
-      - run: mix deps.get
-      - run: ./scripts/check-confidentiality.sh
+          key: dev-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get --check-locked
+      - name: Scan with the private policy
+        env:
+          PUBLIC_DOCS_DENYLIST: ${{ secrets.PUBLIC_DOCS_DENYLIST }}
+        run: ./scripts/check-confidentiality.sh
 
-  # The single branch-protection check name: require `all-checks-pass`
-  # on main and every leg (checks, test matrix, floor, dialyzer, package,
-  # postgres, livebook, security) gates through it — no per-job
-  # check-name maintenance when the matrix grows.
-  all-checks-pass:
+  # The one required check: green only when every other job is.
+  qualified:
     needs: [toolchain, checks, test, floor, postgres, dialyzer, package, livebook, security, confidentiality]
     if: always()
     runs-on: ubuntu-24.04
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 7s on run 44144689313
     steps:
       - name: Require every needed job green
+        env:
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          results='${{ toJSON(needs) }}'
-          failed=$(printf '%s' "$results" | python3 -c '
-          import json, sys
-          results = json.load(sys.stdin)
-          event = "${{ github.event_name }}"
-          ref = "${{ github.ref }}"
-          policy_required = event == "push" and (ref == "refs/heads/main" or ref.startswith("refs/heads/kci/") or ref.startswith("refs/tags/v"))
-          failed = [name for name, job in results.items()
-                    if job["result"] != "success"
-                    and not (name == "confidentiality" and not policy_required and job["result"] == "skipped")]
-          print(",".join(failed))
-          ')
-          if [ -n "$failed" ]; then
-            echo "failed jobs: $failed" >&2
-            exit 1
-          fi
-          echo "all checks passed"
+          python3 - <<'PY'
+          import json, os, sys
+          results = json.loads(os.environ["RESULTS"])
+          failed = [name for name, job in results.items() if job["result"] != "success"]
+          if failed:
+              sys.exit("failed jobs: " + ", ".join(failed))
+          print("every job passed")
+          PY

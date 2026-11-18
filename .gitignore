@@ -6,7 +6,6 @@ erl_crash.dump
 
 # Dependencies
 deps/
-/test/consumer/mix.lock
 
 # Documentation
 /doc/

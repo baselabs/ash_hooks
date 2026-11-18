@@ -1,0 +1,43 @@
+name: Runtime toolchains
+description: >-
+  Reads the root .tool-versions through scripts/toolchain.sh and composes the
+  default, no-optional and compatibility lanes that CI qualifies and the cache
+  warmer builds. Runs on a checkout, before any toolchain is installed.
+outputs:
+  elixir:
+    description: The default Elixir version.
+    value: ${{ steps.versions.outputs.elixir }}
+  otp:
+    description: The default OTP version.
+    value: ${{ steps.versions.outputs.otp }}
+  beam_lanes:
+    description: The compatibility lanes, as JSON.
+    value: ${{ steps.versions.outputs.beam_lanes }}
+  test_matrix:
+    description: The default, no-optional and compatibility lanes, as a matrix include.
+    value: ${{ steps.matrix.outputs.test_matrix }}
+runs:
+  using: composite
+  steps:
+    - name: Test the version-file parser
+      shell: bash
+      run: sh scripts/toolchain.sh --self-test
+    - name: Read defaults and compatibility lanes
+      id: versions
+      shell: bash
+      run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+    - name: Compose the default, no-optional and compatibility lanes
+      id: matrix
+      shell: bash
+      env:
+        ELIXIR_VERSION: ${{ steps.versions.outputs.elixir }}
+        OTP_VERSION: ${{ steps.versions.outputs.otp }}
+        BEAM_LANES: ${{ steps.versions.outputs.beam_lanes }}
+      run: |
+        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        import json, os
+        default = {"elixir": os.environ["ELIXIR_VERSION"], "otp": os.environ["OTP_VERSION"]}
+        lanes = [default, {**default, "no_optional": "1"}]
+        lanes.extend(json.loads(os.environ["BEAM_LANES"]))
+        print("test_matrix=" + json.dumps({"include": lanes}, separators=(",", ":")))
+        PY

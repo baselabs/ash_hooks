@@ -66,6 +66,28 @@ Run focused checks while developing. Before a push, run:
 mix precommit
 ```
 
+CI resolves nothing: every graph it fetches is a committed lock, fetched with
+`--check-locked`. A change to the package requirements or to a supported floor
+also refreshes the two floor locks. The production consumer's lock is the graph
+CI compiles and audits at the floor. The floor lock is the development graph at
+the floor, which the full-suite qualification below runs on:
+
+<!-- not-run: This resolves the floor graphs' dependencies. -->
+```sh
+(cd test/consumer && MIX_ENV=prod mix deps.get)
+elixir scripts/check-ash-floor.exs --update-lock
+```
+
+CI does not run on pull requests. A maintainer runs the full workflow on the
+exact commit before it reaches `main`, and reports any failure on the pull
+request.
+
+CI only restores build caches. The one writer is
+`.github/workflows/cache-warmer.yml`, which runs hourly on `main` and builds each
+key CI restores from the committed lock: every test lane (the default lane with
+its Dialyzer PLTs), the floor and dev. A commit that changes `mix.lock` qualifies
+on a cold build until the warmer next runs.
+
 To qualify the full suite on exact Ash 3.37.2 and Spark 2.7.6, configure PostgreSQL
 as above and run:
 
@@ -76,7 +98,8 @@ ASH_HOOKS_POSTGRES=1 ASH_HOOKS_HTTPBUN=1 elixir scripts/check-ash-floor.exs
 
 This full-suite check includes a real HTTPS request using the endpoint configured in
 `test/ash_hooks/tenant_worker_postgres_test.exs` and consumes a persisted Oban.Basic
-job in a fresh BEAM process. It keeps the main lock, dependencies, and build files
+job in a fresh BEAM process. It runs on the committed `test/floor/mix.lock`, fetched
+with `--check-locked`, and keeps the main lock, dependencies, and build files
 unchanged by using `_build/ash-floor` for the minimum supported graph and removing it
 on exit. Ash requires Spark 2.7.6 or later; older Spark versions cannot resolve
 with the supported Ash floor. Opt-in
@@ -101,9 +124,9 @@ surfaces. Generated HTML is checked without rewriting it. The checker reads
 the build's project name and version through Mix without compiling or starting
 the application. Only ExDoc's final page-title separator before that identity
 and its index redirect separator before `Documentation` are exempt. Authored
-title and body text remain subject to the dash check. Trusted push CI
-runs the confidentiality scan, required-document
-qualification, and publication dash checks, and requires them in the aggregate.
+title and body text remain subject to the dash check. CI runs the
+confidentiality scan, required-document qualification, and publication dash
+checks, and requires them in `qualified`.
 Local optional-service runs remain focused unless their flags are enabled.
 
 ## Code and documentation

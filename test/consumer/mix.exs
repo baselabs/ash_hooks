@@ -7,15 +7,14 @@ defmodule AshHooks.ConsumerVerification.MixProject do
 
   def application, do: [extra_applications: [:logger]]
 
+  # A production consumer at the declared floors. The committed lock is the
+  # graph CI compiles and scans; refresh it with `MIX_ENV=prod mix deps.get`
+  # here when the floors or the package requirements change.
   defp deps do
-    source = System.get_env("ASH_HOOKS_CONSUMER_SOURCE") || Path.expand("../..", __DIR__)
-    minimum = System.get_env("ASH_HOOKS_MINIMUM_ASH") == "1"
-
-    floors =
-      if minimum,
-        do: [{:ash, "== 3.37.2", override: true}, {:spark, "== 2.7.6", override: true}],
-        else: []
-
-    [{:ash_hooks, path: source} | floors]
+    [
+      {:ash_hooks, path: Path.expand("../..", __DIR__)},
+      {:ash, "== 3.37.2", override: true},
+      {:spark, "== 2.7.6", override: true}
+    ]
   end
 end

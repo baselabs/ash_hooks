@@ -12,6 +12,8 @@
 #       Resolves the notebook's unmodified Mix.install against a throwaway
 #       local Hex registry that serves the candidate archive and the exact
 #       hex.pm tarballs of its dependency graph, signed with a throwaway key.
+#       That graph is the committed development lock, fetched with
+#       --check-locked: qualification resolves nothing new.
 #       Hex verifies each tarball's checksum against that registry, as it does
 #       for a published release. Everything is removed on exit.
 set -euo pipefail
@@ -71,8 +73,9 @@ print(name, version)
 PY
 )
 
-  # Resolve the notebook's own dependency list once against hex.pm, with the
-  # candidate supplied from its unpacked contents, to learn the exact graph.
+  # Fetch the notebook's own dependency list once, with the candidate supplied
+  # from its unpacked contents, from the committed development lock. A
+  # requirement that lock cannot satisfy fails here instead of resolving fresh.
   cat > "$work/probe.exs" <<'EXS'
 [install, name, version, candidate] = System.argv()
 name = String.to_atom(name)
@@ -94,13 +97,16 @@ defmodule NotebookProbe.MixProject do
 end
 """)
 EXS
-  (cd "$work/probe" && elixir "$work/probe.exs" "$work/install.exs" "$name" "$version" "$work/candidate" && mix deps.get >/dev/null)
+  cp "$root/mix.lock" "$work/probe/mix.lock"
+  (cd "$work/probe" && elixir "$work/probe.exs" "$work/install.exs" "$name" "$version" "$work/candidate" && mix deps.get --check-locked >/dev/null)
 
-  # Every hex.pm tarball in that graph, then the candidate itself.
+  # Every hex.pm tarball the probe fetched, then the candidate itself. The lock
+  # also lists development packages the notebook never uses; they are left out.
   elixir -e '
-    lock = System.argv() |> hd() |> File.read!() |> Code.string_to_quoted!(emit_warnings: false) |> Code.eval_quoted() |> elem(0)
-    for {_, {:hex, pkg, ver, _, _, _, "hexpm", _}} <- lock, do: IO.puts("#{pkg} #{ver}")
-  ' "$work/probe/mix.lock" > "$work/graph.txt"
+    [lock, deps] = System.argv()
+    lock = lock |> File.read!() |> Code.string_to_quoted!(emit_warnings: false) |> Code.eval_quoted() |> elem(0)
+    for {app, {:hex, pkg, ver, _, _, _, "hexpm", _}} <- lock, File.dir?(Path.join(deps, to_string(app))), do: IO.puts("#{pkg} #{ver}")
+  ' "$work/probe/mix.lock" "$work/probe/deps" > "$work/graph.txt"
   [ -s "$work/graph.txt" ] || { echo "empty dependency graph" >&2; exit 1; }
   (cd "$registry/tarballs" && while read -r pkg ver; do mix hex.package fetch "$pkg" "$ver" >/dev/null; done < "$work/graph.txt")
   cp "$archive" "$registry/tarballs/"

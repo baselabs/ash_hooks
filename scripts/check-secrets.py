@@ -32,13 +32,6 @@ def object_id(value):
 
 
 def event_range(repo, event_name, event):
-    if event_name == "pull_request":
-        pr = event["pull_request"]
-        base = object_id(pr["base"]["sha"])
-        head = object_id(pr["head"]["sha"])
-        git(repo, "rev-parse", "--verify", base + "^{commit}")
-        git(repo, "rev-parse", "--verify", head + "^{commit}")
-        return base + ".." + head
     if event_name == "push":
         head = object_id(event["after"])
         if set(head) == {"0"}:
@@ -109,8 +102,6 @@ def self_test(rules):
         events = {
             "push range": ("push", {"before": base, "after": head}),
             "first push or new branch": ("push", {"before": "0" * 40, "after": head}),
-            "PR range": ("pull_request", {"pull_request": {
-                "base": {"sha": base}, "head": {"sha": head}}}),
         }
         for label, (event_name, event) in events.items():
             revision = event_range(repo, event_name, event)

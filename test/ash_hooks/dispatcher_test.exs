@@ -1152,6 +1152,44 @@ defmodule AshHooks.DispatcherTest do
       assert entry.endpoint_id == ep.id
       assert delivery_rows() == []
     end
+
+    test "a claim lost to a dispatcher that flipped the row first is :duplicate, never enqueued" do
+      ep = endpoint!()
+      subscription!(ep.id, event_types: ["order_paid"])
+      ev = event!()
+
+      {:ok, _} = Dispatcher.dispatch(Emitter, :order_paid, ev, enqueue: &enqueue_error/2)
+
+      assert [%{status: :enqueue_failed}] = delivery_rows()
+
+      # The forced interleaving, not scheduling luck: another dispatcher's
+      # requeue commits between this dispatcher's upsert and its claim. The
+      # upsert's no-touch ON CONFLICT DO UPDATE fires this trigger, which
+      # flips the row to :pending; RETURNING does not report changes made by
+      # triggers, so the dispatcher still holds the :enqueue_failed row, and
+      # its claim matches nothing.
+      Repo.query!(
+        "CREATE TRIGGER dispatch_requeue_after_upsert AFTER UPDATE ON #{@deliveries} WHEN OLD.status = 'enqueue_failed' AND NEW.status = 'enqueue_failed' BEGIN UPDATE #{@deliveries} SET status = 'pending' WHERE id = NEW.id; END"
+      )
+
+      on_exit(fn -> Repo.query!("DROP TRIGGER IF EXISTS dispatch_requeue_after_upsert") end)
+
+      parent = self()
+
+      assert {:ok, [entry]} =
+               Dispatcher.dispatch(Emitter, :order_paid, ev,
+                 enqueue: fn delivery, _event ->
+                   send(parent, {:enqueued, delivery.id})
+                   :ok
+                 end
+               )
+
+      assert entry.status == :duplicate
+      assert entry.endpoint_id == ep.id
+      assert entry.error == nil
+      refute_received {:enqueued, _}
+      assert [%{status: :pending}] = delivery_rows()
+    end
   end
 
   describe "mark + enqueue failure composition" do
