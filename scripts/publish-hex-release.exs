@@ -25,6 +25,11 @@ defmodule PublishHexRelease do
         Hex.API.Release.publish(nil, package, auth, fn _ -> :ok end, replace: false)
       end)
 
+    # Hex's docs upload has no replace guard: it writes onto whatever release
+    # holds this version. Docs follow only a package that is served, accepted
+    # or held for approval, never a refused or failed package upload.
+    if package_result == :error, do: System.halt(1)
+
     docs_result =
       upload(docs_state, "docs", docs, fn ->
         Hex.API.ReleaseDocs.publish(nil, "ash_hooks", version, docs, auth)

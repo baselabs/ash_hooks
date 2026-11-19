@@ -104,8 +104,10 @@ Only the upload step receives `HEX_API_KEY`, through its environment. Its script
 runs outside a Mix project and refuses a loaded project before reading the key.
 It uploads the inspected package first with replacement disabled, then the
 inspected docs, only for the parts the anonymous decision marked missing. It
-never replaces a package or published docs. HTTP errors refuse without printing
-response bodies, headers, or credentials.
+never replaces a package or published docs. A refused or failed package upload
+stops the step before any docs request, because Hex's docs upload has no
+replacement guard and would write onto whatever release holds the version.
+HTTP errors refuse without printing response bodies, headers, or credentials.
 
 If Hex holds either upload for approval, the script reports its kind, approval
 URL, expiration, and archive SHA-256. It attempts both requested uploads before
