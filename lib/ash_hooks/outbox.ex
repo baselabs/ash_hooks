@@ -152,13 +152,22 @@ defmodule AshHooks.Outbox do
 
   def fanout(resource, id, opts) do
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
-         :ok <- Phase.outside_transaction(resource),
-         {:ok, row} <- fetch(resource, id, tenant) do
-      case row do
-        nil -> :missing
-        %{state: :done} -> :done
-        %{state: :failed} -> :failed
-        row -> claim(row, tenant)
+         :ok <- Phase.outside_transaction(resource) do
+      case fetch(resource, id, tenant) do
+        {:ok, nil} ->
+          emit(:claim, %{event_uuid: id}, :missing)
+          :missing
+
+        {:ok, %{state: state} = row} when state in [:done, :failed] ->
+          emit(:claim, row, state)
+          state
+
+        {:ok, row} ->
+          claim(row, tenant)
+
+        {:error, reason} ->
+          emit(:claim, %{event_uuid: id}, :error, reason)
+          {:error, reason}
       end
     end
   end
@@ -182,10 +191,12 @@ defmodule AshHooks.Outbox do
 
       {:ok, claimed} ->
         emit(:publish, claimed, :accepted)
-        emit(:claim, claimed, :claimed)
-        run(claimed, tenant)
+        result = run(claimed, tenant)
+        emit(:claim, claimed, if(result == :stale, do: :stale, else: :claimed))
+        result
 
       {:error, reason} ->
+        emit(:claim, row, :error, reason)
         {:error, reason}
     end
   end
@@ -347,7 +358,6 @@ defmodule AshHooks.Outbox do
     |> update(action, Map.put(input, :claim_token, row.claim_token), tenant)
     |> case do
       {:ok, nil} ->
-        emit(:claim, row, :stale)
         :stale
 
       {:ok, updated} ->

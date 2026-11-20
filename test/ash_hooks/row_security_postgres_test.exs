@@ -52,6 +52,62 @@ defmodule AshHooks.RowSecurityPostgresTest do
     Cases.unbound_access(context)
   end
 
+  test "replay counts a denied delivery read as skipped without attempting an insert",
+       context do
+    tenant = "tenant_a"
+
+    assert {:ok, endpoint} =
+             AshHooks.Phase.run(context.endpoint, tenant, fn ->
+               Ash.create(context.endpoint,
+                 %{url: "https://hooks.example.test/hook", secret_ref: "replay-key-reference"},
+                 authorize?: false,
+                 tenant: tenant
+               )
+             end)
+
+    {:ok, event} = AshHooks.Event.new(type: :event, payload: "{}")
+
+    assert {:ok, []} =
+             AshHooks.dispatch(context.emitter, :event, event, tenant: tenant)
+
+    table = AshPostgres.DataLayer.Info.table(context.delivery)
+    parent = self()
+    handler = make_ref()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        context.repo.config()[:telemetry_prefix] ++ [:query],
+        fn _, _, metadata, _ ->
+          if String.starts_with?(metadata.query, "INSERT") and
+               String.contains?(metadata.query, table),
+            do: send(parent, :replay_insert)
+        end,
+        nil
+      )
+
+    context.owner.query!("REVOKE SELECT ON #{table} FROM #{context.role}", [], log: false)
+
+    try do
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 1}} =
+               AshHooks.OutboundEvent.replay(context.event_log, endpoint,
+                 event_uuid: event.id,
+                 deliveries: context.delivery,
+                 endpoints: context.endpoint,
+                 declaration: {context.emitter, :event},
+                 requested_by: "ops",
+                 tenant: tenant
+               )
+
+      refute_received :replay_insert
+    after
+      :telemetry.detach(handler)
+      context.owner.query!("GRANT SELECT ON #{table} TO #{context.role}", [], log: false)
+    end
+
+    assert {:ok, %{records: []}} = AshHooks.Delivery.list(context.delivery, tenant: tenant)
+  end
+
   if Code.ensure_loaded?(Oban) do
     test "both Oban logins are restricted roles under forced policies", context do
       Cases.oban_role_access(context)

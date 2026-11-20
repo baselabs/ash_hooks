@@ -383,6 +383,46 @@ defmodule AshHooks.EventLogTest do
   end
 
   describe "replay" do
+    test "a delivery read storage error counts skipped without attempting a replay insert" do
+      ep = endpoint!()
+      dispatch!("msg_el_delivery_read_failure")
+      handler = make_ref()
+      parent = self()
+      prefix =
+        Repo.config()[:telemetry_prefix] ||
+          Enum.map(Module.split(Repo), &String.to_atom(Macro.underscore(&1)))
+
+      :ok =
+        :telemetry.attach(
+          handler,
+          prefix ++ [:query],
+          fn _, _, metadata, _ -> send(parent, {handler, metadata.query}) end,
+          nil
+        )
+
+      try do
+        Repo.query!("ALTER TABLE #{@deliveries} RENAME TO event_log_unavailable_deliveries")
+
+        assert {:ok, %{created: 0, re_sent: 0, skipped: 1}} =
+                 AshHooks.OutboundEvent.replay(EventLog, ep,
+                   event_uuid: "msg_el_delivery_read_failure",
+                   deliveries: Delivery,
+                   declaration: {Emitter, :order_paid},
+                   endpoints: Endpoint,
+                   requested_by: "ops"
+                 )
+
+        queries = replay_queries(handler, [])
+        assert Enum.any?(queries, &String.contains?(&1, "SELECT"))
+        refute Enum.any?(queries, &String.contains?(&1, "INSERT"))
+      after
+        Repo.query!("ALTER TABLE event_log_unavailable_deliveries RENAME TO #{@deliveries}")
+        :telemetry.detach(handler)
+      end
+
+      assert Ash.read!(Delivery, authorize?: false) == []
+    end
+
     test "replaying one event to an endpoint that had no row creates it, id kept, who recorded" do
       original = endpoint!(:disabled)
       later = endpoint!()
@@ -500,7 +540,7 @@ defmodule AshHooks.EventLogTest do
 
       assert_received :replay_enqueued
 
-      # a storage fault on row creation counts skipped
+      # a storage fault on the delivery read counts skipped
       Repo.query!("DROP TABLE #{@deliveries}")
 
       dispatch!("msg_el_fault")
@@ -515,6 +555,27 @@ defmodule AshHooks.EventLogTest do
                )
 
       recreate_deliveries!()
+
+      Repo.query!("""
+      CREATE TRIGGER replay_create_abort
+      BEFORE INSERT ON #{@deliveries}
+      BEGIN
+        SELECT RAISE(ABORT, 'forced replay insert rejection');
+      END
+      """)
+
+      try do
+        assert {:ok, %{created: 0, re_sent: 0, skipped: 1}} =
+                 AshHooks.OutboundEvent.replay(EventLog, ep,
+                   event_uuid: "msg_el_fault",
+                   deliveries: Delivery,
+                   declaration: {Emitter, :order_paid},
+                   endpoints: Endpoint,
+                   requested_by: "ops"
+                 )
+      after
+        Repo.query!("DROP TRIGGER replay_create_abort")
+      end
 
       # a fn enqueue seam applies
       dispatch!("msg_el_fn_enqueue")
@@ -865,6 +926,14 @@ defmodule AshHooks.EventLogTest do
              )
 
     assert Ash.read!(Delivery, authorize?: false) == []
+  end
+
+  defp replay_queries(handler, queries) do
+    receive do
+      {^handler, query} -> replay_queries(handler, [query | queries])
+    after
+      0 -> queries
+    end
   end
 
   @tag release_fix: 14

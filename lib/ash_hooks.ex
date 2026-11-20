@@ -294,7 +294,12 @@ defmodule AshHooks do
           | {:error, term()}
   defdelegate publish(outbox, declaration, event, opts \\ []), to: AshHooks.Outbox
 
-  @typedoc "The outcome of one leased publication fanout. Errors preserve storage failures."
+  @typedoc """
+  The outcome of one leased publication fanout. `:missing` means no row was
+  visible, including rows hidden by row security; `:failed` means parked work.
+  Errors preserve storage failures. The Oban worker cancels missing or failed
+  publications; pending, busy, and stale work relies on the per-tenant sweep.
+  """
   @type fanout_result ::
           :done | {:pending, term()} | :failed | :busy | :stale | :missing | {:error, term()}
   @typedoc "Counts of per-publication outcomes and storage errors in one bounded tenant sweep."
@@ -312,6 +317,11 @@ defmodule AshHooks do
   Claims and fans out one committed publication for `:tenant`. Refuses an
   enclosing transaction. Every attempt re-observes subscriptions and endpoints;
   existing delivery rows survive. Pending results carry a persisted retry time.
+  A missing row may be absent or hidden by row security. Every call reaching
+  the read emits one outbox claim event, including missing and terminal reads.
+  The generated worker cancels missing or failed publications; it completes
+  done, busy, stale, and persisted pending outcomes. No fanout job is re-enqueued:
+  schedule `fanout_pending/3` for every tenant to finish pending work.
   """
   @spec fanout(module(), String.t(), keyword()) :: fanout_result()
   defdelegate fanout(outbox, event_id, opts \\ []), to: AshHooks.Outbox

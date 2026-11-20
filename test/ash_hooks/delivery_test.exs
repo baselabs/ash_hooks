@@ -1397,13 +1397,13 @@ defmodule AshHooks.DeliveryTest do
   # ────────────────── coverage: fetch/gate/reconcile arms ──────────────────
 
   describe "row fetch arms" do
-    test "args without ids are a completed delivery (:ok, no send)" do
-      assert :ok = DeliveryRuntime.run(%{}, config())
+    test "args without ids cancel as invalid delivery identity" do
+      assert {:cancel, :invalid_delivery_identity} = DeliveryRuntime.run(%{}, config())
       assert HttpDouble.calls() == []
     end
 
-    test "ids matching no row are :missing — the durable row is the record" do
-      assert :ok =
+    test "ids matching no visible row cancel as missing delivery" do
+      assert {:cancel, :delivery_missing} =
                DeliveryRuntime.run(
                  %{"endpoint_id" => Ash.UUID.generate(), "event_uuid" => Ash.UUID.generate()},
                  config()
@@ -1418,7 +1418,7 @@ defmodule AshHooks.DeliveryTest do
 
       assert {:error, _reason} =
                DeliveryRuntime.run(
-                 %{"endpoint_id" => "ep", "event_uuid" => "ev"},
+                 %{"endpoint_id" => Ash.UUID.generate(), "event_uuid" => "ev"},
                  config()
                )
 
@@ -1429,10 +1429,10 @@ defmodule AshHooks.DeliveryTest do
       ep = endpoint!()
       row = pending_row!(ep)
 
-      assert {:error, :invalid_primary_key} =
+      assert {:cancel, :invalid_delivery_identity} =
                DeliveryRuntime.run(%{"delivery_pk" => %{"id" => "not-a-uuid"}}, config())
 
-      assert {:error, :invalid_delivery_identity} =
+      assert {:cancel, :invalid_delivery_identity} =
                DeliveryRuntime.run(%{"endpoint_id" => ep.id}, config())
 
       assert row!(row.id).status == :pending

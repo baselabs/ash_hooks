@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Delivery workers emit `[:ash_hooks, :delivery, :missing]` with only the job's
+  identity when no durable row is visible. Outbox claim telemetry includes
+  missing, already-done, already-failed, and storage-error outcomes, exactly
+  once per fanout reaching the read.
+
+### Changed
+
+- Fanout jobs cancel with `:publication_missing` or `:publication_failed`
+  instead of completing without work. Invalid fanout arguments cancel with
+  `:unknown_source` or `:invalid_event`. Delivery jobs cancel with
+  `:delivery_missing` or `:invalid_delivery_identity`. Oban records these jobs
+  as `cancelled` without retrying; hosts alarming on cancellations now see them.
+- Acquired outbox claims emit their single claim event after the runner returns,
+  with `:claimed` or `:stale`; the result event can precede it. Pending, busy,
+  and stale fanout still requires the host-scheduled per-tenant sweep.
+
+### Fixed
+
+- Event-log replay preserves delivery-read storage failures and counts them
+  as skipped instead of attempting to create a replay row.
+
 ## [3.4.0] - 2026-11-20
 
 ### Added

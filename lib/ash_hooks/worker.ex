@@ -32,7 +32,14 @@ defmodule AshHooks.Worker do
   with queues, plugins, peer leadership, and staging disabled. Run
   queues and maintenance through a second instance on an engine-role repo
   with the same prefix and PostgreSQL notifier. `perform/1` binds its own
-  tenant phases through the ledger repo. See the
+  tenant phases through the ledger repo. A hidden row looks absent: fanout
+  cancels with `:publication_missing` and delivery with `:delivery_missing`,
+  emitting outbox claim or delivery missing telemetry; alarm on these outcomes
+  and bind the tenant in the repository's transaction-begin callback.
+  Fanout `:busy`, `:stale`, and pending successes depend on the required
+  host-scheduled per-tenant `AshHooks.fanout_pending/3` sweep; delivery success
+  means a terminal row, while Oban snoozes or retries the same delivery job
+  and `AshHooks.reconcile_pending/3` recovers stranded delivery rows. See the
   [row-level security guide](row-security.md) for SQL and supervision entries.
 
   Options:
@@ -882,21 +889,24 @@ defmodule AshHooks.Worker do
   end
 
   @doc false
-  def perform_fanout(nil, _args), do: {:error, :unknown_source}
+  def perform_fanout(nil, _args), do: {:cancel, :unknown_source}
 
-  def perform_fanout(outbox, %{"outbox_resource" => resource, "event_uuid" => id} = args) do
+  def perform_fanout(outbox, %{"outbox_resource" => resource, "event_uuid" => id} = args)
+      when is_binary(id) and byte_size(id) > 0 do
     if Atom.to_string(outbox) == resource do
       case AshHooks.fanout(outbox, id, tenant: args["tenant"]) do
-        result when result in [:done, :failed, :busy, :stale, :missing] -> :ok
+        result when result in [:done, :busy, :stale] -> :ok
+        :missing -> {:cancel, :publication_missing}
+        :failed -> {:cancel, :publication_failed}
         {:pending, _reason} -> :ok
         {:error, reason} -> {:error, reason}
       end
     else
-      {:error, :unknown_source}
+      {:cancel, :unknown_source}
     end
   end
 
-  def perform_fanout(_outbox, _args), do: {:error, :invalid_event}
+  def perform_fanout(_outbox, _args), do: {:cancel, :invalid_event}
 
   defp retryable_statuses!(statuses) do
     resolved =

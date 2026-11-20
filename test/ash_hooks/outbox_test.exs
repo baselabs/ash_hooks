@@ -889,10 +889,10 @@ for {module, namespace} <- [
         assert [%{state: :done}] = Cases.rows(f, :outbox)
         assert [%{state: :done}] = Cases.rows(f, :outbox, "tenant-b")
         assert {:error, :unknown_source} = worker.enqueue_fanout(%AshHooks.Event{}, "tenant-a")
-        assert {:error, :unknown_source} = AshHooks.Worker.perform_fanout(nil, %{})
-        assert {:error, :invalid_event} = worker.perform(%Oban.Job{args: %{"kind" => "fanout"}})
+        assert {:cancel, :unknown_source} = AshHooks.Worker.perform_fanout(nil, %{})
+        assert {:cancel, :invalid_event} = worker.perform(%Oban.Job{args: %{"kind" => "fanout"}})
 
-        assert {:error, :unknown_source} =
+        assert {:cancel, :unknown_source} =
                  worker.perform(%Oban.Job{
                    args: %{
                      "kind" => "fanout",
@@ -1017,9 +1017,9 @@ for {module, namespace} <- [
         :ok =
           :telemetry.attach(
             handler,
-            [:ash_hooks, :outbox, :claim],
+            [:ash_hooks, :outbox, :publish],
             fn _, _, metadata, _ ->
-              if metadata.outcome == :claimed do
+              if metadata.outcome == :accepted do
                 f.owner.query!(
                   "REVOKE UPDATE ON #{Cases.table(f.outbox)} FROM #{f.roles.runtime}",
                   [],
@@ -1212,6 +1212,7 @@ for {module, namespace} <- [
           assert_receive {:DOWN, ^ref, :process, ^runner, :killed}, 5_000
           assert :stale = Task.await(runner_call, 5_000)
           assert_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim], %{outcome: :stale}}
+          refute_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim], _}
           refute_receive {:outbox_telemetry, [:ash_hooks, :outbox, :result], _}
 
           sweeps =

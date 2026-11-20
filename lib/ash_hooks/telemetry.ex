@@ -33,7 +33,12 @@ defmodule AshHooks.Telemetry do
     * `[:ash_hooks, :outbox, :trigger]`: `%{count: 1}`; `%{event_uuid,
       outcome: :failed, reason: "trigger_failed"}`
     * `[:ash_hooks, :outbox, :claim]`: `%{count: 1}`; `%{event_uuid,
-      outcome: :claimed | :busy | :stale, reason: nil}`
+      outcome: :claimed | :busy | :stale | :missing | :done | :failed | :error,
+      reason}`. Exactly one per fanout that reaches the read, including
+      storage errors with a classified reason. Missing and already-terminal
+      reads report the requested event ID without a state transition.
+      Acquired claims report `:claimed` or `:stale` after the runner returns;
+      their result event can precede the claim event. Other outcomes use nil reasons
     * `[:ash_hooks, :outbox, :result]`: `%{count: 1}`; `%{event_uuid,
       outcome: :done | :pending | :failed, reason}`. Emitted only after the
       matching fenced state transition succeeds
@@ -46,6 +51,10 @@ defmodule AshHooks.Telemetry do
       event_uuid, reason}` (classified, contents-free)
     * `[:ash_hooks, :delivery, :attempt]`: `%{endpoint_id, event_uuid,
       attempts}`
+    * `[:ash_hooks, :delivery, :missing]`: measurement `%{}`; metadata
+      contains only the job's `endpoint_id`, `event_uuid`, and/or `delivery_pk`.
+      No delivery row was visible; the worker returns `{:cancel, :delivery_missing}`.
+      Tenant values, payloads, and metadata contents are omitted
     * `[:ash_hooks, :delivery, :sign]`: measurement `%{duration: native_time}`;
       metadata `%{outcome: :ok | :skip | :retry | :terminal | :invalid_result |
       :callback_failed}`. Contains no callback terms or key material.
@@ -115,6 +124,8 @@ defmodule AshHooks.Telemetry do
           [:ash_hooks, :outbox, :sweep],
           [:ash_hooks, :dispatch, :enqueue_failed],
           [:ash_hooks, :delivery, :attempt],
+          [:ash_hooks, :delivery, :missing],
+          [:ash_hooks, :delivery, :sign],
           [:ash_hooks, :delivery, :result],
           [:ash_hooks, :delivery, :backoff],
           [:ash_hooks, :delivery, :dead_letter],

@@ -40,3 +40,4 @@ Records are repository documentation and are not part of the Hex package.
 | [0027: Observation read failures](0027-observation-read-failures.md) | Accepted | Observation read failures are reported, never counted as zero. |
 | [0028: Host extension seams](0028-host-extension-seams.md) | Accepted | Verified facts, host signers, exact prepared requests and signing provenance. |
 | [0029: Transactional publication and query matching](0029-transactional-publish-and-query-matching.md) | Accepted | A dedicated outbox and query-side selection with an Elixir guard. |
+| [0030: Visible worker outcomes](0030-visible-worker-outcomes.md) | Accepted | Cancel absent, failed and invalid work visibly; preserve row-owned recovery. |

@@ -48,7 +48,9 @@ defmodule AshHooks.OutboxFixtures.Postgres.Repo do
   def min_pg_version, do: %Version{major: 16, minor: 0, patch: 0}
 
   def on_transaction_begin(reason) do
-    if tenant = reason[:tenant] do
+    tenant = reason[:tenant]
+
+    if tenant && not Application.get_env(:ash_hooks, :outbox_skip_tenant_binding, false) do
       query!(
         "SELECT set_config('outbox_acceptance.tenant', $1, true)",
         [to_string(tenant)],

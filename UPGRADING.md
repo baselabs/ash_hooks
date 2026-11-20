@@ -1,5 +1,37 @@
 # Upgrading
 
+## Unreleased
+
+### Observe cancelled worker jobs
+
+Jobs that used to complete without work now end `cancelled`: fanout returns
+`{:cancel, :publication_missing}` for no visible row and
+`{:cancel, :publication_failed}` for a parked publication. Unknown sources and
+invalid fanout arguments cancel with `:unknown_source` and `:invalid_event`.
+Delivery returns `{:cancel, :delivery_missing}` for no visible row and
+`{:cancel, :invalid_delivery_identity}` for invalid or absent identity,
+including malformed complete primary keys. Hosts alarming on Oban `cancelled`
+jobs will now see these cases. Oban does not retry cancelled jobs.
+
+Outbox claim telemetry gains `:missing`, `:done`, `:failed`, and `:error`
+outcomes. Every fanout reaching the read emits exactly one claim event;
+acquired claims report `:claimed` or `:stale` after the runner returns, so the
+result event can arrive first. The new `[:ash_hooks, :delivery, :missing]`
+event carries only the identity supplied by the job. No tenant value, payload,
+or metadata contents are emitted.
+
+A hidden row looks absent. Alarm on cancellations and missing telemetry, and
+bind the tenant in the repository's transaction-begin callback for every
+tenant-bearing phase. See the [row-security guide](row-security.md).
+Fanout `:busy`, `:stale`, and persisted pending retries still complete the job
+without re-enqueueing it. The required per-tenant `AshHooks.fanout_pending/3`
+sweep finishes that work; without it, publications stay pending. Delivery
+retries keep Oban snoozes or retries of the same job, with the host-scheduled
+`AshHooks.reconcile_pending/3` path recovering stranded deliveries.
+
+Replay counts delivery-read storage errors as skipped and never tries to
+create a replay row after such an error. No schema migration is required.
+
 <a id="upgrade-3-4"></a>
 
 ## 3.3.0 → 3.4.0

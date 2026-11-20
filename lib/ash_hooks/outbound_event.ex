@@ -184,7 +184,8 @@ defmodule AshHooks.OutboundEvent do
   Dry run returns `{:ok, %{count: n}}` for the selected batch and writes nothing.
   Normal replay returns created, re-sent, and skipped counts. Batches are spaced
   one second apart according to `:per_second`. Repeated calls can select skipped
-  rows again; this API returns no pagination cursor.
+  rows again; this API returns no pagination cursor. A delivery read error counts
+  as skipped and never causes an attempt to create a replay row.
   """
   @spec replay(module(), struct(), keyword()) ::
           {:ok,
@@ -265,6 +266,9 @@ defmodule AshHooks.OutboundEvent do
 
       {:ok, _live_row} ->
         bump(acc, 2)
+
+      {:error, _reason} ->
+        bump(acc, 2)
     end
   end
 
@@ -321,7 +325,7 @@ defmodule AshHooks.OutboundEvent do
     |> case do
       {:ok, nil} -> :missing
       {:ok, row} -> {:ok, row}
-      {:error, _reason} -> :missing
+      {:error, reason} -> {:error, reason}
     end
   end
 

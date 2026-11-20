@@ -8,8 +8,8 @@ defmodule AshHooks.Delivery do
   driver refuses to re-send `:succeeded`/`:dead_letter` rows, waits on
   `next_attempt_at`, counts `attempts` against the ceiling, and honors
   `Retry-After` (bounded). Oban is the durable trigger; `{:snooze, s}`
-  re-drives later without exhausting the job (snooze extends
-  max_attempts; only this module's ceiling decides dead-letter).
+  re-drives later without consuming a job attempt; only this module's
+  ceiling decides dead-letter.
 
   Every attempt runs in an owned monitored process under one finite deadline.
   The budget includes endpoint reads, secret resolution, signing, destination
@@ -68,7 +68,7 @@ defmodule AshHooks.Delivery do
   must attribute this system change themselves.
   Without application notifications, delivery stops silently from the tenant's
   perspective. Attach `[:ash_hooks, :delivery, :disable]` to your operator or
-  notification surface; it carries the tenant and endpoint IDs. The endpoint's
+  notification surface; it carries the endpoint ID. The endpoint's
   status or mapped switch also exposes the durable disabled state.
   """
 
@@ -393,9 +393,11 @@ defmodule AshHooks.Delivery do
   handoff recovers full tenant context from args alone.
 
   Returns `:ok` (terminal or attempted-to-terminal), `{:snooze, seconds}`
-  (retry later), or `{:error, term}` for a broken trigger (row missing →
-  `:ok`; the durable row is the record; a missing row is a completed or
-  reaped delivery, not a failure). A tenant-less trigger against
+  (retry later), `{:cancel, :delivery_missing}` when no row is visible,
+  `{:cancel, :invalid_delivery_identity}` for invalid or absent identity,
+  or `{:error, term}` for a retryable failure. A hidden row is indistinguishable
+  from an absent row and emits `[:ash_hooks, :delivery, :missing]`.
+  A tenant-less trigger against
   multitenant resources is `{:error, :tenant_required}` before any data
   access. A trigger whose resource, source, route, or complete primary key does
   not match the fetched row fails explicitly.
@@ -437,7 +439,8 @@ defmodule AshHooks.Delivery do
   macro calls this option `:delivery_max_attempts`; its own `:max_attempts`
   configures Oban's job attempts. Other retry option names are the same.
   """
-  @spec run(map(), keyword()) :: :ok | {:snooze, pos_integer()} | {:error, term()}
+  @spec run(map(), keyword()) ::
+          :ok | {:snooze, pos_integer()} | {:cancel, term()} | {:error, term()}
   def run(args, config) when is_map(args) do
     with :ok <- AshHooks.Phase.outside_transaction(config[:deliveries]),
          :ok <- validate_retryable_statuses(config[:retryable_statuses]),
@@ -521,7 +524,7 @@ defmodule AshHooks.Delivery do
            ),
          {:ok, row} <- fetch_row_result(config[:deliveries], args, tenant),
          {:ok, row} <- validate_or_bind_execution(row, args, config, tenant) do
-      if row, do: drive_row(row, config, tenant), else: :ok
+      drive_row(row, config, tenant)
     end
   end
 
@@ -632,13 +635,26 @@ defmodule AshHooks.Delivery do
     end
   end
 
-  # :missing is a COMPLETED delivery (the durable row is the record), not a
-  # failure; normalize it to :ok so the with-chain stays flat
+  # Row security can hide an existing row. Cancel visibly instead of treating
+  # an unreadable identity as completed work; storage errors remain retryable.
   defp fetch_row_result(deliv_mod, args, tenant) do
     case fetch_row(deliv_mod, args, tenant) do
-      {:ok, row} -> {:ok, row}
-      :missing -> {:ok, nil}
-      {:error, reason} -> {:error, reason}
+      {:ok, row} ->
+        {:ok, row}
+
+      :missing ->
+        identity =
+          Map.new([:endpoint_id, :event_uuid, :delivery_pk], &{&1, value(args, &1)})
+          |> Map.reject(fn {_key, value} -> is_nil(value) end)
+
+        :telemetry.execute([:ash_hooks, :delivery, :missing], %{}, identity)
+        {:cancel, :delivery_missing}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      {:cancel, reason} ->
+        {:cancel, reason}
     end
   end
 
@@ -651,9 +667,6 @@ defmodule AshHooks.Delivery do
 
   defp fetch_row(deliv_mod, args, tenant) do
     case delivery_query(deliv_mod, args) do
-      :missing ->
-        :missing
-
       {:ok, query} ->
         AshHooks.Phase.run(query, tenant, &Ash.read_one(&1, authorize?: false, tenant: tenant))
         |> case do
@@ -662,40 +675,40 @@ defmodule AshHooks.Delivery do
           {:error, reason} -> {:error, reason}
         end
 
-      {:error, reason} ->
-        {:error, reason}
+      {:cancel, reason} ->
+        {:cancel, reason}
     end
   end
 
   defp delivery_query(deliv_mod, args) do
     case value(args, :delivery_pk) do
-      encoded when is_map(encoded) -> primary_key_delivery_query(deliv_mod, encoded)
-      _legacy -> legacy_delivery_query(deliv_mod, args)
+      nil -> legacy_delivery_query(deliv_mod, args)
+      encoded -> primary_key_delivery_query(deliv_mod, encoded)
     end
   end
 
   defp primary_key_delivery_query(deliv_mod, encoded) do
     case PrimaryKey.decode(deliv_mod, encoded) do
       {:ok, key} -> {:ok, Ash.Query.do_filter(deliv_mod, key)}
-      {:error, reason} -> {:error, reason}
+      {:error, _reason} -> {:cancel, :invalid_delivery_identity}
     end
   end
 
   defp legacy_delivery_query(deliv_mod, args) do
-    case {value(args, :endpoint_id), value(args, :event_uuid)} do
-      {endpoint_id, event_uuid} when is_binary(endpoint_id) and is_binary(event_uuid) ->
-        {:ok,
-         Ash.Query.filter(deliv_mod, endpoint_id == ^endpoint_id and event_uuid == ^event_uuid)}
+    attribute = ResourceInfo.attribute(deliv_mod, :endpoint_id)
 
-      {nil, nil} ->
-        :missing
-
-      _invalid ->
-        {:error, :invalid_delivery_identity}
+    with {endpoint_id, event_uuid} when is_binary(endpoint_id) and is_binary(event_uuid) <-
+           {value(args, :endpoint_id), value(args, :event_uuid)},
+         true <- byte_size(event_uuid) > 0,
+         {:ok, endpoint_id} <-
+           Ash.Type.cast_input(attribute.type, endpoint_id, attribute.constraints),
+         {:ok, endpoint_id} <-
+           Ash.Type.apply_constraints(attribute.type, endpoint_id, attribute.constraints) do
+      {:ok, Ash.Query.filter(deliv_mod, endpoint_id == ^endpoint_id and event_uuid == ^event_uuid)}
+    else
+      _invalid -> {:cancel, :invalid_delivery_identity}
     end
   end
-
-  defp validate_or_bind_execution(nil, _args, _config, _tenant), do: {:ok, nil}
 
   defp validate_or_bind_execution(row, args, config, tenant) do
     with :ok <- validate_resource_arg(args, :delivery_resource, config[:deliveries]),
@@ -1064,6 +1077,7 @@ defmodule AshHooks.Delivery do
     case run(args, config) do
       :ok -> final_test_row(row, tenant)
       {:snooze, _delay} -> final_test_row(row, tenant)
+      {:cancel, reason} -> {:error, reason}
       {:error, reason} -> {:error, reason}
     end
   end

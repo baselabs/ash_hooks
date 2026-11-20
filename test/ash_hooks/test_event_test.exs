@@ -248,6 +248,34 @@ defmodule AshHooks.TestEventTest do
     end
   end
 
+  test "a test send reports a delivery removed before the driver reads it" do
+    endpoint =
+      Ash.create!(Endpoint,
+        %{url: "https://hooks.example.test/hook", secret_ref: "test-key-reference"},
+        authorize?: false
+      )
+
+    handler = make_ref()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:ash_hooks, :delivery, :test],
+        fn _, _, _, _ -> Repo.query!("DELETE FROM #{@deliveries}") end,
+        nil
+      )
+
+    try do
+      assert {:error, :delivery_missing} =
+               AshHooks.Delivery.test_send(endpoint, type: "removed.row", deliveries: Delivery)
+
+      refute_received {[:ash_hooks, :delivery, :attempt], _}
+      assert Ash.read!(Delivery, authorize?: false) == []
+    after
+      :telemetry.detach(handler)
+    end
+  end
+
   test "a test send delivers a signed synthetic event outside subscriptions" do
     endpoint = receiver_endpoint!()
 

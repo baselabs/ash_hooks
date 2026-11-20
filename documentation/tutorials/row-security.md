@@ -80,6 +80,30 @@ therefore makes dispatch report `:enqueue_failed`, leaving the delivery
 `:pending` for recovery. Enqueue the job and let its worker perform after commit.
 Key issuance and registry sweeps also retain their transaction refusals.
 
+## Alarm on missing work
+
+A row hidden by row security looks absent. The fanout worker cancels its Oban
+job with `:publication_missing`; the delivery worker cancels with
+`:delivery_missing`. Fanout of a failed publication cancels with
+`:publication_failed`. Invalid fanout arguments cancel with `:invalid_event`
+or `:unknown_source`, and invalid or absent delivery identity cancels with
+`:invalid_delivery_identity`. These jobs end `cancelled`, without an Oban retry.
+
+Alarm on Oban cancellations, `[:ash_hooks, :outbox, :claim]` outcomes
+`:missing` and `:failed`, and `[:ash_hooks, :delivery, :missing]`. Claim events
+also expose already-done rows and storage errors. Events carry only the
+requested identity and classified outcome, never tenant values, payloads, or
+metadata contents. Bind the tenant in the repository's transaction-begin
+callback above for every tenant-bearing database phase, including the delivery
+driver's spawned phases. The package cannot detect a missing policy binding.
+
+Fanout completes its trigger for `:busy`, `:stale`, or a persisted pending retry.
+It does not re-enqueue a job. Schedule `AshHooks.fanout_pending/3` for every
+tenant even with a trigger: without the sweep, these publications stay pending.
+Use outbox claim and result telemetry to observe them. Delivery retries use
+Oban snoozes or retries of the same job, with `AshHooks.reconcile_pending/3`
+recovering stranded rows under the host's per-tenant schedule.
+
 ## Secure tables and jobs
 
 Generate the ordinary resource migrations first. Enable and force row-level
