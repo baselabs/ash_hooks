@@ -133,6 +133,7 @@ jobs:
           name: inspected-archives
           path: ${{ runner.temp }}/inspected-archives/
           if-no-files-found: error
+          retention-days: 1
 
   upload:
     name: Upload inspected assets
@@ -296,6 +297,7 @@ jobs:
           path: ${{ runner.temp }}/release-assets/
           if-no-files-found: error
           overwrite: true
+          retention-days: 7
       - name: Record the verified release
         working-directory: ${{ runner.temp }}/release-assets
         env:

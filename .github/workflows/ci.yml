@@ -224,6 +224,7 @@ jobs:
         with:
           name: cover-html-postgres-${{ matrix.postgres }}
           path: cover/
+          retention-days: 7
 
   # Type-check the public API and the consumer worker compiled from test/support.
   # The PostgreSQL suite exercises that same generated worker at runtime.
@@ -287,6 +288,7 @@ jobs:
             test
             scripts/generate-dsl-docs.exs
             documentation/dsls
+          retention-days: 7
       - run: mix spark.check
       - name: Tarball carries every publish surface
         run: ./scripts/check-package.sh
