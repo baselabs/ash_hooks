@@ -33,7 +33,10 @@ defmodule AshHooks.OutboxAcceptance do
         {name, Module.concat(namespace, name |> Atom.to_string() |> Macro.camelize())}
       end)
 
-    create_tables(resources, owner, sqlite?)
+    # One transaction: a pooled SQLite connection that loads the schema between
+    # a table and its unique index keeps that stale schema, and an upsert then
+    # fails to prepare with "ON CONFLICT clause does not match".
+    {:ok, _} = owner.transaction(fn -> create_tables(resources, owner, sqlite?) end)
 
     roles = if sqlite?, do: nil, else: setup_roles(resources, repo, owner)
     oban_options = setup_oban(namespace, repo, owner, roles, sqlite?)

@@ -540,13 +540,15 @@ for {test_module, namespace} <- [
     if @namespace == AshHooks.OutboxFixtures.Postgres, do: @moduletag(:postgres)
 
     setup_all do
-      if @namespace == AshHooks.OutboxFixtures.Postgres,
-        do: Cases.setup(AshHooks.OutboxFixtures.SQLite)
+      sqlite =
+        if @namespace == AshHooks.OutboxFixtures.Postgres,
+          do: Cases.setup(AshHooks.OutboxFixtures.SQLite)
 
-      {:ok, Cases.setup(@namespace)}
+      {:ok, @namespace |> Cases.setup() |> Map.put(:sqlite_fixture, sqlite)}
     end
 
     setup context do
+      if context.sqlite_fixture, do: Cases.clean(context.sqlite_fixture)
       Cases.clean(context)
     end
 
