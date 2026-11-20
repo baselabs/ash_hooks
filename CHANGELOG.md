@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [3.4.0] - 2026-11-18
+## [3.4.0] - 2026-11-20
 
 ### Added
 
@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Unrecognized storage shapes widen the query. A PostgreSQL GIN index on
   `event_types` is recommended. The selected key-set metadata-filter arm (5C)
   measured up to 3.4 times the p95 of type and pause matching alone.
+- HexDocs no longer offers an EPUB. The HTML and Markdown documentation are
+  unchanged.
 
 ### Fixed
 

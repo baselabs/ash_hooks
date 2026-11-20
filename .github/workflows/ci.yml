@@ -11,6 +11,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every run step is bash with -eo pipefail, so a failing command fails its
+# step also behind a pipe.
+defaults:
+  run:
+    shell: bash
+
 # Caches are restore-only. A cache saved on a kci/<sha> ref can be restored
 # only by that ref, so the one writer is cache-warmer.yml on the default
 # branch. Each key names one build: a test lane (on the default lane also the
@@ -25,7 +31,7 @@ jobs:
   toolchain:
     name: Read runtime toolchains
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; the slowest green was 16s on run 44165315179
+    timeout-minutes: 5 # the five-minute floor; the slowest cold green was 13s on run 44211163274
     outputs:
       elixir: ${{ steps.toolchain.outputs.elixir }}
       otp: ${{ steps.toolchain.outputs.otp }}
@@ -43,7 +49,7 @@ jobs:
   checks:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 6 # twice the slowest green, 158s on run 44187378503
+    timeout-minutes: 6 # twice the slowest cold green, 158s on run 44213063258
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}
@@ -76,7 +82,7 @@ jobs:
   test:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 13 # twice the slowest green, 368s on run 44187378503
+    timeout-minutes: 12 # twice the slowest cold green, 334s on run 44211163274
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}
@@ -110,7 +116,7 @@ jobs:
   # unavailable APIs in that consumer graph.
   floor:
     runs-on: ubuntu-24.04
-    timeout-minutes: 16 # twice the slowest green, 468s on run 44172722505
+    timeout-minutes: 12 # twice the slowest cold green, 350s on run 44211163274
     env:
       MIX_ENV: test
     steps:
@@ -141,7 +147,7 @@ jobs:
   postgres:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 62 # twice the slowest green including the exact floor, 1841s on run 44211072814
+    timeout-minutes: 54 # twice the slowest cold green including the exact floor, 1594s on run 44230356354
     strategy:
       fail-fast: false
       matrix:
@@ -224,7 +230,7 @@ jobs:
   dialyzer:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 15 # twice the slowest green (cold PLT), 441s on run 44211163274
+    timeout-minutes: 15 # twice the slowest cold green, 441s on run 44211163274
     env:
       MIX_ENV: test
     steps:
@@ -248,7 +254,7 @@ jobs:
   package:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # twice the slowest green, 130s on run 44139506655
+    timeout-minutes: 5 # the five-minute floor; the slowest cold green was 107s on run 44211163274
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -285,11 +291,33 @@ jobs:
       - name: Tarball carries every publish surface
         run: ./scripts/check-package.sh
       - run: mix docs --warnings-as-errors
+      - name: Read the package version
+        id: version
+        run: |
+          python3 -I - >> "$GITHUB_OUTPUT" <<'PY'
+          from pathlib import Path
+          import re
+          matches = re.findall(r'^  @version "([^"]+)"$', Path('mix.exs').read_text(), re.M)
+          assert len(matches) == 1, 'expected exactly one Mix project version'
+          print(f'version={matches[0]}')
+          PY
+      - name: Name the package, version and commit in the docs
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: python3 -I scripts/stamp-docs-release.py doc --version "$VERSION" --commit "$GITHUB_SHA"
       - run: python3 scripts/check-document-dashes.py --docs doc
+      - name: Build and inspect the docs archive
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          (cd "$RUNNER_TEMP" && mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/build-docs-archive.exs" \
+            "$GITHUB_WORKSPACE/doc" "$RUNNER_TEMP/ash_hooks-docs.tar.gz")
+          python3 -I scripts/check-docs-archive.py --version "$VERSION" --commit "$GITHUB_SHA" \
+            "$RUNNER_TEMP/ash_hooks-docs.tar.gz" doc
 
   # The get-started Livebook, verified headless on one leg: the elixir
   # cells are extracted in order and run outside any mix project
-  # (Mix.install requires it) — the same evaluation Livebook performs.
+  # (Mix.install requires it), the same evaluation Livebook performs.
   livebook:
     needs: toolchain
     runs-on: ubuntu-24.04
@@ -329,7 +357,7 @@ jobs:
   security:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; the slowest green was 114s on run 44190445327
+    timeout-minutes: 5 # the five-minute floor; the slowest cold green was 116s on run 44213063258
     env:
       OSV_SCANNER_VERSION: "2.7.1"
       OSV_SCANNER_SHA256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
@@ -420,7 +448,7 @@ jobs:
   confidentiality:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 8 # twice the slowest green, 223s on run 44187378503
+    timeout-minutes: 7 # twice the slowest cold green, 201s on run 44211163274
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -446,7 +474,7 @@ jobs:
     needs: [toolchain, checks, test, floor, postgres, dialyzer, package, livebook, security, confidentiality]
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; the slowest green was 7s on run 44144689313
+    timeout-minutes: 5 # the five-minute floor; the slowest cold green was 6s on run 44211163274
     steps:
       - name: Require every needed job green
         env:

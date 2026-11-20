@@ -8,12 +8,12 @@ defmodule AshHooks.PublicationDashesTest do
   @version Mix.Project.config()[:version]
   @label "#{Mix.Project.config()[:name]} v#{@version}"
 
-  test "both dashes fail in archives, HTML and EPUB but repository-only text passes" do
+  test "both dashes fail in archives, HTML and Markdown but repository-only text passes" do
     tree = Path.join(System.tmp_dir!(), "publication_dashes_#{Ash.UUID.generate()}")
     File.mkdir_p!(tree)
     on_exit(fn -> File.rm_rf!(tree) end)
 
-    for codepoint <- [0x2013, 0x2014], surface <- ["package", "html", "epub", "repository"] do
+    for codepoint <- [0x2013, 0x2014], surface <- ["package", "html", "markdown", "repository"] do
       {output, status} =
         System.cmd("python3", ["-c", fixture(), tree, surface, Integer.to_string(codepoint)],
           stderr_to_stdout: true
@@ -145,28 +145,24 @@ defmodule AshHooks.PublicationDashesTest do
     System.cmd("python3", [@script, "--docs", docs], cd: root, stderr_to_stdout: true)
   end
 
-  test "the HTML template exception does not exempt an EPUB member" do
-    tree = Path.join(System.tmp_dir!(), "publication_epub_#{Ash.UUID.generate()}")
+  test "the HTML template exception does not exempt a Markdown page" do
+    tree = Path.join(System.tmp_dir!(), "publication_markdown_#{Ash.UUID.generate()}")
     File.mkdir_p!(tree)
     on_exit(fn -> File.rm_rf!(tree) end)
-    archive = Path.join(tree, "guide.epub")
+    page = Path.join(tree, "guide.md")
     dash = <<0x2014::utf8>>
     project = ~s(<meta name="project" content="#{@label}">)
     title = "<title>Guide #{dash} #{@label}</title>"
-
-    assert {:ok, _} =
-             :zip.create(String.to_charlist(archive), [
-               {~c"chapter.xhtml", "#{project}\n#{title}"}
-             ])
+    File.write!(page, "#{project}\n#{title}")
 
     {output, status} = System.cmd("python3", [@script, "--docs", tree], stderr_to_stdout: true)
     assert status == 1
-    assert output =~ "#{archive}/chapter.xhtml:2"
+    assert output =~ "#{page}:2"
   end
 
   defp fixture do
     ~S"""
-    import io, pathlib, sys, tarfile, zipfile
+    import io, pathlib, sys, tarfile
     root, surface, codepoint = pathlib.Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
     text = ("first\ntext " + chr(codepoint) + " here\n").encode()
     clean = b"first\nplain text\n"
@@ -183,10 +179,8 @@ defmodule AshHooks.PublicationDashesTest do
         archive.addfile(member, io.BytesIO(data))
     docs = root / "docs"
     docs.mkdir(exist_ok=True)
-    (docs / ".build.epub").write_text("reference.epub\n")
     (docs / "index.html").write_bytes(text if surface == "html" else clean)
-    with zipfile.ZipFile(docs / "reference.epub", "w") as book:
-        book.writestr("EPUB/index.xhtml", text if surface == "epub" else clean)
+    (docs / "reference.md").write_bytes(text if surface == "markdown" else clean)
     (root / "repository-only.txt").write_bytes(text)
     """
   end

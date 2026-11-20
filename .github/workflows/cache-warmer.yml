@@ -4,7 +4,11 @@ name: Cache warmer
 # can be restored by every qualification ref; one saved on a kci/<sha> ref only
 # by that ref. Each job builds one key that ci.yml restores, on the same paths,
 # from the committed lock, and skips the build when the key already exists.
+# A push warms a changed key. The schedule only replaces an evicted cache:
+# GitHub starts scheduled workflows late and drops some.
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
@@ -50,7 +54,7 @@ jobs:
   test:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 11 # twice the slowest green, 314s (default lane, PLTs) on run 44196835879
+    timeout-minutes: 12 # twice the slowest green, 340s (default lane, PLTs) on run 44230368459
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.toolchain.outputs.test_matrix) }}

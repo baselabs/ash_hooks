@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check only the Hex archive and generated HTML/EPUB publication surfaces."""
+"""Check only the Hex archive and the generated HTML and Markdown documentation."""
 import argparse
 import html
 import io
@@ -7,7 +7,6 @@ import re
 import subprocess
 from pathlib import Path
 import tarfile
-import zipfile
 
 
 def lines(path, content):
@@ -67,13 +66,8 @@ def check(package=None, docs=None):
                 continue
             if path.suffix == ".html":
                 offenses.extend(lines(path, authored_html(path.read_bytes(), identity)))
-            elif path.suffix == ".epub":
-                if path.name == ".build.epub":
-                    offenses.extend(lines(path, path.read_bytes()))
-                    continue
-                with zipfile.ZipFile(path) as book:
-                    for name in book.namelist():
-                        offenses.extend(lines(f"{path}/{name}", book.read(name)))
+            elif path.suffix in (".md", ".txt"):
+                offenses.extend(lines(path, path.read_bytes()))
     return sorted(set(offenses))
 
 

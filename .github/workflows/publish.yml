@@ -2,16 +2,15 @@ name: Publish to Hex
 
 # The release maintainer dispatches this from main after the owner approves.
 # main moves only after the CI run on that exact commit passes. The release
-# maintainer pushes the annotated v<version> tag on the published commit after
-# the read-back below.
-# ash_hooks is a public package on hex.pm, so there is no organization step.
+# maintainer reads back both archives before pushing the tag and creating the
+# GitHub Release from release-assets. No job replaces published bytes.
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Two dispatches never race past the version refusal.
+# A second dispatch finishes an earlier upload without racing another dispatch.
 concurrency:
   group: publish
   cancel-in-progress: false
@@ -21,21 +20,18 @@ defaults:
     shell: bash
 
 jobs:
-  publish:
-    name: Publish
-    # The Hex key belongs only to the protected publish environment. Its
-    # deployment branch policy admits only main; only an owner's dispatch or
-    # re-run may use it.
+  # Build and inspect with no environment and no access to the key.
+  build:
+    name: Build release assets
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
-    environment: publish
-    # A public repository runs only on GitHub-hosted runners.
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; the slowest green was 111s on rehearsal run 44179917802
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 114s on keyless rehearsal run 44380961139
     env:
       MIX_ENV: dev
     outputs:
       version: ${{ steps.version.outputs.version }}
-      sha256: ${{ steps.package.outputs.sha256 }}
+      package_sha256: ${{ steps.assets.outputs.package_sha256 }}
+      docs_sha256: ${{ steps.assets.outputs.docs_sha256 }}
       elixir: ${{ steps.toolchain.outputs.elixir }}
       otp: ${{ steps.toolchain.outputs.otp }}
     steps:
@@ -50,8 +46,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The same reader and file CI uses, so the published build runs on the
-      # runtime every CI run tested.
       - name: Read the runtime toolchain
         id: toolchain
         run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
@@ -62,24 +56,17 @@ jobs:
       - name: Read the package version
         id: version
         run: |
-          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          python3 -I - >> "$GITHUB_OUTPUT" <<'PY'
           from pathlib import Path
           import re
           matches = re.findall(r'^  @version "([^"]+)"$', Path('mix.exs').read_text(), re.M)
           assert len(matches) == 1, 'expected exactly one Mix project version'
           print(f'version={matches[0]}')
           PY
-      - name: Refuse a version already on Hex or tagged
+      - name: Refuse a tag, a missing package name, a retired release or a missing changelog section
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          status=$(curl --silent --show-error --retry 3 --output /dev/null --write-out '%{http_code}' \
-            "https://hex.pm/api/packages/ash_hooks/releases/$VERSION")
-          case "$status" in
-            404) ;;
-            200) echo "::error::ash_hooks $VERSION is already on Hex."; exit 1 ;;
-            *) echo "::error::Hex answered $status for ash_hooks $VERSION; refusing without a definite answer."; exit 1 ;;
-          esac
           status=0
           git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null || status=$?
           case "$status" in
@@ -87,50 +74,139 @@ jobs:
             0) echo "::error::Tag v$VERSION already exists."; exit 1 ;;
             *) echo "::error::git ls-remote failed with status $status; refusing without a definite answer."; exit 1 ;;
           esac
+          python3 -I scripts/hex-release-state.py pre-build "$VERSION"
+          python3 -I scripts/release-notes.py "$VERSION"
       - name: Fetch the locked dependencies
         run: mix deps.get --check-locked
-      # The package job's checks, on the commit being published.
       - name: Generated formatter and DSL references match the commit
         run: |
           mix format
           mix spark.generate
           git diff --exit-code -- .formatter.exs mix.exs lib test scripts/generate-dsl-docs.exs documentation/dsls
       - run: mix spark.check
-      - name: Build and inspect the archive
-        id: package
+      - name: Build and inspect the package archive
+        run: ./scripts/check-package.sh
+      - run: env -u ASH_HOOKS_NO_OPTIONAL mix docs --warnings-as-errors
+      - name: Name the package, version and commit in the docs
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: python3 -I scripts/stamp-docs-release.py doc --version "$VERSION" --commit "$GITHUB_SHA"
+      - run: python3 scripts/check-document-dashes.py --docs doc
+      - name: Build and inspect the docs archive
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          ./scripts/check-package.sh
-          echo "sha256=$(sha256sum "_build/release/ash_hooks-$VERSION.tar" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-      - run: mix docs --warnings-as-errors
-      - run: python3 scripts/check-document-dashes.py --docs doc
+          (cd "$RUNNER_TEMP" && mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/build-docs-archive.exs" \
+            "$GITHUB_WORKSPACE/doc" "$RUNNER_TEMP/ash_hooks-docs.tar.gz")
+          python3 -I scripts/check-docs-archive.py --version "$VERSION" --commit "$GITHUB_SHA" \
+            "$RUNNER_TEMP/ash_hooks-docs.tar.gz" doc
       - name: Refuse a checkout that differs from the commit
         run: |
+          git check-ignore --quiet doc/
+          git check-ignore --quiet _build/
           if [ -n "$(git status --porcelain)" ]; then
             git status --short
             echo "::error::The checkout differs from $GITHUB_SHA."
             exit 1
           fi
-      # Optional Oban and Plug requirements are published only with
-      # ASH_HOOKS_NO_OPTIONAL unset. The key is in this step's environment only.
-      - name: Publish to hex.pm
+      - name: Assemble the inspected archives
+        id: assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          inspected="$RUNNER_TEMP/inspected-archives"
+          mkdir -p "$inspected"
+          cp "_build/release/ash_hooks-$VERSION.tar" "$inspected/ash_hooks-$VERSION.tar"
+          cp "$RUNNER_TEMP/ash_hooks-docs.tar.gz" "$inspected/ash_hooks-$VERSION-docs.tar.gz"
+          cd "$inspected"
+          sha256sum "ash_hooks-$VERSION.tar" "ash_hooks-$VERSION-docs.tar.gz" > SHA256SUMS
+          package_sha256=$(sha256sum "ash_hooks-$VERSION.tar" | cut -d' ' -f1)
+          docs_sha256=$(sha256sum "ash_hooks-$VERSION-docs.tar.gz" | cut -d' ' -f1)
+          {
+            echo "package_sha256=$package_sha256"
+            echo "docs_sha256=$docs_sha256"
+          } >> "$GITHUB_OUTPUT"
+      # The upload job's input only. Consumer files leave as release-assets,
+      # assembled by Read back from the bytes Hex serves.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: inspected-archives
+          path: ${{ runner.temp }}/inspected-archives/
+          if-no-files-found: error
+
+  upload:
+    name: Upload inspected assets
+    needs: build
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
+    environment: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 21s on keyless rehearsal run 44380961139
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      PACKAGE_SHA256: ${{ needs.build.outputs.package_sha256 }}
+      DOCS_SHA256: ${{ needs.build.outputs.docs_sha256 }}
+    steps:
+      - name: Refuse any ref but the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ -z "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::Publish runs only from the default branch; this run is on $GITHUB_REF."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /scripts/hex-release-state.py
+            /scripts/publish-hex-release.exs
+            /scripts/toolchain.sh
+            /.github/actions/beam/
+      - uses: ./.github/actions/beam
+        with:
+          elixir: ${{ needs.build.outputs.elixir }}
+          otp: ${{ needs.build.outputs.otp }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: inspected-archives
+          path: ${{ runner.temp }}/inspected-archives
+      - name: Verify the downloaded archive checksums
+        working-directory: ${{ runner.temp }}/inspected-archives
+        run: |
+          test ! -e mix.exs
+          sha256sum -c SHA256SUMS
+          printf '%s  %s\n' "$PACKAGE_SHA256" "ash_hooks-$VERSION.tar" \
+            "$DOCS_SHA256" "ash_hooks-$VERSION-docs.tar.gz" | sha256sum -c -
+      - name: Decide which archives hex.pm is missing
+        id: state
+        run: |
+          python3 -I scripts/hex-release-state.py post-build "$VERSION" \
+            --package-archive "$RUNNER_TEMP/inspected-archives/ash_hooks-$VERSION.tar"
+      # This runner has run no project code. Only this step receives the key.
+      - name: Upload the missing inspected archives
+        if: steps.state.outputs.package == 'upload' || steps.state.outputs.docs == 'upload'
+        working-directory: ${{ runner.temp }}/inspected-archives
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-        run: env -u ASH_HOOKS_NO_OPTIONAL mix hex.publish --yes
+          PACKAGE_STATE: ${{ steps.state.outputs.package }}
+          DOCS_STATE: ${{ steps.state.outputs.docs }}
+        run: |
+          mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/publish-hex-release.exs" \
+            "$VERSION" "ash_hooks-$VERSION.tar" "ash_hooks-$VERSION-docs.tar.gz" \
+            "$PACKAGE_STATE" "$DOCS_STATE"
 
-  # Reads the release back with no access to the key: the archive Hex serves is
-  # the archive inspected above, HexDocs serves the version, and the Livebook
-  # runs against the published package from hex.pm.
+  # Read back the release with no environment and no access to the key, then
+  # record exactly the bytes Hex serves as release-assets.
   verify:
     name: Read back
-    needs: publish
+    needs: [build, upload]
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     runs-on: ubuntu-24.04
-    # Twice the slowest green (236s on rehearsal run 44187801263) plus the
-    # bounded propagation retries below: up to 2.5 minutes for the archive,
-    # 5 for HexDocs and 5 for the registry.
-    timeout-minutes: 21
+    # Twice 170s on keyless rehearsal run 44380961139 is 5.7 minutes, plus
+    # bounded propagation: 2.5 minutes package archive, 5 docs archive,
+    # 5 HexDocs and 5 registry. 24 minutes rounds up 5.7 + 2.5 + 5 + 5 + 5.
+    timeout-minutes: 24
     services:
       receiver:
         image: ghcr.io/tarampampam/webhook-tester@sha256:85818267b450d3d386cad6510c561e09b974183ed2832c373bc83b125fc1b221
@@ -141,37 +217,58 @@ jobs:
         ports:
           - 52871:8080
     env:
-      VERSION: ${{ needs.publish.outputs.version }}
-      SHA256: ${{ needs.publish.outputs.sha256 }}
+      VERSION: ${{ needs.build.outputs.version }}
+      SHA256: ${{ needs.build.outputs.package_sha256 }}
     steps:
-      - name: The archive on Hex is the inspected archive
+      - name: Refuse any ref but the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          archive="$RUNNER_TEMP/ash_hooks-$VERSION.tar"
-          curl --fail --silent --show-error --location --retry 10 --retry-all-errors --retry-delay 15 \
-            --output "$archive" "https://repo.hex.pm/tarballs/ash_hooks-$VERSION.tar"
-          published=$(sha256sum "$archive" | cut -d' ' -f1)
-          if [ "$published" != "$SHA256" ]; then
-            echo "::error::Hex serves ash_hooks $VERSION with SHA-256 $published; the inspected archive was $SHA256."
+          if [ -z "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::Publish runs only from the default branch; this run is on $GITHUB_REF."
             exit 1
           fi
-          {
-            echo "## ash_hooks $VERSION"
-            echo
-            echo "- Commit: \`$GITHUB_SHA\`"
-            echo "- Archive SHA-256: \`$SHA256\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+      # Full history: the served docs may name an ancestor of this commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: The package archive on Hex is the inspected archive
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          archive="$RUNNER_TEMP/release-assets/ash_hooks-$VERSION.tar"
+          timeout 150s curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
+            --retry 10 --retry-all-errors --retry-delay 15 --retry-max-time 150 \
+            --output "$archive" "https://repo.hex.pm/tarballs/ash_hooks-$VERSION.tar"
+          printf '%s  %s\n' "$SHA256" "$archive" | sha256sum -c -
+      # A docs build is not byte-stable (ExDoc orders its search data
+      # differently in some builds of one commit), so served docs are never
+      # compared with this run's build. Their release.json names the published
+      # commit: this commit or an ancestor of it on the default branch.
+      - name: The docs archive on Hex names this release
+        id: docs
+        run: |
+          archive="$RUNNER_TEMP/release-assets/ash_hooks-$VERSION-docs.tar.gz"
+          timeout 300s curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
+            --retry 20 --retry-all-errors --retry-delay 15 --retry-max-time 300 \
+            --output "$archive" "https://repo.hex.pm/docs/ash_hooks-$VERSION.tar.gz"
+          python3 -I scripts/check-docs-archive.py --served --version "$VERSION" --commit "$GITHUB_SHA" "$archive"
       - name: HexDocs serves the version
         run: |
-          curl --fail --silent --show-error --location --retry 20 --retry-all-errors --retry-delay 15 \
+          timeout 300s curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
+            --retry 20 --retry-all-errors --retry-delay 15 --retry-max-time 300 \
             --output /dev/null "https://hexdocs.pm/ash_hooks/$VERSION/readme.html"
       # The signed registry is what Mix.install verifies against. A release
       # record encodes its version (field 1) before its 32-byte inner checksum
       # (field 2), and carries its 32-byte outer checksum (field 5).
       - name: The Hex registry lists the version with the inspected checksum
         run: |
-          for _ in $(seq 1 20); do
-            if curl --fail --silent --show-error "https://repo.hex.pm/packages/ash_hooks" | gunzip |
-              python3 -c '
+          deadline=$((SECONDS + 300))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            remaining=$((deadline - SECONDS))
+            if curl --fail --silent --show-error --connect-timeout 10 --max-time "$remaining" \
+              "https://repo.hex.pm/packages/ash_hooks" | gunzip |
+              python3 -I -c '
           import os, sys
           registry = sys.stdin.buffer.read()
           version = os.environ["VERSION"].encode()
@@ -180,17 +277,44 @@ jobs:
           '; then
               exit 0
             fi
-            sleep 15
+            remaining=$((deadline - SECONDS))
+            if [ "$remaining" -gt 0 ]; then
+              sleep "$((remaining < 15 ? remaining : 15))"
+            fi
           done
           echo "::error::The Hex registry does not list ash_hooks $VERSION with SHA-256 $SHA256."
           exit 1
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Recorded before any project or dependency code runs on this runner,
+      # so nothing executed later can alter the served bytes it records.
+      - name: Assemble release-assets from the served archives
+        env:
+          PUBLISHED_COMMIT: ${{ steps.docs.outputs.commit }}
+        run: python3 -I scripts/release-notes.py "$VERSION" --assets "$RUNNER_TEMP/release-assets" --commit "$PUBLISHED_COMMIT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          persist-credentials: false
+          name: release-assets
+          path: ${{ runner.temp }}/release-assets/
+          if-no-files-found: error
+          overwrite: true
+      - name: Record the verified release
+        working-directory: ${{ runner.temp }}/release-assets
+        env:
+          PUBLISHED_COMMIT: ${{ steps.docs.outputs.commit }}
+        run: |
+          {
+            echo "## ash_hooks $VERSION"
+            echo
+            echo "- Published commit (tag \`v$VERSION\` here): \`$PUBLISHED_COMMIT\`"
+            echo "- Dispatched commit: \`$GITHUB_SHA\`"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: ./.github/actions/beam
         with:
-          elixir: ${{ needs.publish.outputs.elixir }}
-          otp: ${{ needs.publish.outputs.otp }}
+          elixir: ${{ needs.build.outputs.elixir }}
+          otp: ${{ needs.build.outputs.otp }}
       - run: mix deps.get --check-locked
       - name: Wait for the real receiver
         run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version

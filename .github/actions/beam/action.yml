@@ -1,7 +1,8 @@
 name: Exact BEAM runtime
 description: >-
-  Installs the Elixir and OTP versions a .tool-versions file names, exactly, and
-  refuses the job when the installed runtime differs.
+  Installs the exact Elixir and OTP versions a .tool-versions file names and the
+  pinned Hex client, then refuses any differing version. The runtime check is
+  the shared scripts/toolchain.sh, so the job's checkout must include it.
 inputs:
   elixir:
     description: Elixir version as .tool-versions names it, such as 1.20.5-otp-29.
@@ -9,6 +10,9 @@ inputs:
   otp:
     description: OTP version as .tool-versions names it, such as 29.1.2.
     required: true
+  hex:
+    description: Exact Hex client version shared by every build and upload.
+    default: "2.7.0"
 runs:
   using: composite
   steps:
@@ -17,19 +21,23 @@ runs:
         elixir-version: ${{ inputs.elixir }}
         otp-version: ${{ inputs.otp }}
         version-type: strict
+        install-hex: false
+    - name: Install and verify the exact Hex client
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      env:
+        WANT_HEX: ${{ inputs.hex }}
+      run: |
+        mix local.hex "$WANT_HEX" --force
+        installed=$(mix hex.info | awk '$1 == "Hex:" {print $2}')
+        if [ "$installed" != "$WANT_HEX" ]; then
+          echo "::error::Installed Hex $installed; expected $WANT_HEX."
+          exit 1
+        fi
+        echo "Hex $installed, as pinned"
     - name: Refuse a runtime other than .tool-versions names
       shell: bash
       env:
         WANT_ELIXIR: ${{ inputs.elixir }}
         WANT_OTP: ${{ inputs.otp }}
-      run: |
-        elixir -e '
-          otp_file = Path.join([to_string(:code.root_dir()), "releases", System.otp_release(), "OTP_VERSION"])
-          installed = {"#{System.version()}-otp-#{System.build_info()[:otp_release]}", String.trim(File.read!(otp_file))}
-          wanted = {System.fetch_env!("WANT_ELIXIR"), System.fetch_env!("WANT_OTP")}
-          if installed != wanted do
-            IO.puts(:stderr, "installed Elixir #{elem(installed, 0)} on OTP #{elem(installed, 1)}; .tool-versions names Elixir #{elem(wanted, 0)} on OTP #{elem(wanted, 1)}")
-            System.halt(1)
-          end
-          IO.puts("Elixir #{elem(installed, 0)} on OTP #{elem(installed, 1)}, as .tool-versions names")
-        '
+      run: sh "$GITHUB_WORKSPACE/scripts/toolchain.sh" --installed "elixir=$WANT_ELIXIR" "erlang=$WANT_OTP"
