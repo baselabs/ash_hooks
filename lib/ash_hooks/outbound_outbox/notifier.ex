@@ -43,7 +43,7 @@ defmodule AshHooks.OutboundOutbox.Notifier do
         :ok
 
       {module, function} ->
-        case apply(module, function, [row, tenant]) do
+        case apply(module, function, [row, AshHooks.Tenancy.from_row(row)]) do
           :ok -> :ok
           _other -> AshHooks.Outbox.emit(:trigger, row, :failed, tenant, :trigger_failed)
         end

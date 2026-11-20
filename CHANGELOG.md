@@ -14,8 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tenant identifier or `nil` when absent, so hosts can alarm per tenant.
   Outbox claim telemetry includes missing, already-done, already-failed, and
   storage-error outcomes. Each fanout reaching the read emits one read or claim
-  outcome, plus `:stale` if a claimed
-  run loses its fenced lease.
+  outcome, plus `:stale` if a claimed run loses its fenced lease.
 
 ### Changed
 
