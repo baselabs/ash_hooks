@@ -38,6 +38,7 @@ defmodule AshHooks.RowSecurityPostgresTest do
   use ExUnit.Case, async: false
   alias AshHooks.RowSecurityPostgresTest.{ReadRepo, Repo}
   alias AshHooks.Test.RowSecurityCases, as: Cases
+  alias AshPostgres.DataLayer.Info
   @moduletag :postgres
 
   setup_all do
@@ -71,7 +72,7 @@ defmodule AshHooks.RowSecurityPostgresTest do
     assert {:ok, []} =
              AshHooks.dispatch(context.emitter, :event, event, tenant: tenant)
 
-    table = AshPostgres.DataLayer.Info.table(context.delivery)
+    table = Info.table(context.delivery)
     parent = self()
     handler = make_ref()
 

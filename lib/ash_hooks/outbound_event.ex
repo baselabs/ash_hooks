@@ -242,45 +242,59 @@ defmodule AshHooks.OutboundEvent do
   defp validate_rate(_), do: {:error, :invalid_per_second}
 
   defp replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant, acc) do
-    case fetch_delivery(deliveries, endpoint, logged, tenant) do
-      :missing ->
-        case create_replay_row(deliveries, endpoint, logged, requested_by, opts, tenant) do
-          {:ok, row} ->
-            :telemetry.execute(
-              [:ash_hooks, :delivery, :resend],
-              %{},
-              %{
-                endpoint_id: PrimaryKey.scalar!(endpoint),
-                event_uuid: logged.event_uuid,
-                requested_by: requested_by
-              }
-            )
+    outcome =
+      case fetch_delivery(deliveries, endpoint, logged, tenant) do
+        :missing ->
+          replay_missing(logged, endpoint, deliveries, requested_by, opts, tenant)
 
-            _ = Keyword.get(opts, :enqueue) && enqueue_replay(opts[:enqueue], row, logged)
-            Map.update!(acc, :created, &(&1 + 1))
+        {:ok, %{status: status} = row} when status in [:succeeded, :dead_letter] ->
+          resend_terminal(row, requested_by, endpoints, opts, tenant)
 
-          {:error, reason} ->
-            Map.update!(acc, :errors, &[reason | &1])
-        end
+        {:ok, _live_row} ->
+          :skipped
 
-      {:ok, %{status: status} = row} when status in [:succeeded, :dead_letter] ->
-        case Delivery.resend(row,
-               requested_by: requested_by,
-               endpoints: endpoints,
-               enqueue: opts[:enqueue],
-               tenant: tenant
-             ) do
-          {:ok, _} -> Map.update!(acc, :re_sent, &(&1 + 1))
-          {:error, reason} -> Map.update!(acc, :errors, &[reason | &1])
-        end
+        {:error, reason} ->
+          {:error, reason}
+      end
 
-      {:ok, _live_row} ->
-        Map.update!(acc, :skipped, &(&1 + 1))
+    tally(acc, outcome)
+  end
+
+  defp replay_missing(logged, endpoint, deliveries, requested_by, opts, tenant) do
+    case create_replay_row(deliveries, endpoint, logged, requested_by, opts, tenant) do
+      {:ok, row} ->
+        :telemetry.execute(
+          [:ash_hooks, :delivery, :resend],
+          %{},
+          %{
+            endpoint_id: PrimaryKey.scalar!(endpoint),
+            event_uuid: logged.event_uuid,
+            requested_by: requested_by
+          }
+        )
+
+        _ = Keyword.get(opts, :enqueue) && enqueue_replay(opts[:enqueue], row, logged)
+        :created
 
       {:error, reason} ->
-        Map.update!(acc, :errors, &[reason | &1])
+        {:error, reason}
     end
   end
+
+  defp resend_terminal(row, requested_by, endpoints, opts, tenant) do
+    case Delivery.resend(row,
+           requested_by: requested_by,
+           endpoints: endpoints,
+           enqueue: opts[:enqueue],
+           tenant: tenant
+         ) do
+      {:ok, _} -> :re_sent
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp tally(acc, {:error, reason}), do: Map.update!(acc, :errors, &[reason | &1])
+  defp tally(acc, outcome), do: Map.update!(acc, outcome, &(&1 + 1))
 
   defp replay_declaration(resource, deliveries, endpoints, opts) do
     case opts[:declaration] do
