@@ -147,7 +147,7 @@ jobs:
   postgres:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 54 # twice the slowest cold green including the exact floor, 1594s on run 44230356354
+    timeout-minutes: 62 # twice the slowest green, 1841s on run 44211072814
     strategy:
       fail-fast: false
       matrix:
