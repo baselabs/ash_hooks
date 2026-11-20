@@ -77,7 +77,8 @@ defmodule AshHooks.EndpointHealth do
   `{:ok, %{disabled: n, warned: n, unread: n}}`. Failed history reads do not
   stop other endpoints from being considered. Each increments `unread` and emits
   `[:ash_hooks, :endpoint_health, :read_failed]` with measurement `%{count: 1}`
-  and metadata `%{endpoint_id: id, reason: reason}`. That endpoint's status and
+  and metadata `%{endpoint_id: id, reason: reason}`, with a classified reason
+  rather than the storage error contents. That endpoint's status and
   warning marker remain unchanged. A positive `unread` count means the sweep is
   incomplete; repair storage and retry. Counts describe committed writes.
   Endpoint-list read errors return `{:error, reason}` directly. Persisted warning
@@ -149,7 +150,10 @@ defmodule AshHooks.EndpointHealth do
         :telemetry.execute(
           [:ash_hooks, :endpoint_health, :read_failed],
           %{count: 1},
-          %{endpoint_id: endpoint_id_of(endpoint), reason: reason}
+          %{
+            endpoint_id: endpoint_id_of(endpoint),
+            reason: AshHooks.Telemetry.classify_token(reason)
+          }
         )
 
         {disabled, warned, failed_reads + 1}

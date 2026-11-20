@@ -30,27 +30,27 @@ defmodule AshHooks.OutboundOutbox.Notifier do
     submitted = Map.new(keys, &{&1, Ash.Changeset.get_attribute(changeset, &1)})
 
     if Map.take(row, keys) === submitted do
-      AshHooks.Outbox.emit(:publish, row, outcome)
-      if outcome == :accepted and row.state == :pending, do: trigger(row)
+      AshHooks.Outbox.emit(:publish, row, outcome, changeset.tenant)
+      if outcome == :accepted and row.state == :pending, do: trigger(row, changeset.tenant)
     end
 
     :ok
   end
 
-  defp trigger(row) do
+  defp trigger(row, tenant) do
     case AshHooks.Outbox.option(row.__struct__, :trigger) do
       nil ->
         :ok
 
       {module, function} ->
-        case apply(module, function, [row, AshHooks.Tenancy.from_row(row)]) do
+        case apply(module, function, [row, tenant]) do
           :ok -> :ok
-          _other -> AshHooks.Outbox.emit(:trigger, row, :failed, :trigger_failed)
+          _other -> AshHooks.Outbox.emit(:trigger, row, :failed, tenant, :trigger_failed)
         end
     end
   rescue
-    _error -> AshHooks.Outbox.emit(:trigger, row, :failed, :trigger_failed)
+    _error -> AshHooks.Outbox.emit(:trigger, row, :failed, tenant, :trigger_failed)
   catch
-    _kind, _reason -> AshHooks.Outbox.emit(:trigger, row, :failed, :trigger_failed)
+    _kind, _reason -> AshHooks.Outbox.emit(:trigger, row, :failed, tenant, :trigger_failed)
   end
 end

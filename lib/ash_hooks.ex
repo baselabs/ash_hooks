@@ -320,7 +320,8 @@ defmodule AshHooks do
   A missing row may be absent or hidden by row security. Every call reaching
   the read emits one outbox claim event for its read or claim outcome, including
   missing and terminal reads. Acquired claims emit before work; a runner that
-  loses its fenced lease also emits a stale claim event.
+  loses its fenced lease also emits a stale claim event. Every outbox event
+  includes the operation's `tenant` identifier so hosts can alarm per tenant.
   The generated worker cancels missing or failed publications; it completes
   done, busy, stale, and persisted pending outcomes. No fanout job is re-enqueued:
   schedule `fanout_pending/3` for every tenant to finish pending work.

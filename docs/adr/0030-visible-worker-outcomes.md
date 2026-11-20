@@ -31,8 +31,11 @@ to create a replay delivery.
    reason. Acquired claims emit `:claimed` when the claim write succeeds,
    before work starts. A claimed run that loses its fenced lease also emits
    `:stale` from the fenced transition. Missing delivery reads emit
-   `[:ash_hooks, :delivery, :missing]` with only the identity in the job args.
-   These events contain no tenant value, payload or metadata contents.
+   `[:ash_hooks, :delivery, :missing]` with the identity in the job args,
+   preserving every component of `delivery_pk`. These events and every outbox
+   event carry the operation's `tenant` identifier so hosts can alarm per tenant,
+   consistent with the identifier contract in `AshHooks.Telemetry`. Payloads,
+   metadata contents and resolved signing secrets are omitted.
 4. Replay returns `%{created, re_sent, skipped, errors}`. Delivery read,
    replay create, and terminal resend failures retain their per-row error
    terms in `errors`; only live, nonterminal rows left alone count as skipped.
@@ -47,15 +50,15 @@ the result, including the delivery driver to which the worker delegates.
 
 | Outcome | Why the worker returns `:ok` | What finishes the work |
 | --- | --- | --- |
-| Fanout `:done`, including an already-done read ([worker](../../lib/ash_hooks/worker.ex#L898)) | The publication's fanout is durably complete. | No fanout remains. Created deliveries follow their own job and reconcile paths. |
-| Fanout `:busy` ([worker](../../lib/ash_hooks/worker.ex#L898)) | A live lease or persisted future retry prevents this runner from claiming. | The current owner may finish. Otherwise the required host-scheduled per-tenant `AshHooks.fanout_pending/3` sweep claims it when due and its lease expires. |
-| Fanout `:stale` ([worker](../../lib/ash_hooks/worker.ex#L898)) | This runner lost its fenced lease and must not write a result. | The new owner or the required per-tenant sweep finishes it. An expired lease leaves the row pending. |
-| Fanout `{:pending, reason}` ([worker](../../lib/ash_hooks/worker.ex#L901), [release](../../lib/ash_hooks/outbox.ex#L325)) | Release persisted the retry time and cause on the publication. | The required per-tenant sweep retries it when due. Release only persists `next_attempt_at`; it does not re-enqueue a job. |
-| Delivery already `:succeeded` or `:dead_letter` ([driver](../../lib/ash_hooks/delivery.ex#L620)) | The durable row is already terminal. | No work remains unless a host explicitly resends or replays it. |
-| Delivery records success ([success](../../lib/ash_hooks/delivery.ex#L2885)) | The fenced success write completed. | No work remains. |
-| Delivery records a terminal failure ([dead letter](../../lib/ash_hooks/delivery.ex#L2968)) | The fenced dead-letter write completed, including permanent endpoint, destination, signing and response failures and exhausted retries. | No work remains unless explicitly rearmed. |
-| Delivery finishes HTTP 410 disablement ([disable](../../lib/ash_hooks/delivery.ex#L2613)) | The endpoint obligation was resolved and the delivery dead-lettered durably. | No work remains. A changed endpoint is never disabled by this older obligation. |
-| Delivery terminalizes its exhausted attempt series ([ceiling](../../lib/ash_hooks/delivery.ex#L2694)) | The fenced write durably records `:dead_letter`. | No work remains unless explicitly rearmed. |
+| Fanout `:done`, including an already-done read ([`perform_fanout/2`](../../lib/ash_hooks/worker.ex)) | The publication's fanout is durably complete. | No fanout remains. Created deliveries follow their own job and reconcile paths. |
+| Fanout `:busy` ([`perform_fanout/2`](../../lib/ash_hooks/worker.ex)) | A live lease or persisted future retry prevents this runner from claiming. | The current owner may finish. Otherwise the required host-scheduled per-tenant `AshHooks.fanout_pending/3` sweep claims it when due and its lease expires. |
+| Fanout `:stale` ([`perform_fanout/2`](../../lib/ash_hooks/worker.ex)) | This runner lost its fenced lease and must not write a result. | The new owner or the required per-tenant sweep finishes it. An expired lease leaves the row pending. |
+| Fanout `{:pending, reason}` ([`perform_fanout/2`](../../lib/ash_hooks/worker.ex), [`retry/3`](../../lib/ash_hooks/outbox.ex)) | Release persisted the retry time and cause on the publication. | The required per-tenant sweep retries it when due. Release only persists `next_attempt_at`; it does not re-enqueue a job. |
+| Delivery already `:succeeded` or `:dead_letter` ([`drive_row/3`](../../lib/ash_hooks/delivery.ex)) | The durable row is already terminal. | No work remains unless a host explicitly resends or replays it. |
+| Delivery records success ([`mark_succeeded/5`](../../lib/ash_hooks/delivery.ex)) | The fenced success write completed. | No work remains. |
+| Delivery records a terminal failure ([`dead_letter/6`](../../lib/ash_hooks/delivery.ex)) | The fenced dead-letter write completed, including permanent endpoint, destination, signing and response failures and exhausted retries. | No work remains unless explicitly rearmed. |
+| Delivery finishes HTTP 410 disablement ([`finalize_disable/4`](../../lib/ash_hooks/delivery.ex)) | The endpoint obligation was resolved and the delivery dead-lettered durably. | No work remains. A changed endpoint is never disabled by this older obligation. |
+| Delivery terminalizes its exhausted attempt series ([`terminalize_exhausted/3`](../../lib/ash_hooks/delivery.ex)) | The fenced write durably records `:dead_letter`. | No work remains unless explicitly rearmed. |
 
 No fanout success above re-enqueues a job. Without the required host-scheduled
 per-tenant `AshHooks.fanout_pending/3` sweep, busy, stale and released
@@ -63,16 +66,16 @@ publications stay pending when no owner finishes them. Outbox claim and result
 telemetry supplies the operational signal. A trigger supplements the sweep;
 it never replaces it, as [the public API](../../lib/ash_hooks.ex) requires.
 
-Delivery does not return `:ok` for a scheduled retry. A
-[future retry time](../../lib/ash_hooks/delivery.ex#L1108),
-[live send lease](../../lib/ash_hooks/delivery.ex#L628),
-[lost compare-and-set claim](../../lib/ash_hooks/delivery.ex#L1294) or result
-fence, or a [persisted retryable failure](../../lib/ash_hooks/delivery.ex#L2922)
+Delivery does not return `:ok` for a scheduled retry. A future retry time
+([`maybe_wait/3`](../../lib/ash_hooks/delivery.ex)),
+live send lease ([`maybe_reclaim_sending/3`](../../lib/ash_hooks/delivery.ex)),
+lost compare-and-set claim ([`claim_then_attempt/3`](../../lib/ash_hooks/delivery.ex)) or result
+fence, or a persisted retryable failure ([`retry/7`](../../lib/ash_hooks/delivery.ex))
 returns `{:snooze, seconds}`. Oban snoozes the same job, and the row
 continues to own due time and attempt limits. Storage failures, finalization
 failures and failures before ownership return errors; Oban retries the same
 job within its attempt budget. The host-scheduled per-tenant
-[`AshHooks.reconcile_pending/3`](../../lib/ash_hooks/dispatcher.ex#L766) path
+[`AshHooks.Dispatcher.reconcile_pending/3`](../../lib/ash_hooks/dispatcher.ex) path
 recovers stale pending, enqueue-failed, due retryable, expired sending and
 disable-pending rows when their trigger is stranded or exhausted. It re-admits
 through the declared enqueue seam. Successful terminal writes remain `:ok`.
@@ -81,9 +84,10 @@ through the declared enqueue seam. Successful terminal writes remain `:ok`.
 
 Hosts alarming on Oban `cancelled` jobs now see work that previously completed
 silently. Alarm on missing and failed claim outcomes and delivery missing
-events. Bind each tenant-bearing phase through the repository's
-transaction-begin callback, including spawned delivery work. A cancellation
-does not prove the row was deleted or that a binding failed. Operators inspect
+events per tenant using their `tenant` identifier. Bind each tenant-bearing
+phase through the repository's transaction-begin callback, including spawned
+delivery work. A cancellation does not prove the row was deleted or that a
+binding failed. Operators inspect
 the row and host binding before explicitly recovering work. No schema change
 or automatic tenant discovery is introduced.
 

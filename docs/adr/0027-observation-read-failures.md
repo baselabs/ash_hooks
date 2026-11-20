@@ -21,7 +21,8 @@ A failed observation read is reported, never counted as zero.
   attempt-history read fails, the sweep still checks the other endpoints. That
   endpoint is not warned, disabled or cleared. The sweep counts it in an `unread`
   field of its result and emits
-  `[:ash_hooks, :endpoint_health, :read_failed]` with the endpoint and the reason.
+  `[:ash_hooks, :endpoint_health, :read_failed]` with the endpoint and a classified
+  reason, never the storage error contents.
   A failed read of the endpoint list fails the whole sweep.
 
 ## Consequences

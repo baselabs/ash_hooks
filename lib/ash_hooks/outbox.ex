@@ -11,7 +11,8 @@ defmodule AshHooks.Outbox do
   def option(resource, key), do: Extension.get_opt(resource, [:outbox], key)
 
   def publish(resource, declaration, event, opts) do
-    emit(:publish, %{event_uuid: event_id(event)}, :attempt)
+    tenant = opts[:tenant]
+    emit(:publish, %{event_uuid: event_id(event)}, :attempt, tenant)
 
     with {:ok, emitter, name, entity, endpoint} <- declaration(resource, declaration),
          {:ok, event} <- event(event, name),
@@ -35,7 +36,7 @@ defmodule AshHooks.Outbox do
       persist(resource, input, tenant, opts)
     else
       {:error, reason} = error ->
-        emit(:publish, %{event_uuid: event_id(event)}, :refused, reason)
+        emit(:publish, %{event_uuid: event_id(event)}, :refused, tenant, reason)
         error
     end
   end
@@ -55,7 +56,7 @@ defmodule AshHooks.Outbox do
 
     case result do
       {:ok, row, notifications} ->
-        with {:ok, disposition} <- disposition(row, input) do
+        with {:ok, disposition} <- disposition(row, input, tenant) do
           notifications =
             Enum.flat_map(notifications, &route_notification(&1, resource, Notifier))
 
@@ -63,7 +64,7 @@ defmodule AshHooks.Outbox do
         end
 
       {:error, reason} ->
-        emit(:publish, %{event_uuid: input.event_uuid}, :refused, reason)
+        emit(:publish, %{event_uuid: input.event_uuid}, :refused, tenant, reason)
         {:error, reason}
     end
   end
@@ -104,7 +105,7 @@ defmodule AshHooks.Outbox do
     end
   end
 
-  defp disposition(row, input) do
+  defp disposition(row, input, tenant) do
     keys = [
       :dispatch_source,
       :dispatch_route,
@@ -118,7 +119,7 @@ defmodule AshHooks.Outbox do
     if Map.take(row, keys) === Map.take(input, keys) do
       {:ok, if(row.acceptance_token == input.acceptance_token, do: :accepted, else: :duplicate)}
     else
-      emit(:publish, row, :refused, :publication_conflict)
+      emit(:publish, row, :refused, tenant, :publication_conflict)
       {:error, :publication_conflict}
     end
   end
@@ -155,18 +156,18 @@ defmodule AshHooks.Outbox do
          :ok <- Phase.outside_transaction(resource) do
       case fetch(resource, id, tenant) do
         {:ok, nil} ->
-          emit(:claim, %{event_uuid: id}, :missing)
+          emit(:claim, %{event_uuid: id}, :missing, tenant)
           :missing
 
         {:ok, %{state: state} = row} when state in [:done, :failed] ->
-          emit(:claim, row, state)
+          emit(:claim, row, state, tenant)
           state
 
         {:ok, row} ->
           claim(row, tenant)
 
         {:error, reason} ->
-          emit(:claim, %{event_uuid: id}, :error, reason)
+          emit(:claim, %{event_uuid: id}, :error, tenant, reason)
           {:error, reason}
       end
     end
@@ -186,16 +187,16 @@ defmodule AshHooks.Outbox do
     |> update(:claim, %{claim_token: token, lease_expires_at: lease}, tenant)
     |> case do
       {:ok, nil} ->
-        emit(:claim, row, :busy)
+        emit(:claim, row, :busy, tenant)
         :busy
 
       {:ok, claimed} ->
-        emit(:publish, claimed, :accepted)
-        emit(:claim, claimed, :claimed)
+        emit(:publish, claimed, :accepted, tenant)
+        emit(:claim, claimed, :claimed, tenant)
         run(claimed, tenant)
 
       {:error, reason} ->
-        emit(:claim, row, :error, reason)
+        emit(:claim, row, :error, tenant, reason)
         {:error, reason}
     end
   end
@@ -357,12 +358,12 @@ defmodule AshHooks.Outbox do
     |> update(action, Map.put(input, :claim_token, row.claim_token), tenant)
     |> case do
       {:ok, nil} ->
-        emit(:claim, row, :stale)
+        emit(:claim, row, :stale, tenant)
         :stale
 
       {:ok, updated} ->
         {status, reason} = if is_tuple(outcome), do: outcome, else: {outcome, updated.last_error}
-        emit(:result, updated, status, reason)
+        emit(:result, updated, status, tenant, reason)
         outcome
 
       {:error, reason} ->
@@ -371,6 +372,7 @@ defmodule AshHooks.Outbox do
   end
 
   def fanout_pending(resource, batch_size, opts) do
+    tenant = opts[:tenant]
     opts = Keyword.put(opts, :batch_size, batch_size)
 
     with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
@@ -380,11 +382,11 @@ defmodule AshHooks.Outbox do
 
       summary = Enum.reduce(rows, summary, &sweep_result(&1, tenant, &2))
 
-      emit(:sweep, %{}, :complete)
+      emit(:sweep, %{}, :complete, tenant)
       {:ok, summary}
     else
       {:error, reason} = error ->
-        emit(:sweep, %{}, :error, reason)
+        emit(:sweep, %{}, :error, tenant, reason)
         error
     end
   end
@@ -416,7 +418,7 @@ defmodule AshHooks.Outbox do
         {:error, :publication_not_failed}
 
       {:ok, updated} ->
-        emit(:rearm, updated, :pending)
+        emit(:rearm, updated, :pending, tenant)
         {:ok, updated}
 
       {:error, reason} ->
@@ -604,11 +606,12 @@ defmodule AshHooks.Outbox do
     _kind, _reason -> {:error, :fanout_crashed}
   end
 
-  def emit(event, row, outcome, reason \\ nil) do
+  def emit(event, row, outcome, tenant, reason \\ nil) do
     :telemetry.execute([:ash_hooks, :outbox, event], %{count: 1}, %{
       event_uuid: Map.get(row, :event_uuid),
       outcome: outcome,
-      reason: if(reason, do: AshHooks.Telemetry.classify_token(reason))
+      reason: if(reason, do: AshHooks.Telemetry.classify_token(reason)),
+      tenant: tenant
     })
   end
 end

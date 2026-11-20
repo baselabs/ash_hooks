@@ -8,7 +8,10 @@ defmodule AshHooks.Telemetry do
   secret fingerprint in your own event, `AshHooks.Telemetry.fingerprint/1`
   returns an eight-character hexadecimal value; package events do not use it.
 
-  Attach handlers to consume these best-effort `:telemetry.execute/3` events:
+  Attach handlers to consume these best-effort `:telemetry.execute/3` events.
+  Measurements are `%{}` unless shown separately before the metadata map.
+  Outbox events and delivery missing and disable events include the operation's
+  `tenant` identifier, or `nil` when absent, so hosts can alarm or notify per tenant.
 
     * `[:ash_hooks, :ingress, :verify]`: `%{duration_ms}`; `%{source,
       outcome: :ok | :invalid, reason: atom | nil}` (the underscored error-struct name, such as `:invalid_signature` or
@@ -26,36 +29,38 @@ defmodule AshHooks.Telemetry do
       and invalid UTF-8 becomes `[binary]`. Hosts must not put secrets or payload
       data in this class; it is not restricted to the package's fixed vocabulary
     * `[:ash_hooks, :outbox, :publish]`: `%{count: 1}`; `%{event_uuid,
-      outcome: :attempt | :accepted | :duplicate | :refused, reason}`.
+      outcome: :attempt | :accepted | :duplicate | :refused, reason, tenant}`.
       The after-commit notifier or a successful fanout claim reports committed
       acceptance. Raw repository transactions suppress notifications and rely
       on the sweep
     * `[:ash_hooks, :outbox, :trigger]`: `%{count: 1}`; `%{event_uuid,
-      outcome: :failed, reason: "trigger_failed"}`
+      outcome: :failed, reason: "trigger_failed", tenant}`
     * `[:ash_hooks, :outbox, :claim]`: `%{count: 1}`; `%{event_uuid,
       outcome: :claimed | :busy | :stale | :missing | :done | :failed | :error,
-      reason}`. Each fanout reaching the read emits one event for its read or
+      reason, tenant}`. Each fanout reaching the read emits one event for its read or
       claim outcome, including storage errors with a classified reason.
       Missing and already-terminal reads report the requested event ID without
       a state transition. `:claimed` fires when the claim write succeeds,
       before fanout work. A claimed run that loses its fenced lease also emits
       `:stale`. Other outcomes use nil reasons
     * `[:ash_hooks, :outbox, :result]`: `%{count: 1}`; `%{event_uuid,
-      outcome: :done | :pending | :failed, reason}`. Emitted only after the
+      outcome: :done | :pending | :failed, reason, tenant}`. Emitted only after the
       matching fenced state transition succeeds
     * `[:ash_hooks, :outbox, :rearm]`: `%{count: 1}`; `%{event_uuid,
-      outcome: :pending, reason: nil}`
+      outcome: :pending, reason: nil, tenant}`
     * `[:ash_hooks, :outbox, :sweep]`: `%{count: 1}`; `%{event_uuid: nil,
-      outcome: :complete | :error, reason}`. Reasons use `classify_token/1`;
+      outcome: :complete | :error, reason, tenant}`. Reasons use `classify_token/1`;
       outbox events contain no payload or metadata contents
     * `[:ash_hooks, :dispatch, :enqueue_failed]`: `%{endpoint_id,
       event_uuid, reason}` (classified, contents-free)
     * `[:ash_hooks, :delivery, :attempt]`: `%{endpoint_id, event_uuid,
       attempts}`
     * `[:ash_hooks, :delivery, :missing]`: measurement `%{}`; metadata
-      contains only the job's `endpoint_id`, `event_uuid`, and/or `delivery_pk`.
+      contains the job's `endpoint_id`, `event_uuid`, and/or `delivery_pk`, plus
+      the resolved `tenant`. The complete job key is preserved, including any
+      tenant attribute component.
       No delivery row was visible; the worker returns `{:cancel, :delivery_missing}`.
-      Tenant values, payloads, and metadata contents are omitted
+      Payloads and metadata contents are omitted
     * `[:ash_hooks, :delivery, :sign]`: measurement `%{duration: native_time}`;
       metadata `%{outcome: :ok | :skip | :retry | :terminal | :invalid_result |
       :callback_failed}`. Contains no callback terms or key material.
@@ -67,7 +72,7 @@ defmodule AshHooks.Telemetry do
     * `[:ash_hooks, :delivery, :dead_letter]`: `%{endpoint_id,
       event_uuid, reason, response_status}`
     * `[:ash_hooks, :delivery, :disable]`: `%{endpoint_id, reason:
-      :gone_410}`
+      :gone_410, tenant}`
     * `[:ash_hooks, :worker, :invalid_runtime_config]`: `%{reason:
       binary}` (the fixed validation vocabulary: `callback_failed`,
       `unknown_key`, `not_positive_integer`, `backoff_inversion`,
@@ -97,7 +102,7 @@ defmodule AshHooks.Telemetry do
       `[:ash_hooks, :delivery, :disable]`
 
     * `[:ash_hooks, :endpoint_health, :read_failed]`: measurement `%{count: 1}`;
-      metadata `%{endpoint_id, reason}`: attempt history could not be read.
+      metadata `%{endpoint_id, reason}` (classified): attempt history could not be read.
       The sweep increments `unread` and preserves this endpoint's warning marker.
     * `[:ash_hooks, :key_registry, :destroy_failed]`: measurement `%{count: 1}`;
       metadata `%{registry: module, ref: reference, reason: reason}`, where

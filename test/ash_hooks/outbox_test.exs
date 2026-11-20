@@ -1207,7 +1207,8 @@ for {module, namespace} <- [
         try do
           runner_call = Task.async(fn -> Cases.fanout(f, event.id) end)
 
-          assert_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim], %{outcome: :claimed}},
+          assert_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim],
+                          %{outcome: :claimed, tenant: "tenant-a"}},
                          5_000
 
           assert_receive {:outbox_builder, runner}, 5_000
@@ -1215,7 +1216,8 @@ for {module, namespace} <- [
           Cases.expire(f, event)
           assert_receive {:DOWN, ^ref, :process, ^runner, :killed}, 5_000
           assert :stale = Task.await(runner_call, 5_000)
-          assert_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim], %{outcome: :stale}}
+          assert_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim],
+                          %{outcome: :stale, tenant: "tenant-a"}}
           refute_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim], _}
           refute_receive {:outbox_telemetry, [:ash_hooks, :outbox, :result], _}
 
@@ -1642,60 +1644,103 @@ for {module, namespace} <- [
         )
 
       on_exit(fn -> :telemetry.detach(handler) end)
-      runtime = Module.concat(f.namespace, :Runtime)
-      Application.put_env(:ash_hooks, runtime, :raise)
-      event = Cases.event()
-      assert {:ok, :accepted} = Cases.publish(f, event)
-      assert_receive {:observed, :publish, %{count: 1}, %{outcome: :attempt}}
-      assert_receive {:observed, :publish, %{count: 1}, %{outcome: :accepted}}
 
-      assert_receive {:observed, :trigger, %{count: 1},
-                      %{outcome: :failed, reason: "trigger_failed"}}
+      for tenant <- ["tenant-a", "tenant-b"] do
+        runtime = Module.concat(f.namespace, :Runtime)
+        Application.put_env(:ash_hooks, runtime, :raise)
+        event = Cases.event()
+        assert {:ok, :accepted} = Cases.publish(f, event, tenant: tenant)
 
-      assert {:ok, :duplicate} = Cases.publish(f, event)
-      assert_receive {:observed, :publish, _, %{outcome: :duplicate}}
-      assert {:error, :publication_conflict} = Cases.publish(f, %{event | payload: "conflict"})
+        assert_receive {:observed, :publish, %{count: 1}, %{outcome: :attempt, tenant: ^tenant}}
 
-      assert_receive {:observed, :publish, _,
-                      %{outcome: :refused, reason: "publication_conflict"}}
+        assert_receive {:observed, :publish, %{count: 1}, %{outcome: :accepted, tenant: ^tenant}}
 
-      assert :done = Cases.fanout(f, event.id)
-      assert_receive {:observed, :claim, _, %{outcome: :claimed}}
-      assert_receive {:observed, :result, _, %{outcome: :done, reason: nil}}
-      pending = Cases.event()
-      assert {:ok, :accepted} = Cases.publish(f, pending)
-      Cases.set(f, pending.id, dispatch_route: "removed")
-      assert {:pending, :unresolved_route} = Cases.fanout(f, pending.id)
-      assert_receive {:observed, :result, _, %{outcome: :pending, reason: "unresolved_route"}}
-      assert :busy = Cases.fanout(f, pending.id)
-      assert_receive {:observed, :claim, _, %{outcome: :busy}}
+        assert_receive {:observed, :trigger, %{count: 1},
+                        %{outcome: :failed, reason: "trigger_failed", tenant: ^tenant}}
 
-      Cases.set(f, pending.id,
-        format_version: 99,
-        next_attempt_at: DateTime.add(DateTime.utc_now(), -1)
-      )
+        assert {:ok, :duplicate} = Cases.publish(f, event, tenant: tenant)
+        assert_receive {:observed, :publish, _, %{outcome: :duplicate, tenant: ^tenant}}
 
-      assert :failed = Cases.fanout(f, pending.id)
+        assert {:error, :publication_conflict} =
+                 Cases.publish(f, %{event | payload: "conflict"}, tenant: tenant)
 
-      assert_receive {:observed, :result, _,
-                      %{outcome: :failed, reason: "unsupported_publication_format"}}
+        assert_receive {:observed, :publish, _,
+                        %{outcome: :refused, reason: "publication_conflict", tenant: ^tenant}}
 
-      assert {:ok, _} = AshHooks.rearm(f.outbox, pending.id, tenant: "tenant-a")
-      assert_receive {:observed, :rearm, _, %{outcome: :pending}}
-      assert {:ok, _} = AshHooks.fanout_pending(f.outbox, 10, tenant: "tenant-a")
-      assert_receive {:observed, :sweep, _, %{outcome: :complete}}
+        assert {:error, :invalid_event} = Cases.publish(f, :invalid, tenant: tenant)
 
-      assert {:error, :invalid_outbox_query} =
-               AshHooks.fanout_pending(f.outbox, 0, tenant: "tenant-a")
+        assert_receive {:observed, :publish, _,
+                        %{
+                          event_uuid: nil,
+                          outcome: :refused,
+                          reason: "invalid_event",
+                          tenant: ^tenant
+                        }}
 
-      assert_receive {:observed, :sweep, _, %{outcome: :error, reason: "invalid_outbox_query"}}
-      # The dedicated blocked-runner case asserts :stale and the absence of result telemetry.
-      observed = Cases.observed([])
+        assert :done = AshHooks.fanout(f.outbox, event.id, tenant: tenant)
+        assert_receive {:observed, :claim, _, %{outcome: :claimed, tenant: ^tenant}}
+        assert_receive {:observed, :result, _, %{outcome: :done, reason: nil, tenant: ^tenant}}
+        pending = Cases.event()
+        assert {:ok, :accepted} = Cases.publish(f, pending, tenant: tenant)
+        Cases.set(f, pending.id, dispatch_route: "removed")
 
-      for {_name, measurements, metadata} <- observed do
-        assert measurements == %{count: 1}
-        assert Enum.sort(Map.keys(metadata)) == [:event_uuid, :outcome, :reason]
+        assert {:pending, :unresolved_route} =
+                 AshHooks.fanout(f.outbox, pending.id, tenant: tenant)
+
+        assert_receive {:observed, :result, _,
+                        %{outcome: :pending, reason: "unresolved_route", tenant: ^tenant}}
+
+        assert :busy = AshHooks.fanout(f.outbox, pending.id, tenant: tenant)
+        assert_receive {:observed, :claim, _, %{outcome: :busy, tenant: ^tenant}}
+
+        Cases.set(f, pending.id,
+          format_version: 99,
+          next_attempt_at: DateTime.add(DateTime.utc_now(), -1)
+        )
+
+        assert :failed = AshHooks.fanout(f.outbox, pending.id, tenant: tenant)
+
+        assert_receive {:observed, :result, _,
+                        %{
+                          outcome: :failed,
+                          reason: "unsupported_publication_format",
+                          tenant: ^tenant
+                        }}
+
+        assert {:ok, _} = AshHooks.rearm(f.outbox, pending.id, tenant: tenant)
+        assert_receive {:observed, :rearm, _, %{outcome: :pending, tenant: ^tenant}}
+        assert {:ok, _} = AshHooks.fanout_pending(f.outbox, 10, tenant: tenant)
+        assert_receive {:observed, :sweep, _, %{outcome: :complete, tenant: ^tenant}}
+
+        assert {:error, :invalid_outbox_query} =
+                 AshHooks.fanout_pending(f.outbox, 0, tenant: tenant)
+
+        assert_receive {:observed, :sweep, _,
+                        %{outcome: :error, reason: "invalid_outbox_query", tenant: ^tenant}}
+
+        # The dedicated blocked-runner case asserts :stale and the absence of result telemetry.
+        observed = Cases.observed([])
+        refute observed == []
+
+        for {_name, measurements, metadata} <- observed do
+          assert measurements == %{count: 1}
+          assert Enum.sort(Map.keys(metadata)) == [:event_uuid, :outcome, :reason, :tenant]
+          assert metadata.tenant == tenant
+        end
       end
+
+      assert {:error, :tenant_required} = Cases.publish(f, Cases.event(), tenant: nil)
+      assert_receive {:observed, :publish, %{count: 1}, %{outcome: :attempt, tenant: nil}}
+
+      assert_receive {:observed, :publish, %{count: 1},
+                      %{outcome: :refused, reason: "unclassified", tenant: nil}}
+
+      assert {:error, :tenant_required} = AshHooks.fanout_pending(f.outbox, 10)
+
+      assert_receive {:observed, :sweep, %{count: 1},
+                      %{event_uuid: nil, outcome: :error, reason: "unclassified", tenant: nil}}
+
+      assert Cases.observed([]) == []
     end
 
     test "A13 readable invalid content parks immediately and missing declarations retry", f do

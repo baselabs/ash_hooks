@@ -187,10 +187,37 @@ for {test_module, namespace} <- [
     end
 
     test "A11 package trigger failures never reach a caller after commit", f do
+      parent = self()
+      handler = make_ref()
+
+      :ok =
+        :telemetry.attach(
+          handler,
+          [:ash_hooks, :outbox, :trigger],
+          fn _, measurements, metadata, _ ->
+            send(parent, {:trigger_failed, measurements, metadata})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
       for operation <- [:publish, :change], failure <- [:raise, :exit, :throw, :error] do
         Application.put_env(:ash_hooks, Module.concat(@namespace, :Runtime), failure)
         assert :success = invoke(f, operation, [])
         assert length(host_notifications([])) == 2
+
+        assert_receive {:trigger_failed, %{count: 1}, metadata}
+
+        assert metadata == %{
+                 event_uuid: metadata.event_uuid,
+                 outcome: :failed,
+                 reason: "trigger_failed",
+                 tenant: "tenant-a"
+               }
+
+        assert is_binary(metadata.event_uuid)
+        refute_received {:trigger_failed, _, _}
       end
     end
 

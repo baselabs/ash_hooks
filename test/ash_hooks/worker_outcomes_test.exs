@@ -44,9 +44,15 @@ if Code.ensure_loaded?(Oban) do
         assert {:cancel, :publication_missing} = f.worker.perform(fanout_job(f, id))
 
         assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], %{count: 1},
-                        %{event_uuid: ^id, outcome: :missing, reason: nil} = metadata}
+                        metadata}
 
-        assert map_size(metadata) == 3
+        assert metadata == %{
+                 event_uuid: id,
+                 outcome: :missing,
+                 reason: nil,
+                 tenant: "tenant-a"
+               }
+
         refute_received {:worker_outcome, _, _, _}
       end
 
@@ -61,19 +67,25 @@ if Code.ensure_loaded?(Oban) do
           assert_receive {:worker_outcome, name, %{count: 1}, metadata}
 
           assert name == [:ash_hooks, :outbox, :claim]
-          assert %{event_uuid: id, outcome: :claimed, reason: nil} = metadata
+          assert %{event_uuid: id, outcome: :claimed, reason: nil, tenant: "tenant-a"} = metadata
 
           assert_receive {:worker_outcome, [:ash_hooks, :outbox, :result], %{count: 1},
-                          %{event_uuid: ^id, outcome: ^state}}
+                          %{event_uuid: ^id, outcome: ^state, tenant: "tenant-a"}}
 
           assert id == event.id
           assert Cases.publication(f, event.id).state == state
           assert ^result = f.worker.perform(fanout_job(f, event.id))
 
           assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], %{count: 1},
-                          %{event_uuid: ^id, outcome: ^state, reason: nil} = metadata}
+                          metadata}
 
-          assert map_size(metadata) == 3
+          assert metadata == %{
+                   event_uuid: id,
+                   outcome: state,
+                   reason: nil,
+                   tenant: "tenant-a"
+                 }
+
           refute_received {:worker_outcome, _, _, _}
         end
       end
@@ -86,7 +98,7 @@ if Code.ensure_loaded?(Oban) do
         assert Cases.publication(f, event.id).state == :pending
 
         assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], %{count: 1},
-                        %{outcome: :busy, reason: nil}}
+                        %{outcome: :busy, reason: nil, tenant: "tenant-a"}}
 
         refute_received {:worker_outcome, _, _, _}
       end
@@ -99,12 +111,13 @@ if Code.ensure_loaded?(Oban) do
         refute_received {:worker_outcome, _, _, _}
       end
 
-      test "missing deliveries cancel and emit only the identity carried by the job", f do
+      test "missing deliveries cancel and emit the job identity and resolved tenant", f do
         endpoint_id = Ash.UUID.generate()
         event_uuid = Ash.UUID.generate()
         key = %{"id" => Ash.UUID.generate()}
 
-        for identity <- [
+        for tenant <- ["tenant-a", "tenant-b"],
+            identity <- [
               %{"endpoint_id" => endpoint_id, "event_uuid" => event_uuid},
               %{endpoint_id: endpoint_id, event_uuid: event_uuid},
               %{"delivery_pk" => key},
@@ -114,12 +127,16 @@ if Code.ensure_loaded?(Oban) do
                 "event_uuid" => event_uuid
               }
             ] do
-          args = Map.put(identity, "tenant", "tenant-a")
+          args = Map.put(identity, "tenant", tenant)
           assert {:cancel, :delivery_missing} = f.worker.perform(%Oban.Job{args: args})
 
           assert_receive {:worker_outcome, [:ash_hooks, :delivery, :missing], %{}, metadata}
 
-          expected = Map.new(identity, fn {key, value} -> {to_string(key), value} end)
+          expected =
+            identity
+            |> Map.new(fn {key, value} -> {to_string(key), value} end)
+            |> Map.put("tenant", tenant)
+
           assert Map.new(metadata, fn {key, value} -> {to_string(key), value} end) == expected
           refute_received {:worker_outcome, _, _, _}
         end
@@ -164,7 +181,12 @@ if Code.ensure_loaded?(Oban) do
 
             if resource == :outbox do
               assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], %{count: 1},
-                              %{event_uuid: ^id, outcome: :error, reason: "unclassified"}}
+                              %{
+                                event_uuid: ^id,
+                                outcome: :error,
+                                reason: "unclassified",
+                                tenant: "tenant-a"
+                              }}
             end
 
             refute_received {:worker_outcome, _, _, _}
@@ -194,7 +216,7 @@ if Code.ensure_loaded?(Oban) do
           assert {:error, _reason} = f.worker.perform(fanout_job(f, event.id))
 
           assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], %{count: 1},
-                          %{outcome: :error, reason: "unclassified"}}
+                          %{outcome: :error, reason: "unclassified", tenant: "tenant-a"}}
 
           refute_received {:worker_outcome, _, _, _}
         after
@@ -217,15 +239,17 @@ if Code.ensure_loaded?(Oban) do
           assert_receive {:worker_outcome, name, %{count: 1}, metadata}
           assert name == [:ash_hooks, :outbox, :claim]
           assert metadata.outcome == :claimed
+          assert metadata.tenant == "tenant-a"
 
-          assert_receive {:worker_outcome, [:ash_hooks, :outbox, :result], _, %{outcome: :done}}
+          assert_receive {:worker_outcome, [:ash_hooks, :outbox, :result], _,
+                          %{outcome: :done, tenant: "tenant-a"}}
           Application.put_env(:ash_hooks, :outbox_skip_tenant_binding, true)
 
           try do
             assert {:cancel, :publication_missing} = f.worker.perform(fanout_job(f, event.id))
 
             assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], %{count: 1},
-                            %{event_uuid: id, outcome: :missing, reason: nil}}
+                            %{event_uuid: id, outcome: :missing, reason: nil, tenant: "tenant-a"}}
 
             assert id == event.id
             key = AshHooks.PrimaryKey.encode(row)
@@ -236,9 +260,9 @@ if Code.ensure_loaded?(Oban) do
                      })
 
             assert_receive {:worker_outcome, [:ash_hooks, :delivery, :missing], %{},
-                            %{delivery_pk: ^key} = metadata}
+                            %{delivery_pk: ^key, tenant: "tenant-a"} = metadata}
 
-            assert map_size(metadata) == 1
+            assert map_size(metadata) == 2
             refute_received {:worker_outcome, _, _, _}
           after
             Application.delete_env(:ash_hooks, :outbox_skip_tenant_binding)

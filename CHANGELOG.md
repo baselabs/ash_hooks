@@ -8,10 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Delivery workers emit `[:ash_hooks, :delivery, :missing]` with only the job's
-  identity when no durable row is visible. Outbox claim telemetry includes
-  missing, already-done, already-failed, and storage-error outcomes. Each fanout
-  reaching the read emits one read or claim outcome, plus `:stale` if a claimed
+- Delivery workers emit `[:ash_hooks, :delivery, :missing]` with the job's
+  `endpoint_id`, `event_uuid`, and/or complete `delivery_pk` when no durable row
+  is visible. This event and every outbox event carry `tenant`, the operation's
+  tenant identifier or `nil` when absent, so hosts can alarm per tenant.
+  Outbox claim telemetry includes missing, already-done, already-failed, and
+  storage-error outcomes. Each fanout reaching the read emits one read or claim
+  outcome, plus `:stale` if a claimed
   run loses its fenced lease.
 
 ### Changed
@@ -30,6 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Event-log replay reports delivery-read storage failures instead of attempting
   to create a replay row.
+- Endpoint-health read-failure telemetry classifies storage errors instead of
+  emitting their contents.
 
 ## [3.4.0] - 2026-11-20
 

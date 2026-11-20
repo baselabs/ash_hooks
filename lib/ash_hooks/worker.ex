@@ -34,8 +34,9 @@ defmodule AshHooks.Worker do
   with the same prefix and PostgreSQL notifier. `perform/1` binds its own
   tenant phases through the ledger repo. A hidden row looks absent: fanout
   cancels with `:publication_missing` and delivery with `:delivery_missing`,
-  emitting outbox claim or delivery missing telemetry; alarm on these outcomes
-  and bind the tenant in the repository's transaction-begin callback.
+  emitting outbox claim or delivery missing telemetry with the run's `tenant`
+  identifier. Alarm per tenant on these outcomes and bind the tenant in the
+  repository's transaction-begin callback.
   Fanout `:busy`, `:stale`, and pending successes depend on the required
   host-scheduled per-tenant `AshHooks.fanout_pending/3` sweep; delivery success
   means a terminal row, while Oban snoozes or retries the same delivery job

@@ -68,7 +68,8 @@ defmodule AshHooks.Delivery do
   must attribute this system change themselves.
   Without application notifications, delivery stops silently from the tenant's
   perspective. Attach `[:ash_hooks, :delivery, :disable]` to your operator or
-  notification surface; it carries the endpoint ID. The endpoint's
+  notification surface; it carries `endpoint_id`, `reason: :gone_410`, and
+  `tenant` so hosts can notify the right tenant. The endpoint's
   status or mapped switch also exposes the durable disabled state.
   """
 
@@ -646,6 +647,7 @@ defmodule AshHooks.Delivery do
         identity =
           Map.new([:endpoint_id, :event_uuid, :delivery_pk], &{&1, value(args, &1)})
           |> Map.reject(fn {_key, value} -> is_nil(value) end)
+          |> Map.put(:tenant, tenant)
 
         :telemetry.execute([:ash_hooks, :delivery, :missing], %{}, identity)
         {:cancel, :delivery_missing}

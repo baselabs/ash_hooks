@@ -416,11 +416,36 @@ defmodule AshHooks.EndpointHealthTest do
     assert error =~ ":endpoint_id"
 
     # All enabled endpoints are attempted and failed reads report incompleteness.
-    endpoint!()
+    other_endpoint = endpoint!()
     Repo.query!("DROP TABLE IF EXISTS #{@attempts}")
+
+    parent = self()
+    handler = make_ref()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:ash_hooks, :endpoint_health, :read_failed],
+        fn _, measurements, metadata, _ ->
+          send(parent, {:history_read_failed, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
 
     assert {:ok, %{disabled: 0, warned: 0, unread: 2}} =
              AshHooks.EndpointHealth.sweep(Endpoint, Attempt, now: DateTime.utc_now())
+
+    failed_ids =
+      for _ <- 1..2 do
+        assert_receive {:history_read_failed, %{count: 1}, metadata}
+        assert metadata == %{endpoint_id: metadata.endpoint_id, reason: "unclassified"}
+        metadata.endpoint_id
+      end
+
+    assert Enum.sort(failed_ids) == Enum.sort([endpoint.id, other_endpoint.id])
+    refute_received {:history_read_failed, _, _}
 
     # and stats surfaces the read error
     assert {:error, %Ash.Error.Unknown{}} =

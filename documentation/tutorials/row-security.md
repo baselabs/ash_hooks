@@ -91,11 +91,12 @@ or `:unknown_source`, and invalid or absent delivery identity cancels with
 
 Alarm on Oban cancellations, `[:ash_hooks, :outbox, :claim]` outcomes
 `:missing` and `:failed`, and `[:ash_hooks, :delivery, :missing]`. Claim events
-also expose already-done rows and storage errors. Events carry only the
-requested identity and classified outcome, never tenant values, payloads, or
-metadata contents. Bind the tenant in the repository's transaction-begin
-callback above for every tenant-bearing database phase, including the delivery
-driver's spawned phases. The package cannot detect a missing policy binding.
+also expose already-done rows and storage errors. These events carry the
+requested identity, classified outcome, and `tenant` identifier so hosts can
+alarm per tenant. Payloads and metadata contents are omitted. Bind the tenant
+in the repository's transaction-begin callback above for every tenant-bearing
+database phase, including the delivery driver's spawned phases. The package
+cannot detect a missing policy binding.
 
 Fanout completes its trigger for `:busy`, `:stale`, or a persisted pending retry.
 It does not re-enqueue a job. Schedule `AshHooks.fanout_pending/3` for every

@@ -19,9 +19,11 @@ Outbox claim telemetry gains `:missing`, `:done`, `:failed`, and `:error`
 outcomes. Every fanout reaching the read emits one event for its read or claim
 outcome. Acquired claims report `:claimed` when the claim write succeeds,
 before work starts; a run that loses its fenced lease also emits `:stale`.
-The new `[:ash_hooks, :delivery, :missing]`
-event carries only the identity supplied by the job. No tenant value, payload,
-or metadata contents are emitted.
+The new `[:ash_hooks, :delivery, :missing]` event carries the job's `endpoint_id`,
+`event_uuid`, and/or complete `delivery_pk`, including any tenant key component.
+This event and every outbox event include `tenant`, the operation's tenant
+identifier or `nil` when absent, so hosts can alarm per tenant. Payloads and
+metadata contents are omitted.
 
 A hidden row looks absent. Alarm on cancellations and missing telemetry, and
 bind the tenant in the repository's transaction-begin callback for every
