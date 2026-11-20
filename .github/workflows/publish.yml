@@ -168,6 +168,7 @@ jobs:
           sparse-checkout: |
             /scripts/hex-release-state.py
             /scripts/publish-hex-release.exs
+            /scripts/toolchain.sh
             /.github/actions/beam/
       - uses: ./.github/actions/beam
         with:

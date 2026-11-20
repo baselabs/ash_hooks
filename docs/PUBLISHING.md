@@ -87,8 +87,8 @@ commit and both SHA-256 values. Consumer verification uses the files attached
 to the GitHub Release for `v<version>`; workflow artifacts expire.
 
 `Upload inspected assets` starts on a separate runner that has run no project
-code. Its sparse checkout contains only the shared runtime action and the
-registry-state and upload scripts. It installs the build's exact runtime and
+code. Its sparse checkout contains only the shared runtime action, the shared
+toolchain reader it calls, and the registry-state and upload scripts. It installs the build's exact runtime and
 Hex client, downloads `release-assets`, checks `SHA256SUMS`, and compares both
 archive hashes with the build job's outputs. Nothing is rebuilt.
 
