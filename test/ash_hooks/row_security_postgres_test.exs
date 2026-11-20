@@ -58,7 +58,8 @@ defmodule AshHooks.RowSecurityPostgresTest do
 
     assert {:ok, endpoint} =
              AshHooks.Phase.run(context.endpoint, tenant, fn ->
-               Ash.create(context.endpoint,
+               Ash.create(
+                 context.endpoint,
                  %{url: "https://hooks.example.test/hook", secret_ref: "replay-key-reference"},
                  authorize?: false,
                  tenant: tenant
@@ -81,7 +82,7 @@ defmodule AshHooks.RowSecurityPostgresTest do
         fn _, _, metadata, _ ->
           if String.starts_with?(metadata.query, "INSERT") and
                String.contains?(metadata.query, table),
-            do: send(parent, :replay_insert)
+             do: send(parent, :replay_insert)
         end,
         nil
       )

@@ -250,7 +250,8 @@ defmodule AshHooks.TestEventTest do
 
   test "a test send reports a delivery removed before the driver reads it" do
     endpoint =
-      Ash.create!(Endpoint,
+      Ash.create!(
+        Endpoint,
         %{url: "https://hooks.example.test/hook", secret_ref: "test-key-reference"},
         authorize?: false
       )

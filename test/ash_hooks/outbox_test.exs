@@ -1206,8 +1206,10 @@ for {module, namespace} <- [
 
         try do
           runner_call = Task.async(fn -> Cases.fanout(f, event.id) end)
+
           assert_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim], %{outcome: :claimed}},
                          5_000
+
           assert_receive {:outbox_builder, runner}, 5_000
           ref = Process.monitor(runner)
           Cases.expire(f, event)

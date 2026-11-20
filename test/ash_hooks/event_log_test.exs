@@ -388,6 +388,7 @@ defmodule AshHooks.EventLogTest do
       dispatch!("msg_el_delivery_read_failure")
       handler = make_ref()
       parent = self()
+
       prefix =
         Repo.config()[:telemetry_prefix] ||
           Enum.map(Module.split(Repo), &String.to_atom(Macro.underscore(&1)))
@@ -511,7 +512,8 @@ defmodule AshHooks.EventLogTest do
       ep = endpoint!()
       dispatch!("msg_el_batch_missing")
 
-      Ash.create!(Subscription,
+      Ash.create!(
+        Subscription,
         %{endpoint_id: ep.id, event_types: ["order_paid"], signing_mode: :standard},
         authorize?: false
       )
@@ -523,7 +525,8 @@ defmodule AshHooks.EventLogTest do
         "msg_el_batch_terminal"
       ])
 
-      Ash.create!(Subscription,
+      Ash.create!(
+        Subscription,
         %{endpoint_id: ep.id, event_types: ["order_paid"], signing_mode: :legacy},
         authorize?: false
       )

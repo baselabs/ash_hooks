@@ -25,7 +25,7 @@ or metadata contents are emitted.
 
 A hidden row looks absent. Alarm on cancellations and missing telemetry, and
 bind the tenant in the repository's transaction-begin callback for every
-tenant-bearing phase. See the [row-security guide](row-security.md).
+tenant-bearing phase. See the [row-security guide](documentation/tutorials/row-security.md).
 Fanout `:busy`, `:stale`, and persisted pending retries still complete the job
 without re-enqueueing it. The required per-tenant `AshHooks.fanout_pending/3`
 sweep finishes that work; without it, publications stay pending. Delivery

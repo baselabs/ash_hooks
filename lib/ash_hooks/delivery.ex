@@ -704,7 +704,8 @@ defmodule AshHooks.Delivery do
            Ash.Type.cast_input(attribute.type, endpoint_id, attribute.constraints),
          {:ok, endpoint_id} <-
            Ash.Type.apply_constraints(attribute.type, endpoint_id, attribute.constraints) do
-      {:ok, Ash.Query.filter(deliv_mod, endpoint_id == ^endpoint_id and event_uuid == ^event_uuid)}
+      {:ok,
+       Ash.Query.filter(deliv_mod, endpoint_id == ^endpoint_id and event_uuid == ^event_uuid)}
     else
       _invalid -> {:cancel, :invalid_delivery_identity}
     end

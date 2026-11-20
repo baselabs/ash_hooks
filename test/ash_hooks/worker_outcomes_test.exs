@@ -156,10 +156,9 @@ if Code.ensure_loaded?(Oban) do
             job =
               if resource == :outbox,
                 do: fanout_job(f, id),
-                else:
-                  %Oban.Job{
-                    args: %{"delivery_pk" => %{"id" => id}, "tenant" => "tenant-a"}
-                  }
+                else: %Oban.Job{
+                  args: %{"delivery_pk" => %{"id" => id}, "tenant" => "tenant-a"}
+                }
 
             assert {:error, _reason} = f.worker.perform(job)
 
@@ -201,8 +200,7 @@ if Code.ensure_loaded?(Oban) do
         after
           if f.sqlite?,
             do: f.owner.query!("DROP TRIGGER reject_worker_claim"),
-            else:
-              f.owner.query!("GRANT UPDATE ON #{table} TO #{f.roles.runtime}", [], log: false)
+            else: f.owner.query!("GRANT UPDATE ON #{table} TO #{f.roles.runtime}", [], log: false)
         end
 
         assert %{state: :pending, attempts: 0} = Cases.publication(f, event.id)
