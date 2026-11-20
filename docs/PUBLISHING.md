@@ -131,12 +131,14 @@ their staged release checksums must match.
 - The get-started Livebook runs against the published package from hex.pm with
   a real receiver.
 
-`Read back` then assembles `release-assets` from the archives hex.pm serves:
-both archives, `SHA256SUMS` in `sha256sum` format, and `RELEASE-NOTES.md` with
-the version's changelog section, the commit and both SHA-256 values. The run
-summary records the commit and `SHA256SUMS`. Only after read-back succeeds does
-the release maintainer push the tag and create the GitHub Release from
-`release-assets`.
+After the registry check and before it runs any project or dependency code,
+`Read back` assembles `release-assets` from the archives hex.pm serves: both
+archives, `SHA256SUMS` in `sha256sum` format, and `RELEASE-NOTES.md` with the
+version's changelog section, the commit and both SHA-256 values. Code that runs
+later, such as the Livebook's dependencies, cannot alter what it recorded. The
+run summary records the commit and `SHA256SUMS`. Only after the whole read-back
+succeeds, Livebook included, does the release maintainer push the tag and
+create the GitHub Release from `release-assets`.
 
 ## When a run fails
 

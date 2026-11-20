@@ -273,15 +273,8 @@ jobs:
           done
           echo "::error::The Hex registry does not list ash_hooks $VERSION with SHA-256 $SHA256."
           exit 1
-      - uses: ./.github/actions/beam
-        with:
-          elixir: ${{ needs.build.outputs.elixir }}
-          otp: ${{ needs.build.outputs.otp }}
-      - run: mix deps.get --check-locked
-      - name: Wait for the real receiver
-        run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version
-      - name: Run the Livebook against the published package
-        run: ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd
+      # Recorded before any project or dependency code runs on this runner,
+      # so nothing executed later can alter the served bytes it records.
       - name: Assemble release-assets from the served archives
         run: python3 -I scripts/release-notes.py "$VERSION" --assets "$RUNNER_TEMP/release-assets" --commit "$GITHUB_SHA"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -302,3 +295,12 @@ jobs:
             cat SHA256SUMS
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - uses: ./.github/actions/beam
+        with:
+          elixir: ${{ needs.build.outputs.elixir }}
+          otp: ${{ needs.build.outputs.otp }}
+      - run: mix deps.get --check-locked
+      - name: Wait for the real receiver
+        run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version
+      - name: Run the Livebook against the published package
+        run: ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd
