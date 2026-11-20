@@ -11,6 +11,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every run step is bash with -eo pipefail, so a failing command fails its
+# step also behind a pipe.
+defaults:
+  run:
+    shell: bash
+
 # Caches are restore-only. A cache saved on a kci/<sha> ref can be restored
 # only by that ref, so the one writer is cache-warmer.yml on the default
 # branch. Each key names one build: a test lane (on the default lane also the
@@ -292,7 +298,7 @@ jobs:
 
   # The get-started Livebook, verified headless on one leg: the elixir
   # cells are extracted in order and run outside any mix project
-  # (Mix.install requires it) — the same evaluation Livebook performs.
+  # (Mix.install requires it), the same evaluation Livebook performs.
   livebook:
     needs: toolchain
     runs-on: ubuntu-24.04
