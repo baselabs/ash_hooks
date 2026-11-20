@@ -293,7 +293,7 @@ if Code.ensure_loaded?(Oban) do
 
       refute result.os_pid == System.pid()
       assert result.ash == to_string(Application.spec(:ash, :vsn))
-      assert result.foreign_result == :ok
+      assert result.foreign_result == {:cancel, :delivery_missing}
       assert result.foreign_rows == [["ATTACKER", "pending", 0], ["VICTIM", "pending", 0]]
       assert %{failure: 0, snoozed: 0, success: 1} = result.drained
 
