@@ -289,12 +289,29 @@ jobs:
       - name: Tarball carries every publish surface
         run: ./scripts/check-package.sh
       - run: mix docs --warnings-as-errors
+      - name: Read the package version
+        id: version
+        run: |
+          python3 -I - >> "$GITHUB_OUTPUT" <<'PY'
+          from pathlib import Path
+          import re
+          matches = re.findall(r'^  @version "([^"]+)"$', Path('mix.exs').read_text(), re.M)
+          assert len(matches) == 1, 'expected exactly one Mix project version'
+          print(f'version={matches[0]}')
+          PY
+      - name: Name the package, version and commit in the docs
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: python3 -I scripts/stamp-docs-release.py doc --version "$VERSION" --commit "$GITHUB_SHA"
       - run: python3 scripts/check-document-dashes.py --docs doc
       - name: Build and inspect the docs archive
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           (cd "$RUNNER_TEMP" && mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/build-docs-archive.exs" \
             "$GITHUB_WORKSPACE/doc" "$RUNNER_TEMP/ash_hooks-docs.tar.gz")
-          python3 -I scripts/check-docs-archive.py "$RUNNER_TEMP/ash_hooks-docs.tar.gz" doc
+          python3 -I scripts/check-docs-archive.py --version "$VERSION" --commit "$GITHUB_SHA" \
+            "$RUNNER_TEMP/ash_hooks-docs.tar.gz" doc
 
   # The get-started Livebook, verified headless on one leg: the elixir
   # cells are extracted in order and run outside any mix project

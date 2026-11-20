@@ -87,12 +87,19 @@ jobs:
       - name: Build and inspect the package archive
         run: ./scripts/check-package.sh
       - run: env -u ASH_HOOKS_NO_OPTIONAL mix docs --warnings-as-errors
+      - name: Name the package, version and commit in the docs
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: python3 -I scripts/stamp-docs-release.py doc --version "$VERSION" --commit "$GITHUB_SHA"
       - run: python3 scripts/check-document-dashes.py --docs doc
       - name: Build and inspect the docs archive
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           (cd "$RUNNER_TEMP" && mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/build-docs-archive.exs" \
             "$GITHUB_WORKSPACE/doc" "$RUNNER_TEMP/ash_hooks-docs.tar.gz")
-          python3 -I scripts/check-docs-archive.py "$RUNNER_TEMP/ash_hooks-docs.tar.gz" doc
+          python3 -I scripts/check-docs-archive.py --version "$VERSION" --commit "$GITHUB_SHA" \
+            "$RUNNER_TEMP/ash_hooks-docs.tar.gz" doc
       - name: Refuse a checkout that differs from the commit
         run: |
           git check-ignore --quiet doc/
@@ -221,9 +228,11 @@ jobs:
             echo "::error::Publish runs only from the default branch; this run is on $GITHUB_REF."
             exit 1
           fi
+      # Full history: the served docs may name an ancestor of this commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: The package archive on Hex is the inspected archive
         run: |
           mkdir -p "$RUNNER_TEMP/release-assets"
@@ -233,15 +242,17 @@ jobs:
             --output "$archive" "https://repo.hex.pm/tarballs/ash_hooks-$VERSION.tar"
           printf '%s  %s\n' "$SHA256" "$archive" | sha256sum -c -
       # A docs build is not byte-stable (ExDoc orders its search data
-      # differently in some builds of one commit), so served docs are read
-      # back as present and never compared with this run's build.
-      - name: The docs archive on Hex is present
+      # differently in some builds of one commit), so served docs are never
+      # compared with this run's build. Their release.json names the published
+      # commit: this commit or an ancestor of it on the default branch.
+      - name: The docs archive on Hex names this release
+        id: docs
         run: |
           archive="$RUNNER_TEMP/release-assets/ash_hooks-$VERSION-docs.tar.gz"
           timeout 300s curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
             --retry 20 --retry-all-errors --retry-delay 15 --retry-max-time 300 \
             --output "$archive" "https://repo.hex.pm/docs/ash_hooks-$VERSION.tar.gz"
-          python3 -I scripts/check-docs-archive.py --served "$archive"
+          python3 -I scripts/check-docs-archive.py --served --version "$VERSION" --commit "$GITHUB_SHA" "$archive"
       - name: HexDocs serves the version
         run: |
           timeout 300s curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
@@ -276,7 +287,9 @@ jobs:
       # Recorded before any project or dependency code runs on this runner,
       # so nothing executed later can alter the served bytes it records.
       - name: Assemble release-assets from the served archives
-        run: python3 -I scripts/release-notes.py "$VERSION" --assets "$RUNNER_TEMP/release-assets" --commit "$GITHUB_SHA"
+        env:
+          PUBLISHED_COMMIT: ${{ steps.docs.outputs.commit }}
+        run: python3 -I scripts/release-notes.py "$VERSION" --assets "$RUNNER_TEMP/release-assets" --commit "$PUBLISHED_COMMIT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-assets
@@ -285,11 +298,14 @@ jobs:
           overwrite: true
       - name: Record the verified release
         working-directory: ${{ runner.temp }}/release-assets
+        env:
+          PUBLISHED_COMMIT: ${{ steps.docs.outputs.commit }}
         run: |
           {
             echo "## ash_hooks $VERSION"
             echo
-            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Published commit (tag \`v$VERSION\` here): \`$PUBLISHED_COMMIT\`"
+            echo "- Dispatched commit: \`$GITHUB_SHA\`"
             echo
             echo '```'
             cat SHA256SUMS

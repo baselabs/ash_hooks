@@ -35,7 +35,9 @@ upload step receives it. The build and read-back jobs never receive the key.
 3. **The workflow publishes and reads the release back.** See
    [What the workflow checks](#what-the-workflow-checks).
 4. **The release maintainer tags and records the release.** They push the
-   annotated tag `v<version>` on the commit the run published. They compare the
+   annotated tag `v<version>` on the published commit: the commit the served
+   docs' `release.json` names, recorded in the run summary and in
+   `RELEASE-NOTES.md`. They compare the
    package archive in `release-assets`, which `Read back` assembles from the
    bytes hex.pm serves, with the archive hex.pm serves, then create the GitHub
    Release for that tag from the artifact. The Release carries
@@ -73,8 +75,13 @@ release-tag links to shipped files, every file's bytes against the checkout,
 and the publication dash rule.
 
 The build also runs `mix docs --warnings-as-errors` with optional dependencies,
-checks the rendered documentation's dash rule, and builds the docs archive
-with Hex's own archive builder. Inspection requires safe relative paths,
+then writes `release.json` at the docs root:
+`{"package": "ash_hooks", "version": ..., "commit": ...}`, the commit being the
+run's own. Docs render files the package does not carry, such as `mix.lock`,
+which pins ExDoc, so equal package bytes do not say which commit built served
+docs; `release.json` does. The build checks the rendered documentation's dash
+rule and builds the docs archive with Hex's own archive builder. Inspection
+requires a `release.json` naming this package, version and commit, safe relative paths,
 regular files only, no semantic-version top-level name, top-level `index.html`
 and `readme.html`, and exactly the generated tree's file set and bytes. The
 file set is the one `mix hex.publish` uses: every regular file except names
@@ -124,8 +131,11 @@ their staged release checksums must match.
 
 - The package archive Hex serves has the inspected package SHA-256.
 - Hex serves a docs archive for the version: safe relative paths, regular files
-  only, and top-level `index.html` and `readme.html`. Its bytes are not
-  compared with a build.
+  only, top-level `index.html` and `readme.html`, and a `release.json` naming
+  `ash_hooks`, the version, and a commit that is the dispatched commit or an
+  ancestor of it on the default branch. That commit is the published commit.
+  Served docs without `release.json`, or naming a commit off that history, are
+  refused. Their bytes are not compared with a build.
 - The signed Hex registry lists the version with the inspected package checksum.
 - HexDocs serves the version.
 - The get-started Livebook runs against the published package from hex.pm with

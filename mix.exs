@@ -134,8 +134,8 @@ defmodule AshHooks.MixProject do
       main: "readme",
       source_ref: "v#{@version}",
       source_url: @source_url,
-      # No EPUB: ExDoc stamps the build time into it, so a rebuilt docs archive
-      # would never equal the published one.
+      # No EPUB: ExDoc stamps the build time into it. HexDocs offers HTML and
+      # Markdown.
       formatters: ["html", "markdown"],
       extras:
         [
