@@ -36,8 +36,9 @@ upload step receives it. The build and read-back jobs never receive the key.
    [What the workflow checks](#what-the-workflow-checks).
 4. **The release maintainer tags and records the release.** They push the
    annotated tag `v<version>` on the commit the run published. They compare the
-   package archive in `release-assets` with the archive hex.pm serves, then
-   create the GitHub Release for that tag from the artifact. The Release carries
+   package archive in `release-assets`, which `Read back` assembles from the
+   bytes hex.pm serves, with the archive hex.pm serves, then create the GitHub
+   Release for that tag from the artifact. The Release carries
    both archives, `SHA256SUMS`, and `RELEASE-NOTES.md`, including the version's
    changelog section, commit, and both SHA-256 values. They then confirm that
    the tag, the Release, `main` and Hex name the same version. Earlier release
@@ -61,6 +62,7 @@ building, it checks these in order:
 3. A missing version may continue. An existing, unretired version may continue
    so a second dispatch can finish an earlier upload. A retired version or an
    indeterminate response refuses.
+4. `CHANGELOG.md` must hold exactly one nonempty section for the version.
 
 The build fetches with `mix deps.get --check-locked`, checks generated formatter
 and DSL references against the commit, and runs `mix spark.check`.
@@ -80,25 +82,29 @@ that start with a dot, such as ExDoc's build manifests.
 Qualification builds and inspects the same docs archive. The build refuses a
 checkout that differs from the commit.
 
-One artifact, named `release-assets`, holds the inspected package and docs
-archives, `SHA256SUMS` in `sha256sum` format, and `RELEASE-NOTES.md`. Release
-notes require a nonempty changelog section for the version and record the
-commit and both SHA-256 values. Consumer verification uses the files attached
-to the GitHub Release for `v<version>`; workflow artifacts expire.
+The build hands the inspected package and docs archives, with their
+`SHA256SUMS`, to the upload job as the artifact `inspected-archives`. Consumer
+files leave the workflow only as `release-assets`, which `Read back` assembles
+from the bytes hex.pm serves. Consumer verification uses the files attached to
+the GitHub Release for `v<version>`; workflow artifacts expire.
 
 `Upload inspected assets` starts on a separate runner that has run no project
 code. Its sparse checkout contains only the shared runtime action, the shared
 toolchain reader it calls, and the registry-state and upload scripts. It installs the build's exact runtime and
-Hex client, downloads `release-assets`, checks `SHA256SUMS`, and compares both
+Hex client, downloads `inspected-archives`, checks `SHA256SUMS`, and compares both
 archive hashes with the build job's outputs. Nothing is rebuilt.
 
 Before receiving a key, the upload job checks hex.pm anonymously:
 
-- A missing package archive is uploaded. An already served archive is skipped
-  only when its SHA-256 equals the inspected package archive. A different
-  checksum or a retired version refuses.
-- Missing docs are uploaded. Already served docs are skipped only when the
-  served docs archive has the inspected docs SHA-256. Different bytes refuse.
+- The package is the release. A missing package archive is uploaded. An
+  already served archive is skipped only when its SHA-256 equals the inspected
+  package archive. A different checksum or a retired version refuses.
+- Missing docs are uploaded. Docs hex.pm already serves for the version are
+  kept and never compared. A docs build is not byte-stable: ExDoc 0.40.4 orders
+  its search data differently in some builds of one commit, so comparing docs
+  bytes could refuse every later dispatch of a held release. Hex accepts docs
+  only for a release it serves, so served docs belong to the package just
+  compared.
 
 Only the upload step receives `HEX_API_KEY`, through its environment. Its script
 runs outside a Mix project and refuses a loaded project before reading the key.
@@ -117,15 +123,20 @@ their staged release checksums must match.
 `Read back` requires all of the following:
 
 - The package archive Hex serves has the inspected package SHA-256.
-- The docs archive Hex serves has the inspected docs SHA-256.
+- Hex serves a docs archive for the version: safe relative paths, regular files
+  only, and top-level `index.html` and `readme.html`. Its bytes are not
+  compared with a build.
 - The signed Hex registry lists the version with the inspected package checksum.
 - HexDocs serves the version.
 - The get-started Livebook runs against the published package from hex.pm with
   a real receiver.
 
-The run summary records the commit, version, and both archive SHA-256 values.
-Only after read-back succeeds does the release maintainer push the tag and
-create the GitHub Release from `release-assets`.
+`Read back` then assembles `release-assets` from the archives hex.pm serves:
+both archives, `SHA256SUMS` in `sha256sum` format, and `RELEASE-NOTES.md` with
+the version's changelog section, the commit and both SHA-256 values. The run
+summary records the commit and `SHA256SUMS`. Only after read-back succeeds does
+the release maintainer push the tag and create the GitHub Release from
+`release-assets`.
 
 ## When a run fails
 
@@ -134,16 +145,16 @@ create the GitHub Release from `release-assets`.
   another dispatch. An earlier run may already have uploaded either archive.
 - **An upload held for approval.** The owner approves it on hex.pm. The release
   maintainer then dispatches again on the same commit, before pushing any tag.
-  The new run builds and compares both archives, uploads only what is missing,
-  and reads both back. A hold is never reported as a completed publication.
+  The new run compares the package archive, keeps docs hex.pm already serves,
+  uploads only what is missing, and reads both back. A hold is never reported as a completed publication.
 - **A partial upload or other upload failure.** A second dispatch on the same
-  commit finishes it when already served bytes match. Other bytes or a retired
-  version refuse. The workflow never replaces an archive to make a retry pass.
+  commit finishes it when the served package has the inspected bytes. Other
+  package bytes or a retired version refuse. The workflow never replaces an archive to make a retry pass.
 - **A read-back failure caused by propagation delay.** The release maintainer
   re-runs only the failed `Read back` job. The successful build and upload jobs
   do not run again. A new dispatch on the same commit can also finish the
-  release while no tag exists and both served archives match.
-- **A persistent read-back failure, retired version, or differing served bytes.**
+  release while no tag exists and the served package matches.
+- **A persistent read-back failure, retired version, or differing served package.**
   The release maintainer reports it to the owner, who decides whether to retire
   the version. A required code fix ships as the next version through the same
   path. No tag or GitHub Release records an unverified publication.

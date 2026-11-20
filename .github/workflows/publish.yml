@@ -63,7 +63,7 @@ jobs:
           assert len(matches) == 1, 'expected exactly one Mix project version'
           print(f'version={matches[0]}')
           PY
-      - name: Refuse a tag, a missing package name or a retired release
+      - name: Refuse a tag, a missing package name, a retired release or a missing changelog section
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -75,6 +75,7 @@ jobs:
             *) echo "::error::git ls-remote failed with status $status; refusing without a definite answer."; exit 1 ;;
           esac
           python3 -I scripts/hex-release-state.py pre-build "$VERSION"
+          python3 -I scripts/release-notes.py "$VERSION"
       - name: Fetch the locked dependencies
         run: mix deps.get --check-locked
       - name: Generated formatter and DSL references match the commit
@@ -101,44 +102,29 @@ jobs:
             echo "::error::The checkout differs from $GITHUB_SHA."
             exit 1
           fi
-      - name: Assemble the inspected release assets
+      - name: Assemble the inspected archives
         id: assets
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          assets="$RUNNER_TEMP/release-assets"
-          mkdir -p "$assets"
-          cp "_build/release/ash_hooks-$VERSION.tar" "$assets/ash_hooks-$VERSION.tar"
-          cp "$RUNNER_TEMP/ash_hooks-docs.tar.gz" "$assets/ash_hooks-$VERSION-docs.tar.gz"
-          (
-            cd "$assets" || exit
-            sha256sum "ash_hooks-$VERSION.tar" "ash_hooks-$VERSION-docs.tar.gz" > SHA256SUMS
-          )
-          python3 -I - <<'PY'
-          import hashlib, os, re
-          from pathlib import Path
-          assets = Path(os.environ['RUNNER_TEMP']) / 'release-assets'
-          version = os.environ['VERSION']
-          changelog = Path('CHANGELOG.md').read_text()
-          sections = re.findall(
-              rf'^## \[{re.escape(version)}\][^\n]*\n.*?(?=^## |\Z)',
-              changelog, re.M | re.S
-          )
-          if len(sections) != 1 or not re.sub(r'^\s*#+[^\n]*$', '', sections[0].partition('\n')[2], flags=re.M).strip():
-              raise SystemExit('Release changelog section is missing, duplicated or empty.')
-          package = hashlib.sha256((assets / f'ash_hooks-{version}.tar').read_bytes()).hexdigest()
-          docs = hashlib.sha256((assets / f'ash_hooks-{version}-docs.tar.gz').read_bytes()).hexdigest()
-          notes = sections[0].strip() + '\n\n'
-          notes += f'Commit: {os.environ["GITHUB_SHA"]}\n\n'
-          notes += f'Package SHA-256: {package}\n\nDocs SHA-256: {docs}\n'
-          (assets / 'RELEASE-NOTES.md').write_text(notes)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'package_sha256={package}\ndocs_sha256={docs}\n')
-          PY
+          inspected="$RUNNER_TEMP/inspected-archives"
+          mkdir -p "$inspected"
+          cp "_build/release/ash_hooks-$VERSION.tar" "$inspected/ash_hooks-$VERSION.tar"
+          cp "$RUNNER_TEMP/ash_hooks-docs.tar.gz" "$inspected/ash_hooks-$VERSION-docs.tar.gz"
+          cd "$inspected"
+          sha256sum "ash_hooks-$VERSION.tar" "ash_hooks-$VERSION-docs.tar.gz" > SHA256SUMS
+          package_sha256=$(sha256sum "ash_hooks-$VERSION.tar" | cut -d' ' -f1)
+          docs_sha256=$(sha256sum "ash_hooks-$VERSION-docs.tar.gz" | cut -d' ' -f1)
+          {
+            echo "package_sha256=$package_sha256"
+            echo "docs_sha256=$docs_sha256"
+          } >> "$GITHUB_OUTPUT"
+      # The upload job's input only. Consumer files leave as release-assets,
+      # assembled by Read back from the bytes Hex serves.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-assets
-          path: ${{ runner.temp }}/release-assets/
+          name: inspected-archives
+          path: ${{ runner.temp }}/inspected-archives/
           if-no-files-found: error
 
   upload:
@@ -176,10 +162,10 @@ jobs:
           otp: ${{ needs.build.outputs.otp }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release-assets
-          path: ${{ runner.temp }}/release-assets
+          name: inspected-archives
+          path: ${{ runner.temp }}/inspected-archives
       - name: Verify the downloaded archive checksums
-        working-directory: ${{ runner.temp }}/release-assets
+        working-directory: ${{ runner.temp }}/inspected-archives
         run: |
           test ! -e mix.exs
           sha256sum -c SHA256SUMS
@@ -189,12 +175,11 @@ jobs:
         id: state
         run: |
           python3 -I scripts/hex-release-state.py post-build "$VERSION" \
-            --package-archive "$RUNNER_TEMP/release-assets/ash_hooks-$VERSION.tar" \
-            --docs-archive "$RUNNER_TEMP/release-assets/ash_hooks-$VERSION-docs.tar.gz"
+            --package-archive "$RUNNER_TEMP/inspected-archives/ash_hooks-$VERSION.tar"
       # This runner has run no project code. Only this step receives the key.
       - name: Upload the missing inspected archives
         if: steps.state.outputs.package == 'upload' || steps.state.outputs.docs == 'upload'
-        working-directory: ${{ runner.temp }}/release-assets
+        working-directory: ${{ runner.temp }}/inspected-archives
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
           PACKAGE_STATE: ${{ steps.state.outputs.package }}
@@ -204,7 +189,8 @@ jobs:
             "$VERSION" "ash_hooks-$VERSION.tar" "ash_hooks-$VERSION-docs.tar.gz" \
             "$PACKAGE_STATE" "$DOCS_STATE"
 
-  # Read back the release with no environment and no access to the key.
+  # Read back the release with no environment and no access to the key, then
+  # record exactly the bytes Hex serves as release-assets.
   verify:
     name: Read back
     needs: [build, upload]
@@ -226,7 +212,6 @@ jobs:
     env:
       VERSION: ${{ needs.build.outputs.version }}
       SHA256: ${{ needs.build.outputs.package_sha256 }}
-      DOCS_SHA256: ${{ needs.build.outputs.docs_sha256 }}
     steps:
       - name: Refuse any ref but the default branch
         env:
@@ -236,20 +221,27 @@ jobs:
             echo "::error::Publish runs only from the default branch; this run is on $GITHUB_REF."
             exit 1
           fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: The package archive on Hex is the inspected archive
         run: |
-          archive="$RUNNER_TEMP/ash_hooks-$VERSION.tar"
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          archive="$RUNNER_TEMP/release-assets/ash_hooks-$VERSION.tar"
           timeout 150s curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
             --retry 10 --retry-all-errors --retry-delay 15 --retry-max-time 150 \
             --output "$archive" "https://repo.hex.pm/tarballs/ash_hooks-$VERSION.tar"
           printf '%s  %s\n' "$SHA256" "$archive" | sha256sum -c -
-      - name: The docs archive on Hex is the inspected archive
+      # A docs build is not byte-stable (ExDoc orders its search data
+      # differently in some builds of one commit), so served docs are read
+      # back as present and never compared with this run's build.
+      - name: The docs archive on Hex is present
         run: |
-          archive="$RUNNER_TEMP/ash_hooks-$VERSION-docs.tar.gz"
+          archive="$RUNNER_TEMP/release-assets/ash_hooks-$VERSION-docs.tar.gz"
           timeout 300s curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
             --retry 20 --retry-all-errors --retry-delay 15 --retry-max-time 300 \
             --output "$archive" "https://repo.hex.pm/docs/ash_hooks-$VERSION.tar.gz"
-          printf '%s  %s\n' "$DOCS_SHA256" "$archive" | sha256sum -c -
+          python3 -I scripts/check-docs-archive.py --served "$archive"
       - name: HexDocs serves the version
         run: |
           timeout 300s curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
@@ -281,9 +273,6 @@ jobs:
           done
           echo "::error::The Hex registry does not list ash_hooks $VERSION with SHA-256 $SHA256."
           exit 1
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
       - uses: ./.github/actions/beam
         with:
           elixir: ${{ needs.build.outputs.elixir }}
@@ -293,12 +282,23 @@ jobs:
         run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version
       - name: Run the Livebook against the published package
         run: ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd
+      - name: Assemble release-assets from the served archives
+        run: python3 -I scripts/release-notes.py "$VERSION" --assets "$RUNNER_TEMP/release-assets" --commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release-assets/
+          if-no-files-found: error
+          overwrite: true
       - name: Record the verified release
+        working-directory: ${{ runner.temp }}/release-assets
         run: |
           {
             echo "## ash_hooks $VERSION"
             echo
             echo "- Commit: \`$GITHUB_SHA\`"
-            echo "- Package SHA-256: \`$SHA256\`"
-            echo "- Docs SHA-256: \`$DOCS_SHA256\`"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

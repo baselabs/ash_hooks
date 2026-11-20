@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Decide whether inspected release archives are missing or already served."""
+"""Decide which inspected release archives Hex is missing.
+
+The package is the release: an already served package must have the inspected
+package's bytes. A docs build is not byte-stable, so docs Hex already serves for
+the version are kept and never compared; Hex accepts docs only for a release it
+serves, so they belong to the package just compared.
+"""
 
 import argparse
 import hashlib
@@ -65,7 +71,7 @@ def sha256(path):
         return hashlib.file_digest(archive, "sha256").hexdigest()
 
 
-def decide(record, version, package, docs):
+def decide(record, version, package):
     if record is None:
         return {"package": "upload", "docs": "upload"}
     if record.get("checksum") != sha256(package):
@@ -75,17 +81,7 @@ def decide(record, version, package, docs):
         )
     if type(record.get("has_docs")) is not bool:
         raise ValueError("hex.pm returned no definite documentation state; refusing.")
-    if not record["has_docs"]:
-        return {"package": "served", "docs": "upload"}
-    status, body = get(f"https://repo.hex.pm/docs/ash_hooks-{version}.tar.gz")
-    if status != 200:
-        raise ValueError(f"Docs archive lookup answered HTTP {status}; refusing.")
-    if hashlib.sha256(body).hexdigest() != sha256(docs):
-        raise ValueError(
-            f"hex.pm serves ash_hooks {version} docs with other bytes; "
-            "nothing replaces published docs"
-        )
-    return {"package": "served", "docs": "served"}
+    return {"package": "served", "docs": "served" if record["has_docs"] else "upload"}
 
 
 def main():
@@ -93,23 +89,21 @@ def main():
     parser.add_argument("mode", choices=("pre-build", "post-build"))
     parser.add_argument("version")
     parser.add_argument("--package-archive", type=Path)
-    parser.add_argument("--docs-archive", type=Path)
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", args.version):
         parser.error("expected a semantic release version")
     if args.mode == "post-build":
-        if not args.package_archive or not args.docs_archive:
-            parser.error("post-build requires both inspected archives")
-        for archive in (args.package_archive, args.docs_archive):
-            if not archive.is_file() or archive.stat().st_size == 0:
-                parser.error("an inspected archive is missing or empty")
+        if not args.package_archive:
+            parser.error("post-build requires the inspected package archive")
+        if not args.package_archive.is_file() or args.package_archive.stat().st_size == 0:
+            parser.error("the inspected package archive is missing or empty")
     try:
         record = release_record(args.version)
         if args.mode == "pre-build":
             outputs = {"release": "missing" if record is None else "served"}
             print(f"ash_hooks {args.version}: {outputs['release']}; build may continue.")
         else:
-            outputs = decide(record, args.version, args.package_archive, args.docs_archive)
+            outputs = decide(record, args.version, args.package_archive)
             for part, state in outputs.items():
                 print(f"ash_hooks {args.version} {part}: {state}")
         if output := os.environ.get("GITHUB_OUTPUT"):

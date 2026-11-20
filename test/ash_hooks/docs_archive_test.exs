@@ -61,6 +61,28 @@ defmodule AshHooks.DocsArchiveTest do
     end
   end
 
+  test "a served archive passes with its entry pages, an EPUB or other bytes", context do
+    entries = [{"AshHooks.epub", "book"}, {"index.html", "rebuilt"} | tl(members(context))]
+    {output, status} = served(archive(context, entries))
+    assert status == 0, output
+    assert output =~ "DOCS OK: 5 regular files served, entry pages present"
+    assert output =~ ~r/SHA256: [0-9a-f]{64}/
+  end
+
+  test "a served archive without entry pages or with unsafe members is refused", context do
+    cases = [
+      {Enum.reject(members(context), &(elem(&1, 0) == "readme.html")), "requires top-level"},
+      {[{"../index.html", "index"} | members(context)], "Unsafe docs archive member"},
+      {[{"index.html", "index"} | members(context)], "Duplicate docs archive member"}
+    ]
+
+    for {entries, message} <- cases do
+      {output, status} = served(archive(context, entries))
+      assert status == 1, message
+      assert output =~ message
+    end
+  end
+
   defp members(%{docs: docs}) do
     for name <- ["index.html", "readme.html", "readme.md", "dist/app.js"],
         do: {name, File.read!(Path.join(docs, name))}
@@ -82,4 +104,7 @@ defmodule AshHooks.DocsArchiveTest do
 
   defp check(%{docs: docs}, archive),
     do: System.cmd("python3", ["-I", @script, archive, docs], stderr_to_stdout: true)
+
+  defp served(archive),
+    do: System.cmd("python3", ["-I", @script, "--served", archive], stderr_to_stdout: true)
 end

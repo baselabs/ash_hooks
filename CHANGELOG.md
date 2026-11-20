@@ -8,9 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- HexDocs no longer offers an EPUB. ExDoc stamps the build time into the EPUB,
-  so the published docs archive could never be rebuilt byte for byte from its
-  commit. The HTML and Markdown documentation are unchanged.
+- HexDocs no longer offers an EPUB. The HTML and Markdown documentation are
+  unchanged.
 
 ## [3.3.0] - 2026-11-17
 
