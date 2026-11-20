@@ -383,7 +383,7 @@ defmodule AshHooks.EventLogTest do
   end
 
   describe "replay" do
-    test "a delivery read storage error counts skipped without attempting a replay insert" do
+    test "a delivery read storage error is reported without attempting a replay insert" do
       ep = endpoint!()
       dispatch!("msg_el_delivery_read_failure")
       handler = make_ref()
@@ -403,7 +403,7 @@ defmodule AshHooks.EventLogTest do
       try do
         Repo.query!("ALTER TABLE #{@deliveries} RENAME TO event_log_unavailable_deliveries")
 
-        assert {:ok, %{created: 0, re_sent: 0, skipped: 1}} =
+        assert {:ok, %{created: 0, re_sent: 0, skipped: 0, errors: [error]}} =
                  AshHooks.OutboundEvent.replay(EventLog, ep,
                    event_uuid: "msg_el_delivery_read_failure",
                    deliveries: Delivery,
@@ -412,6 +412,8 @@ defmodule AshHooks.EventLogTest do
                    requested_by: "ops"
                  )
 
+        assert is_exception(error)
+        assert Exception.message(error) =~ "event_log_deliveries"
         queries = replay_queries(handler, [])
         assert Enum.any?(queries, &String.contains?(&1, "SELECT"))
         refute Enum.any?(queries, &String.contains?(&1, "INSERT"))
@@ -434,7 +436,7 @@ defmodule AshHooks.EventLogTest do
       dispatch!("msg_el_replay_new")
 
       # the later endpoint had no subscription at the time
-      assert {:ok, %{created: 1, re_sent: 0}} =
+      assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
                AshHooks.OutboundEvent.replay(EventLog, later,
                  event_uuid: "msg_el_replay_new",
                  deliveries: Delivery,
@@ -466,7 +468,7 @@ defmodule AshHooks.EventLogTest do
         ]
       )
 
-      assert {:ok, %{created: 0, re_sent: 1}} =
+      assert {:ok, %{created: 0, re_sent: 1, skipped: 0, errors: []}} =
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  event_uuid: "msg_el_replay_term",
                  deliveries: Delivery,
@@ -491,7 +493,7 @@ defmodule AshHooks.EventLogTest do
 
       dispatch!("other_type_msg")
 
-      assert {:ok, %{created: 3, re_sent: 0}} =
+      assert {:ok, %{created: 3, re_sent: 0, skipped: 0, errors: []}} =
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  event_type: "order_paid",
                  deliveries: Delivery,
@@ -505,6 +507,45 @@ defmodule AshHooks.EventLogTest do
       assert Enum.all?(rows, &(&1.endpoint_id == ep.id))
     end
 
+    test "replay keeps per-row failures apart from live skips in one batch" do
+      ep = endpoint!()
+      dispatch!("msg_el_batch_missing")
+
+      Ash.create!(Subscription,
+        %{endpoint_id: ep.id, event_types: ["order_paid"], signing_mode: :standard},
+        authorize?: false
+      )
+
+      dispatch!("msg_el_batch_terminal")
+      dispatch!("msg_el_batch_live")
+
+      Repo.query!("UPDATE #{@deliveries} SET status = 'dead_letter' WHERE event_uuid = ?", [
+        "msg_el_batch_terminal"
+      ])
+
+      Ash.create!(Subscription,
+        %{endpoint_id: ep.id, event_types: ["order_paid"], signing_mode: :legacy},
+        authorize?: false
+      )
+
+      Ash.update!(ep, %{status: :disabled}, authorize?: false)
+
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 1, errors: errors}} =
+               AshHooks.OutboundEvent.replay(EventLog, ep,
+                 event_type: "order_paid",
+                 deliveries: Delivery,
+                 declaration: {Emitter, :order_paid},
+                 endpoints: Endpoint,
+                 requested_by: "ops"
+               )
+
+      assert Enum.sort(errors) == [:conflicting_subscriptions, :endpoint_not_live]
+      rows = Ash.read!(Delivery, authorize?: false)
+      assert length(rows) == 2
+      assert Enum.find(rows, &(&1.event_uuid == "msg_el_batch_terminal")).status == :dead_letter
+      assert Enum.find(rows, &(&1.event_uuid == "msg_el_batch_live")).status == :pending
+    end
+
     test "replay's remaining arms: skips live rows, enqueue shapes, bounds, errors" do
       ep = endpoint!()
 
@@ -515,7 +556,7 @@ defmodule AshHooks.EventLogTest do
 
       dispatch!("msg_el_live_row")
 
-      assert {:ok, %{created: 0, re_sent: 0, skipped: 1}} =
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 1, errors: []}} =
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  event_uuid: "msg_el_live_row",
                  deliveries: Delivery,
@@ -528,7 +569,7 @@ defmodule AshHooks.EventLogTest do
       dispatch!("msg_el_enqueue")
       fresh = endpoint!()
 
-      assert {:ok, %{created: 1}} =
+      assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
                AshHooks.OutboundEvent.replay(EventLog, fresh,
                  event_uuid: "msg_el_enqueue",
                  deliveries: Delivery,
@@ -540,12 +581,12 @@ defmodule AshHooks.EventLogTest do
 
       assert_received :replay_enqueued
 
-      # a storage fault on the delivery read counts skipped
+      # a storage fault on the delivery read is an error, not a live skip
       Repo.query!("DROP TABLE #{@deliveries}")
 
       dispatch!("msg_el_fault")
 
-      assert {:ok, %{created: 0, skipped: 1}} =
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 0, errors: [read_error]}} =
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  event_uuid: "msg_el_fault",
                  deliveries: Delivery,
@@ -554,6 +595,7 @@ defmodule AshHooks.EventLogTest do
                  requested_by: "ops"
                )
 
+      assert is_exception(read_error)
       recreate_deliveries!()
 
       Repo.query!("""
@@ -565,7 +607,7 @@ defmodule AshHooks.EventLogTest do
       """)
 
       try do
-        assert {:ok, %{created: 0, re_sent: 0, skipped: 1}} =
+        assert {:ok, %{created: 0, re_sent: 0, skipped: 0, errors: [create_error]}} =
                  AshHooks.OutboundEvent.replay(EventLog, ep,
                    event_uuid: "msg_el_fault",
                    deliveries: Delivery,
@@ -573,6 +615,8 @@ defmodule AshHooks.EventLogTest do
                    endpoints: Endpoint,
                    requested_by: "ops"
                  )
+
+        assert is_exception(create_error)
       after
         Repo.query!("DROP TRIGGER replay_create_abort")
       end
@@ -580,7 +624,7 @@ defmodule AshHooks.EventLogTest do
       # a fn enqueue seam applies
       dispatch!("msg_el_fn_enqueue")
 
-      assert {:ok, %{created: 1}} =
+      assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
                AshHooks.OutboundEvent.replay(EventLog, endpoint!(),
                  event_uuid: "msg_el_fn_enqueue",
                  deliveries: Delivery,
@@ -590,7 +634,7 @@ defmodule AshHooks.EventLogTest do
                  enqueue: fn _logged, _event -> :ok end
                )
 
-      # a failed terminal re-arm counts skipped
+      # a failed terminal re-arm is reported apart from live skips
       terminal_ep = endpoint!()
 
       Ash.create!(Subscription, %{endpoint_id: terminal_ep.id, event_types: ["order_paid"]},
@@ -612,7 +656,7 @@ defmodule AshHooks.EventLogTest do
       END
       """)
 
-      assert {:ok, %{created: 0, re_sent: 0, skipped: 1}} =
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 0, errors: [resend_error]}} =
                AshHooks.OutboundEvent.replay(EventLog, terminal_ep,
                  event_uuid: "msg_el_rearm_fail",
                  deliveries: Delivery,
@@ -621,6 +665,7 @@ defmodule AshHooks.EventLogTest do
                  requested_by: "ops"
                )
 
+      assert is_exception(resend_error)
       Repo.query!("DROP TRIGGER IF EXISTS replay_rearm_abort")
 
       # a single-uuid read failure surfaces
@@ -640,7 +685,7 @@ defmodule AshHooks.EventLogTest do
       # filter arms: to-bound alone, both bounds, and the named errors
       dispatch!("msg_el_bounds")
 
-      assert {:ok, %{created: created}} =
+      assert {:ok, %{created: created, re_sent: 0, skipped: 0, errors: []}} =
                AshHooks.OutboundEvent.replay(EventLog, endpoint!(),
                  event_type: "order_paid",
                  from: DateTime.add(DateTime.utc_now(), -60, :second),
@@ -653,7 +698,7 @@ defmodule AshHooks.EventLogTest do
 
       assert created >= 1
 
-      assert {:ok, %{created: 0}} =
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 0, errors: []}} =
                AshHooks.OutboundEvent.replay(EventLog, endpoint!(),
                  event_type: "no.events.of.this.type",
                  limit: 1,
@@ -788,7 +833,7 @@ defmodule AshHooks.EventLogTest do
     endpoint = endpoint!()
     {:ok, []} = dispatch!("release-missing-replay")
 
-    assert {:ok, %{created: 1}} =
+    assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
              AshHooks.OutboundEvent.replay(EventLog, endpoint,
                event_uuid: "release-missing-replay",
                deliveries: Delivery,
@@ -946,7 +991,7 @@ defmodule AshHooks.EventLogTest do
       :ok
     end
 
-    assert {:ok, %{created: 2}} =
+    assert {:ok, %{created: 2, re_sent: 0, skipped: 0, errors: []}} =
              AshHooks.OutboundEvent.replay(EventLog, endpoint,
                event_type: "order_paid",
                deliveries: Delivery,
@@ -1001,7 +1046,7 @@ defmodule AshHooks.EventLogTest do
     endpoint = endpoint!()
     {:ok, []} = dispatch!("release-plain-replay")
 
-    assert {:ok, %{created: 1, re_sent: 0, skipped: 0}} =
+    assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
              AshHooks.OutboundEvent.replay(EventLog, endpoint,
                event_uuid: "release-plain-replay",
                deliveries: PlainDelivery,

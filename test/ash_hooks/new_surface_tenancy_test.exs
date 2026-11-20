@@ -495,7 +495,7 @@ defmodule AshHooks.NewSurfaceTenancyTest do
     # event-log replay: tenant-scoped, cross-tenant endpoints named
     later_b = tenant_endpoint!(org_b)
 
-    assert {:ok, %{created: 1}} =
+    assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
              AshHooks.OutboundEvent.replay(EventLog, later_b,
                event_uuid: "msg_ts_b",
                deliveries: Delivery,
@@ -540,7 +540,7 @@ defmodule AshHooks.NewSurfaceTenancyTest do
     {:ok, [_]} = AshHooks.dispatch(Emitter, :order_paid, event, tenant: "tenant-a")
     Repo.query!("UPDATE #{@deliveries} SET status = 'dead_letter' WHERE org_id = ?", ["tenant-a"])
 
-    assert {:ok, %{re_sent: 1, skipped: 0}} =
+    assert {:ok, %{created: 0, re_sent: 1, skipped: 0, errors: []}} =
              AshHooks.OutboundEvent.replay(EventLog, endpoint,
                event_uuid: event.id,
                deliveries: Delivery,

@@ -52,7 +52,7 @@ defmodule AshHooks.RowSecurityPostgresTest do
     Cases.unbound_access(context)
   end
 
-  test "replay counts a denied delivery read as skipped without attempting an insert",
+  test "replay reports a denied delivery read without attempting an insert",
        context do
     tenant = "tenant_a"
 
@@ -89,7 +89,7 @@ defmodule AshHooks.RowSecurityPostgresTest do
     context.owner.query!("REVOKE SELECT ON #{table} FROM #{context.role}", [], log: false)
 
     try do
-      assert {:ok, %{created: 0, re_sent: 0, skipped: 1}} =
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 0, errors: [error]}} =
                AshHooks.OutboundEvent.replay(context.event_log, endpoint,
                  event_uuid: event.id,
                  deliveries: context.delivery,
@@ -99,6 +99,8 @@ defmodule AshHooks.RowSecurityPostgresTest do
                  tenant: tenant
                )
 
+      assert is_exception(error)
+      assert Exception.message(error) =~ "permission denied"
       refute_received :replay_insert
     after
       :telemetry.detach(handler)

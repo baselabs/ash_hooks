@@ -1103,7 +1103,7 @@ defmodule AshHooks.DocumentationContentTest do
     {_, binding} = Docs.eval("operations-send", namespace, binding)
     assert binding[:sent_delivery].status == :succeeded
     {_, binding} = Docs.eval("recovery-replay", namespace, binding)
-    assert binding[:replay_counts] == %{created: 0, re_sent: 1, skipped: 0}
+    assert binding[:replay_counts] == %{created: 0, re_sent: 1, skipped: 0, errors: []}
     {_, binding} = Docs.eval("operations-send", namespace, binding)
     assert binding[:sent_delivery].status == :succeeded
     assert binding[:sent_delivery].response_status == 200

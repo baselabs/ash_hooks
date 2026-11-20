@@ -24,7 +24,11 @@ if Code.ensure_loaded?(Oban) do
         :ok =
           :telemetry.attach_many(
             handler,
-            [[:ash_hooks, :outbox, :claim], [:ash_hooks, :delivery, :missing]],
+            [
+              [:ash_hooks, :outbox, :claim],
+              [:ash_hooks, :outbox, :result],
+              [:ash_hooks, :delivery, :missing]
+            ],
             fn name, measurements, metadata, _ ->
               send(parent, {:worker_outcome, name, measurements, metadata})
             end,
@@ -54,8 +58,13 @@ if Code.ensure_loaded?(Oban) do
           if state == :failed, do: Cases.set(f, event.id, format_version: 99)
           assert ^result = f.worker.perform(fanout_job(f, event.id))
 
-          assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], %{count: 1},
-                          %{event_uuid: id, outcome: :claimed, reason: nil}}
+          assert_receive {:worker_outcome, name, %{count: 1}, metadata}
+
+          assert name == [:ash_hooks, :outbox, :claim]
+          assert %{event_uuid: id, outcome: :claimed, reason: nil} = metadata
+
+          assert_receive {:worker_outcome, [:ash_hooks, :outbox, :result], %{count: 1},
+                          %{event_uuid: ^id, outcome: ^state}}
 
           assert id == event.id
           assert Cases.publication(f, event.id).state == state
@@ -207,7 +216,11 @@ if Code.ensure_loaded?(Oban) do
           assert {:ok, :accepted} = Cases.publish(f, event)
           assert :done = Cases.fanout(f, event.id)
           assert [%{id: delivery_id} = row] = Cases.rows(f, :delivery)
-          assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], _, _}
+          assert_receive {:worker_outcome, name, %{count: 1}, metadata}
+          assert name == [:ash_hooks, :outbox, :claim]
+          assert metadata.outcome == :claimed
+
+          assert_receive {:worker_outcome, [:ash_hooks, :outbox, :result], _, %{outcome: :done}}
           Application.put_env(:ash_hooks, :outbox_skip_tenant_binding, true)
 
           try do

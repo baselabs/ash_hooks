@@ -191,9 +191,8 @@ defmodule AshHooks.Outbox do
 
       {:ok, claimed} ->
         emit(:publish, claimed, :accepted)
-        result = run(claimed, tenant)
-        emit(:claim, claimed, if(result == :stale, do: :stale, else: :claimed))
-        result
+        emit(:claim, claimed, :claimed)
+        run(claimed, tenant)
 
       {:error, reason} ->
         emit(:claim, row, :error, reason)
@@ -358,6 +357,7 @@ defmodule AshHooks.Outbox do
     |> update(action, Map.put(input, :claim_token, row.claim_token), tenant)
     |> case do
       {:ok, nil} ->
+        emit(:claim, row, :stale)
         :stale
 
       {:ok, updated} ->

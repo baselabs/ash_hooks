@@ -249,7 +249,8 @@ once; receivers deduplicate using the stable `webhook-id`.
   delivery to that declaration and enqueue callback. Enable `resend_tracking :on`
   to store the requester and request time. Enqueue receives `(delivery, event)`,
   matching the generated worker and recovery contracts. Terminal replay forwards
-  the tenant to resend.
+  the tenant to resend. Event-log replay returns `created`, `re_sent`, `skipped`,
+  and `errors`; only live rows count as skipped, and row failures remain in `errors`.
 
 Worked guides cover [event retention and replay](documentation/tutorials/outbound-recovery.md),
 [catalogs, payload versions, and filters](documentation/tutorials/outbound-contracts.md),

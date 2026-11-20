@@ -98,14 +98,17 @@ replay_options = [
     Keyword.put(replay_options, :dry_run, true)
   )
 
-{:ok, replay_counts} =
+{:ok, %{created: _, re_sent: _, skipped: _, errors: _} = replay_counts} =
   AshHooks.OutboundEvent.replay(MyApp.OutboundEvent, endpoint, replay_options)
 ```
 
 A new endpoint gets a new delivery preserving the event ID and bytes. An
 existing terminal delivery is rearmed; a pending or retrying delivery is
-skipped. Check `created`, `re_sent`, and `skipped` rather than treating a
-successful call as proof every event was delivered. An unknown event returns
+skipped. Check `created`, `re_sent`, `skipped`, and `errors` rather than treating
+a successful call as proof every event was delivered. `errors` holds the
+per-row error terms from delivery reads, replay creates, and terminal resends.
+Those failures do not increment `skipped`; only live, nonterminal rows do.
+An unknown event returns
 `:event_not_found`; missing or mismatched declarations fail before replay.
 
 For a queued application, pass the same `enqueue: {MyApp.WebhookDeliveryWorker,
@@ -117,7 +120,7 @@ queue route, and tenant. It recovers persistence/enqueue gaps and expired leases
 Filter bulk replay with `event_type: "order_paid"` and explicit `from:` / `to:`
 bounds instead of `event_uuid:`. Each call selects a bounded batch; replay has
 no continuation cursor. Advance the time range or select IDs to progress past
-skipped rows. Receivers must deduplicate the preserved `webhook-id` because
+skipped or failed rows. Receivers must deduplicate the preserved `webhook-id` because
 network delivery remains at least once.
 
 ## Own retention and tenant boundaries

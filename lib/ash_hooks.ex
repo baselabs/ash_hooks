@@ -318,7 +318,9 @@ defmodule AshHooks do
   enclosing transaction. Every attempt re-observes subscriptions and endpoints;
   existing delivery rows survive. Pending results carry a persisted retry time.
   A missing row may be absent or hidden by row security. Every call reaching
-  the read emits one outbox claim event, including missing and terminal reads.
+  the read emits one outbox claim event for its read or claim outcome, including
+  missing and terminal reads. Acquired claims emit before work; a runner that
+  loses its fenced lease also emits a stale claim event.
   The generated worker cancels missing or failed publications; it completes
   done, busy, stale, and persisted pending outcomes. No fanout job is re-enqueued:
   schedule `fanout_pending/3` for every tenant to finish pending work.

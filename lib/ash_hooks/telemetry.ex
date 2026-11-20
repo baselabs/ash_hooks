@@ -34,11 +34,12 @@ defmodule AshHooks.Telemetry do
       outcome: :failed, reason: "trigger_failed"}`
     * `[:ash_hooks, :outbox, :claim]`: `%{count: 1}`; `%{event_uuid,
       outcome: :claimed | :busy | :stale | :missing | :done | :failed | :error,
-      reason}`. Exactly one per fanout that reaches the read, including
-      storage errors with a classified reason. Missing and already-terminal
-      reads report the requested event ID without a state transition.
-      Acquired claims report `:claimed` or `:stale` after the runner returns;
-      their result event can precede the claim event. Other outcomes use nil reasons
+      reason}`. Each fanout reaching the read emits one event for its read or
+      claim outcome, including storage errors with a classified reason.
+      Missing and already-terminal reads report the requested event ID without
+      a state transition. `:claimed` fires when the claim write succeeds,
+      before fanout work. A claimed run that loses its fenced lease also emits
+      `:stale`. Other outcomes use nil reasons
     * `[:ash_hooks, :outbox, :result]`: `%{count: 1}`; `%{event_uuid,
       outcome: :done | :pending | :failed, reason}`. Emitted only after the
       matching fenced state transition succeeds

@@ -138,6 +138,9 @@ AshHooks 3.5.0.
 - Event-log replay takes `declaration: {Emitter, :event_name}` and the same tenant
   as dispatch. Enable `resend_tracking :on` to store the requester and request time.
   Enqueue receives the created delivery and its event. Dry runs write nothing.
+  Inspect all four summary fields: `created`, `re_sent`, `skipped`, and `errors`.
+  Only live, nonterminal rows count as skipped; delivery-read, replay-create,
+  and terminal-resend errors remain in `errors` even on an `{:ok, summary}` result.
 - Health sweeps wait `warning_interval_seconds` (default 60) from the stored warning
   time before disabling. Counts and telemetry reflect successful writes.
 - When pruning with `attempts:`, both resources must support transactions. A history

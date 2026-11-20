@@ -175,21 +175,29 @@ defmodule AshHooks.OutboundEvent do
   They inherit the signing mode of an endpoint subscription matching the
   logged event type under that declaration, using the declaration's mode when
   the subscription leaves it unset. With no match they use `:standard`.
-  Conflicting matching modes count as skipped. The log contains no original
+  Conflicting matching modes return a per-row error. The log contains no original
   event metadata, so this lookup selects by endpoint and event type.
   Enable `resend_tracking :on` to persist `last_resend_by` and `last_resend_at`.
   Existing terminal rows use `AshHooks.Delivery.resend/2` with the same tenant
   and requester. Nonterminal existing rows are skipped.
 
   Dry run returns `{:ok, %{count: n}}` for the selected batch and writes nothing.
-  Normal replay returns created, re-sent, and skipped counts. Batches are spaced
-  one second apart according to `:per_second`. Repeated calls can select skipped
-  rows again; this API returns no pagination cursor. A delivery read error counts
-  as skipped and never causes an attempt to create a replay row.
+  Normal replay returns `{:ok, %{created: n, re_sent: n, skipped: n, errors: list}}`.
+  Skipped counts only live, nonterminal delivery rows left alone. Delivery reads,
+  replay creates, and terminal resends that fail append their error terms to
+  `errors` in processing order. A delivery read error never causes an attempt
+  to create a replay row. Batches are spaced one second apart according to
+  `:per_second`. Repeated calls can select skipped or failed rows again;
+  this API returns no pagination cursor.
   """
   @spec replay(module(), struct(), keyword()) ::
           {:ok,
-           %{created: non_neg_integer(), re_sent: non_neg_integer(), skipped: non_neg_integer()}}
+           %{
+             created: non_neg_integer(),
+             re_sent: non_neg_integer(),
+             skipped: non_neg_integer(),
+             errors: [term()]
+           }}
           | {:ok, %{count: non_neg_integer()}}
           | {:error, term()}
   def replay(resource, endpoint, opts) do
@@ -213,11 +221,13 @@ defmodule AshHooks.OutboundEvent do
   end
 
   defp replay_events(events, endpoint, deliveries, endpoints, requested_by, opts, tenant) do
-    counts =
+    summary = %{created: 0, re_sent: 0, skipped: 0, errors: []}
+
+    summary =
       events
       |> Enum.chunk_every(opts[:per_second] || 50)
       |> Enum.with_index()
-      |> Enum.reduce({0, 0, 0}, fn {batch, index}, counts ->
+      |> Enum.reduce(summary, fn {batch, index}, counts ->
         if index > 0, do: Process.sleep(1_000)
 
         Enum.reduce(batch, counts, fn logged, acc ->
@@ -225,7 +235,7 @@ defmodule AshHooks.OutboundEvent do
         end)
       end)
 
-    {:ok, %{created: elem(counts, 0), re_sent: elem(counts, 1), skipped: elem(counts, 2)}}
+    {:ok, Map.update!(summary, :errors, &Enum.reverse/1)}
   end
 
   defp validate_rate(rate) when is_integer(rate) and rate > 0, do: :ok
@@ -247,10 +257,10 @@ defmodule AshHooks.OutboundEvent do
             )
 
             _ = Keyword.get(opts, :enqueue) && enqueue_replay(opts[:enqueue], row, logged)
-            bump(acc, 0)
+            Map.update!(acc, :created, &(&1 + 1))
 
-          {:error, _reason} ->
-            bump(acc, 2)
+          {:error, reason} ->
+            Map.update!(acc, :errors, &[reason | &1])
         end
 
       {:ok, %{status: status} = row} when status in [:succeeded, :dead_letter] ->
@@ -260,23 +270,15 @@ defmodule AshHooks.OutboundEvent do
                enqueue: opts[:enqueue],
                tenant: tenant
              ) do
-          {:ok, _} -> bump(acc, 1)
-          {:error, _reason} -> bump(acc, 2)
+          {:ok, _} -> Map.update!(acc, :re_sent, &(&1 + 1))
+          {:error, reason} -> Map.update!(acc, :errors, &[reason | &1])
         end
 
       {:ok, _live_row} ->
-        bump(acc, 2)
+        Map.update!(acc, :skipped, &(&1 + 1))
 
-      {:error, _reason} ->
-        bump(acc, 2)
-    end
-  end
-
-  defp bump({c, r, s}, index) do
-    case index do
-      0 -> {c + 1, r, s}
-      1 -> {c, r + 1, s}
-      2 -> {c, r, s + 1}
+      {:error, reason} ->
+        Map.update!(acc, :errors, &[reason | &1])
     end
   end
 

@@ -16,9 +16,10 @@ including malformed complete primary keys. Hosts alarming on Oban `cancelled`
 jobs will now see these cases. Oban does not retry cancelled jobs.
 
 Outbox claim telemetry gains `:missing`, `:done`, `:failed`, and `:error`
-outcomes. Every fanout reaching the read emits exactly one claim event;
-acquired claims report `:claimed` or `:stale` after the runner returns, so the
-result event can arrive first. The new `[:ash_hooks, :delivery, :missing]`
+outcomes. Every fanout reaching the read emits one event for its read or claim
+outcome. Acquired claims report `:claimed` when the claim write succeeds,
+before work starts; a run that loses its fenced lease also emits `:stale`.
+The new `[:ash_hooks, :delivery, :missing]`
 event carries only the identity supplied by the job. No tenant value, payload,
 or metadata contents are emitted.
 
@@ -31,8 +32,12 @@ sweep finishes that work; without it, publications stay pending. Delivery
 retries keep Oban snoozes or retries of the same job, with the host-scheduled
 `AshHooks.reconcile_pending/3` path recovering stranded deliveries.
 
-Replay counts delivery-read storage errors as skipped and never tries to
-create a replay row after such an error. No schema migration is required.
+Event-log replay now returns `%{created, re_sent, skipped, errors}`. Delivery
+read, replay create, and terminal resend errors no longer count as skipped;
+their error terms are returned in `errors`. Inspect that list even when the
+call returns `{:ok, summary}`. Only live, nonterminal rows left alone count as
+skipped. A delivery read error never causes a replay insert. Dry-run results
+remain `%{count: n}`. No schema migration is required.
 
 <a id="upgrade-3-4"></a>
 

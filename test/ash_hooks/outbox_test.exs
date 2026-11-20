@@ -1017,9 +1017,9 @@ for {module, namespace} <- [
         :ok =
           :telemetry.attach(
             handler,
-            [:ash_hooks, :outbox, :publish],
+            [:ash_hooks, :outbox, :claim],
             fn _, _, metadata, _ ->
-              if metadata.outcome == :accepted do
+              if metadata.outcome == :claimed do
                 f.owner.query!(
                   "REVOKE UPDATE ON #{Cases.table(f.outbox)} FROM #{f.roles.runtime}",
                   [],
@@ -1206,6 +1206,8 @@ for {module, namespace} <- [
 
         try do
           runner_call = Task.async(fn -> Cases.fanout(f, event.id) end)
+          assert_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim], %{outcome: :claimed}},
+                         5_000
           assert_receive {:outbox_builder, runner}, 5_000
           ref = Process.monitor(runner)
           Cases.expire(f, event)

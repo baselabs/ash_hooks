@@ -1342,7 +1342,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
       authorize?: false
     )
 
-    assert {:ok, %{created: 1}} =
+    assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
              AshHooks.OutboundEvent.replay(EventLog, endpoint,
                deliveries: Delivery,
                endpoints: Endpoint,
@@ -1413,10 +1413,16 @@ defmodule AshHooks.HostExtensionSeamsTest do
         |> Ash.read!(tenant: "tenant-a", authorize?: false)
 
       if expected == :conflict do
-        assert counts.skipped == 1
+        assert counts == %{
+                 created: 0,
+                 re_sent: 0,
+                 skipped: 0,
+                 errors: [:conflicting_subscriptions]
+               }
+
         assert rows == []
       else
-        assert counts.created == 1
+        assert counts == %{created: 1, re_sent: 0, skipped: 0, errors: []}
         assert [%{signing_mode: ^expected}] = rows
       end
     end

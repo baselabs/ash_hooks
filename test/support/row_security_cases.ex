@@ -2532,8 +2532,8 @@ defmodule AshHooks.Test.RowSecurityCases do
 
     expected =
       if operation == :event_replay_missing,
-        do: %{created: 1, re_sent: 0, skipped: 0},
-        else: %{created: 0, re_sent: 1, skipped: 0}
+        do: %{created: 1, re_sent: 0, skipped: 0, errors: []},
+        else: %{created: 0, re_sent: 1, skipped: 0, errors: []}
 
     assert {:ok, ^expected} =
              OutboundEvent.replay(ctx.event_log, endpoint,
