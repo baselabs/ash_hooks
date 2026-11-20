@@ -30,8 +30,8 @@ upload step receives it. The build and read-back jobs never receive the key.
    the version and anything the release needs first.
 2. **The release maintainer asks the owner and dispatches.** After the owner
    approves, the release maintainer dispatches the workflow from `main`. All
-   three jobs run only for the owner's accounts, and the `publish` environment
-   admits only `main`.
+   three jobs run only for the owner's accounts and refuse any ref but `main`.
+   The `publish` environment, which holds the key, admits only `main`.
 3. **The workflow publishes and reads the release back.** See
    [What the workflow checks](#what-the-workflow-checks).
 4. **The release maintainer tags and records the release.** They push the
@@ -46,9 +46,9 @@ upload step receives it. The build and read-back jobs never receive the key.
 ## What the workflow checks
 
 Every job first refuses any ref other than the default branch. All three jobs
-admit only the owner's accounts. `Build release assets` and `Upload inspected
-assets` use the protected `publish` environment; `Read back` has no environment
-and no access to the key. No job restores or writes a build cache.
+admit only the owner's accounts. Only `Upload inspected assets` uses the
+protected `publish` environment; `Build release assets` and `Read back` have no
+environment and no access to the key. No job restores or writes a build cache.
 
 `Build release assets` installs the exact Elixir and OTP defaults from
 `.tool-versions` and the exact Hex client shared with qualification. Before

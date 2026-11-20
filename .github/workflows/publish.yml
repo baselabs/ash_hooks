@@ -20,10 +20,10 @@ defaults:
     shell: bash
 
 jobs:
+  # Build and inspect with no environment and no access to the key.
   build:
     name: Build release assets
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
-    environment: publish
     runs-on: ubuntu-24.04
     timeout-minutes: 5 # the five-minute floor; the slowest green was 114s on keyless rehearsal run 44380961139
     env:
