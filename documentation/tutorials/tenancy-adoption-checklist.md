@@ -28,7 +28,7 @@ Two declarations are rejected outright with `{:error, :tenancy_mismatch}`:
 
 ## The ordered steps
 
-If you are also upgrading from a version >= 1.0.0 and < 2.0.0 to 3.4.0, complete
+If you are also upgrading from a version >= 1.0.0 and < 2.0.0 to 3.5.0, complete
 the intervening schema and declaration/route migrations in
 [UPGRADING](../../UPGRADING.md) before enabling the new runtime.
 

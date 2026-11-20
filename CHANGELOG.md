@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [3.5.0] - 2026-11-20
 
 ### Added
 
@@ -1635,6 +1635,7 @@ see migration notes in [UPGRADING.md](UPGRADING.md).
   either ledger at all, no response-body persistence by default,
   classified-only error strings.
 
+[3.5.0]: https://github.com/baselabs/ash_hooks/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/baselabs/ash_hooks/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/baselabs/ash_hooks/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/baselabs/ash_hooks/compare/v3.1.0...v3.2.0

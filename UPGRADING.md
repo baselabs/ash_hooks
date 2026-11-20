@@ -1,6 +1,8 @@
 # Upgrading
 
-## Unreleased
+<a id="upgrade-3-5"></a>
+
+## 3.4.0 → 3.5.0
 
 ### Observe cancelled worker jobs
 
@@ -1947,7 +1949,7 @@ as the error class.
 
 ## Required `default_string_length_count` configuration
 
-Every Ash version supported by ash_hooks 3.4.0 requires this configuration
+Every Ash version supported by ash_hooks 3.5.0 requires this configuration
 before compiling resources. ash_hooks writes no `:ash` configuration for you. Set it
 in your application's `config/config.exs`:
 

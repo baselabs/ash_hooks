@@ -10,7 +10,7 @@ and its change is in the `CHANGELOG.md` section of the release that ships it.
 
 | Outcome | Acceptance | Waits on |
 |---|---|---|
-| W27: Publish transactionally and select subscriptions in the query for every host and tenant. | One-statement outbox acceptance, fenced fanout, per-tenant recovery, SQL type/pause/filter selection with an Elixir guard, and the ADR 0029 acceptance matrix pass in hosted CI. | 3.4.0. |
+| W31: Package Oban workers expose absent, failed and invalid work for every host and tenant. | Native cancellations, contents-free missing and terminal telemetry, replay read-error handling, and the ADR 0030 recovery contract pass in hosted CI, including forced PostgreSQL row security. | 3.5.0. |
 | The synchronous-decision tutorial links a signed authorization recipe. | The "Decide in the response" section of `documentation/tutorials/verify-any-sender.md` links `request_seal`'s signed authorization hook recipe. | `request_seal` 2.0.0, which publishes that recipe. |
 
 ## Not planned
