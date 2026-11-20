@@ -1216,8 +1216,10 @@ for {module, namespace} <- [
           Cases.expire(f, event)
           assert_receive {:DOWN, ^ref, :process, ^runner, :killed}, 5_000
           assert :stale = Task.await(runner_call, 5_000)
+
           assert_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim],
                           %{outcome: :stale, tenant: "tenant-a"}}
+
           refute_receive {:outbox_telemetry, [:ash_hooks, :outbox, :claim], _}
           refute_receive {:outbox_telemetry, [:ash_hooks, :outbox, :result], _}
 

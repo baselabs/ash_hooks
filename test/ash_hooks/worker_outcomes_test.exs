@@ -43,8 +43,7 @@ if Code.ensure_loaded?(Oban) do
         id = Ash.UUID.generate()
         assert {:cancel, :publication_missing} = f.worker.perform(fanout_job(f, id))
 
-        assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], %{count: 1},
-                        metadata}
+        assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], %{count: 1}, metadata}
 
         assert metadata == %{
                  event_uuid: id,
@@ -76,8 +75,7 @@ if Code.ensure_loaded?(Oban) do
           assert Cases.publication(f, event.id).state == state
           assert ^result = f.worker.perform(fanout_job(f, event.id))
 
-          assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], %{count: 1},
-                          metadata}
+          assert_receive {:worker_outcome, [:ash_hooks, :outbox, :claim], %{count: 1}, metadata}
 
           assert metadata == %{
                    event_uuid: id,
@@ -243,6 +241,7 @@ if Code.ensure_loaded?(Oban) do
 
           assert_receive {:worker_outcome, [:ash_hooks, :outbox, :result], _,
                           %{outcome: :done, tenant: "tenant-a"}}
+
           Application.put_env(:ash_hooks, :outbox_skip_tenant_binding, true)
 
           try do
