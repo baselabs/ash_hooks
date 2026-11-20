@@ -25,9 +25,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   replay-create, and terminal-resend failures retain their error terms in
   `errors` instead of counting as skipped. Only live, nonterminal rows count
   as skipped. Dry-run counts are unchanged.
-- Outbox claims retain their claim-time `:claimed` event before work starts;
-  a lost fenced lease emits an additional `:stale` event. Pending, busy, and
-  stale fanout still requires the host-scheduled per-tenant sweep.
 
 ### Fixed
 
