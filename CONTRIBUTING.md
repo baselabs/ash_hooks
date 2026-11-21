@@ -45,7 +45,12 @@ For a different free loopback port, set `LOCAL_WEBHOOK_TESTER_PORT` on the Compo
 command and set `ASH_HOOKS_REAL_RECEIVER_PORT` to the same port for tests. Reuse
 an existing receiver when available; do not restart another user's service or
 remove capture data. See the [receiver guide](https://github.com/baselabs/ash_hooks/blob/main/ops/local/README.md). CI provides
-the receiver alongside PostgreSQL.
+the receiver alongside PostgreSQL. Its PostgreSQL job runs the public platform
+engine checked in `.github/postgres.ref` and the compatibility majors declared
+once in `.github/postgres-lanes`, using digest-pinned upstream images. The reader
+in `scripts/postgres-lanes.py` supplies both the matrix and compatibility images
+and refuses a lane for the engine's major. Each lane starts a disposable server
+on IPv4 loopback and removes it after the job.
 
 ## Testing changes
 
@@ -156,4 +161,5 @@ Releases are maintainer-only. The authoritative procedure is the
 The [architecture decisions](https://github.com/baselabs/ash_hooks/tree/main/docs/adr)
 record the package contracts and their consequences for hosts.
 
-The development default and every CI lane are pinned only in `.tool-versions` files, read by `scripts/toolchain.sh`.
+The development runtime and CI runtime lanes are pinned only in `.tool-versions`
+files, read by `scripts/toolchain.sh`.

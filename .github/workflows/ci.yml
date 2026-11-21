@@ -37,12 +37,18 @@ jobs:
       otp: ${{ steps.toolchain.outputs.otp }}
       beam_lanes: ${{ steps.toolchain.outputs.beam_lanes }}
       test_matrix: ${{ steps.toolchain.outputs.test_matrix }}
+      postgres_matrix: ${{ steps.postgres.outputs.postgres_matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/toolchain
         id: toolchain
+      - name: Test the PostgreSQL lane reader
+        run: python3 -I scripts/postgres-lanes.py --self-test
+      - name: Read the PostgreSQL lanes
+        id: postgres
+        run: python3 -I scripts/postgres-lanes.py matrix >> "$GITHUB_OUTPUT"
 
   # The default and compatibility lanes use the full development dependencies.
   # The no-optional lane proves Oban and Plug are optional (ADR-0004).
@@ -145,45 +151,24 @@ jobs:
   # ASH_HOOKS_POSTGRES=1 enables the PostgreSQL resources.
   # Ordinary development uses SQLite.
   postgres:
+    name: postgres (${{ matrix.lane }})
     needs: toolchain
     runs-on: ubuntu-24.04
     timeout-minutes: 62 # twice the slowest green, 1841s on run 44211072814
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # postgres:16-alpine
-          - postgres: "16"
-            image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
-          # postgres:17-alpine
-          - postgres: "17"
-            image: postgres:17-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7
-          # postgres:18-alpine
-          - postgres: "18"
-            image: postgres:18-alpine@sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
+      matrix: ${{ fromJSON(needs.toolchain.outputs.postgres_matrix) }}
     env:
       MIX_ENV: test
       ASH_HOOKS_POSTGRES: "1"
-      ASH_HOOKS_TEST_PG_HOST: localhost
+      ASH_HOOKS_TEST_PG_HOST: 127.0.0.1
       ASH_HOOKS_TEST_PG_PORT: "5432"
+      # Throwaway fixture values, never credentials for an external service.
       ASH_HOOKS_TEST_PG_USER: postgres
       ASH_HOOKS_TEST_PG_PASSWORD: postgres
       ASH_HOOKS_TEST_PG_DATABASE: ash_hooks_test
       ASH_HOOKS_REAL_RECEIVER_PORT: "52871"
     services:
-      postgres:
-        image: ${{ matrix.image }}
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: ash_hooks_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
       receiver:
         image: ghcr.io/tarampampam/webhook-tester@sha256:85818267b450d3d386cad6510c561e09b974183ed2832c373bc83b125fc1b221
         env:
@@ -206,6 +191,11 @@ jobs:
             deps
             _build
           key: test-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-noopt--${{ hashFiles('mix.lock') }}
+      - name: Start PostgreSQL
+        uses: ./.github/actions/postgres
+        with:
+          lane: ${{ matrix.lane }}
+          mode: start
       - run: mix deps.get --check-locked
       - run: mix compile --warnings-as-errors
       - name: Wait for the real receiver
@@ -222,9 +212,15 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: cover-html-postgres-${{ matrix.postgres }}
+          name: cover-html-postgres-${{ matrix.lane }}
           path: cover/
           retention-days: 7
+      - name: Stop PostgreSQL
+        if: always()
+        uses: ./.github/actions/postgres
+        with:
+          lane: ${{ matrix.lane }}
+          mode: stop
 
   # Type-check the public API and the consumer worker compiled from test/support.
   # The PostgreSQL suite exercises that same generated worker at runtime.

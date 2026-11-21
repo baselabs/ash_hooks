@@ -1,0 +1,110 @@
+name: CI PostgreSQL
+description: Start or remove this job's disposable platform engine or declared compatibility server
+inputs:
+  lane:
+    description: engine or a major declared in .github/postgres-lanes
+    required: true
+  mode:
+    description: start or stop
+    required: false
+    default: start
+runs:
+  using: composite
+  steps:
+    - name: Validate the PostgreSQL mode
+      if: always()
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+      run: |
+        case "$MODE" in
+          start | stop) ;;
+          *) echo '::error::mode must be start or stop'; exit 1 ;;
+        esac
+    - name: Check the public platform engine and pull its digest
+      if: inputs.mode == 'start' && inputs.lane == 'engine'
+      shell: bash
+      run: |
+        engine="$(cat .github/postgres.ref)"
+        [[ "$engine" =~ ^ghcr\.io/baselabs/postgres:[0-9]+\.[0-9]+-inputs-[0-9a-f]{64}@sha256:[0-9a-f]{64}$ ]]
+        current_digest="$(python3 - <<'PY'
+        import json, re, urllib.request
+        host, path = 'ghcr.io', 'baselabs/postgres'
+        with urllib.request.urlopen(f'https://{host}/token?scope=repository:{path}:pull', timeout=30) as response:
+            token = json.load(response)['token']
+        request = urllib.request.Request(f'https://{host}/v2/{path}/manifests/current', method='HEAD', headers={
+            'Authorization': 'Bearer ' + token,
+            'Accept': ', '.join(('application/vnd.oci.image.index.v1+json', 'application/vnd.oci.image.manifest.v1+json',
+                                 'application/vnd.docker.distribution.manifest.list.v2+json',
+                                 'application/vnd.docker.distribution.manifest.v2+json'))})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            digest = response.headers.get('Docker-Content-Digest', '')
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+            raise SystemExit('ghcr.io/baselabs/postgres:current: registry named no digest')
+        print(digest)
+        PY
+        )"
+        if [ "${engine##*@}" != "$current_digest" ]; then
+          echo 'checked PostgreSQL digest differs from ghcr.io/baselabs/postgres:current' >&2; exit 1
+        fi
+        docker pull "$engine"
+    - name: Pull the declared PostgreSQL compatibility image
+      if: inputs.mode == 'start' && inputs.lane != 'engine'
+      shell: bash
+      env:
+        LANE: ${{ inputs.lane }}
+      run: |
+        image="$(python3 -I scripts/postgres-lanes.py image "$LANE")"
+        docker pull "$image"
+    - name: Start PostgreSQL and wait for readiness
+      if: inputs.mode == 'start'
+      shell: bash
+      env:
+        LANE: ${{ inputs.lane }}
+        TEST_PG_USER: ${{ env.ASH_HOOKS_TEST_PG_USER }}
+        TEST_PG_PASSWORD: ${{ env.ASH_HOOKS_TEST_PG_PASSWORD }}
+        TEST_PG_DATABASE: ${{ env.ASH_HOOKS_TEST_PG_DATABASE }}
+        POSTGRES_USER: ${{ env.ASH_HOOKS_TEST_PG_USER }}
+        POSTGRES_PASSWORD: ${{ env.ASH_HOOKS_TEST_PG_PASSWORD }}
+        POSTGRES_DB: ${{ env.ASH_HOOKS_TEST_PG_DATABASE }}
+      run: |
+        if [ "$LANE" = engine ]; then
+          engine="$(cat .github/postgres.ref)"
+          docker run --detach --name ash-hooks-postgres --pull=never \
+            --publish 127.0.0.1:5432:5432 \
+            --tmpfs /var/lib/pg:uid=26,gid=26,mode=0750 --tmpfs /tmp \
+            --env TEST_PG_USER --env TEST_PG_PASSWORD --env TEST_PG_DATABASE \
+            --entrypoint baselabs-test-postgres "$engine"
+        else
+          image="$(python3 -I scripts/postgres-lanes.py image "$LANE")"
+          docker run --detach --name ash-hooks-postgres --pull=never \
+            --publish 127.0.0.1:5432:5432 \
+            --env POSTGRES_USER --env POSTGRES_PASSWORD --env POSTGRES_DB "$image"
+        fi
+        ready=false
+        for ((attempt=0; attempt<60; attempt++)); do
+          if docker exec ash-hooks-postgres pg_isready -h 127.0.0.1 -U "$TEST_PG_USER" -d "$TEST_PG_DATABASE"; then
+            ready=true
+            break
+          fi
+          sleep 1
+        done
+        if [ "$ready" != true ]; then
+          docker logs ash-hooks-postgres
+          echo '::error::PostgreSQL did not become ready within 60 attempts'
+          exit 1
+        fi
+    - name: Log PostgreSQL after a failure
+      if: always() && inputs.mode == 'stop' && (failure() || job.status == 'failure')
+      shell: bash
+      run: |
+        if docker container inspect ash-hooks-postgres > /dev/null 2>&1; then
+          docker logs ash-hooks-postgres
+        fi
+    - name: Remove PostgreSQL
+      if: always() && inputs.mode == 'stop'
+      shell: bash
+      run: |
+        if docker container inspect ash-hooks-postgres > /dev/null 2>&1; then
+          docker rm -f -v ash-hooks-postgres
+        fi
