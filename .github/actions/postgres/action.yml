@@ -99,6 +99,8 @@ runs:
       shell: bash
       run: |
         if docker container inspect ash-hooks-postgres > /dev/null 2>&1; then
-          docker logs ash-hooks-postgres
+          logged=0
+          docker logs ash-hooks-postgres || logged=$?
           docker rm -f -v ash-hooks-postgres
+          exit "$logged"
         fi
