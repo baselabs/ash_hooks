@@ -94,17 +94,11 @@ runs:
           echo '::error::PostgreSQL did not become ready within 60 attempts'
           exit 1
         fi
-    - name: Log PostgreSQL after a failure
-      if: always() && inputs.mode == 'stop' && (failure() || job.status == 'failure')
-      shell: bash
-      run: |
-        if docker container inspect ash-hooks-postgres > /dev/null 2>&1; then
-          docker logs ash-hooks-postgres
-        fi
-    - name: Remove PostgreSQL
+    - name: Log and remove PostgreSQL
       if: always() && inputs.mode == 'stop'
       shell: bash
       run: |
         if docker container inspect ash-hooks-postgres > /dev/null 2>&1; then
+          docker logs ash-hooks-postgres
           docker rm -f -v ash-hooks-postgres
         fi
