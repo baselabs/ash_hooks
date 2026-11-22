@@ -229,7 +229,8 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
       assert {_, %Error{reason: :repeat_attempt_refused}} = ReqAdapter.run(returned)
     end
 
-    test "callback-returned Req settings cannot enable another automatic transport attempt", ctx do
+    test "callback-returned Req settings cannot enable another automatic transport attempt",
+         ctx do
       callback = fn {:data, _}, {_request, response} ->
         fresh = Req.new(url: ctx.url <> "/echo", retry: :transient, follow_redirects: true)
         response = %{response | status: 302, headers: %{"location" => [ctx.url <> "/target"]}}
