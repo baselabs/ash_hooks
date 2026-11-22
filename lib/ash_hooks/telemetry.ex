@@ -18,8 +18,9 @@ defmodule AshHooks.Telemetry do
       first_byte_duration_ms, total_duration_ms, bytes_sent, bytes_received}`;
       metadata `%{destination_id, scheme, port, address_family, method, phase,
       sent, status, completion, reason}`. Durations are milliseconds; unset
-      first-byte duration is nil. Byte counts are wire bytes, including HTTP
-      framing. Start has zero counts and durations. Stop classifies the final
+      first-byte duration is nil. Byte counts include HTTP framing;
+      `bytes_sent` counts bytes submitted to the write, including a failed
+      write whose delivery is unknown. Start has zero counts. Stop classifies the final
       phase and result. Method is an uppercase supported method string or nil.
       The host's opaque destination ID is the only host-supplied value. No
       host, path, query, headers, bodies, or raw exception terms are included

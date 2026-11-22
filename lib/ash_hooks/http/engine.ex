@@ -102,6 +102,7 @@ defmodule AshHooks.Http.Engine do
     opts = Keyword.put(state.opts, :deadline, min(state.deadline, state.connect_deadline))
     result = Target.resolve(url, opts)
     state = %{state | dns_duration_ms: now() - started}
+    deadline!(state, state.connect_deadline)
     target = checked(result, state)
     family = if tuple_size(target.address) == 4, do: :inet, else: :inet6
     {target, %{state | address_family: family}}
@@ -135,13 +136,14 @@ defmodule AshHooks.Http.Engine do
       {transport, state} = secure(socket, target, state)
 
       try do
+        deadline!(state, state.connect_deadline)
         state = %{state | phase: :send}
         deadline!(state)
         bytes = IO.iodata_to_binary(bytes)
         # This transition is immediately before the only socket write.
-        state = %{state | sent: :possible}
+        state = %{state | sent: :possible, bytes_sent: byte_size(bytes)}
         checked(send_all(transport, bytes), state)
-        state = %{state | bytes_sent: byte_size(bytes), phase: :head, last_activity: now()}
+        state = %{state | phase: :head, last_activity: now()}
         read_final(transport, "", state.opts[:max_header_bytes] || 32_768, 0, state)
       after
         close(transport)
@@ -223,8 +225,8 @@ defmodule AshHooks.Http.Engine do
     max(min(state.deadline, cap || state.deadline) - now(), 0)
   end
 
-  defp deadline!(state) do
-    if now() >= state.deadline, do: fail(:deadline_exceeded, state)
+  defp deadline!(state, cap \\ nil) do
+    if remaining(state, cap) == 0, do: fail(:deadline_exceeded, state)
   end
 
   defp now, do: System.monotonic_time(:millisecond)
@@ -233,7 +235,29 @@ defmodule AshHooks.Http.Engine do
   defp checked({:ok, value}, _state), do: value
   defp checked({:error, reason}, state), do: fail(reason, state)
   defp fail(reason, state), do: throw({:egress_error, reason, state})
-  defp done(state, completion), do: throw({:egress_done, %{state | completion: completion}})
+
+  defp done(state, completion) do
+    state = finalize(state, completion)
+    throw({:egress_done, %{state | completion: completion}})
+  end
+
+  # The Req collectable must finish before the stop event classifies its outcome.
+  defp finalize(state, completion) do
+    case state.opts[:on_complete] do
+      nil ->
+        state
+
+      callback ->
+        case invoke(callback, completion, state.acc) do
+          {:cont, acc} ->
+            deadline!(state)
+            %{state | acc: acc}
+
+          _ ->
+            fail(:callback_failed, state)
+        end
+    end
+  end
 
   defp read_final(socket, buffer, allowance, interim, state) do
     {head, rest, state} = read_head(socket, buffer, allowance, state)

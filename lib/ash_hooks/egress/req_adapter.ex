@@ -168,6 +168,13 @@ if Code.ensure_loaded?(Req.Request) do
       key = {__MODULE__, make_ref()}
       callback = collector_callback(request, key)
 
+      finalize = fn _, {req, resp} ->
+        {value, collector} = Process.get(key)
+        body = collector.(value, :done)
+        Process.delete(key)
+        {:cont, {req, %{resp | body: body}}}
+      end
+
       try do
         case Egress.stream(
                destination,
@@ -177,12 +184,11 @@ if Code.ensure_loaded?(Req.Request) do
                body,
                callback,
                {request, Req.Response.new()},
-               opts
+               Keyword.put(opts, :on_complete, finalize)
              ) do
           {:ok, response} ->
-            {acc, collector} = Process.delete(key)
             {req, resp} = response.acc
-            finish_collector(req, resp, collector, acc, response.completion)
+            {req, completion(resp, response.completion)}
 
           {:error, error} ->
             {request, error}
@@ -210,16 +216,6 @@ if Code.ensure_loaded?(Req.Request) do
           Process.put(key, {collector.(value, {:cont, data}), collector})
           {:cont, acc}
       end
-    end
-
-    defp finish_collector(request, response, collector, acc, completed) do
-      {request, completion(%{response | body: collector.(acc, :done)}, completed)}
-    catch
-      _, _ ->
-        halt_collector(collector, acc)
-
-        {request,
-         %Error{reason: :callback_failed, phase: :body, sent: :possible, status: response.status}}
     end
 
     defp halt_collector(collector, acc) do

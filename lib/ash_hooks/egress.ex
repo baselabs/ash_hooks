@@ -275,7 +275,8 @@ defmodule AshHooks.Egress do
         reason in @reasons ->
           reason
 
-        reason == :timeout and System.monotonic_time(:millisecond) >= state.deadline ->
+        reason == :timeout and
+            System.monotonic_time(:millisecond) >= min(state.deadline, state.connect_deadline) ->
           :deadline_exceeded
 
         state.phase == :connect ->

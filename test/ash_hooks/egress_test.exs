@@ -200,6 +200,35 @@ defmodule AshHooks.EgressTest do
 
     assert {:ok, %Response{completion: :complete, body: "abc"}} =
              Egress.request(enroll(url), :get, "/", %{}, nil, max_body_bytes: 3)
+
+    oversized = String.duplicate("x", 70_000)
+    {url, _} = server(send: "HTTP/1.1 200 OK\r\ncontent-length: 70000\r\n\r\n" <> oversized)
+
+    assert {:error, %Error{reason: :body_too_large}} =
+             Egress.request(enroll(url), :get, "/", %{}, nil)
+  end
+
+  test "stream body caps and malformed heads produce classified outcomes" do
+    for opts <- [[max_body_bytes: 3], [max_body_bytes: 3, capture_limit: true]] do
+      {url, _} = server(send: "HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nabcdef")
+
+      callback = fn
+        {:data, bytes}, acc -> {:cont, acc <> bytes}
+        _, acc -> {:cont, acc}
+      end
+
+      result = Egress.stream(enroll(url), :get, "/", %{}, nil, callback, "", opts)
+
+      if opts[:capture_limit] do
+        assert {:ok, %Response{completion: :capture_limit, acc: "abc"}} = result
+      else
+        assert {:error, %Error{reason: :body_too_large, sent: :possible}} = result
+      end
+    end
+
+    {url, _} = server(send: "HTTP/1.1 nope\r\n\r\n")
+    assert {:error, %Error{reason: :malformed_status_line, phase: :head}} =
+             Egress.request(enroll(url), :get, "/", %{}, nil)
   end
 
   test "SSE bytes survive split chunk data and streams have no default body cap" do
@@ -336,6 +365,14 @@ defmodule AshHooks.EgressTest do
 
     assert {:error, %Error{reason: :deadline_exceeded, sent: :none}} =
              Egress.request(enroll(url), :get, "/", %{}, nil, timeout: 0)
+
+    {:ok, destination} = Egress.destination("https://example.com/")
+
+    assert {:error, %Error{reason: :deadline_exceeded, phase: :resolve, sent: :none}} =
+             Egress.request(destination, :get, "/", %{}, nil, timeout: 0)
+
+    assert {:error, %Error{reason: :deadline_exceeded, sent: :none}} =
+             Egress.request(enroll(url), :get, "/", %{}, nil, connect_timeout: 0)
   end
 
   test "caller death closes the calling process's socket" do

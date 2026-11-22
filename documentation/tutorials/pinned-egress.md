@@ -167,7 +167,9 @@ the host. ReqLLM is not an ash_hooks dependency.
 Attach to `[:ash_hooks, :egress, :start]` and `[:ash_hooks, :egress, :stop]`.
 Measurements are `dns_duration_ms`, `connect_duration_ms`, `tls_duration_ms`,
 `first_byte_duration_ms`, `total_duration_ms`, `bytes_sent`, and `bytes_received`.
-Durations use milliseconds; byte counts include HTTP framing. Before a first
+Durations use milliseconds; byte counts include HTTP framing. `bytes_sent`
+counts bytes submitted to the write, including a failed write with unknown
+delivery. Use `sent` to classify the outcome. Before a first
 byte, its duration is nil. Metadata is exactly `destination_id`, `scheme`,
 `port`, `address_family`, `method`, `phase`, `sent`, `status`, `completion`,
 and `reason`. No host, path, query, headers, bodies, or raw exception terms

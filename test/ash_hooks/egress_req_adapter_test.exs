@@ -11,16 +11,17 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
 
     defimpl Collectable, for: FailureCollector do
       def into(collectable) do
-        {[], fn acc, command ->
-          case {command, collectable.failure} do
-            {{:cont, _}, :data} -> raise "collector-sentinel"
-            {:done, :done} -> throw("collector-sentinel")
-            {:halt, :halt} -> exit("collector-sentinel")
-            {:halt, _} -> send(collectable.owner, {:collector_halted, acc})
-            {{:cont, bytes}, _} -> [bytes | acc]
-            {:done, _} -> Enum.reverse(acc)
-          end
-        end}
+        {[],
+         fn acc, command ->
+           case {command, collectable.failure} do
+             {{:cont, _}, :data} -> raise "collector-sentinel"
+             {:done, :done} -> throw("collector-sentinel")
+             {:halt, :halt} -> exit("collector-sentinel")
+             {:halt, _} -> send(collectable.owner, {:collector_halted, acc})
+             {{:cont, bytes}, _} -> [bytes | acc]
+             {:done, _} -> Enum.reverse(acc)
+           end
+         end}
       end
     end
 
@@ -98,7 +99,12 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
     end
 
     test "redirect flags and any follow_redirects option are refused before I/O", ctx do
-      for options <- [[redirect: true], [redirect: "yes"], [follow_redirects: false], [follow_redirects: true]] do
+      for options <- [
+            [redirect: true],
+            [redirect: "yes"],
+            [follow_redirects: false],
+            [follow_redirects: true]
+          ] do
         assert {:error, %Error{reason: :redirect_refused, sent: :none}} =
                  Req.request(request(ctx, "/redirect", options))
       end
@@ -134,6 +140,47 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
       assert response.private.ash_hooks_completion == :complete
     end
 
+    test "early-close SSE keeps bytes and all emitted events contents-free" do
+      sentinel = "egress-private-sentinel"
+      handler = "req-sentinel-#{System.unique_integer([:positive])}"
+      table = :ets.new(:egress_events, [:bag, :public])
+
+      :ok =
+        :telemetry.attach_many(
+          handler,
+          [[:ash_hooks, :egress, :start], [:ash_hooks, :egress, :stop]],
+          fn event, measurements, metadata, events ->
+            :ets.insert(events, {event, measurements, metadata})
+          end,
+          table
+        )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+      parent = self()
+
+      callback = fn {:data, bytes}, acc ->
+        send(parent, {:sse_bytes, bytes})
+        {:cont, acc}
+      end
+
+      req =
+        raw_request(
+          "HTTP/1.1 200 OK\r\nx-private: #{sentinel}\r\ncontent-length: 100\r\n\r\ndata: #{sentinel}\n\n",
+          into: callback,
+          method: :post,
+          body: sentinel,
+          headers: [{"x-private", sentinel}]
+        )
+
+      assert {:error, %Error{reason: :truncated_body, sent: :possible}} = Req.request(req)
+      assert_receive {:sse_bytes, bytes}
+      assert bytes == "data: #{sentinel}\n\n"
+      events = :ets.tab2list(table)
+      assert length(events) == 2
+      refute inspect(events) =~ sentinel
+      :ets.delete(table)
+    end
+
     test "callback halt keeps the latch even if the callback returns a fresh request", ctx do
       callback = fn {:data, _}, {_req, resp} -> {:halt, {request(ctx, "/echo"), resp}} end
       {returned, response} = ReqAdapter.run(request(ctx, "/sse", into: callback))
@@ -151,25 +198,51 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
                Req.request(request(ctx, "/sse", into: fn _, _ -> {:cont, :invalid} end))
     end
 
-    test "collectable failures and truncated streams halt collection without retaining terms", ctx do
+    test "collectable failures and truncated streams halt collection without retaining terms",
+         ctx do
+      handler = "req-collector-#{System.unique_integer([:positive])}"
+      :ok =
+        :telemetry.attach(
+          handler,
+          [:ash_hooks, :egress, :stop],
+          fn _, _, metadata, owner -> send(owner, {:egress_stop, metadata}) end,
+          self()
+        )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
       for failure <- [:data, :done] do
         collector = %FailureCollector{owner: self(), failure: failure}
+
         assert {:error, %Error{reason: :callback_failed, sent: :possible}} =
                  Req.request(request(ctx, "/sse", into: collector))
+
         assert_receive {:collector_halted, _}
+        assert_receive {:egress_stop, metadata}
+        assert metadata.reason == :callback_failed
+        assert metadata.completion == nil
+        assert metadata.sent == :possible
       end
 
       for failure <- [:halt, nil] do
         collector = %FailureCollector{owner: self(), failure: failure}
-        req = raw_request("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\ndata: partial\n\n", into: collector)
+
+        req =
+          raw_request("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\ndata: partial\n\n",
+            into: collector
+          )
+
         assert {:error, %Error{reason: :truncated_body, sent: :possible}} = Req.request(req)
         if is_nil(failure), do: assert_receive({:collector_halted, _})
       end
 
       req = raw_request("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n")
       assert {:error, %Error{reason: :truncated_body}} = Req.request(%{req | into: []})
+
       assert {:error, %Error{reason: :callback_failed}} =
                Req.request(request(ctx, "/sse", into: :not_collectable))
+
+      refute Enum.any?(Process.get_keys(), &match?({ReqAdapter, _}, &1))
     end
 
     test "collectable receives 200 body and other statuses accumulate a binary", ctx do
@@ -228,12 +301,13 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
       {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
       {:ok, port} = :inet.port(listener)
 
-      peer = spawn(fn ->
-        {:ok, socket} = :gen_tcp.accept(listener, 3_000)
-        {:ok, _} = :gen_tcp.recv(socket, 0, 3_000)
-        :gen_tcp.send(socket, bytes)
-        :gen_tcp.close(socket)
-      end)
+      peer =
+        spawn(fn ->
+          {:ok, socket} = :gen_tcp.accept(listener, 3_000)
+          {:ok, _} = :gen_tcp.recv(socket, 0, 3_000)
+          :gen_tcp.send(socket, bytes)
+          :gen_tcp.close(socket)
+        end)
 
       on_exit(fn ->
         :gen_tcp.close(listener)

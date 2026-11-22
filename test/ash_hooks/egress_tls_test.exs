@@ -90,6 +90,34 @@ defmodule AshHooks.EgressTlsTest do
     assert_receive :tls_peer_closed
   end
 
+  test "TLS handshake time is bounded by the connect budget from call start" do
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, port} = :inet.port(listener)
+
+    peer =
+      spawn(fn ->
+        {:ok, socket} = :gen_tcp.accept(listener, 2_000)
+        :gen_tcp.recv(socket, 0, 2_000)
+        :timer.sleep(500)
+        :gen_tcp.close(socket)
+      end)
+
+    on_exit(fn ->
+      :gen_tcp.close(listener)
+      Process.exit(peer, :kill)
+    end)
+
+    {:ok, destination} =
+      Egress.destination("https://127.0.0.1:#{port}/", validate_destination: false)
+
+    assert {:error, %Error{reason: :deadline_exceeded, phase: :tls, sent: :none}} =
+             Egress.request(destination, :get, "/", %{}, nil,
+               cacerts: [der("local-ca.pem")],
+               connect_timeout: 40,
+               timeout: 1_000
+             )
+  end
+
   defp der(file) do
     [{:Certificate, der, :not_encrypted}] = :public_key.pem_decode(File.read!(@dir <> file))
     der
