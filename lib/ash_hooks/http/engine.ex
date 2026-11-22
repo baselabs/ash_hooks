@@ -331,7 +331,7 @@ defmodule AshHooks.Http.Engine do
 
   defp read_body(socket, buffer, state) do
     cond do
-      state.method == "HEAD" or state.status in [204, 304] ->
+      bodyless?(state) ->
         done(state, :complete)
 
       state.opts[:capture_limit] && state.opts[:max_body_bytes] == 0 ->
@@ -350,6 +350,8 @@ defmodule AshHooks.Http.Engine do
         to_close(socket, buffer, state)
     end
   end
+
+  defp bodyless?(state), do: state.method == "HEAD" or state.status in [204, 304]
 
   defp chunked?(headers) do
     case List.keyfind(headers, "transfer-encoding", 0) do

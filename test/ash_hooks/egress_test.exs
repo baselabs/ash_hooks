@@ -3,6 +3,7 @@ defmodule AshHooks.EgressTest do
 
   alias AshHooks.Egress
   alias AshHooks.Egress.{Destination, Error, Response}
+  alias AshHooks.Http.Bounded
 
   test "enrollment stores plain authority, path, pin and opaque identifier without DNS" do
     assert {:ok, destination} =
@@ -240,7 +241,7 @@ defmodule AshHooks.EgressTest do
       result =
         case adapter do
           :bounded ->
-            AshHooks.Http.Bounded.request(:get, url, %{}, nil,
+            Bounded.request(:get, url, %{}, nil,
               validate_destination: false,
               max_body_bytes: 0
             )
