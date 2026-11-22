@@ -155,7 +155,10 @@ defmodule AshHooks.Http.Engine do
     end
   end
 
-  defp secure(socket, %{uri: %{scheme: "http"}}, state), do: {{:gen_tcp, socket}, state}
+  defp secure(socket, %{uri: %{scheme: "http"}}, state) do
+    checked(:inet.setopts(socket, send_timeout: remaining(state)), state)
+    {{:gen_tcp, socket}, state}
+  end
 
   defp secure(socket, target, state) do
     state = %{state | phase: :tls}
