@@ -83,11 +83,25 @@ defmodule AshHooks.Egress do
   `capture_limit: true` instead returns the retained prefix with completion
   `:capture_limit`; it does not establish remote completion.
   """
-  @spec request(Destination.t(), atom() | String.t(), String.t(), map() | list(),
-          binary() | nil, keyword()) :: {:ok, Response.t()} | {:error, Error.t()}
+  @spec request(
+          Destination.t(),
+          atom() | String.t(),
+          String.t(),
+          map() | list(),
+          binary() | nil,
+          keyword()
+        ) :: {:ok, Response.t()} | {:error, Error.t()}
   def request(destination, method, url, headers, body, opts \\ []) do
-    perform(destination, method, url, headers, body, nil, nil,
-      Keyword.put_new(opts, :max_body_bytes, 65_536))
+    perform(
+      destination,
+      method,
+      url,
+      headers,
+      body,
+      nil,
+      nil,
+      Keyword.put_new(opts, :max_body_bytes, 65_536)
+    )
   end
 
   @doc """
@@ -105,8 +119,16 @@ defmodule AshHooks.Egress do
   background reader and no retry. Any 3xx is refused before callbacks run;
   101 returns `:unsupported_upgrade`.
   """
-  @spec stream(Destination.t(), atom() | String.t(), String.t(), map() | list(),
-          binary() | nil, function(), term(), keyword()) ::
+  @spec stream(
+          Destination.t(),
+          atom() | String.t(),
+          String.t(),
+          map() | list(),
+          binary() | nil,
+          function(),
+          term(),
+          keyword()
+        ) ::
           {:ok, Response.t()} | {:error, Error.t()}
   def stream(destination, method, url, headers, body, fun, acc, opts \\ []) do
     perform(destination, method, url, headers, body, fun, acc, opts)
@@ -142,11 +164,13 @@ defmodule AshHooks.Egress do
   defp refusal(reason) when reason in @reasons, do: {:error, reason}
 
   defp valid_options?(opts) do
-    Enum.all?([:timeout, :connect_timeout, :idle_timeout, :max_header_bytes,
-               :max_interim_responses], fn key ->
-      value = Keyword.get(opts, key, 1)
-      is_integer(value) and value >= 0
-    end) and
+    Enum.all?(
+      [:timeout, :connect_timeout, :idle_timeout, :max_header_bytes, :max_interim_responses],
+      fn key ->
+        value = Keyword.get(opts, key, 1)
+        is_integer(value) and value >= 0
+      end
+    ) and
       (Keyword.get(opts, :max_body_bytes, :infinity) == :infinity or
          (is_integer(opts[:max_body_bytes]) and opts[:max_body_bytes] >= 0))
   end
@@ -155,11 +179,11 @@ defmodule AshHooks.Egress do
     with true <- is_nil(body) or is_binary(body),
          true <- is_nil(fun) or is_function(fun, 2),
          {:ok, lines} <- Headers.validate_ordered(Enum.to_list(headers)),
-         false <- Enum.any?(lines, fn {name, _} ->
-           String.downcase(name, :ascii) in
-             ~w(host connection content-length transfer-encoding te trailer upgrade
+         false <-
+           Enum.any?(lines, fn {name, _} ->
+             String.downcase(name, :ascii) in ~w(host connection content-length transfer-encoding te trailer upgrade
                 proxy-connection keep-alive)
-         end) do
+           end) do
       :ok
     else
       {:error, reason} -> {:error, reason}
@@ -170,13 +194,19 @@ defmodule AshHooks.Egress do
   defp valid_request(_, _, _), do: {:error, :invalid_request}
 
   defp effective_url(%Destination{} = destination, value) when is_binary(value) do
-    base = %URI{scheme: destination.scheme, host: destination.host, port: destination.port,
-                path: destination.path_prefix}
+    base = %URI{
+      scheme: destination.scheme,
+      host: destination.host,
+      port: destination.port,
+      path: destination.path_prefix
+    }
+
     url = base |> URI.merge(value) |> URI.to_string()
 
     with {:ok, uri} <- uri(url),
-         true <- uri.scheme == destination.scheme and
-                   String.downcase(uri.host) == destination.host and uri.port == destination.port,
+         true <-
+           uri.scheme == destination.scheme and
+             String.downcase(uri.host) == destination.host and uri.port == destination.port,
          true <- uri.scheme == "https" or (uri.scheme == "http" and destination.allow_http),
          true <- in_prefix?(uri.path || "/", destination.path_prefix) do
       {:ok, url}
@@ -205,6 +235,7 @@ defmodule AshHooks.Egress do
 
   defp valid_path?(path) when is_binary(path) do
     decoded = URI.decode(path)
+
     String.starts_with?(path, "/") and not String.contains?(decoded, "\\") and
       not Enum.any?(String.split(decoded, "/"), &(&1 in [".", ".."]))
   end
@@ -218,8 +249,15 @@ defmodule AshHooks.Egress do
   defp finish({:ok, state}, destination) do
     emit(:stop, destination, state)
     body = if state.callback, do: nil, else: state.body |> Enum.reverse() |> IO.iodata_to_binary()
-    {:ok, %Response{status: state.status, headers: state.headers, body: body,
-                    completion: state.completion, acc: state.acc}}
+
+    {:ok,
+     %Response{
+       status: state.status,
+       headers: state.headers,
+       body: body,
+       completion: state.completion,
+       acc: state.acc
+     }}
   end
 
   defp finish({:error, reason, state}, destination) do
@@ -229,25 +267,50 @@ defmodule AshHooks.Egress do
   end
 
   defp error(reason, state) do
-    reason = cond do
-      reason == :unsupported_protocol_switch -> :unsupported_upgrade
-      reason in @reasons -> reason
-      reason == :timeout and System.monotonic_time(:millisecond) >= state.deadline -> :deadline_exceeded
-      state.phase == :connect -> :connect_failed
-      state.phase == :tls -> :tls_failed
-      true -> :transport_failed
-    end
+    reason =
+      cond do
+        reason == :unsupported_protocol_switch ->
+          :unsupported_upgrade
+
+        reason in @reasons ->
+          reason
+
+        reason == :timeout and System.monotonic_time(:millisecond) >= state.deadline ->
+          :deadline_exceeded
+
+        state.phase == :connect ->
+          :connect_failed
+
+        state.phase == :tls ->
+          :tls_failed
+
+        true ->
+          :transport_failed
+      end
 
     %Error{reason: reason, phase: state.phase, sent: state.sent, status: state.status}
   end
 
   defp emit(event, destination, state) do
-    measurements = Map.take(state, [:dns_duration_ms, :connect_duration_ms, :tls_duration_ms,
-                                   :first_byte_duration_ms, :bytes_sent, :bytes_received])
+    measurements =
+      Map.take(state, [
+        :dns_duration_ms,
+        :connect_duration_ms,
+        :tls_duration_ms,
+        :first_byte_duration_ms,
+        :bytes_sent,
+        :bytes_received
+      ])
       |> Map.put(:total_duration_ms, System.monotonic_time(:millisecond) - state.started)
-    metadata = Map.take(state, [:address_family, :method, :phase, :sent, :status, :completion, :reason])
-      |> Map.merge(%{destination_id: destination_id(destination), scheme: scheme(destination),
-                     port: port(destination)})
+
+    metadata =
+      Map.take(state, [:address_family, :method, :phase, :sent, :status, :completion, :reason])
+      |> Map.merge(%{
+        destination_id: destination_id(destination),
+        scheme: scheme(destination),
+        port: port(destination)
+      })
+
     :telemetry.execute([:ash_hooks, :egress, event], measurements, metadata)
   end
 
@@ -259,9 +322,11 @@ defmodule AshHooks.Egress do
   defp port(_), do: nil
 
   defp telemetry_method(method) when is_atom(method), do: telemetry_method(Atom.to_string(method))
+
   defp telemetry_method(method) when is_binary(method) do
     value = String.upcase(method, :ascii)
     if value in ~w(CONNECT DELETE GET HEAD OPTIONS PATCH POST PUT TRACE), do: value
   end
+
   defp telemetry_method(_), do: nil
 end

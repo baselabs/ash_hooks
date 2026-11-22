@@ -13,8 +13,16 @@ defmodule AshHooks.Egress.Destination do
   """
 
   @enforce_keys [:scheme, :host, :port, :path_prefix]
-  defstruct [:scheme, :host, :port, :path_prefix, :certificate_pin, :id,
-             allow_http: false, validate_destination: true]
+  defstruct [
+    :scheme,
+    :host,
+    :port,
+    :path_prefix,
+    :certificate_pin,
+    :id,
+    allow_http: false,
+    validate_destination: true
+  ]
 
   @type t :: %__MODULE__{
           scheme: String.t(),

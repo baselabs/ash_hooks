@@ -21,28 +21,43 @@ defmodule AshHooks.EgressTlsTest do
       port = tls_server(certificate)
       opts = [validate_destination: false, timeout: 3_000]
       opts = if trust == :ca, do: Keyword.put(opts, :cacerts, [der("local-ca.pem")]), else: opts
-      pin = case pin do
-        :matching -> {:sha256, :crypto.hash(:sha256, der(certificate))}
-        :mismatch -> {:sha256, <<0::256>>}
-        nil -> nil
-      end
+
+      pin =
+        case pin do
+          :matching -> {:sha256, :crypto.hash(:sha256, der(certificate))}
+          :mismatch -> {:sha256, <<0::256>>}
+          nil -> nil
+        end
+
       url = "https://#{host}:#{port}/"
-      result = case adapter do
-        :bounded -> Bounded.request(:get, url, %{}, nil, Keyword.put(opts, :certificate_pin, pin))
-        :egress ->
-          {:ok, destination} = Egress.destination(url, validate_destination: false, certificate_pin: pin)
-          Egress.request(destination, :get, url, %{}, nil, opts)
-      end
+
+      result =
+        case adapter do
+          :bounded ->
+            Bounded.request(:get, url, %{}, nil, Keyword.put(opts, :certificate_pin, pin))
+
+          :egress ->
+            {:ok, destination} =
+              Egress.destination(url, validate_destination: false, certificate_pin: pin)
+
+            Egress.request(destination, :get, url, %{}, nil, opts)
+        end
+
       case {adapter, expected, result} do
         {_, :ok, {:ok, %{status: 200, body: "ok"}}} ->
           assert_receive {:tls_http, _}, 1_000
+
         {:egress, reason, {:error, %Error{reason: reason, phase: :tls, sent: :none}}} ->
           refute_receive {:tls_http, _}, 20
+
         {:bounded, :tls_failed, {:error, _}} ->
           refute_receive {:tls_http, _}, 20
+
         {:bounded, reason, {:error, reason}} ->
           refute_receive {:tls_http, _}, 20
-        other -> flunk("TLS identity matrix failed: #{inspect(other)}")
+
+        other ->
+          flunk("TLS identity matrix failed: #{inspect(other)}")
       end
     end
   end
@@ -51,15 +66,27 @@ defmodule AshHooks.EgressTlsTest do
     {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listener)
     parent = self()
-    peer = spawn(fn ->
-      {:ok, socket} = :gen_tcp.accept(listener, 2_000)
-      :gen_tcp.close(socket)
-      send(parent, :tls_peer_closed)
+
+    peer =
+      spawn(fn ->
+        {:ok, socket} = :gen_tcp.accept(listener, 2_000)
+        :gen_tcp.close(socket)
+        send(parent, :tls_peer_closed)
+      end)
+
+    on_exit(fn ->
+      :gen_tcp.close(listener)
+      Process.exit(peer, :kill)
     end)
-    on_exit(fn -> :gen_tcp.close(listener); Process.exit(peer, :kill) end)
-    {:ok, destination} = Egress.destination("https://127.0.0.1:#{port}/", validate_destination: false)
+
+    {:ok, destination} =
+      Egress.destination("https://127.0.0.1:#{port}/", validate_destination: false)
+
     assert {:error, %Error{reason: :tls_failed, phase: :tls, sent: :none}} =
-             Egress.request(destination, :post, "/", %{}, "never written", cacerts: [der("local-ca.pem")])
+             Egress.request(destination, :post, "/", %{}, "never written",
+               cacerts: [der("local-ca.pem")]
+             )
+
     assert_receive :tls_peer_closed
   end
 
@@ -70,23 +97,40 @@ defmodule AshHooks.EgressTlsTest do
 
   defp tls_server(certificate) do
     parent = self()
-    {:ok, listener} = :ssl.listen(0, certfile: String.to_charlist(@dir <> certificate),
-      keyfile: String.to_charlist(@dir <> "server.key"), ip: {127, 0, 0, 1},
-      active: false, mode: :binary)
+
+    {:ok, listener} =
+      :ssl.listen(0,
+        certfile: String.to_charlist(@dir <> certificate),
+        keyfile: String.to_charlist(@dir <> "server.key"),
+        ip: {127, 0, 0, 1},
+        active: false,
+        mode: :binary
+      )
+
     {:ok, {_, port}} = :ssl.sockname(listener)
-    pid = spawn(fn ->
-      with {:ok, socket} <- :ssl.transport_accept(listener, 5_000),
-           {:ok, socket} <- :ssl.handshake(socket, 3_000) do
-        case :ssl.recv(socket, 0, 3_000) do
-          {:ok, bytes} ->
-            send(parent, {:tls_http, bytes})
-            :ssl.send(socket, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
-          _ -> :ok
+
+    pid =
+      spawn(fn ->
+        with {:ok, socket} <- :ssl.transport_accept(listener, 5_000),
+             {:ok, socket} <- :ssl.handshake(socket, 3_000) do
+          case :ssl.recv(socket, 0, 3_000) do
+            {:ok, bytes} ->
+              send(parent, {:tls_http, bytes})
+              :ssl.send(socket, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+
+            _ ->
+              :ok
+          end
+
+          :ssl.close(socket)
         end
-        :ssl.close(socket)
-      end
+      end)
+
+    on_exit(fn ->
+      :ssl.close(listener)
+      Process.exit(pid, :kill)
     end)
-    on_exit(fn -> :ssl.close(listener); Process.exit(pid, :kill) end)
+
     port
   end
 end

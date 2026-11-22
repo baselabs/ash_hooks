@@ -76,13 +76,19 @@ defmodule AshHooks.Http.Bounded do
 
   defp state(opts) do
     opts
-    |> Keyword.put_new(:max_body_bytes, 65_536)
+    |> Keyword.update(:max_body_bytes, 65_536, &(&1 || 65_536))
+    |> Keyword.put(:idle_timeout, opts[:timeout] || 15_000)
     |> Keyword.put(:capture_limit, true)
     |> Engine.init()
   end
 
   defp result({:ok, state}) do
-    {:ok, %{status: state.status, headers: state.headers, body: state.body |> Enum.reverse() |> IO.iodata_to_binary()}}
+    {:ok,
+     %{
+       status: state.status,
+       headers: state.headers,
+       body: state.body |> Enum.reverse() |> IO.iodata_to_binary()
+     }}
   end
 
   defp result({:error, reason, _state}) when reason in [:deadline_exceeded, :idle_timeout],

@@ -11,9 +11,9 @@ defmodule AshHooks.Http.Engine do
 
     %{
       started: started,
-      deadline: started + Keyword.get(opts, :timeout, 15_000),
-      connect_deadline: started + Keyword.get(opts, :connect_timeout, 5_000),
-      idle_timeout: Keyword.get(opts, :idle_timeout, 15_000),
+      deadline: started + (opts[:timeout] || 15_000),
+      connect_deadline: started + (opts[:connect_timeout] || 5_000),
+      idle_timeout: opts[:idle_timeout] || 15_000,
       last_activity: started,
       phase: :validate,
       sent: :none,
@@ -83,8 +83,11 @@ defmodule AshHooks.Http.Engine do
     {:egress_done, state} -> {:ok, state}
   end
 
-  defp normalize_method(method, state) when is_atom(method),
-    do: normalize_method(Atom.to_string(method), state)
+  defp normalize_method(method, state) when is_atom(method) do
+    if method in ~w(connect delete get head options patch post put trace)a,
+      do: normalize_method(Atom.to_string(method), state),
+      else: fail(:unsupported_method, state)
+  end
 
   defp normalize_method(method, state) when is_binary(method) do
     normalized = String.upcase(method, :ascii)
@@ -104,6 +107,7 @@ defmodule AshHooks.Http.Engine do
     {target, %{state | address_family: family}}
   end
 
+  @spec exchange(map(), iodata(), map()) :: no_return()
   defp exchange(target, bytes, state) do
     state = %{state | phase: :connect}
     started = now()

@@ -41,10 +41,27 @@ if Code.ensure_loaded?(Req.Request) do
       request = Req.Request.put_private(request, @latch, true)
 
       if refusal do
-        Req.Request.halt(request, %Error{reason: refusal, phase: :validate, sent: :none})
+        refuse(request, refusal)
       else
         dispatch(request)
       end
+    end
+
+    defp refuse(request, reason) do
+      destination = Req.Request.get_private(request, :ash_hooks_destination)
+      opts = Req.Request.get_private(request, :ash_hooks_egress_options, [])
+
+      {:error, error} =
+        Egress.request(
+          destination,
+          request.method,
+          URI.to_string(request.url),
+          %{},
+          nil,
+          Keyword.put(opts, :refusal, reason)
+        )
+
+      Req.Request.halt(request, error)
     end
 
     defp refusal(request) do
@@ -57,7 +74,7 @@ if Code.ensure_loaded?(Req.Request) do
             Map.get(request.options, :max_retries, 3) != 0 ->
           :retry_not_disabled
 
-        Map.get(request.options, :redirect, true) or
+        Map.get(request.options, :redirect, true) ||
             Map.has_key?(request.options, :follow_redirects) ->
           :redirect_refused
 
@@ -73,14 +90,16 @@ if Code.ensure_loaded?(Req.Request) do
       destination = Req.Request.get_private(request, :ash_hooks_destination)
       opts = Req.Request.get_private(request, :ash_hooks_egress_options, [])
       url = URI.to_string(request.url)
-      headers = Enum.map(request.headers, fn {name, values} -> {name, Enum.join(values, ", ")} end)
+
+      headers =
+        Enum.map(request.headers, fn {name, values} -> {name, Enum.join(values, ", ")} end)
 
       case body(request.body) do
         {:ok, body} ->
           send_request(request, destination, url, headers, body, opts)
 
         :error ->
-          Req.Request.halt(request, %Error{reason: :invalid_request, phase: :validate, sent: :none})
+          refuse(request, :invalid_request)
       end
     end
 
@@ -93,7 +112,13 @@ if Code.ensure_loaded?(Req.Request) do
     defp send_request(%{into: nil} = request, destination, url, headers, body, opts) do
       case Egress.request(destination, request.method, url, headers, body, opts) do
         {:ok, response} ->
-          result = Req.Response.new(status: response.status, headers: response.headers, body: response.body)
+          result =
+            Req.Response.new(
+              status: response.status,
+              headers: response.headers,
+              body: response.body
+            )
+
           {request, completion(result, response.completion)}
 
         {:error, error} ->
@@ -104,14 +129,32 @@ if Code.ensure_loaded?(Req.Request) do
     defp send_request(%{into: fun} = request, destination, url, headers, body, opts)
          when is_function(fun, 2) do
       callback = fn
-        {:status, status}, {req, resp} -> {:cont, {req, %{resp | status: status}}}
+        {:status, status}, {req, resp} ->
+          {:cont, {req, %{resp | status: status}}}
+
         {:headers, fields}, {req, resp} ->
           {:cont, {req, %{resp | headers: Req.Response.new(headers: fields).headers}}}
-        {:data, data}, acc -> fun.({:data, data}, acc)
+
+        {:data, data}, acc ->
+          case fun.({:data, data}, acc) do
+            {action, {%Req.Request{}, %Req.Response{}}} = result when action in [:cont, :halt] ->
+              result
+
+            _ ->
+              :invalid_callback_result
+          end
       end
 
-      case Egress.stream(destination, request.method, url, headers, body,
-             callback, {request, Req.Response.new()}, opts) do
+      case Egress.stream(
+             destination,
+             request.method,
+             url,
+             headers,
+             body,
+             callback,
+             {request, Req.Response.new()},
+             opts
+           ) do
         {:ok, response} ->
           {req, resp} = response.acc
           {Req.Request.put_private(req, @latch, true), completion(resp, response.completion)}
@@ -126,8 +169,16 @@ if Code.ensure_loaded?(Req.Request) do
       callback = collector_callback(request, key)
 
       try do
-        case Egress.stream(destination, request.method, url, headers, body,
-               callback, {request, Req.Response.new()}, opts) do
+        case Egress.stream(
+               destination,
+               request.method,
+               url,
+               headers,
+               body,
+               callback,
+               {request, Req.Response.new()},
+               opts
+             ) do
           {:ok, response} ->
             {acc, collector} = Process.delete(key)
             {req, resp} = response.acc
@@ -166,7 +217,9 @@ if Code.ensure_loaded?(Req.Request) do
     catch
       _, _ ->
         halt_collector(collector, acc)
-        {request, %Error{reason: :callback_failed, phase: :body, sent: :possible, status: response.status}}
+
+        {request,
+         %Error{reason: :callback_failed, phase: :body, sent: :possible, status: response.status}}
     end
 
     defp halt_collector(collector, acc) do
@@ -175,6 +228,7 @@ if Code.ensure_loaded?(Req.Request) do
       _, _ -> :ok
     end
 
-    defp completion(response, value), do: Req.Response.put_private(response, :ash_hooks_completion, value)
+    defp completion(response, value),
+      do: Req.Response.put_private(response, :ash_hooks_completion, value)
   end
 end

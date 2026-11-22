@@ -43,7 +43,10 @@ and length headers belong to the transport.
 <!-- not-run: Sending requires an enrolled host destination and bound request credentials. -->
 ```elixir
 result =
-  AshHooks.Egress.request(destination, :post, "/v1/messages",
+  AshHooks.Egress.request(
+    destination,
+    :post,
+    "/v1/messages",
     %{"authorization" => "Bearer " <> per_request_key},
     encoded_request,
     timeout: 30_000,
@@ -66,8 +69,7 @@ callback = fn
 end
 
 {:ok, response} =
-  AshHooks.Egress.stream(destination, :get, "/v1/events", %{}, nil,
-    callback, initial_state,
+  AshHooks.Egress.stream(destination, :get, "/v1/events", %{}, nil, callback, initial_state,
     idle_timeout: 15_000,
     timeout: 120_000
   )
