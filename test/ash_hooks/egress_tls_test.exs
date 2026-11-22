@@ -137,22 +137,7 @@ defmodule AshHooks.EgressTlsTest do
 
     {:ok, {_, port}} = :ssl.sockname(listener)
 
-    pid =
-      spawn(fn ->
-        with {:ok, socket} <- :ssl.transport_accept(listener, 5_000),
-             {:ok, socket} <- :ssl.handshake(socket, 3_000) do
-          case :ssl.recv(socket, 0, 3_000) do
-            {:ok, bytes} ->
-              send(parent, {:tls_http, bytes})
-              :ssl.send(socket, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
-
-            _ ->
-              :ok
-          end
-
-          :ssl.close(socket)
-        end
-      end)
+    pid = spawn(fn -> serve_tls(listener, parent) end)
 
     on_exit(fn ->
       :ssl.close(listener)
@@ -160,5 +145,21 @@ defmodule AshHooks.EgressTlsTest do
     end)
 
     port
+  end
+
+  defp serve_tls(listener, parent) do
+    with {:ok, socket} <- :ssl.transport_accept(listener, 5_000),
+         {:ok, socket} <- :ssl.handshake(socket, 3_000) do
+      case :ssl.recv(socket, 0, 3_000) do
+        {:ok, bytes} ->
+          send(parent, {:tls_http, bytes})
+          :ssl.send(socket, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+
+        _ ->
+          :ok
+      end
+
+      :ssl.close(socket)
+    end
   end
 end

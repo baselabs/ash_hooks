@@ -232,6 +232,31 @@ defmodule AshHooks.EgressTest do
              Egress.request(enroll(url), :get, "/", %{}, nil)
   end
 
+  test "zero-byte captures close after headers through delivery and egress" do
+    for adapter <- [:bounded, :egress] do
+      {url, _} =
+        server(send: "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n", wait_closed: true)
+
+      result =
+        case adapter do
+          :bounded ->
+            AshHooks.Http.Bounded.request(:get, url, %{}, nil,
+              validate_destination: false,
+              max_body_bytes: 0
+            )
+
+          :egress ->
+            Egress.request(enroll(url), :get, "/", %{}, nil,
+              max_body_bytes: 0,
+              capture_limit: true
+            )
+        end
+
+      assert {:ok, %{body: ""}} = result
+      assert_receive {:peer_closed, :closed}, 1_000
+    end
+  end
+
   test "SSE bytes survive split chunk data and streams have no default body cap" do
     first = "data: {\"a\":"
     second = "1}\n\n" <> String.duplicate("x", 70_000)
@@ -471,35 +496,7 @@ defmodule AshHooks.EgressTest do
     {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listener)
 
-    pid =
-      spawn(fn ->
-        case :gen_tcp.accept(listener, 5_000) do
-          {:ok, socket} ->
-            case :gen_tcp.recv(socket, 0, 5_000) do
-              {:ok, bytes} -> send(parent, {:received, bytes})
-              _ -> :ok
-            end
-
-            Enum.each(actions, fn
-              {:send, bytes} ->
-                :gen_tcp.send(socket, bytes)
-
-              {:pause, ms} ->
-                :timer.sleep(ms)
-
-              {:wait_closed, true} ->
-                send(parent, {:peer_closed, elem(:gen_tcp.recv(socket, 0, 2_000), 1)})
-
-              {:reset, true} ->
-                :inet.setopts(socket, linger: {true, 0})
-            end)
-
-            :gen_tcp.close(socket)
-
-          _ ->
-            :ok
-        end
-      end)
+    pid = spawn(fn -> accept(listener, actions, parent) end)
 
     on_exit(fn ->
       :gen_tcp.close(listener)
@@ -507,5 +504,35 @@ defmodule AshHooks.EgressTest do
     end)
 
     {"http://127.0.0.1:#{port}", pid}
+  end
+
+  defp accept(listener, actions, parent) do
+    case :gen_tcp.accept(listener, 5_000) do
+      {:ok, socket} -> serve(socket, actions, parent)
+      _ -> :ok
+    end
+  end
+
+  defp serve(socket, actions, parent) do
+    case :gen_tcp.recv(socket, 0, 5_000) do
+      {:ok, bytes} -> send(parent, {:received, bytes})
+      _ -> :ok
+    end
+
+    Enum.each(actions, fn
+      {:send, bytes} ->
+        :gen_tcp.send(socket, bytes)
+
+      {:pause, ms} ->
+        :timer.sleep(ms)
+
+      {:wait_closed, true} ->
+        send(parent, {:peer_closed, elem(:gen_tcp.recv(socket, 0, 2_000), 1)})
+
+      {:reset, true} ->
+        :inet.setopts(socket, linger: {true, 0})
+    end)
+
+    :gen_tcp.close(socket)
   end
 end

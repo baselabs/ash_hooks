@@ -334,6 +334,9 @@ defmodule AshHooks.Http.Engine do
       state.method == "HEAD" or state.status in [204, 304] ->
         done(state, :complete)
 
+      state.opts[:capture_limit] && state.opts[:max_body_bytes] == 0 ->
+        done(state, :capture_limit)
+
       chunked?(state.headers) ->
         chunked(socket, buffer, state)
 
