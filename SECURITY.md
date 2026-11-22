@@ -10,8 +10,8 @@ Security fixes are released for the newest minor release in the current major li
 
 | Release line | Supported |
 | --- | --- |
-| >= 3.5.0 and < 3.6.0 | Yes |
-| < 3.5.0 | No |
+| >= 3.6.0 and < 3.7.0 | Yes |
+| < 3.6.0 | No |
 
 Upgrade to a supported release before requesting a backport. Safety corrections may
 tighten behavior in a patch release when the previous behavior accepted unsafe input or
@@ -88,6 +88,10 @@ Application providers and secret resolvers must provide their own error handling
   the packaged send-time gate for that URL (the HTTP adapter's resolve-and-pin remains
   the transport's own boundary), a `:deny` is terminal, and a contained callback
   failure retries: a policy defect never dead-letters deliveries.
+- `AshHooks.Egress` applies the same resolve-and-pin, TLS, IP-SAN and certificate-pin
+  checks to host requests. Each send must match its enrolled destination before any I/O,
+  resolves once, never follows a redirect, never resends, and reports whether request
+  bytes may have left. Its telemetry carries no host, path, headers or bodies.
 - TLS uses the OTP trust store unless the host supplies a CA bundle. Hostnames use the
   normal certificate hostname check. Literal HTTPS addresses must match an `iPAddress`
   subject alternative name.
@@ -130,4 +134,4 @@ receiver-side deduplication are outside the package's enforcement boundary. Cust
 adapters and explicit destination-validation or bound overrides replace the corresponding
 built-in guarantee and should be assessed as part of the host application.
 
-The supported version range is `>= 3.4.0 and < 3.5.0`.
+The supported version range is `>= 3.6.0 and < 3.7.0`.

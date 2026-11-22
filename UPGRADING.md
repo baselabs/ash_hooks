@@ -1,5 +1,13 @@
 # Upgrading
 
+<a id="upgrade-3-6"></a>
+
+## 3.5.0 → 3.6.0
+
+No changes are required. 3.6.0 adds `AshHooks.Egress` and the optional
+`AshHooks.Egress.ReqAdapter` (Req `~> 0.7.5`); webhook delivery results are
+unchanged. See the [pinned egress guide](documentation/tutorials/pinned-egress.md).
+
 <a id="upgrade-3-5"></a>
 
 ## 3.4.0 → 3.5.0
@@ -1956,7 +1964,7 @@ as the error class.
 
 ## Required `default_string_length_count` configuration
 
-Every Ash version supported by ash_hooks 3.5.0 requires this configuration
+Every Ash version supported by ash_hooks 3.6.0 requires this configuration
 before compiling resources. ash_hooks writes no `:ash` configuration for you. Set it
 in your application's `config/config.exs`:
 

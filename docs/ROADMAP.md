@@ -10,7 +10,7 @@ and its change is in the `CHANGELOG.md` section of the release that ships it.
 
 | Outcome | Acceptance | Waits on |
 |---|---|---|
-| W31: Package Oban workers expose absent, failed and invalid work for every host and tenant. | Native cancellations, contents-free missing and terminal telemetry, replay read-error handling, and the ADR 0030 recovery contract pass in hosted CI, including forced PostgreSQL row security. | 3.5.0. |
+| W33: Hosts send buffered and streaming HTTP requests through public pinned egress. | `AshHooks.Egress` and the optional Req adapter pass hosted CI: TLS identity, mixed DNS answers, redirect refusal, one attempt under installed retry functions, exact sent classification, and contents-free telemetry ([ADR 0031](adr/0031-pinned-egress.md)). | 3.6.0. |
 | The synchronous-decision tutorial links a signed authorization recipe. | The "Decide in the response" section of `documentation/tutorials/verify-any-sender.md` links `request_seal`'s signed authorization hook recipe. | `request_seal` 2.0.0, which publishes that recipe. |
 
 ## Not planned

@@ -14,7 +14,7 @@ The dependency-list fragment is tested as part of a Mix project module.
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 3.5"},
+    {:ash_hooks, "~> 3.6"},
     {:ash_postgres, "~> 2.0"},
     # Optional: required for the generated Oban worker.
     {:oban, "~> 2.24"}

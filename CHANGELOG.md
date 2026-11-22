@@ -4,11 +4,11 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## [3.6.0] - 2026-11-22
 
 ### Added
 
-- The additive 3.6.0 API `AshHooks.Egress` enrolls pinned destinations and
+- The additive API `AshHooks.Egress` enrolls pinned destinations and
   sends buffered or streaming HTTP/1.1 requests with explicit completion and
   sent classification. One shared engine serves webhook delivery and egress.
 - Optional `AshHooks.Egress.ReqAdapter` supports Req callbacks and collectables,
@@ -1653,6 +1653,7 @@ see migration notes in [UPGRADING.md](UPGRADING.md).
   either ledger at all, no response-body persistence by default,
   classified-only error strings.
 
+[3.6.0]: https://github.com/baselabs/ash_hooks/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/baselabs/ash_hooks/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/baselabs/ash_hooks/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/baselabs/ash_hooks/compare/v3.2.0...v3.3.0
