@@ -227,6 +227,7 @@ defmodule AshHooks.EgressTest do
     end
 
     {url, _} = server(send: "HTTP/1.1 nope\r\n\r\n")
+
     assert {:error, %Error{reason: :malformed_status_line, phase: :head}} =
              Egress.request(enroll(url), :get, "/", %{}, nil)
   end

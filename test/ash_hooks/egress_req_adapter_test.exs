@@ -201,6 +201,7 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
     test "collectable failures and truncated streams halt collection without retaining terms",
          ctx do
       handler = "req-collector-#{System.unique_integer([:positive])}"
+
       :ok =
         :telemetry.attach(
           handler,
