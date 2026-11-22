@@ -113,10 +113,18 @@ defmodule AshHooks.Ssrf do
   def resolve_host_public(host, opts \\ []) do
     with {:ok, parsed} <- parse_host(host),
          {:ok, addresses} <- resolve_host(parsed, opts) do
-      if Enum.all?(addresses, &public_address?/1),
-        do: {:ok, addresses},
-        else: {:error, :unsafe}
+      classify_addresses(addresses)
     end
+  end
+
+  @doc false
+  # The policy over one complete DNS answer bag, independent of lookup I/O.
+  @spec classify_addresses([:inet.ip_address()]) ::
+          {:ok, [:inet.ip_address()]} | {:error, :unsafe}
+  def classify_addresses(addresses) do
+    if Enum.all?(addresses, &public_address?/1),
+      do: {:ok, addresses},
+      else: {:error, :unsafe}
   end
 
   @doc """

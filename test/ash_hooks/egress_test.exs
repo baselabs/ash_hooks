@@ -99,7 +99,8 @@ defmodule AshHooks.EgressTest do
           {%{"x" => "a\r\nb"}, nil, :invalid_header_value},
           {%{"bad name" => "a"}, nil, :invalid_header_name},
           {%{}, :bad_body, :invalid_request},
-          {:bad_headers, nil, :invalid_request}
+          {:bad_headers, nil, :invalid_request},
+          {%URI{path: "/header-sentinel"}, nil, :invalid_request}
         ] do
       assert {:error, %Error{reason: ^reason, sent: :none}} =
                Egress.request(destination, :get, url, headers, body)

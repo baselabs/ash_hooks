@@ -39,8 +39,11 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
             conn = Plug.Conn.send_chunked(conn, 200)
             {:ok, conn} = Plug.Conn.chunk(conn, "data: {\"a\":")
             :timer.sleep(20)
-            {:ok, conn} = Plug.Conn.chunk(conn, "1}\n\ndata: done\n\n")
-            conn
+
+            case Plug.Conn.chunk(conn, "1}\n\ndata: done\n\n") do
+              {:ok, conn} -> conn
+              {:error, _} -> conn
+            end
 
           "/redirect" ->
             conn
@@ -224,6 +227,20 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
       {returned, response} = ReqAdapter.run(request(ctx, "/sse", into: callback))
       assert response.private.ash_hooks_completion == :halted
       assert {_, %Error{reason: :repeat_attempt_refused}} = ReqAdapter.run(returned)
+    end
+
+    test "callback-returned Req settings cannot enable another automatic transport attempt", ctx do
+      callback = fn {:data, _}, {_request, response} ->
+        fresh = Req.new(url: ctx.url <> "/echo", retry: :transient, follow_redirects: true)
+        response = %{response | status: 302, headers: %{"location" => [ctx.url <> "/target"]}}
+        {:halt, {fresh, response}}
+      end
+
+      assert {:ok, %Req.Response{status: 302}} =
+               Req.request(request(ctx, "/sse", into: callback))
+
+      assert_receive {:bandit_request, "GET", "/sse", ""}
+      refute_receive {:bandit_request, _, _, _}, 30
     end
 
     test "callback failure is classified without its values", ctx do

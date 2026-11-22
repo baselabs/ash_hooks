@@ -9,13 +9,12 @@ An optional leaf certificate pin supplements normal trust and identity checks.
 
 ## Enroll a destination
 
-The host chooses and enrolls the destination, persists its plain fields on its
-own record, and selects that record for each admitted request. HTTPS is the
-default. Userinfo, fragments, unsafe literal addresses, and metadata hosts
-are refused without DNS. Store an opaque identifier for telemetry, with no
-credential or payload data in that identifier.
+`destination/2` validates an endpoint without DNS and returns a plain
+`AshHooks.Egress.Destination` struct. HTTPS is the default. Userinfo,
+fragments, unsafe literal addresses, and metadata hosts are refused.
+The optional `destination_id` is carried unchanged in telemetry.
 
-<!-- not-run: Enrollment and storage require the host's destination record and endpoint. -->
+<!-- not-run: This enrollment example uses a placeholder endpoint. -->
 ```elixir
 {:ok, destination} =
   AshHooks.Egress.destination("https://api.example.com/v1/",
@@ -35,12 +34,12 @@ destination. A send cannot disable its enrolled address validation.
 
 ## Buffer or stream a response
 
-Pass an effective absolute URL or an absolute path and query. Bind non-nil
-credentials per admitted request, after selecting the destination. Request
-headers and body remain the host's responsibility; authority, connection,
-and length headers belong to the transport.
+`request/6` and `stream/8` accept an effective absolute URL or an absolute
+path and query. They preserve supplied header values and body bytes.
+Repeated header lines retain their order. The transport generates authority,
+connection, and length headers.
 
-<!-- not-run: Sending requires an enrolled host destination and bound request credentials. -->
+<!-- not-run: This example requires a live endpoint and application request values. -->
 ```elixir
 result =
   AshHooks.Egress.request(
@@ -60,7 +59,7 @@ returns completion `:capture_limit`, as delivery's bounded capture does.
 Streaming has no default body cap. Chunks are decoded HTTP body bytes, not
 HTTP chunk framing, and callbacks execute synchronously in the caller.
 
-<!-- not-run: The host supplies the destination and its incremental consumer. -->
+<!-- not-run: This excerpt requires a live endpoint and an incremental consumer. -->
 ```elixir
 callback = fn
   {:status, status}, acc -> {:cont, Map.put(acc, :status, status)}
@@ -101,20 +100,19 @@ capture leaves remote completion unknown. A 3xx response is always
 another destination. An early close in sized or chunked framing returns
 `:truncated_body`; read-to-close framing completes on close.
 
-ash_hooks never retries. The host records an intent before sending and
-classifies a killed process or lost node from that record: no result can
-arrive after process or node loss. The host also owns admission, interrupted
-or ambiguous outcomes, credential binding, and refusing alternate transports.
+Each call performs one attempt without retries. A killed process or lost
+node returns no result. These are transport-level outcomes; the API does not
+supply admission, credential management, or intent persistence.
 
 ## Req
 
-Req is optional. Attach the destination through private request data. Require
-`redirect: false`; any `follow_redirects` option is refused, including false.
-Use `retry: false` or effective `max_retries: 0`. Installed retry functions
-with zero retries are accepted. An adapter-returned request carries an attempt
-latch, and Req's private retry count also refuses a second run before I/O.
+Req is optional. The adapter reads the destination from private request data.
+It accepts disabled redirects and refuses any `follow_redirects` option,
+including false. It accepts `retry: false` or supported retry settings with
+`max_retries: 0`. Returned requests carry an attempt latch and disabled
+retries. Req's private retry count also refuses a second run before I/O.
 
-<!-- not-run: This composition requires Req and the host's enrolled destination. -->
+<!-- not-run: This example requires Req and an enrolled destination for a live endpoint. -->
 ```elixir
 request =
   Req.new(
@@ -133,36 +131,38 @@ Req.request(request)
 `into:` callbacks receive `{:data, bytes}` and `{request, response}` following
 Req 0.7's contract. Collectables receive status-200 bodies; other statuses
 accumulate a binary. Request bodies are materialized from iodata or enumerable
-chunks before I/O. Hosts own request size and body production. Async
-`into: :self` is refused.
+chunks before I/O. Async `into: :self` is refused.
 Response private data `:ash_hooks_completion` preserves completion.
-Req response decoding and any host-added steps are outside ash_hooks' byte cap;
-leave compression off and choose decoding steps appropriate for trusted data.
+The byte cap applies to transport bytes before Req response steps, including
+any response decoding.
 
-## ReqLLM composition
+## Example: client-library composition
 
-For buffered ReqLLM calls, configure
-`req_http_options: [adapter: AshHooks.Egress.ReqAdapter, retry: false, redirect: false]`
-and top-level `max_retries: 0`. ReqLLM's transport preserves and delegates to
-the adapter. Its retry step installs a function, which the adapter accepts
-only when effective retries are zero. The host's request setup attaches the
-destination and binds a non-nil per-request API key. An empty key must fail
-instead of falling through to global credentials.
+The adapter works with Req pipelines that have retries disabled. ReqLLM
+1.31.0's buffered transport is one example: it preserves and delegates to a
+custom Req adapter. Its `req_http_options` can select
+`adapter: AshHooks.Egress.ReqAdapter`, `retry: false`, and `redirect: false`,
+with top-level `max_retries: 0`. The retry function that ReqLLM installs is
+accepted with zero effective retries. The destination is attached to the
+resulting Req request through the private-data API shown above.
 
-ReqLLM streaming uses a host wrapper provider. Return
-`stream_transport: :in_process` and implement `attach_in_process_stream/3`
-with an `InProcessStream` cancel callback. Build the actual provider request
-with its documented `attach_stream/4`, then send it with
-`AshHooks.Egress.stream/8`. Decode chunks using the documented
+`stream/8` also accepts the method, URL, headers, and body produced by a
+client-library request builder. This supplies the same pinned transport to
+clients whose streams bypass Req. For example, ReqLLM 1.31.0's HTTP streams
+normally call Finch directly; an in-process stream transport can instead
+call `AshHooks.Egress.stream/8` and receive its status, headers, and chunks.
+
+One such composition uses `stream_transport: :in_process`,
+`attach_in_process_stream/3`, and an `InProcessStream` cancel callback. The
+provider's documented `attach_stream/4` builds the request. Its
 `stream_protocol_parser/2`, `parse_stream_protocol/2`, `init_stream_state`,
-`decode_stream_event/3`, and `flush_stream_state` callbacks and
-`ReqLLM.Streaming.SSE`. Keep parser state across chunks, which need not align
-with SSE event boundaries. The in-process client has no retry path.
+`decode_stream_event/3`, `flush_stream_state`, and `ReqLLM.Streaming.SSE`
+can consume the chunks and retain parsing state across split SSE events.
+The in-process client's path has no retry loop. Cancelling the process
+running Egress closes its socket.
 
-The host qualifies that provider wrapper and cancellation behavior. It must
-refuse alternate WebSocket transports, configured `finch_request_adapter`,
-and `on_finch_request`. ReqLLM's own telemetry and errors must be filtered by
-the host. ReqLLM is not an ash_hooks dependency.
+This is an example of composing a client library with the public transport
+API. ReqLLM is not an ash_hooks dependency.
 
 ## Observe attempts
 
@@ -175,4 +175,4 @@ delivery. Use `sent` to classify the outcome. Before a first
 byte, its duration is nil. Metadata is exactly `destination_id`, `scheme`,
 `port`, `address_family`, `method`, `phase`, `sent`, `status`, `completion`,
 and `reason`. No host, path, query, headers, bodies, or raw exception terms
-are emitted. Keep the opaque destination identifier contents-free as well.
+are emitted. The opaque destination identifier is carried unchanged.

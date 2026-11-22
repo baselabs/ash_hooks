@@ -52,16 +52,14 @@ forbids, and encodes and writes in one call.
    status, completion, reason, durations and byte counts. It never carries the
    host name, path, query, headers, bodies or exception terms.
 8. Req is an optional dependency. The adapter compiles only when Req is loaded.
-9. The host decides which destination a request may use, admits it, binds its
-   credentials, records its intent, and classifies a send whose process died as
-   interrupted. With ReqLLM, buffered requests use the adapter with
-   `max_retries: 0`; streams use a host provider wrapper on ReqLLM's in-process
-   stream transport that sends through `AshHooks.Egress.stream/8` and decodes
-   with ReqLLM's documented stream callbacks.
+9. ash_hooks does not choose a request's destination, admit requests, bind
+   credentials or record intent. A send whose process dies returns no result.
+   Req-based clients reach the engine through the adapter; clients that stream
+   through their own transport can call `AshHooks.Egress.stream/8` directly.
 
 ## Consequences
 
 Each send opens one connection: no pooling and no HTTP/2. The result is exact
 about whether bytes may have left, and the same TLS identity tests cover
-delivery and egress. Hosts streaming through ReqLLM maintain a small provider
-wrapper until ReqLLM offers a pluggable HTTP stream transport.
+delivery and egress. A client library whose streams bypass Req reaches the
+engine only through `AshHooks.Egress.stream/8`.

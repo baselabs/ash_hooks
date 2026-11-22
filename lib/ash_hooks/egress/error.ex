@@ -22,7 +22,7 @@ defmodule AshHooks.Egress.Error do
 
   Neither the exception message nor its Inspect representation includes values.
   Inspect the fields explicitly to classify the outcome. A killed process or
-  lost node returns no outcome; recover from the host's committed intent.
+  lost node returns no outcome.
   """
 
   defexception [:reason, :phase, :sent, :status]

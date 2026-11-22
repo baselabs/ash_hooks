@@ -2,16 +2,16 @@ defmodule AshHooks.Egress do
   @moduledoc """
   One pinned HTTP/1.1 attempt, buffered or streamed, with explicit outcomes.
 
-  Enroll destinations with `destination/2` and persist their plain data on
-  host-owned records. Every attempt checks its effective URL against that
-  enrollment, resolves once, and connects to a validated address. The original
+  `destination/2` supplies validated enrollment data. Every attempt checks its
+  effective URL against that enrollment, resolves once, and connects to a
+  validated address. The original
   host remains the HTTP authority and TLS identity. No redirect or retry is
   performed. HTTP/2, proxies, and connection reuse are unsupported.
 
   `AshHooks.Egress.Error` distinguishes an unsent request from one that may
-  have left. The host owns admission, credential binding, committed intent,
-  destination selection, and recovery when a process or node returns nothing.
-  See the [pinned egress guide](pinned-egress.html) for Req and ReqLLM composition.
+  have left. A send whose process or node dies returns no outcome.
+  See the [pinned egress guide](pinned-egress.html) for the API guarantees and
+  examples of client-library composition.
   """
 
   alias AshHooks.Egress.{Destination, Error, Response}
@@ -39,7 +39,7 @@ defmodule AshHooks.Egress do
   require `validate_destination: false`; that enrollment flag is preserved
   across sends and cannot be overridden by per-request options. Production
   enrollment uses `AshHooks.Ssrf.registration_safe?/1` and send-time public
-  address validation. Hosts must protect their stored enrollment data.
+  address validation.
   """
   @spec destination(String.t(), keyword()) :: {:ok, Destination.t()} | {:error, Error.t()}
   def destination(url, opts \\ []) do
@@ -175,6 +175,8 @@ defmodule AshHooks.Egress do
       (Keyword.get(opts, :max_body_bytes, :infinity) == :infinity or
          (is_integer(opts[:max_body_bytes]) and opts[:max_body_bytes] >= 0))
   end
+
+  defp valid_request(%{__struct__: _}, _, _), do: {:error, :invalid_request}
 
   defp valid_request(headers, body, fun) when is_map(headers) or is_list(headers) do
     with true <- is_nil(body) or is_binary(body),

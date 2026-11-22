@@ -1,15 +1,15 @@
 defmodule AshHooks.Egress.Destination do
   @moduledoc """
-  An enrolled destination's plain, host-persisted data.
+  The plain data returned by destination enrollment.
 
   Build it with `AshHooks.Egress.destination/2`. The scheme, lowercase host,
   explicit port, and escaped path prefix bind every send. `certificate_pin`
-  optionally constrains the normally verified TLS leaf. `id` is the host's
-  opaque telemetry identifier. Only controlled tests should enroll with
+  optionally constrains the normally verified TLS leaf. `id` is the
+  supplied opaque telemetry identifier. Only controlled tests should enroll with
   `allow_http: true` or `validate_destination: false`.
 
-  This struct is enrollment data, not a credential or an admission decision.
-  The host controls its creation, storage, and selection for each request.
+  Each request checks its effective URL against these fields before network
+  I/O. The fields can be stored and reconstructed without an open connection.
   """
 
   @enforce_keys [:scheme, :host, :port, :path_prefix]

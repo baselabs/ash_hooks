@@ -53,6 +53,7 @@ if Code.ensure_loaded?(AshSqlite) do
 
     alias AshHooks.Ingress
     alias AshHooks.Test.BusyRepo
+    alias AshHooks.Test.PoolReady
 
     @table "busy_retry_ledgers"
     @secret "busy-secret"
@@ -113,6 +114,7 @@ if Code.ensure_loaded?(AshSqlite) do
       )
 
       start_supervised!(BusyRepo)
+      PoolReady.wait(BusyRepo)
 
       on_exit(fn ->
         Application.delete_env(:ash_hooks, BusyRepo)

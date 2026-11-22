@@ -22,7 +22,7 @@ defmodule AshHooks.Telemetry do
       `bytes_sent` counts bytes submitted to the write, including a failed
       write whose delivery is unknown. Start has zero counts. Stop classifies the final
       phase and result. Method is an uppercase supported method string or nil.
-      The host's opaque destination ID is the only host-supplied value. No
+      The opaque destination ID is the only caller-supplied value. No
       host, path, query, headers, bodies, or raw exception terms are included
     * `[:ash_hooks, :ingress, :verify]`: `%{duration_ms}`; `%{source,
       outcome: :ok | :invalid, reason: atom | nil}` (the underscored error-struct name, such as `:invalid_signature` or

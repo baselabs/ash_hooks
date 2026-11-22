@@ -19,8 +19,8 @@ if Code.ensure_loaded?(Req.Request) do
 
     The adapter's private attempt latch is returned on the request, including
     requests returned by callbacks. Req's retry count also prevents a second
-    adapter run. Hosts must refuse alternate transports and bind credentials
-    and destinations before running Req's pipeline.
+    adapter run. Req-based clients use the adapter; other client transports
+    can call `AshHooks.Egress.stream/8` directly.
     """
 
     alias AshHooks.Egress
@@ -31,7 +31,8 @@ if Code.ensure_loaded?(Req.Request) do
     @doc """
     Runs one Req adapter attempt, returning `{request, response_or_exception}`.
 
-    Refusals before I/O halt Req's pipeline. Transport failures are
+    Returned requests retain this adapter, disabled redirects and retries, and an attempt latch,
+    including refusals before I/O. Transport failures are
     `AshHooks.Egress.Error` exceptions. Successful responses store egress
     completion in response private data under `:ash_hooks_completion`.
     A returned request cannot be run again through this adapter.
@@ -39,13 +40,21 @@ if Code.ensure_loaded?(Req.Request) do
     @spec run(Req.Request.t()) :: {Req.Request.t(), Req.Response.t() | Error.t()}
     def run(request) do
       refusal = refusal(request)
-      request = Req.Request.put_private(request, @latch, true)
+      request = attempted(request)
 
       if refusal do
         refuse(request, refusal)
       else
         dispatch(request)
       end
+    end
+
+    defp attempted(request) do
+      %{request | adapter: __MODULE__}
+      |> Req.Request.put_private(@latch, true)
+      |> Req.Request.put_option(:retry, false)
+      |> Req.Request.put_option(:redirect, false)
+      |> Req.Request.delete_option(:follow_redirects)
     end
 
     defp refuse(request, reason) do
@@ -178,7 +187,7 @@ if Code.ensure_loaded?(Req.Request) do
            ) do
         {:ok, response} ->
           {req, resp} = response.acc
-          {Req.Request.put_private(req, @latch, true), completion(resp, response.completion)}
+          {attempted(req), completion(resp, response.completion)}
 
         {:error, error} ->
           {request, error}
