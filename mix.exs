@@ -77,6 +77,7 @@ defmodule AshHooks.MixProject do
         [
           {:oban, "~> 2.24", optional: true},
           {:plug, ">= 1.20.4 and < 2.0.0-0", optional: true},
+          {:req, "~> 0.7.5", optional: true},
           # A real HTTP server and a real Phoenix endpoint and router for the
           # plug's interoperability tests and the documentation's mounting
           # examples. Both depend on Plug, so they leave with it on the
@@ -162,6 +163,13 @@ defmodule AshHooks.MixProject do
         DSLs: ~r"documentation/dsls/?"
       ],
       groups_for_modules: [
+        Egress: [
+          AshHooks.Egress,
+          AshHooks.Egress.Destination,
+          AshHooks.Egress.Response,
+          AshHooks.Egress.Error,
+          AshHooks.Egress.ReqAdapter
+        ],
         Core: [
           AshHooks,
           AshHooks.Info,

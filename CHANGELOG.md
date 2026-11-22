@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- The additive 3.6.0 API `AshHooks.Egress` enrolls pinned destinations and
+  sends buffered or streaming HTTP/1.1 requests with explicit completion and
+  sent classification. One shared engine serves webhook delivery and egress.
+- Optional `AshHooks.Egress.ReqAdapter` supports Req callbacks and collectables,
+  refuses redirect and retry settings before I/O, and rejects repeat attempts.
+- Contents-free egress start and stop telemetry reports timing, byte counts,
+  and classified outcomes. See the [pinned egress guide](documentation/tutorials/pinned-egress.md).
+
 ## [3.5.0] - 2026-11-20
 
 ### Added

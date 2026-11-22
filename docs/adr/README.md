@@ -41,3 +41,4 @@ Records are repository documentation and are not part of the Hex package.
 | [0028: Host extension seams](0028-host-extension-seams.md) | Accepted | Verified facts, host signers, exact prepared requests and signing provenance. |
 | [0029: Transactional publication and query matching](0029-transactional-publish-and-query-matching.md) | Accepted | A dedicated outbox and query-side selection with an Elixir guard. |
 | [0030: Visible worker outcomes](0030-visible-worker-outcomes.md) | Accepted | Cancel absent, failed and invalid work visibly; preserve row-owned recovery. |
+| [0031: Pinned egress for host requests](0031-pinned-egress.md) | Accepted | One pinned streaming engine for delivery and host egress, explicit outcomes, and optional Req integration. |

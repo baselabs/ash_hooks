@@ -13,6 +13,16 @@ defmodule AshHooks.Telemetry do
   Outbox events and delivery missing and disable events include the operation's
   `tenant` identifier, or `nil` when absent, so hosts can alarm or notify per tenant.
 
+    * `[:ash_hooks, :egress, :start | :stop]`: measurements
+      `%{dns_duration_ms, connect_duration_ms, tls_duration_ms,
+      first_byte_duration_ms, total_duration_ms, bytes_sent, bytes_received}`;
+      metadata `%{destination_id, scheme, port, address_family, method, phase,
+      sent, status, completion, reason}`. Durations are milliseconds; unset
+      first-byte duration is nil. Byte counts are wire bytes, including HTTP
+      framing. Start has zero counts and durations. Stop classifies the final
+      phase and result. Method is an uppercase supported method string or nil.
+      The host's opaque destination ID is the only host-supplied value. No
+      host, path, query, headers, bodies, or raw exception terms are included
     * `[:ash_hooks, :ingress, :verify]`: `%{duration_ms}`; `%{source,
       outcome: :ok | :invalid, reason: atom | nil}` (the underscored error-struct name, such as `:invalid_signature` or
       `:unknown_error`; paused sources use `:source_paused`; success uses nil)
@@ -118,6 +128,8 @@ defmodule AshHooks.Telemetry do
       :telemetry.attach_many(
         "my-ash-hooks",
         [
+          [:ash_hooks, :egress, :start],
+          [:ash_hooks, :egress, :stop],
           [:ash_hooks, :ingress, :verify],
           [:ash_hooks, :ingress, :dedup],
           [:ash_hooks, :ingress, :claim],
