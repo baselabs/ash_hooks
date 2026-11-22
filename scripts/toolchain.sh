@@ -4,8 +4,8 @@
 # across repositories and runs before any listed toolchain is installed.
 # After installation, --installed TOOL=VERSION... refuses unless each installed
 # tool (elixir, erlang, nodejs, golang) reports exactly that version.
-# The one source is infra baselabs/ci/toolchain.sh; each repository carries a byte-identical
-# copy at scripts/toolchain.sh, mode 755, called by path (infra docs/ci.md).
+# The one source is kimosabe scripts/toolchain.sh; each repository carries a byte-identical
+# copy at scripts/toolchain.sh, mode 755, called by path, and the harness preflight refuses any other.
 set -euo pipefail
 
 self_test() (
