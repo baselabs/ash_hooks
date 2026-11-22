@@ -110,6 +110,7 @@ if Code.ensure_loaded?(AshSqlite) do
     alias AshHooks.Dispatcher
     alias AshHooks.Event
     alias AshHooks.Test.BusyRepo
+    alias AshHooks.Test.PoolReady
 
     @endpoints "dispatch_busy_endpoints"
     @subscriptions "dispatch_busy_subscriptions"
@@ -182,6 +183,7 @@ if Code.ensure_loaded?(AshSqlite) do
       )
 
       start_supervised!(BusyRepo)
+      PoolReady.wait(BusyRepo)
 
       on_exit(fn ->
         Application.delete_env(:ash_hooks, BusyRepo)
