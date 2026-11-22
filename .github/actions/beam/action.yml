@@ -40,4 +40,5 @@ runs:
       env:
         WANT_ELIXIR: ${{ inputs.elixir }}
         WANT_OTP: ${{ inputs.otp }}
-      run: sh "$GITHUB_WORKSPACE/scripts/toolchain.sh" --installed "elixir=$WANT_ELIXIR" "erlang=$WANT_OTP"
+      run: |
+        "$GITHUB_WORKSPACE/scripts/toolchain.sh" --installed "elixir=$WANT_ELIXIR" "erlang=$WANT_OTP"

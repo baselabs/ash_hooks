@@ -48,7 +48,7 @@ jobs:
           persist-credentials: false
       - name: Read the runtime toolchain
         id: toolchain
-        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+        run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/beam
         with:
           elixir: ${{ steps.toolchain.outputs.elixir }}

@@ -21,11 +21,11 @@ runs:
   steps:
     - name: Test the version-file parser
       shell: bash
-      run: sh scripts/toolchain.sh --self-test
+      run: scripts/toolchain.sh --self-test
     - name: Read defaults and compatibility lanes
       id: versions
       shell: bash
-      run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+      run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
     - name: Compose the default, no-optional and compatibility lanes
       id: matrix
       shell: bash

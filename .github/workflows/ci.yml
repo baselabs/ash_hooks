@@ -131,7 +131,7 @@ jobs:
           persist-credentials: false
       - name: Read the floor toolchain
         id: versions
-        run: sh scripts/toolchain.sh ci/floor/.tool-versions >> "$GITHUB_OUTPUT"
+        run: scripts/toolchain.sh ci/floor/.tool-versions >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/beam
         with:
           elixir: ${{ steps.versions.outputs.elixir }}
