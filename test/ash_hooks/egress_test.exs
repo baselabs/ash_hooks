@@ -4,6 +4,7 @@ defmodule AshHooks.EgressTest do
   alias AshHooks.Egress
   alias AshHooks.Egress.{Destination, Error, Response}
   alias AshHooks.Http.Bounded
+  alias AshHooks.Test.EgressEvents
 
   test "enrollment stores plain authority, path, pin and opaque identifier without DNS" do
     assert {:ok, destination} =
@@ -78,6 +79,9 @@ defmodule AshHooks.EgressTest do
     assert {:error, %Error{reason: :destination_mismatch}} =
              Egress.request(%{destination | allow_http: false}, :get, url <> "/v1", %{}, nil)
 
+    assert {:error, %Error{reason: :destination_mismatch, sent: :none}} =
+             Egress.request(%{destination | port: :invalid}, :get, "/v1", %{}, nil)
+
     refute_receive {:received, _}, 30
   end
 
@@ -94,7 +98,6 @@ defmodule AshHooks.EgressTest do
           {%{"host" => "elsewhere"}, nil, :invalid_request},
           {%{"x" => "a\r\nb"}, nil, :invalid_header_value},
           {%{"bad name" => "a"}, nil, :invalid_header_name},
-          {[{"x", "a"}, {"X", "b"}], nil, :duplicate_header},
           {%{}, :bad_body, :invalid_request},
           {:bad_headers, nil, :invalid_request}
         ] do
@@ -117,6 +120,9 @@ defmodule AshHooks.EgressTest do
              "#AshHooks.Egress.Error<>"
 
     assert_raise Error, "egress request failed", fn -> raise error end
+
+    assert %Error{reason: :unsafe_destination, phase: :validate, sent: :none} =
+             Error.exception(reason: :unsafe_destination, phase: :validate, sent: :none)
   end
 
   test "an enrolled public policy cannot be bypassed per request; DNS refusal is unsent" do
@@ -145,6 +151,37 @@ defmodule AshHooks.EgressTest do
     assert bytes =~ "content-length: 7\r\n"
     assert String.ends_with?(bytes, "\r\n\r\nrequest")
     refute inspect(response) =~ "hello"
+  end
+
+  test "ordered headers preserve separate values without comma joining" do
+    {url, _} = server(send: "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+
+    assert {:ok, _} =
+             Egress.request(enroll(url), :get, "/", [{"cookie", "a=1"}, {"cookie", "b=2"}], nil)
+
+    assert_receive {:received, bytes}
+    assert bytes =~ "cookie: a=1\r\ncookie: b=2\r\n"
+    refute bytes =~ "a=1, b=2"
+  end
+
+  test "read-to-close framing awaits body bytes after an initially empty buffer" do
+    {url, peer} =
+      server(send: "HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n", await: :body, send: "body")
+
+    callback = fn
+      {:headers, _}, acc ->
+        send(peer, :body)
+        {:cont, acc}
+
+      {:data, bytes}, acc ->
+        {:cont, acc <> bytes}
+
+      _, acc ->
+        {:cont, acc}
+    end
+
+    assert {:ok, %Response{body: nil, acc: "body", completion: :complete}} =
+             Egress.stream(enroll(url), :get, "/", %{}, nil, callback, "")
   end
 
   test "HEAD, 204 and informational responses do not wait for absent bodies" do
@@ -366,10 +403,8 @@ defmodule AshHooks.EgressTest do
 
     {url, _} = server(reset: true)
 
-    assert {:error, %Error{sent: :possible, reason: reason}} =
+    assert {:error, %Error{sent: :possible, reason: :transport_failed}} =
              Egress.request(enroll(url), :get, "/", %{}, nil)
-
-    assert reason in [:transport_failed, :truncated_response]
   end
 
   test "idle, total and pre-I/O deadlines are classified independently" do
@@ -433,7 +468,7 @@ defmodule AshHooks.EgressTest do
     :ok =
       :telemetry.attach_many(
         handler,
-        [[:ash_hooks, :egress, :start], [:ash_hooks, :egress, :stop]],
+        EgressEvents.all(),
         fn name, measurements, metadata, pid ->
           send(pid, {:event, name, measurements, metadata})
         end,
@@ -483,6 +518,7 @@ defmodule AshHooks.EgressTest do
              )
 
     refute inspect({start, start_meta, stop, meta}) =~ sentinel
+    refute_receive {:event, [:finch | _], _, _}, 30
   end
 
   defp enroll(url, opts \\ []) do
@@ -526,6 +562,11 @@ defmodule AshHooks.EgressTest do
 
       {:pause, ms} ->
         :timer.sleep(ms)
+
+      {:await, message} ->
+        receive do
+          ^message -> :ok
+        end
 
       {:wait_closed, true} ->
         send(parent, {:peer_closed, elem(:gen_tcp.recv(socket, 0, 2_000), 1)})

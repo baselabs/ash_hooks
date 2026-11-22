@@ -71,7 +71,8 @@ defmodule AshHooks.Egress do
 
   Returns `{:ok, %AshHooks.Egress.Response{}}` or
   `{:error, %AshHooks.Egress.Error{}}`. Headers are binary name/value pairs
-  in a map or list; the body is a binary or `nil`. Authority, connection, and
+  in a map or list; a list preserves repeated header lines. The body is a
+  binary or `nil`. Authority, connection, and
   length headers are transport-owned and cannot be supplied.
 
   Options: `:timeout` (15,000 ms from call start), `:connect_timeout`
@@ -178,7 +179,8 @@ defmodule AshHooks.Egress do
   defp valid_request(headers, body, fun) when is_map(headers) or is_list(headers) do
     with true <- is_nil(body) or is_binary(body),
          true <- is_nil(fun) or is_function(fun, 2),
-         {:ok, lines} <- Headers.validate_ordered(Enum.to_list(headers)),
+         {:ok, _validated} <- Headers.validate(headers),
+         lines = Enum.to_list(headers),
          false <-
            Enum.any?(lines, fn {name, _} ->
              String.downcase(name, :ascii) in ~w(host connection content-length transfer-encoding te trailer upgrade

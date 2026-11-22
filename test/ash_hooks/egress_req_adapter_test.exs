@@ -4,6 +4,7 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
 
     alias AshHooks.Egress
     alias AshHooks.Egress.{Error, ReqAdapter}
+    alias AshHooks.Test.EgressEvents
 
     defmodule FailureCollector do
       defstruct [:owner, :failure]
@@ -31,6 +32,7 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
       def call(conn, owner) do
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         send(owner, {:bandit_request, conn.method, conn.request_path, body})
+        send(owner, {:bandit_headers, conn.req_headers})
 
         case conn.request_path do
           "/sse" ->
@@ -80,6 +82,33 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
       refute_receive {:bandit_request, _, _, _}, 30
     end
 
+    test "Req header arrays retain distinct values at the real receiver", ctx do
+      req = request(ctx, "/echo", headers: [{"x-repeated", "first"}, {"x-repeated", "second"}])
+      assert {:ok, %Req.Response{status: 200}} = Req.request(req)
+      assert_receive {:bandit_headers, headers}
+      assert {"x-repeated", "first"} in headers
+      assert {"x-repeated", "second"} in headers
+      refute {"x-repeated", "first, second"} in headers
+    end
+
+    test "enumerable request bodies are consumed once and arrive as exact bytes", ctx do
+      owner = self()
+
+      body =
+        Stream.map(["first", "second"], fn bytes ->
+          send(owner, :body_chunk)
+          bytes
+        end)
+
+      assert {:ok, %Req.Response{body: "firstsecond"}} =
+               Req.request(request(ctx, "/echo", method: :post, body: body))
+
+      assert_receive :body_chunk
+      assert_receive :body_chunk
+      refute_receive :body_chunk, 30
+      assert_receive {:bandit_request, "POST", "/echo", "firstsecond"}
+    end
+
     test "429/503 with a ReqLLM-shaped retry function and zero retries sends exactly once", ctx do
       for status <- [429, 503] do
         retry = fn _request, %Req.Response{status: code} -> code in [429, 503] end
@@ -96,6 +125,15 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
 
         assert_receive {:bandit_request, _, _, _}
       end
+    end
+
+    test "invalid retry settings cannot reach Req's response steps after I/O", ctx do
+      for retry <- [nil, "invalid-retry", fn _, _, _ -> true end] do
+        assert {:error, %Error{reason: :retry_not_disabled, sent: :none}} =
+                 Req.request(request(ctx, "/echo", retry: retry, max_retries: 0))
+      end
+
+      refute_receive {:bandit_request, _, _, _}, 30
     end
 
     test "redirect flags and any follow_redirects option are refused before I/O", ctx do
@@ -148,7 +186,7 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
       :ok =
         :telemetry.attach_many(
           handler,
-          [[:ash_hooks, :egress, :start], [:ash_hooks, :egress, :stop]],
+          EgressEvents.all(),
           fn event, measurements, metadata, events ->
             :ets.insert(events, {event, measurements, metadata})
           end,
@@ -264,11 +302,11 @@ if Code.ensure_loaded?(Req.Request) and Code.ensure_loaded?(Bandit) do
       assert File.read!(path) == "data: {\"a\":1}\n\ndata: done\n\n"
     end
 
-    test "invalid destinations, body streams, async streams and defaults fail before I/O", ctx do
+    test "invalid destinations, bodies, async streams and defaults fail before I/O", ctx do
       req = request(ctx, "/echo")
 
       assert {_, %Error{reason: :invalid_request, sent: :none}} =
-               ReqAdapter.run(%{req | body: Stream.map(["a"], & &1)})
+               ReqAdapter.run(%{req | body: %{invalid: "body"}})
 
       assert {_, %Error{reason: :invalid_request, sent: :none}} =
                ReqAdapter.run(%{req | into: :self})

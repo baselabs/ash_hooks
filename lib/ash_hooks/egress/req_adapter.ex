@@ -13,8 +13,9 @@ if Code.ensure_loaded?(Req.Request) do
     Callback and collectable `into:` values stream in the caller. Callback
     functions receive `{:data, bytes}` with `{request, response}`, as in Req.
     Collectables receive the body for status 200; other statuses accumulate a
-    binary, following Req's contract. `into: :self` and request body streams
-    are unsupported. No Finch pool or Finch callback is invoked.
+    binary, following Req's contract. Request bodies are materialized from
+    iodata or enumerable chunks before I/O. Async `into: :self` is unsupported.
+    No Finch pool or Finch callback is invoked.
 
     The adapter's private attempt latch is returned on the request, including
     requests returned by callbacks. Req's retry count also prevents a second
@@ -70,8 +71,7 @@ if Code.ensure_loaded?(Req.Request) do
             Req.Request.get_private(request, @latch, false) ->
           :repeat_attempt_refused
 
-        Map.get(request.options, :retry, :safe_transient) != false and
-            Map.get(request.options, :max_retries, 3) != 0 ->
+        not retry_disabled?(request.options) ->
           :retry_not_disabled
 
         Map.get(request.options, :redirect, true) ||
@@ -86,13 +86,31 @@ if Code.ensure_loaded?(Req.Request) do
       end
     end
 
+    defp retry_disabled?(options) do
+      case Map.get(options, :retry, :safe_transient) do
+        false ->
+          true
+
+        retry when retry in [:safe_transient, :transient, :safe, :never] ->
+          Map.get(options, :max_retries, 3) === 0
+
+        fun when is_function(fun, 1) or is_function(fun, 2) ->
+          Map.get(options, :max_retries, 3) === 0
+
+        _ ->
+          false
+      end
+    end
+
     defp dispatch(request) do
       destination = Req.Request.get_private(request, :ash_hooks_destination)
       opts = Req.Request.get_private(request, :ash_hooks_egress_options, [])
       url = URI.to_string(request.url)
 
       headers =
-        Enum.map(request.headers, fn {name, values} -> {name, Enum.join(values, ", ")} end)
+        Enum.flat_map(request.headers, fn {name, values} ->
+          Enum.map(values, &{name, &1})
+        end)
 
       case body(request.body) do
         {:ok, body} ->
@@ -103,10 +121,13 @@ if Code.ensure_loaded?(Req.Request) do
       end
     end
 
+    defp body(nil), do: {:ok, ""}
+
     defp body(body) do
-      {:ok, IO.iodata_to_binary(body || "")}
-    rescue
-      _ -> :error
+      chunks = if Enumerable.impl_for(body), do: Enum.to_list(body), else: body
+      {:ok, IO.iodata_to_binary(chunks)}
+    catch
+      _, _ -> :error
     end
 
     defp send_request(%{into: nil} = request, destination, url, headers, body, opts) do

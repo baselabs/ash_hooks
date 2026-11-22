@@ -41,7 +41,8 @@ defmodule AshHooks.Http.Engine do
     protect(fn ->
       method = normalize_method(method, state)
       state = %{state | method: method}
-      headers = checked(Headers.validate(headers), state)
+      validated = checked(Headers.validate(headers), state)
+      headers = if state.opts[:egress], do: Enum.to_list(headers), else: Map.to_list(validated)
       {target, state} = resolve(url, state)
       checked(CertificatePin.validate(state.opts[:certificate_pin], target.uri.scheme), state)
 
@@ -50,7 +51,7 @@ defmodule AshHooks.Http.Engine do
           {"host", Target.host_header(target.host, target.port, target.uri.scheme)},
           {"connection", "close"},
           {"content-length", Integer.to_string(byte_size(body || ""))}
-        ] ++ Map.to_list(headers)
+        ] ++ headers
 
       bytes = [
         method,
@@ -123,6 +124,7 @@ defmodule AshHooks.Http.Engine do
           active: false,
           packet: :raw,
           buffer: @slice,
+          show_econnreset: state.opts[:egress] == true,
           send_timeout: remaining(state),
           send_timeout_close: true
         ],

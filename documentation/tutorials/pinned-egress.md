@@ -132,7 +132,9 @@ Req.request(request)
 
 `into:` callbacks receive `{:data, bytes}` and `{request, response}` following
 Req 0.7's contract. Collectables receive status-200 bodies; other statuses
-accumulate a binary. Async `into: :self` and request body streams are refused.
+accumulate a binary. Request bodies are materialized from iodata or enumerable
+chunks before I/O. Hosts own request size and body production. Async
+`into: :self` is refused.
 Response private data `:ash_hooks_completion` preserves completion.
 Req response decoding and any host-added steps are outside ash_hooks' byte cap;
 leave compression off and choose decoding steps appropriate for trusted data.
