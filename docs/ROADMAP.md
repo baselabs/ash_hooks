@@ -10,7 +10,6 @@ and its change is in the `CHANGELOG.md` section of the release that ships it.
 
 | Outcome | Acceptance | Waits on |
 |---|---|---|
-| W34: Adopters resolve Ash with both advisory fixes. | The Ash floor is `>= 3.38.1 and < 4.0.0-0`, excluding releases affected by EEF-CVE-2026-124283 and EEF-CVE-2026-120299. The development, consumer, and floor locks resolve Ash 3.38.1 and pass hosted CI, including the advisory scans. | 3.7.0. |
 | The synchronous-decision tutorial links a signed authorization recipe. | The "Decide in the response" section of `documentation/tutorials/verify-any-sender.md` links `request_seal`'s signed authorization hook recipe. | `request_seal` 2.0.0, which publishes that recipe. |
 
 ## Not planned
