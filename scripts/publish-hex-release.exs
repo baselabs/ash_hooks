@@ -47,7 +47,7 @@ defmodule PublishHexRelease do
 
     if Enum.any?([package_result, docs_result], &match?({:staged, _}, &1)) do
       IO.puts(:stderr, """
-      Release held for approval; after the owner approves, dispatch again on the same commit.
+      Release held for approval; after the owner approves, dispatch again from main with the same release_commit.
       The next dispatch uploads only what is missing and reads both archives back.
       """)
 

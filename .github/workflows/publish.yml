@@ -32,7 +32,7 @@ jobs:
     permissions:
       contents: read
       checks: read
-    timeout-minutes: 5
+    timeout-minutes: 5 # no green run yet
     outputs:
       release_commit: ${{ steps.release.outputs.commit }}
       version: ${{ steps.version.outputs.version }}

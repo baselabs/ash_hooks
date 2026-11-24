@@ -24,11 +24,13 @@ the upload step receives it. The build and read-back jobs never receive the key.
    - the supported range in `SECURITY.md`, the version in `usage-rules.md`
      and the tenancy adoption checklist.
 
-   `main` moves to the commit only after the CI run on that exact commit
-   passes `qualified`, the check that requires every job: the package,
-   Livebook, documentation, confidentiality and dash checks among them. They
-   then hand the release to the release maintainer with the full commit SHA,
-   the version and anything the release needs first.
+   `main` moves only after the CI run on a landing's head passes `qualified`,
+   the check that requires every job: the package, Livebook, documentation,
+   confidentiality and dash checks among them. The release commit is the
+   version commit when it was a landing's head, otherwise the first later
+   qualified commit with the same package. They then hand the release to the
+   release maintainer with that full commit SHA as `release_commit`, the
+   version and anything the release needs first.
 2. **The release maintainer asks the owner and dispatches.** After the owner
    approves, the release maintainer dispatches the workflow from `main` with
    the handed-off SHA as `release_commit`. All jobs admit only the owner's
