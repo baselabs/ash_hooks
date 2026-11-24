@@ -70,7 +70,7 @@ end
 
 dependencies =
   dependencies
-  |> List.keyreplace(:ash, 0, {:ash, "== 3.37.2"})
+  |> List.keyreplace(:ash, 0, {:ash, "== 3.38.1"})
   |> List.keyreplace(:spark, 0, {:spark, "== 2.7.6"})
 
 committed_lock = Path.join(root, "test/floor/mix.lock")
@@ -157,7 +157,7 @@ try do
     Mix.Task.run("app.start")
 
     actual = to_string(Application.spec(:ash, :vsn))
-    unless actual == "3.37.2", do: raise("expected loaded Ash 3.37.2, found #{actual}")
+    unless actual == "3.38.1", do: raise("expected loaded Ash 3.38.1, found #{actual}")
     IO.puts("LOADED ASH: #{actual}; #{:code.which(Ash.Resource.Info)}")
     spark = to_string(Application.spec(:spark, :vsn))
     unless spark == "2.7.6", do: raise("expected loaded Spark 2.7.6, found #{spark}")
@@ -166,7 +166,7 @@ try do
     Mix.Task.run("test", ["--seed", "0", "--raise"])
 
     IO.puts(
-      "FLOOR SUITE QUALIFICATION: exact Ash 3.37.2 and Spark 2.7.6 full suite returned without failure"
+      "FLOOR SUITE QUALIFICATION: exact Ash 3.38.1 and Spark 2.7.6 full suite returned without failure"
     )
   end)
 after

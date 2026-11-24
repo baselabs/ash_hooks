@@ -117,7 +117,7 @@ jobs:
           mix run --no-start -e 'if :code.which(Oban) != :non_existing or :code.which(Plug) != :non_existing, do: (IO.puts("optional dep loaded"); System.halt(1))'
 
   # The suite on the floor toolchain from the committed lock, then a minimal
-  # production consumer locked at the actual Ash floor, 3.37.2, on Elixir 1.20.
+  # production consumer locked at the actual Ash floor, 3.38.1, on Elixir 1.20.
   # Dev/test and optional dependencies cannot mask OTP startup requirements or
   # unavailable APIs in that consumer graph.
   floor:

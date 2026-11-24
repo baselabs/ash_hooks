@@ -71,7 +71,7 @@ defmodule AshHooks.Outbox do
 
   defp notify(resource, disposition, notifications, opts) do
     # Mirror Ash's notification modes, including host notifications. These
-    # internal helpers are qualified at exact Ash 3.37.2 and in latest-Ash CI.
+    # internal helpers are qualified at exact Ash 3.38.1 and in latest-Ash CI.
     cond do
       opts[:return_notifications?] ->
         {:ok, disposition, notifications}

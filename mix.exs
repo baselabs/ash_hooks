@@ -90,9 +90,9 @@ defmodule AshHooks.MixProject do
     [
       # Runtime
       # The Ash floor excludes releases affected by published advisories and
-      # supplies the tenant inverse API. The security job scans both the
-      # development lock and the consumer lock pinned at this floor.
-      {:ash, ">= 3.37.2 and < 4.0.0-0"},
+      # supplies the tenant inverse API. The security job scans the
+      # development lock and both locks pinned at this floor.
+      {:ash, ">= 3.38.1 and < 4.0.0-0"},
       {:splode, "~> 0.3"},
       {:spark, ">= 2.7.6 and < 3.0.0-0"},
       {:jason, "~> 1.2"},

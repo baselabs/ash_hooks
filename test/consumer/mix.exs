@@ -13,7 +13,7 @@ defmodule AshHooks.ConsumerVerification.MixProject do
   defp deps do
     [
       {:ash_hooks, path: Path.expand("../..", __DIR__)},
-      {:ash, "== 3.37.2", override: true},
+      {:ash, "== 3.38.1", override: true},
       {:spark, "== 2.7.6", override: true}
     ]
   end

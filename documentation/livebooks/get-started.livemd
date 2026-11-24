@@ -46,7 +46,7 @@ application.
 ```elixir
 Mix.install(
   [
-    {:ash, ">= 3.37.2 and < 4.0.0-0"},
+    {:ash, ">= 3.38.1 and < 4.0.0-0"},
     {:ash_hooks, "== 3.6.0"},
     {:ash_sqlite, "~> 0.3.1"},
     {:jason, "~> 1.2"}

@@ -1,5 +1,17 @@
 # Upgrading
 
+<a id="upgrade-3-7"></a>
+
+## 3.6.0 → 3.7.0 (unreleased)
+
+Before upgrading ash_hooks, update your Ash requirement to allow 3.38.1 or later
+within the 3.x series, and update your lockfile if it holds an older Ash release.
+
+<!-- not-run: This changes an adopter's project dependencies and lockfile. -->
+```sh
+mix deps.update ash
+```
+
 <a id="upgrade-3-6"></a>
 
 ## 3.5.0 → 3.6.0

@@ -6,7 +6,7 @@ application with PostgreSQL. For a complete SQLite walkthrough and real outbound
 request, run the [Livebook](../livebooks/get-started.livemd).
 
 Requires Elixir `~> 1.20`, Erlang/OTP 28 or 29, and Ash
-`>= 3.37.2 and < 4.0.0-0`. Inbound works without Oban. Add these entries to your
+`>= 3.38.1 and < 4.0.0-0`. Inbound works without Oban. Add these entries to your
 application's dependency list; the optional Oban entry supports the generated worker.
 The dependency-list fragment is tested as part of a Mix project module.
 

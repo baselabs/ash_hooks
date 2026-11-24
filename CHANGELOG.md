@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **Ash floor raised to 3.38.1** (`{:ash, ">= 3.38.1 and < 4.0.0-0"}`), excluding
+  releases affected by [EEF-CVE-2026-124283](https://osv.dev/vulnerability/EEF-CVE-2026-124283)
+  (fixed in 3.38.0) and [EEF-CVE-2026-120299](https://osv.dev/vulnerability/EEF-CVE-2026-120299)
+  (fixed in 3.38.1). Increasing the minimum supported dependency version is a
+  minor change. See [UPGRADING.md](UPGRADING.md#upgrade-3-7).
+
 ## [3.6.0] - 2026-11-22
 
 ### Added

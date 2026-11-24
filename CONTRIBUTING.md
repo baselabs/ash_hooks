@@ -2,7 +2,7 @@
 
 ## Development environment
 
-AshHooks supports Elixir `~> 1.20`, Erlang/OTP 28 and 29, and Ash `>= 3.37.2 and < 4.0.0-0`.
+AshHooks supports Elixir `~> 1.20`, Erlang/OTP 28 and 29, and Ash `>= 3.38.1 and < 4.0.0-0`.
 The repository pins Elixir 1.20.5 and Erlang/OTP 29.1.2 in `.tool-versions` for development.
 Use macOS or Linux; Windows contributors should use WSL2 and clone inside its Linux filesystem.
 
@@ -93,7 +93,7 @@ key CI restores from the committed lock: every test lane (the default lane with
 its Dialyzer PLTs), the floor and dev. A commit that changes `mix.lock` qualifies
 on a cold build until the warmer next runs.
 
-To qualify the full suite on exact Ash 3.37.2 and Spark 2.7.6, configure PostgreSQL
+To qualify the full suite on exact Ash 3.38.1 and Spark 2.7.6, configure PostgreSQL
 as above and run:
 
 <!-- not-run: This requires a configured PostgreSQL service and sends a request to a public HTTPS receiver. -->

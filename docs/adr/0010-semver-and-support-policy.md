@@ -44,7 +44,7 @@ surface. The internal database phase implementation is not a public API.
 3. Safety corrections use patch or minor releases, including when an application
    depends on unsafe behavior. Record them under "Fixed" in `CHANGELOG.md`.
 4. The newest minor receives fixes. Supported floors are Elixir `~> 1.20`, OTP
-   28 and 29, and Ash `>= 3.37.2 and < 4.0.0-0`. CI qualifies a locked consumer
+   28 and 29, and Ash `>= 3.38.1 and < 4.0.0-0`. CI qualifies a locked consumer
    graph at the declared minimums. Raising a supported floor requires a minor release
    and an `UPGRADING.md` note.
 5. Security fixes ship as patches on the supported minor. See `SECURITY.md`.
