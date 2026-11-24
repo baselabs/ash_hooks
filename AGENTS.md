@@ -20,7 +20,8 @@ The development default and every CI lane are pinned only in `.tool-versions` fi
 - An agent's work ends when the change is on `main`. `main` moves only after the CI run on that
   exact commit passes `qualified`.
 - Agents never publish, tag a version, create a release, dispatch a workflow, push an image or
-  handle a registry or CI key. Releases follow [docs/PUBLISHING.md](docs/PUBLISHING.md).
+  handle a registry or CI key. The release maintainer dispatches from `main` with the full
+  qualified commit SHA as `release_commit`. Releases follow [docs/PUBLISHING.md](docs/PUBLISHING.md).
 - A change to `.github/`, a release script or anything that touches a secret is reviewed by the
   release maintainer before it lands.
 - A secret reaches a step only through its environment: never on a command line, in a log or in

@@ -14,8 +14,7 @@ defmodule AshHooks.DocsArchiveTest do
           packed.addfile(info, io.BytesIO(content))
   """
 
-  # A repository whose default branch is first -> second, with a side commit
-  # off that history, stands in for the dispatched checkout.
+  # The default branch has advanced past second, the selected release commit.
   setup do
     tree = Path.join(System.tmp_dir!(), "docs_archive_#{Ash.UUID.generate()}")
     docs = Path.join(tree, "doc")
@@ -35,6 +34,7 @@ defmodule AshHooks.DocsArchiveTest do
     git(repo, ["init", "--quiet", "--initial-branch", "main"])
     first = commit(repo, "first")
     second = commit(repo, "second")
+    head = commit(repo, "head")
     git(repo, ["switch", "--quiet", "--create", "side", first])
     side = commit(repo, "side")
     git(repo, ["switch", "--quiet", "main"])
@@ -43,7 +43,7 @@ defmodule AshHooks.DocsArchiveTest do
     {output, status} = System.cmd("python3", stamp, stderr_to_stdout: true)
 
     assert status == 0, output
-    %{tree: tree, docs: docs, repo: repo, first: first, second: second, side: side}
+    %{tree: tree, docs: docs, repo: repo, first: first, second: second, head: head, side: side}
   end
 
   test "release.json names the package, version and building commit", context do
@@ -92,7 +92,7 @@ defmodule AshHooks.DocsArchiveTest do
     assert output =~ "not the building commit #{context.first}"
   end
 
-  test "served docs naming the dispatched commit or an ancestor publish that commit", context do
+  test "served docs naming the release commit or an ancestor publish that commit", context do
     for named <- [context.second, context.first] do
       {output, status} = served(context, archive(context, served_members(context, named)))
       assert status == 0, output
@@ -106,14 +106,16 @@ defmodule AshHooks.DocsArchiveTest do
     assert status == 0, output
   end
 
-  test "served docs off the default branch, unknown or unnamed are refused", context do
+  test "served docs outside the release commit's history, unknown or unnamed are refused",
+       context do
     unknown = String.duplicate("0", 40)
     named = served_members(context, context.second)
     without = Enum.reject(named, &(elem(&1, 0) == "release.json"))
     other_version = {"release.json", release_json(context.second, "3.3.0")}
 
     cases = [
-      {served_members(context, context.side), "off the default branch history"},
+      {served_members(context, context.head), "not an ancestor of #{context.second}"},
+      {served_members(context, context.side), "not an ancestor of #{context.second}"},
       {served_members(context, unknown), "which this repository does not have"},
       {without, "carries no top-level release.json"},
       {[other_version | without], "does not name ash_hooks 3.4.0"},

@@ -163,7 +163,8 @@ feature requests. Report vulnerabilities privately as described in
 
 ## Releases
 
-Releases are maintainer-only. The authoritative procedure is the
+Releases are maintainer-only. The maintainer dispatches from `main` and supplies the full
+SHA of the qualified release commit as `release_commit`. The authoritative procedure is the
 [publishing runbook](https://github.com/baselabs/ash_hooks/blob/main/docs/PUBLISHING.md).
 
 The [architecture decisions](https://github.com/baselabs/ash_hooks/tree/main/docs/adr)

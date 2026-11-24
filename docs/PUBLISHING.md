@@ -4,9 +4,10 @@ A release is the Hex package, its versioned HexDocs, the executable Livebook,
 and an annotated tag and GitHub Release that name the published commit.
 
 Releases run only through `.github/workflows/publish.yml`, dispatched from
-`main`. Nobody publishes from a workstation. The Hex key exists only as the
-`HEX_API_KEY` secret of the repository's `publish` environment, and only the
-upload step receives it. The build and read-back jobs never receive the key.
+`main` with the full lowercase `release_commit` SHA. Landings continue while
+publication runs. Nobody publishes from a workstation. The Hex key exists only
+as the `HEX_API_KEY` secret of the repository's `publish` environment, and only
+the upload step receives it. The build and read-back jobs never receive the key.
 
 ## Who does what
 
@@ -29,8 +30,9 @@ upload step receives it. The build and read-back jobs never receive the key.
    then hand the release to the release maintainer with the full commit SHA,
    the version and anything the release needs first.
 2. **The release maintainer asks the owner and dispatches.** After the owner
-   approves, the release maintainer dispatches the workflow from `main`. All
-   three jobs run only for the owner's accounts and refuse any ref but `main`.
+   approves, the release maintainer dispatches the workflow from `main` with
+   the handed-off SHA as `release_commit`. All jobs admit only the owner's
+   accounts, and publication requires dispatch from `main`.
    The `publish` environment, which holds the key, admits only `main`.
 3. **The workflow publishes and reads the release back.** See
    [What the workflow checks](#what-the-workflow-checks).
@@ -43,31 +45,38 @@ upload step receives it. The build and read-back jobs never receive the key.
    Release for that tag from the artifact. The Release carries
    both archives, `SHA256SUMS`, and `RELEASE-NOTES.md`, including the version's
    changelog section, commit, and both SHA-256 values. They then confirm that
-   the tag, the Release, `main` and Hex name the same version. Earlier release
+   the tag, the Release and Hex name the same version. Earlier release
    notes may link forward, but they are not backfilled with changes they omitted.
 
 ## What the workflow checks
 
-Every job first refuses any ref other than the default branch. All three jobs
-admit only the owner's accounts. Only `Upload inspected assets` uses the
-protected `publish` environment; `Build release assets` and `Read back` have no
-environment and no access to the key. No job restores or writes a build cache.
+`Verify the qualified release source` gates every later job and refuses any
+dispatch ref other than the default branch. Only `Upload inspected assets` uses
+the protected `publish` environment. No job restores or writes a build cache.
 
-`Build release assets` installs the exact Elixir and OTP defaults from
-`.tool-versions` and the exact Hex client shared with qualification. Before
-building, it checks these in order:
+Verification requires exactly 40 lowercase hexadecimal characters in
+`release_commit` and checks out that SHA. It checks these in order:
 
-1. The tag `v<version>` must not exist on origin. An indeterminate lookup refuses.
-2. The package name `ash_hooks` must exist on hex.pm. A first publication of a
+1. The commit must be reachable from the current head of `main` and have a
+   successful GitHub Actions check named `qualified` on that exact SHA.
+2. The version comes from `mix.exs` at the selected commit. The tag
+   `v<version>` must not exist on origin. An indeterminate lookup refuses.
+
+`Build release assets` checks out the verified SHA and checks these before
+installing the runtime:
+
+1. The package name `ash_hooks` must exist on hex.pm. A first publication of a
    new name is the owner's decision, made by the owner, and this workflow
    refuses it. An indeterminate lookup refuses.
-3. A missing version may continue. An existing, unretired version may continue
+2. A missing version may continue. An existing, unretired version may continue
    so a second dispatch can finish an earlier upload. A retired version or an
    indeterminate response refuses.
-4. `CHANGELOG.md` must hold exactly one nonempty section for the version.
+3. `CHANGELOG.md` must hold exactly one nonempty section for the version.
 
-The build fetches with `mix deps.get --check-locked`, checks generated formatter
-and DSL references against the commit, and runs `mix spark.check`.
+The build installs the selected commit's Elixir and OTP defaults from
+`.tool-versions` and the Hex client shared with qualification. It fetches with
+`mix deps.get --check-locked`, checks generated formatter and DSL references
+against the commit, and runs `mix spark.check`.
 `scripts/check-package.sh` builds and inspects the package archive, with
 `ASH_HOOKS_NO_OPTIONAL` unset so Oban and Plug remain optional requirements. It
 checks the version, optional requirements, required documents, relative links,
@@ -76,8 +85,8 @@ and the publication dash rule.
 
 The build also runs `mix docs --warnings-as-errors` with optional dependencies,
 then writes `release.json` at the docs root:
-`{"package": "ash_hooks", "version": ..., "commit": ...}`, the commit being the
-run's own. Docs render files the package does not carry, such as `mix.lock`,
+`{"package": "ash_hooks", "version": ..., "commit": ...}`, with the selected
+`release_commit`. Docs render files the package does not carry, such as `mix.lock`,
 which pins ExDoc, so equal package bytes do not say which commit built served
 docs; `release.json` does. The build checks the rendered documentation's dash
 rule and builds the docs archive with Hex's own archive builder. Inspection
@@ -96,10 +105,11 @@ from the bytes hex.pm serves. Consumer verification uses the files attached to
 the GitHub Release for `v<version>`; workflow artifacts expire.
 
 `Upload inspected assets` starts on a separate runner that has run no project
-code. Its sparse checkout contains only the shared runtime action, the shared
-toolchain reader it calls, and the registry-state and upload scripts. It installs the build's exact runtime and
-Hex client, downloads `inspected-archives`, checks `SHA256SUMS`, and compares both
-archive hashes with the build job's outputs. Nothing is rebuilt.
+code. Its sparse checkout of `release_commit` contains only the shared runtime
+action, the shared toolchain reader it calls, and the registry-state and upload
+scripts. It installs the build's exact runtime and Hex client, downloads
+`inspected-archives`, checks `SHA256SUMS`, and compares both archive hashes with
+the build job's outputs. Nothing is rebuilt.
 
 Before receiving a key, the upload job checks hex.pm anonymously:
 
@@ -127,15 +137,15 @@ URL, expiration, and archive SHA-256. It attempts both requested uploads before
 exiting with failure to mark the hold. When both are staged as one release,
 their staged release checksums must match.
 
-`Read back` requires all of the following:
+`Read back` checks out `release_commit` and requires all of the following:
 
 - The package archive Hex serves has the inspected package SHA-256.
 - Hex serves a docs archive for the version: safe relative paths, regular files
   only, top-level `index.html` and `readme.html`, and a `release.json` naming
-  `ash_hooks`, the version, and a commit that is the dispatched commit or an
-  ancestor of it on the default branch. That commit is the published commit.
-  Served docs without `release.json`, or naming a commit off that history, are
-  refused. Their bytes are not compared with a build.
+  `ash_hooks`, the version, and either `release_commit` or an ancestor of it.
+  That commit is the published commit. Served docs without `release.json` or
+  naming a commit outside the selected commit's history are refused. Their
+  bytes are not compared with a build.
 - The signed Hex registry lists the version with the inspected package checksum.
 - HexDocs serves the version.
 - The get-started Livebook runs against the published package from hex.pm with
@@ -146,9 +156,9 @@ After the registry check and before it runs any project or dependency code,
 archives, `SHA256SUMS` in `sha256sum` format, and `RELEASE-NOTES.md` with the
 version's changelog section, the commit and both SHA-256 values. Code that runs
 later, such as the Livebook's dependencies, cannot alter what it recorded. The
-run summary records the commit and `SHA256SUMS`. Only after the whole read-back
-succeeds, Livebook included, does the release maintainer push the tag and
-create the GitHub Release from `release-assets`.
+run summary records `release_commit`, the published commit and `SHA256SUMS`.
+Only after the whole read-back succeeds, Livebook included, does the release
+maintainer push the tag and create the GitHub Release from `release-assets`.
 
 ## When a run fails
 
@@ -156,15 +166,16 @@ create the GitHub Release from `release-assets`.
   nothing. A required code fix lands on `main` through qualification before
   another dispatch. An earlier run may already have uploaded either archive.
 - **An upload held for approval.** The owner approves it on hex.pm. The release
-  maintainer then dispatches again on the same commit, before pushing any tag.
+  maintainer then dispatches again from `main` with the same `release_commit`,
+  before pushing any tag.
   The new run compares the package archive, keeps docs hex.pm already serves,
   uploads only what is missing, and reads both back. A hold is never reported as a completed publication.
-- **A partial upload or other upload failure.** A second dispatch on the same
-  commit finishes it when the served package has the inspected bytes. Other
+- **A partial upload or other upload failure.** A second dispatch with the same
+  `release_commit` finishes it when the served package has the inspected bytes. Other
   package bytes or a retired version refuse. The workflow never replaces an archive to make a retry pass.
 - **A read-back failure caused by propagation delay.** The release maintainer
   re-runs only the failed `Read back` job. The successful build and upload jobs
-  do not run again. A new dispatch on the same commit can also finish the
+  do not run again. A new dispatch with the same `release_commit` can also finish the
   release while no tag exists and the served package matches.
 - **A persistent read-back failure, retired version, or differing served package.**
   The release maintainer reports it to the owner, who decides whether to retire

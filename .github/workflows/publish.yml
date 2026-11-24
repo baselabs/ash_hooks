@@ -1,11 +1,16 @@
 name: Publish to Hex
 
 # The release maintainer dispatches this from main after the owner approves.
-# main moves only after the CI run on that exact commit passes. The release
-# maintainer reads back both archives before pushing the tag and creating the
-# GitHub Release from release-assets. No job replaces published bytes.
+# The input selects a qualified commit on main's history. The release maintainer
+# reads back both archives before pushing the tag and creating the GitHub Release
+# from release-assets. No job replaces published bytes.
 on:
   workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Full 40-hex lowercase SHA of the qualified release commit
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,22 +25,19 @@ defaults:
     shell: bash
 
 jobs:
-  # Build and inspect with no environment and no access to the key.
-  build:
-    name: Build release assets
+  verify:
+    name: Verify the qualified release source
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; the slowest green was 114s on keyless rehearsal run 44380961139
-    env:
-      MIX_ENV: dev
+    permissions:
+      contents: read
+      checks: read
+    timeout-minutes: 5
     outputs:
+      release_commit: ${{ steps.release.outputs.commit }}
       version: ${{ steps.version.outputs.version }}
-      package_sha256: ${{ steps.assets.outputs.package_sha256 }}
-      docs_sha256: ${{ steps.assets.outputs.docs_sha256 }}
-      elixir: ${{ steps.toolchain.outputs.elixir }}
-      otp: ${{ steps.toolchain.outputs.otp }}
     steps:
-      - name: Refuse any ref but the default branch
+      - name: Refuse refs outside the default branch
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -43,27 +45,59 @@ jobs:
             echo "::error::Publish runs only from the default branch; this run is on $GITHUB_REF."
             exit 1
           fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate the release commit
+        id: release
+        env:
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          LC_ALL: C
+        run: |
+          if [[ ! "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::release_commit must be a full 40-hex lowercase SHA."
+            exit 1
+          fi
+          printf 'commit=%s\n' "$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ steps.release.outputs.commit }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Read the runtime toolchain
-        id: toolchain
-        run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
-      - uses: ./.github/actions/beam
-        with:
-          elixir: ${{ steps.toolchain.outputs.elixir }}
-          otp: ${{ steps.toolchain.outputs.otp }}
-      - name: Read the package version
+      - name: Require default-branch ancestry
+        env:
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$RELEASE_COMMIT" ]; then
+            echo "::error::The checkout is not release commit $RELEASE_COMMIT."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$RELEASE_COMMIT" "refs/remotes/origin/$DEFAULT_BRANCH"; then
+            echo "::error::$RELEASE_COMMIT is not reachable from $DEFAULT_BRANCH."
+            exit 1
+          fi
+      - name: Require successful qualification of the release commit
+        env:
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          qualified=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/commits/$RELEASE_COMMIT/check-runs?check_name=qualified&status=completed&filter=all&per_page=100" \
+            --jq '.check_runs[] | select(.name == "qualified" and .conclusion == "success" and .app.slug == "github-actions") | .head_sha')
+          if ! grep -Fxq -- "$RELEASE_COMMIT" <<< "$qualified"; then
+            echo "::error::No successful GitHub Actions qualified check on $RELEASE_COMMIT."
+            exit 1
+          fi
+      - name: Read the source package version
         id: version
         run: |
           python3 -I - >> "$GITHUB_OUTPUT" <<'PY'
           from pathlib import Path
           import re
-          matches = re.findall(r'^  @version "([^"]+)"$', Path('mix.exs').read_text(), re.M)
+          matches = re.findall(r'^  @version "([^"\n]+)"$', Path('mix.exs').read_text(), re.M)
           assert len(matches) == 1, 'expected exactly one Mix project version'
           print(f'version={matches[0]}')
           PY
-      - name: Refuse a tag, a missing package name, a retired release or a missing changelog section
+      - name: Refuse an existing release tag
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -74,8 +108,40 @@ jobs:
             0) echo "::error::Tag v$VERSION already exists."; exit 1 ;;
             *) echo "::error::git ls-remote failed with status $status; refusing without a definite answer."; exit 1 ;;
           esac
+
+  # Build and inspect with no environment and no access to the key.
+  build:
+    name: Build release assets
+    needs: verify
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5 # the five-minute floor; the slowest green was 114s on keyless rehearsal run 44380961139
+    env:
+      MIX_ENV: dev
+      RELEASE_COMMIT: ${{ needs.verify.outputs.release_commit }}
+      VERSION: ${{ needs.verify.outputs.version }}
+    outputs:
+      package_sha256: ${{ steps.assets.outputs.package_sha256 }}
+      docs_sha256: ${{ steps.assets.outputs.docs_sha256 }}
+      elixir: ${{ steps.toolchain.outputs.elixir }}
+      otp: ${{ steps.toolchain.outputs.otp }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.release_commit }}
+          persist-credentials: false
+      - name: Refuse a missing package name, a retired release or a missing changelog section
+        run: |
           python3 -I scripts/hex-release-state.py pre-build "$VERSION"
           python3 -I scripts/release-notes.py "$VERSION"
+      - name: Read the runtime toolchain
+        id: toolchain
+        run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/beam
+        with:
+          elixir: ${{ steps.toolchain.outputs.elixir }}
+          otp: ${{ steps.toolchain.outputs.otp }}
       - name: Fetch the locked dependencies
         run: mix deps.get --check-locked
       - name: Generated formatter and DSL references match the commit
@@ -87,8 +153,6 @@ jobs:
       - name: Build and inspect the package archive
         run: ./scripts/check-package.sh
       - name: Refuse a package whose changelog is not stamped for its version
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         shell: bash
         run: |
           python3 -I - "_build/release/ash_hooks-$VERSION.tar" "$VERSION" <<'PY'
@@ -133,31 +197,25 @@ jobs:
           PY
       - run: env -u ASH_HOOKS_NO_OPTIONAL mix docs --warnings-as-errors
       - name: Name the package, version and commit in the docs
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: python3 -I scripts/stamp-docs-release.py doc --version "$VERSION" --commit "$GITHUB_SHA"
+        run: python3 -I scripts/stamp-docs-release.py doc --version "$VERSION" --commit "$RELEASE_COMMIT"
       - run: python3 scripts/check-document-dashes.py --docs doc
       - name: Build and inspect the docs archive
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           (cd "$RUNNER_TEMP" && mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/build-docs-archive.exs" \
             "$GITHUB_WORKSPACE/doc" "$RUNNER_TEMP/ash_hooks-docs.tar.gz")
-          python3 -I scripts/check-docs-archive.py --version "$VERSION" --commit "$GITHUB_SHA" \
+          python3 -I scripts/check-docs-archive.py --version "$VERSION" --commit "$RELEASE_COMMIT" \
             "$RUNNER_TEMP/ash_hooks-docs.tar.gz" doc
       - name: Refuse a checkout that differs from the commit
         run: |
           git check-ignore --quiet doc/
           git check-ignore --quiet _build/
-          if [ -n "$(git status --porcelain)" ]; then
+          if [ "$(git rev-parse HEAD)" != "$RELEASE_COMMIT" ] || [ -n "$(git status --porcelain)" ]; then
             git status --short
-            echo "::error::The checkout differs from $GITHUB_SHA."
+            echo "::error::The checkout differs from $RELEASE_COMMIT."
             exit 1
           fi
       - name: Assemble the inspected archives
         id: assets
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           inspected="$RUNNER_TEMP/inspected-archives"
           mkdir -p "$inspected"
@@ -178,30 +236,24 @@ jobs:
           name: inspected-archives
           path: ${{ runner.temp }}/inspected-archives/
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
 
   upload:
     name: Upload inspected assets
-    needs: build
+    needs: [verify, build]
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     environment: publish
     runs-on: ubuntu-24.04
     timeout-minutes: 5 # the five-minute floor; the slowest green was 21s on keyless rehearsal run 44380961139
     env:
-      VERSION: ${{ needs.build.outputs.version }}
+      VERSION: ${{ needs.verify.outputs.version }}
       PACKAGE_SHA256: ${{ needs.build.outputs.package_sha256 }}
       DOCS_SHA256: ${{ needs.build.outputs.docs_sha256 }}
     steps:
-      - name: Refuse any ref but the default branch
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          if [ -z "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
-            echo "::error::Publish runs only from the default branch; this run is on $GITHUB_REF."
-            exit 1
-          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.verify.outputs.release_commit }}
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -244,9 +296,9 @@ jobs:
 
   # Read back the release with no environment and no access to the key, then
   # record exactly the bytes Hex serves as release-assets.
-  verify:
+  read_back:
     name: Read back
-    needs: [build, upload]
+    needs: [verify, build, upload]
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     runs-on: ubuntu-24.04
     # Twice 170s on keyless rehearsal run 44380961139 is 5.7 minutes, plus
@@ -263,20 +315,14 @@ jobs:
         ports:
           - 52871:8080
     env:
-      VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.verify.outputs.release_commit }}
+      VERSION: ${{ needs.verify.outputs.version }}
       SHA256: ${{ needs.build.outputs.package_sha256 }}
     steps:
-      - name: Refuse any ref but the default branch
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          if [ -z "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
-            echo "::error::Publish runs only from the default branch; this run is on $GITHUB_REF."
-            exit 1
-          fi
-      # Full history: the served docs may name an ancestor of this commit.
+      # Full history: served docs may name an ancestor of the release commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.verify.outputs.release_commit }}
           persist-credentials: false
           fetch-depth: 0
       - name: The package archive on Hex is the inspected archive
@@ -290,7 +336,7 @@ jobs:
       # A docs build is not byte-stable (ExDoc orders its search data
       # differently in some builds of one commit), so served docs are never
       # compared with this run's build. Their release.json names the published
-      # commit: this commit or an ancestor of it on the default branch.
+      # commit: the selected release commit or one of its ancestors.
       - name: The docs archive on Hex names this release
         id: docs
         run: |
@@ -298,7 +344,7 @@ jobs:
           timeout 300s curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
             --retry 20 --retry-all-errors --retry-delay 15 --retry-max-time 300 \
             --output "$archive" "https://repo.hex.pm/docs/ash_hooks-$VERSION.tar.gz"
-          python3 -I scripts/check-docs-archive.py --served --version "$VERSION" --commit "$GITHUB_SHA" "$archive"
+          python3 -I scripts/check-docs-archive.py --served --version "$VERSION" --commit "$RELEASE_COMMIT" "$archive"
       - name: HexDocs serves the version
         run: |
           timeout 300s curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
@@ -351,8 +397,8 @@ jobs:
           {
             echo "## ash_hooks $VERSION"
             echo
+            echo "- Release input commit: \`$RELEASE_COMMIT\`"
             echo "- Published commit (tag \`v$VERSION\` here): \`$PUBLISHED_COMMIT\`"
-            echo "- Dispatched commit: \`$GITHUB_SHA\`"
             echo
             echo '```'
             cat SHA256SUMS

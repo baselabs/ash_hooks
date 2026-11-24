@@ -6,7 +6,7 @@ files and bytes, and release.json must name this package, the version and the
 building commit. With --served, an archive Hex already serves must be a safe
 docs archive with its entry pages; its bytes are never compared with a build.
 Its release.json must name this package and version, and a commit that is the
-dispatched commit or an ancestor of it: that commit is the published commit.
+selected release commit or an ancestor of it: that commit is the published commit.
 """
 
 import argparse
@@ -39,19 +39,19 @@ def release(data, version):
     return record["commit"]
 
 
-def published(commit, dispatched, repo):
-    if commit == dispatched:
+def published(commit, release_commit, repo):
+    if commit == release_commit:
         return commit
-    # The dispatched commit is the default branch's head, so its ancestors are
-    # that branch's history.
+    # Publication has already checked that the release commit is reachable from
+    # the default branch. Its ancestors can hold docs served from an earlier run.
     status = subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, dispatched],
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, release_commit],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ).returncode
     if status == 0:
         return commit
     if status == 1:
-        raise ValueError(f"release.json names {commit}, off the default branch history.")
+        raise ValueError(f"release.json names {commit}, which is not an ancestor of {release_commit}.")
     raise ValueError(f"release.json names {commit}, which this repository does not have.")
 
 
@@ -115,7 +115,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--served", action="store_true", help="inspect an archive Hex already serves")
     parser.add_argument("--version", required=True)
-    parser.add_argument("--commit", required=True, help="the building or dispatched commit")
+    parser.add_argument("--commit", required=True, help="the building or selected release commit")
     parser.add_argument("--repo", type=Path, default=Path("."), help="repository for ancestry")
     parser.add_argument("archive", type=Path)
     parser.add_argument("directory", type=Path, nargs="?")
