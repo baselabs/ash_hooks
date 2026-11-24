@@ -21,7 +21,8 @@ Tenancy scopes data; hosts own authorization. System operations use
 `authorize?: false` and require an application trust boundary.
 
 Tenant-scoped resources include endpoints, subscriptions, outbound deliveries,
-attempt history, event logs, inbound ledgers, inbound sources, and key registries.
+outboxes, attempt history, event logs, inbound ledgers, inbound sources, and
+key registries.
 Complete primary keys, declaration/route ownership, and independent enqueue
 leases govern recovery as defined in
 [delivery ownership](0012-durable-delivery-ownership-and-recovery.md).

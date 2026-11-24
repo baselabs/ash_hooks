@@ -599,7 +599,7 @@ database when the delivery resource has an enclosing transaction. Their
 monitored child cannot join the caller's connection or see its uncommitted
 rows. Enqueue a job and perform it after commit. A dispatch whose enqueue
 callback invokes the driver inline inside a host transaction reports
-`:enqueue_failed` for that endpoint and leaves the row `:pending` for recovery.
+`:enqueue_failed` for that endpoint and records that state for recovery.
 The child retains the attempt deadline and configured tracer context.
 
 Inbound ledgers can configure `json_decoder` in `inbound_delivery` with an MFA

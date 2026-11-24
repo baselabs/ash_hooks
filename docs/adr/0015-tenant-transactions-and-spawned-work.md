@@ -47,9 +47,9 @@ Stored tenant attributes are converted back through `tenant_from_attribute`
 before reuse. Tenant values must survive job JSON encoding; strings and integers
 do, while atoms arrive as strings. Custom parsing must round-trip through its
 inverse. Queue insertion occurs in a tenant phase after delivery persistence;
-the queue instance must share the ledger repository for that binding. An inline
-enqueue callback invoking the driver inside a host transaction is refused and
-reported as enqueue failure, leaving the row `enqueue_failed` and recoverable.
+the queue instance must share the ledger repository for that binding. When
+dispatch invokes the driver inline inside a host transaction, the driver
+refuses the call and dispatch records the row as `:enqueue_failed` for recovery.
 
 A row-security setting belongs to one connection and transaction. A child process or a
 separately routed read does not inherit that transaction's binding; a monitored delivery

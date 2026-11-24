@@ -102,7 +102,7 @@ its Dialyzer PLTs), the floor and dev. A commit that changes `mix.lock` qualifie
 on a cold build until the warmer next runs.
 
 To qualify the full suite on exact Ash 3.38.1 and Spark 2.7.6, configure PostgreSQL
-as above and run:
+and the local receiver as described above, then run:
 
 <!-- not-run: This requires configured PostgreSQL and local receiver services and sends a request to a public HTTPS receiver. -->
 ```sh

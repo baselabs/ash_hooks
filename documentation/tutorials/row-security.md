@@ -75,9 +75,9 @@ AshPostgres's Ash transaction hook by itself.
 `{:error, :inside_transaction}` when the delivery resource is already in a
 transaction, before starting a process or accessing the database. Their
 monitored child preserves the attempt deadline and opens its own tenant phases.
-An inline enqueue callback that invokes the driver inside a host transaction
-therefore makes dispatch report `:enqueue_failed`, leaving the delivery
-`:pending` for recovery. Enqueue the job and let its worker perform after commit.
+If dispatch invokes the driver inline inside a host transaction, it records the
+delivery as `:enqueue_failed` for recovery. Enqueue the job and let its worker
+perform after commit.
 Key issuance and registry sweeps also retain their transaction refusals.
 
 ## Alarm on missing work
@@ -108,10 +108,10 @@ recovering stranded rows under the host's per-tenant schedule.
 ## Secure tables and jobs
 
 Generate the ordinary resource migrations first. Enable and force row-level
-security on every package table your application uses: endpoints,
-subscriptions, deliveries, attempts, event logs, inbound ledgers, inbound
-sources, and custody registries. The application role must neither own these tables nor have
-superuser or `BYPASSRLS` privileges.
+security on every package table your application uses, including endpoints,
+subscriptions, deliveries, outboxes, attempts, event logs, inbound ledgers,
+inbound sources, and custody registries. The application role must neither own
+these tables nor have superuser or `BYPASSRLS` privileges.
 
 For a text tenant attribute named `tenant_id`, both the policy's `USING` and
 `WITH CHECK` expressions can use

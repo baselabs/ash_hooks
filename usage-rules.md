@@ -172,7 +172,7 @@ AshHooks 3.7.0.
   the package's primary-key helpers and full key maps rather than assuming a field named
   `id`.
 - In a multitenant application, use the same attribute-tenancy contract on every resource
-  touched by an operation, including optional history and event-log resources, and
+  touched by an operation, including outboxes, attempt history, and event logs, and
   pass the tenant to every entry point. `AshHooks.Tenancy.resolve/2` checks only
   its supplied modules; entry points include every resource they read or write. Global tenancy is
   rejected. Missing or mismatched tenancy fails before data access.

@@ -417,8 +417,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transactions are disabled.
 - `AshHooks.Delivery.run/2` and `test_send/2` refuse an enclosing transaction
   with `{:error, :inside_transaction}` before starting work. Previously their
-  monitored child could block or miss uncommitted rows. Inline driver enqueue
-  refusal reports `:enqueue_failed` and leaves the delivery `:pending`.
+  monitored child could block or miss uncommitted rows. When dispatch invokes
+  the driver inline, it records `:enqueue_failed` for recovery.
 - Custody lifecycle retirement checks the persisted owner after each write and
   retains references still held in any slot, including after a concurrent roll
   or a host action that returns an outdated record.

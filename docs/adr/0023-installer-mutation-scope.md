@@ -22,10 +22,9 @@ of edit:
   list without `:body_reader`, it adds
   `body_reader: {AshHooks.BodyReader, :read_body, []}`.
 
-The installer never replaces a `body_reader` the host already set. If the existing
-reader is `AshHooks.BodyReader`, the installer does nothing. If it is any other
-reader, the installer leaves it unchanged and emits a notice. The notice says that
-reader must call `AshHooks.BodyReader.put_raw_body/2` with the complete body.
+The installer preserves the host's existing `body_reader`. For a reader other
+than `AshHooks.BodyReader`, it emits a notice to call
+`AshHooks.BodyReader.put_raw_body/2` with the complete body.
 
 The formatter import also applies when there is no editable parser call.
 Missing `Plug.Parsers` calls and options that are not a literal keyword list

@@ -2,15 +2,15 @@
 
 ash_hooks supports Ash attribute multitenancy: pass an explicit tenant to dispatch, ingest,
 delivery runs, sweeps, and reconciliation. Tenant validation checks the resource
-set touched by each operation, including optional history and event logs. This checklist walks one app (two tenants or two
-thousand) through the same steps. `AshHooks.Tenancy` documents the supported
-tenancy strategies and validation rules.
+set touched by each operation, including the outbox and optional logs.
+`AshHooks.Tenancy` documents the supported tenancy strategies and validation
+rules.
 
 ## The contract
 
 Declare compatible attribute tenancy on every resource an operation touches:
-subscriptions, endpoints, outbound deliveries, enabled attempt and event logs,
-inbound ledgers, inbound sources, and custody registries. Entry points supply
+subscriptions, endpoints, outbound deliveries, outboxes, enabled attempt and
+event logs, inbound ledgers, inbound sources, and custody registries. Entry points supply
 every resource they read or write to `AshHooks.Tenancy.resolve/2`. Event-log replay also forwards
 the tenant when it rearms an existing terminal delivery.
 
@@ -41,8 +41,8 @@ queue BEFORE deploying the version whose resources declare tenancy.
 
 **1. Add the tenant columns, then backfill them.** The following four tables
 are examples. Apply the same column, backfill, constraint, and isolation checks
-to every package resource your application uses, including optional attempt
-logs, event logs, inbound sources, and custody registries. First the columns
+to every package resource your application uses, including outboxes, optional
+attempt logs, event logs, inbound sources, and custody registries. First the columns
 (in the adopter's migration):
 
 <!-- tested: tenancy-add-columns -->

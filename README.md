@@ -171,6 +171,10 @@ resource. Dispatch stores exact payload bytes once per endpoint and event ID.
 Without an enqueue callback, deliveries stay pending. The tutorial shows a generated
 worker; set `oban:` to the supervised instance name or omit it for the default `Oban`.
 
+Use `AshHooks.publish/4` with an [outbox](UPGRADING.md#add-and-migrate-the-outbox)
+to accept events in the producer's transaction and fan them out after commit.
+Schedule `AshHooks.fanout_pending/3` for every tenant to recover unfinished publications.
+
 Delivery succeeds on 2xx, retries 408/429/5xx and transport failures, refuses
 redirects, and permanently fails other client errors. Retry-After is bounded;
 otherwise retries use exponential backoff with random delay. A 410 stores a
@@ -303,10 +307,9 @@ and the executable Livebook for the complete lifecycle.
 ## Multi-tenancy
 
 Declare consistent attribute multitenancy on every enabled resource, including
-attempt history and the event log. Pass the tenant to every entry point and include
-the tenant in unique indexes. `AshHooks.Tenancy.resolve/2` validates only the modules
-supplied by each caller. Entry points include every resource they touch, including
-optional history and event logs, and reject mismatches before data access.
+the outbox, attempt history, and event log. Pass the tenant to every entry point
+and include it in unique indexes. Package entry points pass the resources they
+touch to `AshHooks.Tenancy.resolve/2` and reject mismatches before data access.
 
 The generated worker carries the tenant in job args. String tenants are supported;
 custom parsing must have a matching `tenant_from_attribute` inverse. Tenant-aware
