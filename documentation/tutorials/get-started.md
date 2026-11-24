@@ -14,7 +14,7 @@ The dependency-list fragment is tested as part of a Mix project module.
 ```elixir
 def deps do
   [
-    {:ash_hooks, "~> 3.6"},
+    {:ash_hooks, "~> 3.7"},
     {:ash_postgres, "~> 2.0"},
     # Optional: required for the generated Oban worker.
     {:oban, "~> 2.24"}
@@ -554,3 +554,4 @@ adds PostgreSQL transaction binding and policies. Use the
 
 For advanced outbound delivery, follow [event recovery](outbound-recovery.md),
 [catalogs and filters](outbound-contracts.md), and [delivery operations](outbound-operations.md).
+For application HTTP requests outside webhook delivery, see [pinned egress](pinned-egress.md).

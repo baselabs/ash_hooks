@@ -62,7 +62,8 @@ Configured JWS-body providers use
 full canonical JSON with sorted object keys and no omitted fields. Payload
 changes change identity; alternate signatures and object-key order do not.
 A declaration event extractor takes precedence, then the provider identity
-callback, then the signed-body digest. Callback errors fail closed.
+callback, then the signed-body digest. An unrecognized extractor result uses
+the body digest. An invalid provider identity fails ingress.
 Applications implement any custom normalization explicitly and audit identity
 adoption in a quiesced transaction, preserving payloads and digests and
 terminalizing superseded siblings. Declaration names never infer a provider. See

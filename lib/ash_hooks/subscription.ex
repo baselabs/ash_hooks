@@ -50,9 +50,10 @@ defmodule AshHooks.Subscription do
   all event names.
 
   Matching uses exact names plus the bare wildcard. The dispatcher selects
-  candidates in SQL through the consumer's primary read action, then applies
-  the Elixir predicate as its final guard. Unrecognized storage shapes widen
-  the query and preserve that guard. A PostgreSQL GIN index on `event_types`
+  candidates through the consumer's primary read action. PostgreSQL and SQLite
+  use SQL predicates. The final Elixir guard applies on every data layer.
+  Unrecognized storage shapes widen the query and preserve that guard.
+  A PostgreSQL GIN index on `event_types`
   speeds type selection. Malformed filter containers never match.
 
   The package injects NO read action and NO read policies: read surfaces

@@ -21,10 +21,10 @@ matching read every tenant subscription and matched in memory (ADR 0021).
    parked with a persisted cause and rearmable. Delivery stays at-least-once (ADR 0012).
 3. Outbox metadata is restricted to a JSON term domain that round-trips exactly. The stored
    payload version, not the deployed one, decides pin resolution.
-4. Every dispatch path reads subscriptions with SQL type, pause and metadata-filter arms that
-   widen to true on any unrecognized shape, keeping the Elixir predicate as the final guard. A
-   malformed filter container never matches, as ADR 0021 states; 3.2.0 matched it in one case,
-   and that is corrected.
+4. Every dispatch path applies type, pause, and metadata filters through the primary read.
+   PostgreSQL and SQLite use SQL predicates. Unsupported shapes widen to true,
+   keeping the Elixir predicate as the final guard. Malformed filter containers
+   never match, correcting a case that matched in 3.2.0.
    The metadata-filter arm is the non-recursive key-set test (5C). It was chosen over a recursive
    walk because the walk triggered PostgreSQL JIT. The filter arm costs up to 3.4 times the p95 of
    type and pause matching alone; the probe measured this on PostgreSQL 16 to 18.

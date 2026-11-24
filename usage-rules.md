@@ -1,7 +1,7 @@
 # AshHooks usage rules
 
 Guidance for maintainers and coding assistants working in applications that use
-AshHooks 3.6.0.
+AshHooks 3.7.0.
 
 ## Build events from exact bytes
 

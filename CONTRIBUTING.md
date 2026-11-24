@@ -71,8 +71,8 @@ Run focused checks while developing. Before a push, run:
 mix precommit
 ```
 
-CI resolves nothing: every graph it fetches is a committed lock, fetched with
-`--check-locked`. A change to the package requirements or to a supported floor
+CI fetches project dependencies from committed locks with `--check-locked`.
+A change to the package requirements or to a supported floor
 also refreshes the two floor locks. The production consumer's lock is the graph
 CI compiles and audits at the floor. The floor lock is the development graph at
 the floor, which the full-suite qualification below runs on:
@@ -104,7 +104,7 @@ on a cold build until the warmer next runs.
 To qualify the full suite on exact Ash 3.38.1 and Spark 2.7.6, configure PostgreSQL
 as above and run:
 
-<!-- not-run: This requires a configured PostgreSQL service and sends a request to a public HTTPS receiver. -->
+<!-- not-run: This requires configured PostgreSQL and local receiver services and sends a request to a public HTTPS receiver. -->
 ```sh
 ASH_HOOKS_POSTGRES=1 ASH_HOOKS_HTTPBUN=1 elixir scripts/check-ash-floor.exs
 ```

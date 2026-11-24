@@ -29,6 +29,10 @@ ash_hooks follows semantic versioning over its public surface:
 - Outbound attempts, events, health, transport, destination policy, catalog,
   keysets, resend, replay, test sends, capture, filters, payload-version pins,
   runtime worker budgets, key lifecycle, and subscription pause declarations.
+- Transactional publication and outbox recovery
+  ([ADR 0029](0029-transactional-publish-and-query-matching.md)).
+- Pinned egress, including buffered and streaming requests, completion and sent
+  classifications, and the optional Req adapter ([ADR 0031](0031-pinned-egress.md)).
 - Public additions on existing modules, including `AshHooks.Ssrf.resolve_host_public/2`,
   `AshHooks.Tenancy.from_row/1`, and the unknown-source, key-kind-mismatch,
   unknown-key, and key-unavailable error types.

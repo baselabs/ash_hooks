@@ -12,10 +12,11 @@ Inbound and outbound work independently. Inbound needs no queue. Outbound can
 use the generated Oban worker or your own scheduler calling `AshHooks.Delivery.run/2`.
 
 Requires Elixir `~> 1.20`, Erlang/OTP 28 or 29, and Ash
-`>= 3.38.1 and < 4.0.0-0` and Spark `>= 2.7.6 and < 3.0.0-0`. Add `{:ash_hooks, "~> 3.6"}` to your dependencies.
-Oban `~> 2.24` is optional and required for the generated worker. Plug `>= 1.20.4 and < 2.0.0-0`
-is optional for HTTP receipt. Req `~> 0.7.5` is optional for `AshHooks.Egress.ReqAdapter`. Every supported Ash version requires your application
-to set `default_string_length_count`; see [UPGRADING.md](UPGRADING.md).
+`>= 3.38.1 and < 4.0.0-0` and Spark `>= 2.7.6 and < 3.0.0-0`. Add
+`{:ash_hooks, "~> 3.7"}` to your dependencies. Oban `~> 2.24` enables the generated
+worker. Plug `>= 1.20.4 and < 2.0.0-0` enables HTTP receipt. Req `~> 0.7.5` enables
+`AshHooks.Egress.ReqAdapter`. All three are optional. Every supported Ash version
+requires your application to set `default_string_length_count`. See [UPGRADING.md](UPGRADING.md).
 
 The [get-started tutorial](documentation/tutorials/get-started.md) includes
 migrations, resources, a provider, domain registration, and executable calls.
@@ -255,6 +256,8 @@ once; receivers deduplicate using the stable `webhook-id`.
 Worked guides cover [event retention and replay](documentation/tutorials/outbound-recovery.md),
 [catalogs, payload versions, and filters](documentation/tutorials/outbound-contracts.md),
 and [destination policies, transports, and health](documentation/tutorials/outbound-operations.md).
+For application HTTP requests outside webhook delivery, see
+[pinned egress](documentation/tutorials/pinned-egress.md).
 
 ## Fitting the extensions to your domain
 

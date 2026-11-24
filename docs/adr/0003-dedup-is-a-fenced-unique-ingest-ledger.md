@@ -5,12 +5,15 @@ Status: Accepted August 20, 2026; amended November 15, 2026.
 ## Decision
 
 `AshHooks.InboundDelivery` persists the decoded payload and signed-body digest
-before handling. Its unique identity combines provider, external event ID, and
-consumer-declared scope. Identity precedence is declaration extractor, provider
-callback, then deterministic signed-body digest; callback errors fail closed.
+before handling. Its unique identity combines the source declaration name
+(stored in `provider`), external event ID, and consumer-declared scope within
+the tenant. Identity precedence is declaration extractor, provider callback,
+then the signed-body digest. An unrecognized extractor result uses the body
+digest. An invalid provider identity fails ingress.
 A fenced claim and lease state machine moves receipts through
-`received -> claimed -> processed | failed`. Claim tokens fence mark and renew
-operations, and a reaper recovers expired leases. The data layer must supply
+`received -> claimed -> processed | failed_retryable | failed_permanent`.
+Claim tokens fence mark and renew operations, and a reaper recovers expired
+leases. The data layer must supply
 unique upserts and atomic conditional updates.
 Complete primary keys and identity adoption follow
 [the ownership decision](0012-durable-delivery-ownership-and-recovery.md).

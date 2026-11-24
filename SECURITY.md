@@ -10,8 +10,8 @@ Security fixes are released for the newest minor release in the current major li
 
 | Release line | Supported |
 | --- | --- |
-| >= 3.6.0 and < 3.7.0 | Yes |
-| < 3.6.0 | No |
+| >= 3.7.0 and < 3.8.0 | Yes |
+| < 3.7.0 | No |
 
 Upgrade to a supported release before requesting a backport. Safety corrections may
 tighten behavior in a patch release when the previous behavior accepted unsafe input or
@@ -67,9 +67,7 @@ the reporter.
 - Inbound headers are not stored. Decoded payloads and a digest of the signed raw
   body remain in the ledger until the host applies redaction or retention policies.
 
-Application providers and secret resolvers must provide their own error handling.
-
-## Outbound requests
+### Outbound requests
 
 - `AshHooks.Http.Bounded` is the default adapter. By default it limits the combined
   response header stream to 32 KiB, retained response bodies to 64 KiB, interim
@@ -134,4 +132,4 @@ receiver-side deduplication are outside the package's enforcement boundary. Cust
 adapters and explicit destination-validation or bound overrides replace the corresponding
 built-in guarantee and should be assessed as part of the host application.
 
-The supported version range is `>= 3.6.0 and < 3.7.0`.
+The supported version range is `>= 3.7.0 and < 3.8.0`.

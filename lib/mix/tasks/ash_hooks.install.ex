@@ -16,8 +16,8 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
       them). An existing custom reader is kept and must call
       `AshHooks.BodyReader.put_raw_body/2` with the complete body; the installer
       emits a notice saying so. When it finds no `Plug.Parsers` call or cannot read
-      the options as a literal keyword list, it changes nothing and reports the
-      manual step.
+      the options as a literal keyword list, it leaves the affected endpoint
+      unchanged and reports the manual step. The formatter import still applies.
 
     ## Usage
 

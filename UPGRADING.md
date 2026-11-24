@@ -2,7 +2,7 @@
 
 <a id="upgrade-3-7"></a>
 
-## 3.6.0 → 3.7.0 (unreleased)
+## 3.6.0 → 3.7.0
 
 Before upgrading ash_hooks, update your Ash requirement to allow 3.38.1 or later
 within the 3.x series, and update your lockfile if it holds an older Ash release.
@@ -67,9 +67,10 @@ remain `%{count: n}`. No schema migration is required.
 
 Transactional publication is opt-in. Existing hosts need no migration unless
 adopting `AshHooks.OutboundOutbox`. Immediate dispatch still persists deliveries
-and enqueues synchronously. Every dispatch now selects matching subscriptions
-in SQL and retains the Elixir guard. Malformed filter containers never match;
-this corrects the former `__invalid__` sentinel case for every host.
+and enqueues synchronously. Dispatch applies subscription filters in the
+primary read, using SQL on PostgreSQL and SQLite, and retains the Elixir guard.
+Malformed filter containers never match. This corrects the former
+`__invalid__` sentinel case for every host.
 
 The non-recursive key-set metadata-filter arm (5C) ships under the fallback
 rule. The [final probe run](https://github.com/baselabs/ash_hooks/actions/runs/44224659651)
@@ -1976,7 +1977,7 @@ as the error class.
 
 ## Required `default_string_length_count` configuration
 
-Every Ash version supported by ash_hooks 3.6.0 requires this configuration
+Every Ash version supported by ash_hooks requires this configuration
 before compiling resources. ash_hooks writes no `:ash` configuration for you. Set it
 in your application's `config/config.exs`:
 
