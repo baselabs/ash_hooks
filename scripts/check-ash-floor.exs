@@ -4,14 +4,16 @@
 #
 # After a floor or requirement change, refresh the committed floor graph
 # (resolution only, nothing compiles): elixir scripts/check-ash-floor.exs --update-lock
+# Name packages to unlock them first, so the graph takes their newest admitted
+# release: elixir scripts/check-ash-floor.exs --update-lock db_connection
 Mix.start()
 Mix.env(:test)
 
-update_lock? =
+{update_lock?, lock_updates} =
   case System.argv() do
-    [] -> false
-    ["--update-lock"] -> true
-    _ -> raise("usage: check-ash-floor.exs [--update-lock]")
+    [] -> {false, []}
+    ["--update-lock" | packages] -> {true, packages}
+    _ -> raise("usage: check-ash-floor.exs [--update-lock [PACKAGE ...]]")
   end
 
 for flag <- ["ASH_HOOKS_POSTGRES", "ASH_HOOKS_HTTPBUN"], not update_lock? do
@@ -88,7 +90,10 @@ if update_lock? do
         deps_path: Path.join(qualification, "deps"),
         build_path: Path.join(qualification, "build")
       ],
-      fn _project -> Mix.Task.run("deps.get") end
+      fn _project ->
+        if lock_updates != [], do: Mix.Task.run("deps.unlock", lock_updates)
+        Mix.Task.run("deps.get")
+      end
     )
 
     IO.puts("FLOOR LOCK UPDATED: #{Path.relative_to(committed_lock, root)}")

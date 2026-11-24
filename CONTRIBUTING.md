@@ -83,6 +83,14 @@ the floor, which the full-suite qualification below runs on:
 elixir scripts/check-ash-floor.exs --update-lock
 ```
 
+To move a package in the floor graph to its newest admitted release, for example
+after an advisory, name it; the script unlocks it and resolves again:
+
+<!-- not-run: This resolves the floor graph's dependencies. -->
+```sh
+elixir scripts/check-ash-floor.exs --update-lock db_connection
+```
+
 CI does not run on pull requests. A maintainer runs the full workflow on the
 exact commit before it reaches `main`, and reports any failure on the pull
 request.
