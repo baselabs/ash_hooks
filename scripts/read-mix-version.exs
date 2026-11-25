@@ -32,11 +32,11 @@ source =
 
       case {receiver, function, args} do
         {kernel, :@, [{:version, _, [_ | _] = version_args}]}
-        when kernel in [Kernel, [:Kernel], [:Elixir, :Kernel]] ->
+        when kernel in [Kernel, [:Kernel], [:"Elixir", :Kernel]] ->
           {node, [version_args | assignments]}
 
         {module, function, [_, :version | _]}
-        when module in [Module, [:Module], [:Elixir, :Module]] and
+        when module in [Module, [:Module], [:"Elixir", :Module]] and
                function in [:put_attribute, :register_attribute] ->
           refuse.("Module APIs must not set or register @version in mix.exs")
 
