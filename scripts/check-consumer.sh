@@ -3,7 +3,9 @@
 # the dependencies and build output this check fetched.
 set -euo pipefail
 [ "$#" -eq 0 ] || { echo "usage: $0" >&2; exit 2; }
-consumer="$(cd "$(dirname "$0")/.." && pwd)/test/consumer"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+consumer="$root/test/consumer"
+version="$(elixir "$root/scripts/read-mix-version.exs" "$root/mix.exs")"
 cleanup() {
   rm -rf "$consumer/deps" "$consumer/_build"
 }
@@ -15,4 +17,4 @@ export MIX_ENV=prod
 cd "$consumer"
 mix deps.get --check-locked
 mix compile --warnings-as-errors
-mix run verify.exs
+mix run verify.exs "$version"

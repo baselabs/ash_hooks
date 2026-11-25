@@ -59,8 +59,10 @@ Verification requires exactly 40 lowercase hexadecimal characters in
 
 1. The commit must be reachable from the current head of `main` and have a
    successful GitHub Actions check named `qualified` on that exact SHA.
-2. The version comes from `mix.exs` at the selected commit. The tag
-   `v<version>` must not exist on origin. An indeterminate lookup refuses.
+2. The selected commit's `mix.exs` must declare exactly one `@version` as a
+   string-literal semantic version. Verification parses the source without
+   evaluating it. The tag `v<version>` must not exist on origin. An
+   indeterminate lookup refuses.
 
 `Build release assets` checks out the verified SHA and checks these before
 installing the runtime:
@@ -121,17 +123,23 @@ An upload-only retry skips an already served package with the inspected
 checksum and skips docs already served for that package. A planned skip
 refuses if Hex no longer serves that archive. A different checksum, retired
 version, or uncertain state also refuses. The script uploads the package first
-with replacement disabled.
-Before writing docs, it checks again because Hex's docs upload has no
-replacement guard. The docs upload requires the checked package or a package
-Hex explicitly held for approval. Docs bytes can differ across builds of one
-commit because ExDoc 0.40.4 can order its search data differently. HTTP errors
-report a status without printing response bodies, headers, or credentials.
+with replacement disabled. Immediately before posting docs, it rechecks that
+Hex serves an unretired release with the inspected package's outer SHA-256 and
+`has_docs: false`. Hex 2.7.0 sends an unconditional POST, and the Hex server
+writes the docs without a create-only precondition. Another publisher can
+still change the release or write docs between the check and the POST. The
+POST can replace docs written during that window.
+[Hex client request](https://github.com/hexpm/hex/blob/92cb6a1b10c9b008ccb6fa229f5d9916840dc09d/lib/hex/api/release_docs.ex#L24-L53) ·
+[Hex server write](https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm/repository/assets.ex#L25-L35)
+
+Docs bytes can differ across builds of one commit because ExDoc 0.40.4 can
+order its search data differently. HTTP errors report a status without
+printing response bodies, headers, or credentials.
 
 If Hex holds either upload for approval, the script reports its kind, approval
-URL, expiration, and archive SHA-256. It attempts both requested uploads before
-exiting with failure to mark the hold. When both are staged as one release,
-their staged release checksums must match.
+URL, expiration, and archive SHA-256, then marks the run as held. A package
+hold can defer the docs upload until Hex serves the approved package. If Hex
+then holds the docs upload, it needs its own approval and dispatch.
 
 `Read back` checks out `release_commit` and requires all of the following:
 
@@ -139,9 +147,9 @@ their staged release checksums must match.
 - Hex serves a docs archive for the version: safe relative paths, regular files
   only, top-level `index.html` and `readme.html`, and a `release.json` naming
   `ash_hooks`, the version, and either `release_commit` or an ancestor of it.
-  That commit is the published commit. Served docs without `release.json` or
-  naming a commit outside the selected commit's history are refused. Their
-  bytes are not compared with a build.
+  That commit is the published commit. Served docs are refused if
+  `release.json` is missing, has duplicate keys, or names a commit outside
+  the selected commit's history. Their bytes are not compared with a build.
 - The Hex registry signature verifies against the pinned Hex.pm public key.
   The version's release record must be unretired and contain the inspected
   outer checksum.

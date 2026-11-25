@@ -1,14 +1,7 @@
 version = Application.spec(:ash_hooks, :vsn) |> to_string()
 
-# The expected version is the checkout's own @version — no per-release pin to drift.
-root = Path.expand("../..")
-
-expected =
-  root
-  |> Path.join("mix.exs")
-  |> File.read!()
-  |> then(&Regex.run(~r/@version "([^"]+)"/, &1))
-  |> Enum.at(1)
+# The consumer check passes the version declared in the checkout's mix.exs.
+[expected] = System.argv()
 
 unless version == expected,
   do: raise("unexpected consumer build version: #{version} != #{expected}")

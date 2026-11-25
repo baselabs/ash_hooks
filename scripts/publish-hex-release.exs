@@ -35,16 +35,6 @@ defmodule PublishHexRelease do
 
     docs_result = publish_docs(docs_plan, version, docs, checksum, package_result)
 
-    case {package_result, docs_result} do
-      {{:staged, package}, {:staged, %{"kind" => "release"} = docs}} ->
-        unless is_binary(package["checksum"]) and package["checksum"] == docs["checksum"] do
-          Mix.raise("Staged release changed before its docs were staged")
-        end
-
-      _ ->
-        :ok
-    end
-
     if Enum.any?([package_result, docs_result], &match?({:staged, _}, &1)) do
       IO.puts(:stderr, """
       Release held for approval; after the owner approves, dispatch again from main with the same release_commit.
@@ -98,11 +88,15 @@ defmodule PublishHexRelease do
   end
 
   defp publish_docs(plan, version, docs, checksum, package_result) do
-    # Hex's docs API has no replace guard. Recheck the package identity and docs
-    # state just before the request. An explicitly staged package can accept docs
-    # before it is served.
-    staged_package? = match?({:staged, _}, package_result)
-
+    # The server's DocsController.create calls Releases.publish_docs without a
+    # precondition:
+    # https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm_web/controllers/api/docs_controller.ex#L101-L119
+    # publish_docs_now writes to the existing docs path:
+    # https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm/repository/releases.ex#L326-L344
+    # Hex 2.7.0 sends an unconditional POST:
+    # https://github.com/hexpm/hex/blob/92cb6a1b10c9b008ccb6fa229f5d9916840dc09d/lib/hex/api/release_docs.ex#L24-L53
+    # Another publisher can still change the release or write docs between this
+    # checksum and has_docs check and the POST.
     case {plan, served_release(version, checksum)} do
       {_, {:served, true}} ->
         skip("docs")
@@ -110,10 +104,15 @@ defmodule PublishHexRelease do
       {"skip", _} ->
         Mix.raise("Hex no longer serves the docs that the build planned to keep")
 
-      {"upload", :missing} when not staged_package? ->
-        Mix.raise("Hex does not serve the checked package yet; retry the upload")
+      {"upload", :missing} ->
+        if match?({:staged, _}, package_result) do
+          IO.puts("docs: deferred until Hex serves the staged package")
+          :ok
+        else
+          Mix.raise("Hex does not serve the checked package yet; retry the upload")
+        end
 
-      {"upload", _} ->
+      {"upload", {:served, false}} ->
         auth = upload_auth()
 
         upload("docs", docs, fn ->

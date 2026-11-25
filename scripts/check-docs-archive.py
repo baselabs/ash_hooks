@@ -27,9 +27,18 @@ SEMVER = re.compile(
 COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
+def unique_fields(pairs):
+    record = {}
+    for key, value in pairs:
+        if key in record:
+            raise ValueError("release.json has duplicate fields.")
+        record[key] = value
+    return record
+
+
 def release(data, version):
     try:
-        record = json.loads(data.decode("utf-8"))
+        record = json.loads(data.decode("utf-8"), object_pairs_hook=unique_fields)
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ValueError("release.json is not a JSON object.") from None
     if (not isinstance(record, dict) or set(record) != {"package", "version", "commit"}

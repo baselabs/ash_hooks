@@ -3,8 +3,8 @@
 
 The package is the release: an already served package must have the inspected
 package's bytes. A docs build is not byte-stable, so docs Hex already serves for
-the version are kept and never compared. The uploader can send missing docs
-for a matching served release or for a package explicitly staged by Hex.
+the version are kept and never compared. The uploader sends missing docs only
+after Hex serves the matching package.
 """
 
 import argparse
@@ -37,8 +37,17 @@ def get(url):
     raise ValueError(f"Registry lookup failed after four attempts ({status}).")
 
 
+def unique_fields(pairs):
+    record = {}
+    for key, value in pairs:
+        if key in record:
+            raise ValueError("hex.pm returned duplicate release fields; refusing.")
+        record[key] = value
+    return record
+
+
 def object_body(body):
-    value = json.loads(body)
+    value = json.loads(body, object_pairs_hook=unique_fields)
     if not isinstance(value, dict):
         raise ValueError("hex.pm returned an invalid release record.")
     return value

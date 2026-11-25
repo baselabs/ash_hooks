@@ -4,14 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 mkdir -p _build/release
-version="$(python3 - <<'PY'
-from pathlib import Path
-import re
-matches = re.findall(r'^  @version "([^"]+)"$', Path('mix.exs').read_text(), re.M)
-assert len(matches) == 1, 'expected exactly one Mix project version'
-print(matches[0])
-PY
-)"
+version="$(elixir scripts/read-mix-version.exs mix.exs)"
 archive="$root/_build/release/ash_hooks-$version.tar"
 if [ "$#" -gt 0 ]; then
   [ "$#" -eq 2 ] && [ "$1" = "--inspect" ] || { echo "usage: check-package.sh [--inspect <archive>]" >&2; exit 1; }

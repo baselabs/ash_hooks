@@ -290,17 +290,14 @@ jobs:
         run: ./scripts/check-package.sh
       - name: Verify Hex registry read-back against signed releases
         run: python3 -I test/check_hex_registry_test.py
+      - name: Test release metadata validation
+        run: python3 -I test/check_release_metadata_test.py
       - run: mix docs --warnings-as-errors
       - name: Read the package version
         id: version
         run: |
-          python3 -I - >> "$GITHUB_OUTPUT" <<'PY'
-          from pathlib import Path
-          import re
-          matches = re.findall(r'^  @version "([^"]+)"$', Path('mix.exs').read_text(), re.M)
-          assert len(matches) == 1, 'expected exactly one Mix project version'
-          print(f'version={matches[0]}')
-          PY
+          version=$(elixir scripts/read-mix-version.exs mix.exs)
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Name the package, version and commit in the docs
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -345,7 +342,8 @@ jobs:
         run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version
       - name: Run the livebook against the candidate archive (version from mix.exs)
         run: |
-          archive="_build/release/ash_hooks-$(grep -m1 '@version' mix.exs | sed -E 's/.*@version "([^"]+)".*/\1/').tar"
+          version=$(elixir scripts/read-mix-version.exs mix.exs)
+          archive="_build/release/ash_hooks-$version.tar"
           ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive "$archive"
 
   # Both dependency audits: hex.audit (retirements and the advisories Hex
