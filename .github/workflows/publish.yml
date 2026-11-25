@@ -1,9 +1,9 @@
 name: Publish to Hex
 
-# The release maintainer dispatches this from main after the owner approves.
-# The input selects a qualified commit on main's history. The release maintainer
-# reads back both archives before pushing the tag and creating the GitHub Release
-# from release-assets. No job replaces published bytes.
+# Infra dispatches this from main after the owner approves.
+# The input selects a qualified commit on main's history. Infra confirms read-back
+# of both archives before pushing the tag and creating the GitHub Release from
+# release-assets.
 on:
   workflow_dispatch:
     inputs:
@@ -32,7 +32,7 @@ jobs:
     permissions:
       contents: read
       checks: read
-    timeout-minutes: 5 # no green run yet
+    timeout-minutes: 90 # no green run yet
     outputs:
       release_commit: ${{ steps.release.outputs.commit }}
       version: ${{ steps.version.outputs.version }}

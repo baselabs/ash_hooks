@@ -163,8 +163,9 @@ feature requests. Report vulnerabilities privately as described in
 
 ## Releases
 
-Releases are maintainer-only. The maintainer dispatches from `main` and supplies the full
-SHA of the qualified release commit as `release_commit`. The authoritative procedure is the
+The product session lands the qualified release commit on `main` and hands off to Infra.
+After owner approval, Infra dispatches from `main` with the full commit SHA as
+`release_commit` and tags after read-back. The authoritative procedure is the
 [publishing runbook](https://github.com/baselabs/ash_hooks/blob/main/docs/PUBLISHING.md).
 
 The [architecture decisions](https://github.com/baselabs/ash_hooks/tree/main/docs/adr)

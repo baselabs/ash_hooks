@@ -11,7 +11,7 @@ the upload step receives it. The build and read-back jobs never receive the key.
 
 ## Who does what
 
-1. **The maintainer who prepares the release cuts the version.** They choose
+1. **The product session prepares and lands the version.** It chooses
    the version under the
    [support policy](adr/0010-semver-and-support-policy.md) and make one commit
    that updates:
@@ -28,17 +28,18 @@ the upload step receives it. The build and read-back jobs never receive the key.
    the check that requires every job: the package, Livebook, documentation,
    confidentiality and dash checks among them. The release commit is the
    version commit when it was a landing's head, otherwise the first later
-   qualified commit with the same package. They give the release maintainer
-   the repository, the full SHA as `release_commit`, the version, what goes out,
-   and a link to its green `qualified` run.
-2. **The release maintainer asks the owner and dispatches.** After the owner
-   approves, the release maintainer dispatches the workflow from `main` with
-   the handed-off SHA as `release_commit`. All jobs admit only the owner's
-   accounts, and publication requires dispatch from `main`.
+   qualified commit with the same package. The product session ends at
+   `main` and a handoff to Infra. The five fields are the repository, the full
+   SHA as `release_commit`, the version, what goes out, and a link to its green
+   `qualified` run.
+2. **Infra asks the owner and dispatches.** Infra (infra-1, the infrastructure
+   repository's release maintainer) dispatches the workflow from `main` with
+   the handed-off `release_commit` after owner approval. All jobs admit only the
+   owner's accounts, and publication requires dispatch from `main`.
    The `publish` environment, which holds the key, admits only `main`.
 3. **The workflow publishes and reads the release back.** See
    [What the workflow checks](#what-the-workflow-checks).
-4. **The release maintainer tags and records the release.** With infra's
+4. **Infra tags and records the release.** With Infra's
    `bin/release-tag`, they first compare the package in `release-assets` with
    the archive Hex serves. The helper pushes the annotated tag `v<version>`
    on the published commit named by the served docs' `release.json` and the
@@ -136,13 +137,22 @@ Docs bytes can differ across builds of one commit because ExDoc 0.40.4 can
 order its search data differently. HTTP errors report a status without
 printing response bodies, headers, or credentials.
 
-If Hex holds the package for approval, the script posts the inspected docs
-with the same credential and requires Hex to confirm that both archives are
-staged under the inspected package's outer SHA-256. One approval publishes
-both archives. If the package is already served and Hex holds only the docs,
-one approval publishes the docs. The script reports the held upload's kind,
-approval URL, expiration, and archive SHA-256. Dispatch once more with the
-same `release_commit` to read back both archives.
+If Hex holds the package for approval, the script checks that the release is
+still unpublished, then reads the staged status URL with the same credential.
+It requires an active release stage for the package, version, and inspected
+outer SHA-256 immediately before posting the docs. If either check fails, it
+refuses to post. Hex can still approve the stage between the status read and
+the unconditional POST. The POST response must confirm that both archives
+are staged under the inspected package's outer SHA-256.
+[Hex staged status route](https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm_web/router.ex#L703-L710) ·
+[Hex status and checksum response](https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm_web/views/api/staged_release_view.ex#L6-L16) ·
+[Hex client status read](https://github.com/hexpm/hex/blob/92cb6a1b10c9b008ccb6fa229f5d9916840dc09d/lib/hex/api/release.ex#L18-L30)
+
+One approval publishes both staged archives. If the package is already served
+and Hex holds only the docs, one approval publishes the docs. The script
+reports the held upload's kind, approval URL, expiration, and archive SHA-256.
+The owner waits for the final hold message before approving. Infra dispatches
+once more with the same `release_commit` to read back both archives.
 [Hex attaches docs to the staged release](https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm/repository/staged_releases.ex#L190-L233) ·
 [Hex publishes the attached docs on approval](https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm/repository/staged_releases.ex#L501-L528)
 
@@ -167,27 +177,26 @@ After the registry check and before it runs any project or dependency code,
 `SHA256SUMS` in `sha256sum` format. Code that runs
 later, such as the Livebook's dependencies, cannot alter what it recorded. The
 run summary records `release_commit`, the published commit and `SHA256SUMS`.
-Only after the whole read-back succeeds, Livebook included, does the release
-maintainer push the tag and create the GitHub Release from `release-assets`.
+After the whole read-back succeeds, Livebook included, Infra pushes the tag and
+creates the GitHub Release from `release-assets`.
 
 ## When a run fails
 
 - **A failure in the build or before the upload step.** This run uploaded
   nothing. A required code fix lands on `main` through qualification before
   another dispatch. An earlier run may already have uploaded either archive.
-- **An upload held for approval.** The owner approves it once on hex.pm. The
-  release maintainer dispatches once more from `main` with the same
+- **An upload held for approval.** After the final hold message, the owner
+  approves it once on hex.pm. Infra dispatches once more from `main` with the same
   `release_commit` to compare the served package and read back both archives
   before pushing any tag.
 - **A partial upload or other upload failure.** An upload-only retry rechecks
   what Hex serves while the `inspected-archives` artifact is available. It
-  expires after one day. After expiration, dispatch again from `main` with
+  expires after one day. After expiration, Infra dispatches again from `main` with
   the same `release_commit`. Other package bytes or a retired version refuse.
-- **A read-back failure caused by propagation delay.** The release maintainer
-  re-runs only the failed `Read back` job. The successful build and upload jobs
-  do not run again. A new dispatch with the same `release_commit` can also finish the
-  release while no tag exists and the served package matches.
+- **A read-back failure caused by propagation delay.** Infra reruns only the
+  failed `Read back` job. Infra can also dispatch with the same `release_commit`
+  while no tag exists and the served package matches.
 - **A persistent read-back failure, retired version, or differing served package.**
-  The release maintainer reports it to the owner, who decides whether to retire
+  Infra reports it to the owner, who decides whether to retire
   the version. A required code fix ships as the next version through the same
   path. No tag or GitHub Release records an unverified publication.
