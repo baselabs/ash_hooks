@@ -59,10 +59,10 @@ Verification requires exactly 40 lowercase hexadecimal characters in
 
 1. The commit must be reachable from the current head of `main` and have a
    successful GitHub Actions check named `qualified` on that exact SHA.
-2. The selected commit's `mix.exs` must declare exactly one `@version` as a
-   string-literal semantic version. Verification parses the source without
-   evaluating it. The tag `v<version>` must not exist on origin. An
-   indeterminate lookup refuses.
+2. The selected commit's `mix.exs` must be UTF-8 without a BOM and declare
+   exactly one `@version` as a string-literal semantic version. Verification
+   parses the source without evaluating it. The tag `v<version>` must not
+   exist on origin. An indeterminate lookup refuses.
 
 `Build release assets` checks out the verified SHA and checks these before
 installing the runtime:
@@ -123,12 +123,12 @@ An upload-only retry skips an already served package with the inspected
 checksum and skips docs already served for that package. A planned skip
 refuses if Hex no longer serves that archive. A different checksum, retired
 version, or uncertain state also refuses. The script uploads the package first
-with replacement disabled. Immediately before posting docs, it rechecks that
-Hex serves an unretired release with the inspected package's outer SHA-256 and
-`has_docs: false`. Hex 2.7.0 sends an unconditional POST, and the Hex server
-writes the docs without a create-only precondition. Another publisher can
-still change the release or write docs between the check and the POST. The
-POST can replace docs written during that window.
+with replacement disabled. Before posting docs directly to a served release,
+it rechecks that Hex serves an unretired release with the inspected package's
+outer SHA-256 and `has_docs: false`. Hex 2.7.0 sends an unconditional POST,
+and the Hex server writes the docs without a create-only precondition.
+Another publisher can still change the release or write docs between the
+check and the POST. The POST can replace docs written during that window.
 [Hex client request](https://github.com/hexpm/hex/blob/92cb6a1b10c9b008ccb6fa229f5d9916840dc09d/lib/hex/api/release_docs.ex#L24-L53) ·
 [Hex server write](https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm/repository/assets.ex#L25-L35)
 
@@ -136,10 +136,15 @@ Docs bytes can differ across builds of one commit because ExDoc 0.40.4 can
 order its search data differently. HTTP errors report a status without
 printing response bodies, headers, or credentials.
 
-If Hex holds either upload for approval, the script reports its kind, approval
-URL, expiration, and archive SHA-256, then marks the run as held. A package
-hold can defer the docs upload until Hex serves the approved package. If Hex
-then holds the docs upload, it needs its own approval and dispatch.
+If Hex holds the package for approval, the script posts the inspected docs
+with the same credential and requires Hex to confirm that both archives are
+staged under the inspected package's outer SHA-256. One approval publishes
+both archives. If the package is already served and Hex holds only the docs,
+one approval publishes the docs. The script reports the held upload's kind,
+approval URL, expiration, and archive SHA-256. Dispatch once more with the
+same `release_commit` to read back both archives.
+[Hex attaches docs to the staged release](https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm/repository/staged_releases.ex#L190-L233) ·
+[Hex publishes the attached docs on approval](https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm/repository/staged_releases.ex#L501-L528)
 
 `Read back` checks out `release_commit` and requires all of the following:
 
@@ -170,11 +175,10 @@ maintainer push the tag and create the GitHub Release from `release-assets`.
 - **A failure in the build or before the upload step.** This run uploaded
   nothing. A required code fix lands on `main` through qualification before
   another dispatch. An earlier run may already have uploaded either archive.
-- **An upload held for approval.** The owner approves it on hex.pm. The release
-  maintainer then dispatches again from `main` with the same `release_commit`,
+- **An upload held for approval.** The owner approves it once on hex.pm. The
+  release maintainer dispatches once more from `main` with the same
+  `release_commit` to compare the served package and read back both archives
   before pushing any tag.
-  The new run compares the package archive, keeps docs hex.pm already serves,
-  uploads only what is missing, and reads both back. A hold is never reported as a completed publication.
 - **A partial upload or other upload failure.** An upload-only retry rechecks
   what Hex serves while the `inspected-archives` artifact is available. It
   expires after one day. After expiration, dispatch again from `main` with

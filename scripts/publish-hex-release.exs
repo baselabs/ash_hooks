@@ -37,8 +37,8 @@ defmodule PublishHexRelease do
 
     if Enum.any?([package_result, docs_result], &match?({:staged, _}, &1)) do
       IO.puts(:stderr, """
-      Release held for approval; after the owner approves, dispatch again from main with the same release_commit.
-      The next dispatch uploads only what is missing and reads both archives back.
+      Release held for one approval. After the owner approves on hex.pm, dispatch once more
+      from main with the same release_commit to read both archives back.
       """)
 
       System.halt(1)
@@ -87,7 +87,25 @@ defmodule PublishHexRelease do
     end
   end
 
-  defp publish_docs(plan, version, docs, checksum, package_result) do
+  defp publish_docs("upload", version, docs, checksum, {:staged, package}) do
+    unless package["kind"] == "release" and package["checksum"] == checksum do
+      Mix.raise("Hex did not stage the inspected package")
+    end
+
+    # Hex joins docs to the staged release under the same credential, and a
+    # release receipt reports the package's outer checksum even after docs attach.
+    # https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm/repository/staged_releases.ex#L190-L233
+    # https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm_web/views/api/staged_release_view.ex#L6-L13
+    case upload_docs(version, docs) do
+      {:staged, %{"kind" => "release", "checksum" => ^checksum}} = result ->
+        result
+
+      _ ->
+        Mix.raise("Hex did not attach docs to the staged package")
+    end
+  end
+
+  defp publish_docs(plan, version, docs, checksum, _package_result) do
     # The server's DocsController.create calls Releases.publish_docs without a
     # precondition:
     # https://github.com/hexpm/hexpm/blob/5e638200c2b1fbdb3412e18c7b433071ade3305e/lib/hexpm_web/controllers/api/docs_controller.ex#L101-L119
@@ -105,20 +123,19 @@ defmodule PublishHexRelease do
         Mix.raise("Hex no longer serves the docs that the build planned to keep")
 
       {"upload", :missing} ->
-        if match?({:staged, _}, package_result) do
-          IO.puts("docs: deferred until Hex serves the staged package")
-          :ok
-        else
-          Mix.raise("Hex does not serve the checked package yet; retry the upload")
-        end
+        Mix.raise("Hex does not serve the checked package yet; retry the upload")
 
       {"upload", {:served, false}} ->
-        auth = upload_auth()
-
-        upload("docs", docs, fn ->
-          Hex.API.ReleaseDocs.publish(nil, "ash_hooks", version, docs, auth)
-        end)
+        upload_docs(version, docs)
     end
+  end
+
+  defp upload_docs(version, docs) do
+    auth = upload_auth()
+
+    upload("docs", docs, fn ->
+      Hex.API.ReleaseDocs.publish(nil, "ash_hooks", version, docs, auth)
+    end)
   end
 
   defp upload_auth do

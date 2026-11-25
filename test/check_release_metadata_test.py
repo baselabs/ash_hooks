@@ -40,9 +40,12 @@ class ReleaseMetadataTest(unittest.TestCase):
                     self.state["object_body"](response)
 
     def read_version(self, body):
+        return self.read_version_source(f"defmodule Candidate do\n{body}\nend\n".encode())
+
+    def read_version_source(self, source):
         with TemporaryDirectory(prefix="ash-hooks-mix-version-") as directory:
             project = Path(directory) / "mix.exs"
-            project.write_text(f"defmodule Candidate do\n{body}\nend\n", encoding="utf-8")
+            project.write_bytes(source)
             return subprocess.run(
                 ["elixir", SCRIPTS / "read-mix-version.exs", project],
                 cwd=SCRIPTS.parent, capture_output=True, text=True, timeout=20,
@@ -53,6 +56,8 @@ class ReleaseMetadataTest(unittest.TestCase):
             '  # @version "1.0.0"\n'
             '    @version "3.7.0" # release\n'
             '  def current, do: @version\n'
+            '  @description "example: @version 9.9.9"\n'
+            '  @moduledoc """\n  @version "9.9.9"\n  """\n'
             '  raise "the project must never be evaluated"'
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -64,6 +69,9 @@ class ReleaseMetadataTest(unittest.TestCase):
             '\t@version "3.8.0"',
             '  @version System.get_env("VERSION")',
             '  if true, do: @version("3.8.0")',
+            '  Kernel.@(version("9.9.9"))',
+            '  quote do\n    @version "9.9.9"\n  end',
+            '  defmodule Nested do\n    @version "9.9.9"\n  end',
         ):
             with self.subTest(declaration=declaration):
                 result = self.read_version('  @version "3.7.0"\n' + declaration)
@@ -76,11 +84,51 @@ class ReleaseMetadataTest(unittest.TestCase):
             '  @version System.get_env("VERSION")',
             '  @version "3.7.#{0}"',
             '  @version "3.7." <> "0"',
+            '  @version ~s(3.7.0)',
+            "  @version '3.7.0'",
+            '  quote do\n    @version unquote(candidate)\n  end',
         ):
             with self.subTest(declaration=declaration):
                 result = self.read_version(declaration)
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn("exactly one string-literal @version", result.stderr)
+
+    def test_heredoc_trailing_newline_is_not_a_semantic_version(self):
+        result = self.read_version('  @version """\n  3.7.0\n  """')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("semantic Mix project version", result.stderr)
+
+    def test_kernel_attribute_accepts_one_literal_assignment(self):
+        for declaration in (
+            '  Kernel.@(version("3.7.0"))',
+            '  Elixir.Kernel.@(version("3.7.0"))',
+        ):
+            with self.subTest(declaration=declaration):
+                result = self.read_version(declaration)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, f"{VERSION}\n")
+
+    def test_module_api_cannot_put_or_register_version(self):
+        for declaration in (
+            '  Module.put_attribute(__MODULE__, :version, "9.9.9")',
+            '  Module.register_attribute(__MODULE__, :version, accumulate: true)',
+            '  Elixir.Module.put_attribute(__MODULE__, :version, "9.9.9")',
+        ):
+            with self.subTest(declaration=declaration):
+                result = self.read_version('  @version "3.7.0"\n' + declaration)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("Module APIs must not set or register @version", result.stderr)
+
+    def test_invalid_source_encoding_is_refused_without_a_stack_trace(self):
+        source = b'defmodule Candidate do\n  @version "3.7.0"\nend\n'
+        for encoded, message in (
+            (source + b"# \xff\n", "mix.exs must be valid UTF-8"),
+            (b"\xef\xbb\xbf" + source, "mix.exs must not start with a UTF-8 BOM"),
+        ):
+            with self.subTest(message=message):
+                result = self.read_version_source(encoded)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertEqual(result.stderr.strip(), message)
 
 
 if __name__ == "__main__":
