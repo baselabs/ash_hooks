@@ -1,7 +1,7 @@
 name: Publish to Hex
 
-# Infra dispatches this from main after the owner approves.
-# The input selects a qualified commit on main's history. Infra confirms read-back
+# The release maintainer dispatches this from main after the owner approves.
+# The input selects a qualified commit on main's history. The release maintainer confirms read-back
 # of both archives before pushing the tag and creating the GitHub Release from
 # release-assets.
 on:

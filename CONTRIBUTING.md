@@ -163,8 +163,8 @@ feature requests. Report vulnerabilities privately as described in
 
 ## Releases
 
-The product session lands the qualified release commit on `main` and hands off to Infra.
-After owner approval, Infra dispatches from `main` with the full commit SHA as
+The version author lands the qualified release commit on `main` and hands off to the release maintainer.
+After owner approval, the release maintainer dispatches from `main` with the full commit SHA as
 `release_commit` and tags after read-back. The authoritative procedure is the
 [publishing runbook](https://github.com/baselabs/ash_hooks/blob/main/docs/PUBLISHING.md).
 

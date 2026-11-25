@@ -38,7 +38,7 @@ defmodule PublishHexRelease do
     if Enum.any?([package_result, docs_result], &match?({:staged, _}, &1)) do
       IO.puts(:stderr, """
       Hex has staged the remaining release assets. After the owner approves on hex.pm,
-      Infra dispatches once more from main with the same release_commit to read both archives back.
+      the release maintainer dispatches once more from main with the same release_commit to read both archives back.
       """)
 
       System.halt(1)
