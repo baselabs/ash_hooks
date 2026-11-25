@@ -28,9 +28,9 @@ the upload step receives it. The build and read-back jobs never receive the key.
    the check that requires every job: the package, Livebook, documentation,
    confidentiality and dash checks among them. The release commit is the
    version commit when it was a landing's head, otherwise the first later
-   qualified commit with the same package. They then hand the release to the
-   release maintainer with that full commit SHA as `release_commit`, the
-   version and anything the release needs first.
+   qualified commit with the same package. They give the release maintainer
+   the repository, the full SHA as `release_commit`, the version, what goes out,
+   and a link to its green `qualified` run.
 2. **The release maintainer asks the owner and dispatches.** After the owner
    approves, the release maintainer dispatches the workflow from `main` with
    the handed-off SHA as `release_commit`. All jobs admit only the owner's
@@ -38,15 +38,13 @@ the upload step receives it. The build and read-back jobs never receive the key.
    The `publish` environment, which holds the key, admits only `main`.
 3. **The workflow publishes and reads the release back.** See
    [What the workflow checks](#what-the-workflow-checks).
-4. **The release maintainer tags and records the release.** They push the
-   annotated tag `v<version>` on the published commit: the commit the served
-   docs' `release.json` names, recorded in the run summary and in
-   `RELEASE-NOTES.md`. They compare the
-   package archive in `release-assets`, which `Read back` assembles from the
-   bytes hex.pm serves, with the archive hex.pm serves, then create the GitHub
-   Release for that tag from the artifact. The Release carries
-   both archives, `SHA256SUMS`, and `RELEASE-NOTES.md`, including the version's
-   changelog section, commit, and both SHA-256 values. They then confirm that
+4. **The release maintainer tags and records the release.** With infra's
+   `bin/release-tag`, they first compare the package in `release-assets` with
+   the archive Hex serves. The helper pushes the annotated tag `v<version>`
+   on the published commit named by the served docs' `release.json` and the
+   run summary, then creates the GitHub Release with both archives and
+   `SHA256SUMS`. It writes the release notes from the version's
+   section of the compared package's changelog. They then confirm that
    the tag, the Release and Hex name the same version. Earlier release
    notes may link forward, but they are not backfilled with changes they omitted.
 
@@ -100,39 +98,33 @@ that start with a dot, such as ExDoc's build manifests.
 Qualification builds and inspects the same docs archive. The build refuses a
 checkout that differs from the commit.
 
-The build hands the inspected package and docs archives, with their
-`SHA256SUMS`, to the upload job as the artifact `inspected-archives`. Consumer
+After checking the packaged changelog, the build checks Hex anonymously and
+plans each upload. It marks a served package for skipping only when its
+SHA-256 matches the inspected package, and marks served docs for skipping.
+It passes the plan as job outputs and hands the inspected archives and
+`SHA256SUMS` to the upload job as `inspected-archives`. Consumer
 files leave the workflow only as `release-assets`, which `Read back` assembles
 from the bytes hex.pm serves. Consumer verification uses the files attached to
 the GitHub Release for `v<version>`; workflow artifacts expire.
 
 `Upload inspected assets` starts on a separate runner that has run no project
 code. Its sparse checkout of `release_commit` contains only the shared runtime
-action, the shared toolchain reader it calls, and the registry-state and upload
-scripts. It installs the build's exact runtime and Hex client, downloads
+action, the shared toolchain reader it calls, and the upload script.
+It installs the build's exact runtime and Hex client, downloads
 `inspected-archives`, checks `SHA256SUMS`, and compares both archive hashes with
 the build job's outputs. Nothing is rebuilt.
 
-Before receiving a key, the upload job checks hex.pm anonymously:
-
-- The package is the release. A missing package archive is uploaded. An
-  already served archive is skipped only when its SHA-256 equals the inspected
-  package archive. A different checksum or a retired version refuses.
-- Missing docs are uploaded. Docs hex.pm already serves for the version are
-  kept and never compared. A docs build is not byte-stable: ExDoc 0.40.4 orders
-  its search data differently in some builds of one commit, so comparing docs
-  bytes could refuse every later dispatch of a held release. Hex accepts docs
-  only for a release it serves, so served docs belong to the package just
-  compared.
-
 Only the upload step receives `HEX_API_KEY`, through its environment. Its script
 runs outside a Mix project and refuses a loaded project before reading the key.
-It uploads the inspected package first with replacement disabled, then the
-inspected docs, only for the parts the anonymous decision marked missing. It
-never replaces a package or published docs. A refused or failed package upload
-stops the step before any docs request, because Hex's docs upload has no
-replacement guard and would write onto whatever release holds the version.
-HTTP errors refuse without printing response bodies, headers, or credentials.
+It rechecks the current Hex state before writing. An upload-only retry skips
+an already served package with the inspected checksum and skips docs already
+served for that package. A different checksum, retired version, or uncertain
+state refuses. The script uploads the package first with replacement disabled.
+Before writing docs, it checks again because Hex's docs upload has no
+replacement guard. The docs upload requires the checked package or a package
+Hex explicitly held for approval. Docs bytes can differ across builds of one
+commit because ExDoc 0.40.4 can order its search data differently. HTTP errors
+report a status without printing response bodies, headers, or credentials.
 
 If Hex holds either upload for approval, the script reports its kind, approval
 URL, expiration, and archive SHA-256. It attempts both requested uploads before
@@ -148,15 +140,15 @@ their staged release checksums must match.
   That commit is the published commit. Served docs without `release.json` or
   naming a commit outside the selected commit's history are refused. Their
   bytes are not compared with a build.
-- The signed Hex registry lists the version with the inspected package checksum.
+- The Hex registry signature verifies against the pinned Hex.pm public key,
+  and the version's release record contains the inspected outer checksum.
 - HexDocs serves the version.
 - The get-started Livebook runs against the published package from hex.pm with
   a real receiver.
 
 After the registry check and before it runs any project or dependency code,
-`Read back` assembles `release-assets` from the archives hex.pm serves: both
-archives, `SHA256SUMS` in `sha256sum` format, and `RELEASE-NOTES.md` with the
-version's changelog section, the commit and both SHA-256 values. Code that runs
+`Read back` assembles `release-assets` with both archives hex.pm serves and their
+`SHA256SUMS` in `sha256sum` format. Code that runs
 later, such as the Livebook's dependencies, cannot alter what it recorded. The
 run summary records `release_commit`, the published commit and `SHA256SUMS`.
 Only after the whole read-back succeeds, Livebook included, does the release
@@ -172,9 +164,10 @@ maintainer push the tag and create the GitHub Release from `release-assets`.
   before pushing any tag.
   The new run compares the package archive, keeps docs hex.pm already serves,
   uploads only what is missing, and reads both back. A hold is never reported as a completed publication.
-- **A partial upload or other upload failure.** A second dispatch with the same
-  `release_commit` finishes it when the served package has the inspected bytes. Other
-  package bytes or a retired version refuse. The workflow never replaces an archive to make a retry pass.
+- **A partial upload or other upload failure.** Re-running a failed upload uses
+  the inspected archives and rechecks what Hex serves. A second dispatch with
+  the same `release_commit` also works when the served package has the inspected
+  bytes. Other package bytes or a retired version refuse.
 - **A read-back failure caused by propagation delay.** The release maintainer
   re-runs only the failed `Read back` job. The successful build and upload jobs
   do not run again. A new dispatch with the same `release_commit` can also finish the

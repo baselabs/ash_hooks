@@ -36,10 +36,10 @@ defmodule AshHooks.ReleaseRecordTest do
   test "a served package with the inspected bytes keeps served docs and uploads missing docs",
        context do
     served = %{"checksum" => context.checksum, "has_docs" => true}
-    assert decide(context, served) == ~s({"docs": "served", "package": "served"})
+    assert decide(context, served) == ~s({"docs": "skip", "package": "skip"})
 
     missing = %{served | "has_docs" => false}
-    assert decide(context, missing) == ~s({"docs": "upload", "package": "served"})
+    assert decide(context, missing) == ~s({"docs": "upload", "package": "skip"})
   end
 
   test "other package bytes or an indefinite docs state refuse", context do
@@ -50,24 +50,11 @@ defmodule AshHooks.ReleaseRecordTest do
              "refused: hex.pm returned no definite documentation state"
   end
 
-  test "the release record lists the served archives, the commit and the changelog section",
-       context do
+  test "one nonempty changelog section qualifies", context do
     changelog = changelog(context, "## [3.4.0] - 2026-11-20\n\n### Added\n\n- Dispatch.\n")
-    File.write!(Path.join(context.tree, "ash_hooks-3.4.0-docs.tar.gz"), "docs")
-    commit = String.duplicate("a", 40)
-
-    {output, status} =
-      notes(["3.4.0", "--changelog", changelog, "--assets", context.tree, "--commit", commit])
-
+    {output, status} = notes(["3.4.0", "--changelog", changelog])
     assert status == 0, output
-    docs = :crypto.hash(:sha256, "docs") |> Base.encode16(case: :lower)
-
-    assert File.read!(Path.join(context.tree, "SHA256SUMS")) ==
-             "#{context.checksum}  ash_hooks-3.4.0.tar\n#{docs}  ash_hooks-3.4.0-docs.tar.gz\n"
-
-    assert File.read!(Path.join(context.tree, "RELEASE-NOTES.md")) ==
-             "## [3.4.0] - 2026-11-20\n\n### Added\n\n- Dispatch.\n\nCommit: #{commit}\n\n" <>
-               "Package SHA-256: #{context.checksum}\n\nDocs SHA-256: #{docs}\n"
+    assert output =~ "CHANGELOG OK: one nonempty section for 3.4.0"
   end
 
   test "a missing, empty or duplicated changelog section refuses", context do

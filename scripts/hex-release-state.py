@@ -81,7 +81,7 @@ def decide(record, version, package):
         )
     if type(record.get("has_docs")) is not bool:
         raise ValueError("hex.pm returned no definite documentation state; refusing.")
-    return {"package": "served", "docs": "served" if record["has_docs"] else "upload"}
+    return {"package": "skip", "docs": "skip" if record["has_docs"] else "upload"}
 
 
 def main():
