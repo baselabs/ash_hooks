@@ -101,25 +101,27 @@ checkout that differs from the commit.
 After checking the packaged changelog, the build checks Hex anonymously and
 plans each upload. It marks a served package for skipping only when its
 SHA-256 matches the inspected package, and marks served docs for skipping.
-It passes the plan as job outputs and hands the inspected archives and
-`SHA256SUMS` to the upload job as `inspected-archives`. Consumer
-files leave the workflow only as `release-assets`, which `Read back` assembles
-from the bytes hex.pm serves. Consumer verification uses the files attached to
-the GitHub Release for `v<version>`; workflow artifacts expire.
+It hands the inspected archives, `plan.json`, and `SHA256SUMS` to the upload
+job as `inspected-archives`. The checksum manifest covers both archives and
+the plan. Consumer files leave the workflow only as `release-assets`, which
+`Read back` assembles from the bytes hex.pm serves. Consumers verify the files
+attached to the GitHub Release for `v<version>`.
 
 `Upload inspected assets` starts on a separate runner that has run no project
 code. Its sparse checkout of `release_commit` contains only the shared runtime
 action, the shared toolchain reader it calls, and the upload script.
 It installs the build's exact runtime and Hex client, downloads
-`inspected-archives`, checks `SHA256SUMS`, and compares both archive hashes with
-the build job's outputs. Nothing is rebuilt.
+`inspected-archives`, confirms the manifest's SHA-256 against the build job's
+output, and verifies each file before reading the plan.
 
 Only the upload step receives `HEX_API_KEY`, through its environment. Its script
 runs outside a Mix project and refuses a loaded project before reading the key.
-It rechecks the current Hex state before writing. An upload-only retry skips
-an already served package with the inspected checksum and skips docs already
-served for that package. A different checksum, retired version, or uncertain
-state refuses. The script uploads the package first with replacement disabled.
+It rechecks the current Hex state even when the plan skips both archives.
+An upload-only retry skips an already served package with the inspected
+checksum and skips docs already served for that package. A planned skip
+refuses if Hex no longer serves that archive. A different checksum, retired
+version, or uncertain state also refuses. The script uploads the package first
+with replacement disabled.
 Before writing docs, it checks again because Hex's docs upload has no
 replacement guard. The docs upload requires the checked package or a package
 Hex explicitly held for approval. Docs bytes can differ across builds of one
@@ -140,8 +142,9 @@ their staged release checksums must match.
   That commit is the published commit. Served docs without `release.json` or
   naming a commit outside the selected commit's history are refused. Their
   bytes are not compared with a build.
-- The Hex registry signature verifies against the pinned Hex.pm public key,
-  and the version's release record contains the inspected outer checksum.
+- The Hex registry signature verifies against the pinned Hex.pm public key.
+  The version's release record must be unretired and contain the inspected
+  outer checksum.
 - HexDocs serves the version.
 - The get-started Livebook runs against the published package from hex.pm with
   a real receiver.
@@ -164,10 +167,10 @@ maintainer push the tag and create the GitHub Release from `release-assets`.
   before pushing any tag.
   The new run compares the package archive, keeps docs hex.pm already serves,
   uploads only what is missing, and reads both back. A hold is never reported as a completed publication.
-- **A partial upload or other upload failure.** Re-running a failed upload uses
-  the inspected archives and rechecks what Hex serves. A second dispatch with
-  the same `release_commit` also works when the served package has the inspected
-  bytes. Other package bytes or a retired version refuse.
+- **A partial upload or other upload failure.** An upload-only retry rechecks
+  what Hex serves while the `inspected-archives` artifact is available. It
+  expires after one day. After expiration, dispatch again from `main` with
+  the same `release_commit`. Other package bytes or a retired version refuse.
 - **A read-back failure caused by propagation delay.** The release maintainer
   re-runs only the failed `Read back` job. The successful build and upload jobs
   do not run again. A new dispatch with the same `release_commit` can also finish the

@@ -1,8 +1,8 @@
-defmodule AshHooks.ReleaseRecordTest do
+defmodule AshHooks.ReleaseBuildChecksTest do
   use ExUnit.Case, async: true
 
   @state Path.expand("../../scripts/hex-release-state.py", __DIR__)
-  @notes Path.expand("../../scripts/release-notes.py", __DIR__)
+  @changelog_check Path.expand("../../scripts/check-changelog-section.py", __DIR__)
 
   # Loads the state script and prints decide/3 for one release record. decide
   # makes no request, so served docs are kept without fetching their bytes.
@@ -20,7 +20,7 @@ defmodule AshHooks.ReleaseRecordTest do
   """
 
   setup do
-    tree = Path.join(System.tmp_dir!(), "release_record_#{Ash.UUID.generate()}")
+    tree = Path.join(System.tmp_dir!(), "release_build_checks_#{Ash.UUID.generate()}")
     File.mkdir_p!(tree)
     on_exit(fn -> File.rm_rf!(tree) end)
     package = Path.join(tree, "ash_hooks-3.4.0.tar")
@@ -52,7 +52,7 @@ defmodule AshHooks.ReleaseRecordTest do
 
   test "one nonempty changelog section qualifies", context do
     changelog = changelog(context, "## [3.4.0] - 2026-11-20\n\n### Added\n\n- Dispatch.\n")
-    {output, status} = notes(["3.4.0", "--changelog", changelog])
+    {output, status} = check_changelog(["3.4.0", "--changelog", changelog])
     assert status == 0, output
     assert output =~ "CHANGELOG OK: one nonempty section for 3.4.0"
   end
@@ -63,7 +63,7 @@ defmodule AshHooks.ReleaseRecordTest do
           "## [3.4.0] - 2026-11-20\n\n### Added\n",
           "## [3.4.0] - 2026-11-20\n\n- One.\n\n## [3.4.0] - 2026-11-20\n\n- Two.\n"
         ] do
-      {output, status} = notes(["3.4.0", "--changelog", changelog(context, text)])
+      {output, status} = check_changelog(["3.4.0", "--changelog", changelog(context, text)])
       assert status == 1, text
       assert output =~ "changelog section for 3.4.0 is missing, duplicated or empty"
     end
@@ -81,5 +81,6 @@ defmodule AshHooks.ReleaseRecordTest do
     path
   end
 
-  defp notes(args), do: System.cmd("python3", ["-I", @notes | args], stderr_to_stdout: true)
+  defp check_changelog(args),
+    do: System.cmd("python3", ["-I", @changelog_check | args], stderr_to_stdout: true)
 end

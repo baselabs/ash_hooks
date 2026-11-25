@@ -3,15 +3,14 @@
 
 The package is the release: an already served package must have the inspected
 package's bytes. A docs build is not byte-stable, so docs Hex already serves for
-the version are kept and never compared; Hex accepts docs only for a release it
-serves, so they belong to the package just compared.
+the version are kept and never compared. The uploader can send missing docs
+for a matching served release or for a package explicitly staged by Hex.
 """
 
 import argparse
 import hashlib
 import http.client
 import json
-import os
 from pathlib import Path
 import re
 import sys
@@ -100,16 +99,10 @@ def main():
     try:
         record = release_record(args.version)
         if args.mode == "pre-build":
-            outputs = {"release": "missing" if record is None else "served"}
-            print(f"ash_hooks {args.version}: {outputs['release']}; build may continue.")
+            state = "missing" if record is None else "served"
+            print(f"ash_hooks {args.version}: {state}; build may continue.")
         else:
-            outputs = decide(record, args.version, args.package_archive)
-            for part, state in outputs.items():
-                print(f"ash_hooks {args.version} {part}: {state}")
-        if output := os.environ.get("GITHUB_OUTPUT"):
-            with open(output, "a", encoding="utf-8") as stream:
-                for name, value in outputs.items():
-                    stream.write(f"{name}={value}\n")
+            print(json.dumps(decide(record, args.version, args.package_archive)))
     except (ValueError, OSError) as error:
         # JSON errors can contain response text. Only explicit refusal messages leave.
         if isinstance(error, (json.JSONDecodeError, UnicodeDecodeError)):
@@ -117,7 +110,7 @@ def main():
         elif isinstance(error, ValueError):
             print(str(error), file=sys.stderr)
         else:
-            print("Could not read an archive or write the decision; refusing.", file=sys.stderr)
+            print("Could not read an archive or write the plan; refusing.", file=sys.stderr)
         return 1
     return 0
 

@@ -86,6 +86,10 @@ def check(compressed, version, checksum):
     envelope = fields(signed)
     payload = required_bytes(envelope, 1)
     verify_signature(payload, required_bytes(envelope, 2))
+    check_package(payload, version, checksum)
+
+
+def check_package(payload, version, checksum):
     package = fields(payload)
     if required_bytes(package, 2) != b"ash_hooks" or required_bytes(package, 3) != b"hexpm":
         raise ValueError("signed registry package does not name hexpm/ash_hooks")
@@ -99,7 +103,10 @@ def check(compressed, version, checksum):
             matching.append(release)
     if len(matching) != 1:
         raise ValueError(f"expected exactly one registry release for ash_hooks {version}")
-    if required_bytes(matching[0], 5) != checksum:
+    release = matching[0]
+    if 4 in release:
+        raise ValueError(f"Hex registry lists retired ash_hooks {version}")
+    if required_bytes(release, 5) != checksum:
         raise ValueError(f"outer checksum differs for ash_hooks {version}")
 
 

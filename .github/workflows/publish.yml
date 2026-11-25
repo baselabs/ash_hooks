@@ -121,10 +121,8 @@ jobs:
       RELEASE_COMMIT: ${{ needs.verify.outputs.release_commit }}
       VERSION: ${{ needs.verify.outputs.version }}
     outputs:
-      package_plan: ${{ steps.plan.outputs.package }}
-      docs_plan: ${{ steps.plan.outputs.docs }}
       package_sha256: ${{ steps.assets.outputs.package_sha256 }}
-      docs_sha256: ${{ steps.assets.outputs.docs_sha256 }}
+      manifest_sha256: ${{ steps.assets.outputs.manifest_sha256 }}
       elixir: ${{ steps.toolchain.outputs.elixir }}
       otp: ${{ steps.toolchain.outputs.otp }}
     steps:
@@ -135,12 +133,15 @@ jobs:
           persist-credentials: false
       - name: Check release tooling, Hex state and the changelog
         run: |
-          if [ ! -f scripts/check-hex-registry.py ] || [ ! -f scripts/hexpm-registry-public-key.pem ]; then
-            echo "::error::The release commit lacks the signed Hex registry read-back tools."
-            exit 1
-          fi
+          for tool in check-hex-registry.py hexpm-registry-public-key.pem publish-hex-release.exs \
+            hex-release-state.py check-changelog-section.py; do
+            if [ ! -f "scripts/$tool" ]; then
+              echo "::error::The release commit lacks scripts/$tool."
+              exit 1
+            fi
+          done
           python3 -I scripts/hex-release-state.py pre-build "$VERSION"
-          python3 -I scripts/release-notes.py "$VERSION"
+          python3 -I scripts/check-changelog-section.py "$VERSION"
       - name: Read the runtime toolchain
         id: toolchain
         run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
@@ -201,11 +202,6 @@ jobs:
                   refuse(f'the packaged CHANGELOG has entries above {version}, under "{title}"')
           print(f'{archive}: the packaged CHANGELOG is stamped for {version}')
           PY
-      - name: Plan the missing Hex uploads
-        id: plan
-        run: |
-          python3 -I scripts/hex-release-state.py post-build "$VERSION" \
-            --package-archive "_build/release/ash_hooks-$VERSION.tar"
       - run: env -u ASH_HOOKS_NO_OPTIONAL mix docs --warnings-as-errors
       - name: Name the package, version and commit in the docs
         run: python3 -I scripts/stamp-docs-release.py doc --version "$VERSION" --commit "$RELEASE_COMMIT"
@@ -225,7 +221,7 @@ jobs:
             echo "::error::The checkout differs from $RELEASE_COMMIT."
             exit 1
           fi
-      - name: Assemble the inspected archives
+      - name: Plan uploads and assemble the inspected archives
         id: assets
         run: |
           inspected="$RUNNER_TEMP/inspected-archives"
@@ -233,12 +229,14 @@ jobs:
           cp "_build/release/ash_hooks-$VERSION.tar" "$inspected/ash_hooks-$VERSION.tar"
           cp "$RUNNER_TEMP/ash_hooks-docs.tar.gz" "$inspected/ash_hooks-$VERSION-docs.tar.gz"
           cd "$inspected"
-          sha256sum "ash_hooks-$VERSION.tar" "ash_hooks-$VERSION-docs.tar.gz" > SHA256SUMS
+          python3 -I "$GITHUB_WORKSPACE/scripts/hex-release-state.py" post-build "$VERSION" \
+            --package-archive "ash_hooks-$VERSION.tar" > plan.json
+          sha256sum "ash_hooks-$VERSION.tar" "ash_hooks-$VERSION-docs.tar.gz" plan.json > SHA256SUMS
           package_sha256=$(sha256sum "ash_hooks-$VERSION.tar" | cut -d' ' -f1)
-          docs_sha256=$(sha256sum "ash_hooks-$VERSION-docs.tar.gz" | cut -d' ' -f1)
+          manifest_sha256=$(sha256sum SHA256SUMS | cut -d' ' -f1)
           {
             echo "package_sha256=$package_sha256"
-            echo "docs_sha256=$docs_sha256"
+            echo "manifest_sha256=$manifest_sha256"
           } >> "$GITHUB_OUTPUT"
       # The upload job's input only. Consumer files leave as release-assets,
       # assembled by Read back from the bytes Hex serves.
@@ -259,10 +257,7 @@ jobs:
     timeout-minutes: 5 # the five-minute floor; 23s on publish run 45487330271
     env:
       VERSION: ${{ needs.verify.outputs.version }}
-      PACKAGE_SHA256: ${{ needs.build.outputs.package_sha256 }}
-      DOCS_SHA256: ${{ needs.build.outputs.docs_sha256 }}
-      PACKAGE_PLAN: ${{ needs.build.outputs.package_plan }}
-      DOCS_PLAN: ${{ needs.build.outputs.docs_plan }}
+      MANIFEST_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -281,23 +276,38 @@ jobs:
         with:
           name: inspected-archives
           path: ${{ runner.temp }}/inspected-archives
-      - name: Verify the downloaded archive checksums
+      - name: Verify the downloaded archives and read the upload plan
+        id: plan
         working-directory: ${{ runner.temp }}/inspected-archives
         run: |
           test ! -e mix.exs
+          printf '%s  SHA256SUMS\n' "$MANIFEST_SHA256" | sha256sum -c -
           sha256sum -c SHA256SUMS
-          printf '%s  %s\n' "$PACKAGE_SHA256" "ash_hooks-$VERSION.tar" \
-            "$DOCS_SHA256" "ash_hooks-$VERSION-docs.tar.gz" | sha256sum -c -
-          case "$PACKAGE_PLAN:$DOCS_PLAN" in
-            upload:upload|upload:skip|skip:upload|skip:skip) ;;
-            *) echo "::error::The build did not provide a valid upload plan."; exit 1 ;;
-          esac
+          python3 -I - >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          from pathlib import Path
+
+          try:
+              entries = json.loads(Path("plan.json").read_text(), object_pairs_hook=tuple)
+              if not isinstance(entries, tuple) or len(entries) != 2:
+                  raise ValueError
+              plan = dict(entries)
+              if set(plan) != {"package", "docs"} or (plan["package"], plan["docs"]) not in (
+                  ("upload", "upload"), ("skip", "upload"), ("skip", "skip")
+              ):
+                  raise ValueError
+          except (OSError, ValueError):
+              raise SystemExit("::error::The artifact does not contain a valid Hex upload plan.") from None
+          print(f'package={plan["package"]}')
+          print(f'docs={plan["docs"]}')
+          PY
       # This runner has run no project code. Only this step receives the key.
-      - name: Upload the missing inspected archives
-        if: needs.build.outputs.package_plan == 'upload' || needs.build.outputs.docs_plan == 'upload'
+      - name: Confirm the plan and upload missing inspected archives
         working-directory: ${{ runner.temp }}/inspected-archives
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+          PACKAGE_PLAN: ${{ steps.plan.outputs.package }}
+          DOCS_PLAN: ${{ steps.plan.outputs.docs }}
         run: |
           mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/publish-hex-release.exs" \
             "$VERSION" "ash_hooks-$VERSION.tar" "ash_hooks-$VERSION-docs.tar.gz" \
@@ -310,10 +320,10 @@ jobs:
     needs: [verify, build, upload]
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     runs-on: ubuntu-24.04
-    # Twice the measured 231s on publish run 45487330271 is 7.7 minutes, plus
+    # Twice 176s on publish run 45487330271 is 5.9 minutes, plus
     # bounded propagation: 2.5 minutes package archive, 5 docs archive,
-    # 5 HexDocs and 5 registry. 26 minutes rounds up 7.7 + 2.5 + 5 + 5 + 5.
-    timeout-minutes: 26
+    # 5 HexDocs and 5 registry. 24 minutes rounds up 5.9 + 2.5 + 5 + 5 + 5.
+    timeout-minutes: 24
     services:
       receiver:
         image: ghcr.io/tarampampam/webhook-tester:2.3.0@sha256:85818267b450d3d386cad6510c561e09b974183ed2832c373bc83b125fc1b221

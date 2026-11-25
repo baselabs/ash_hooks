@@ -5,10 +5,11 @@ end
 defmodule PublishHexRelease do
   def run do
     [version, package_path, docs_path, package_plan, docs_plan] = System.argv()
+    plan = {package_plan, docs_plan}
 
     unless match?({:ok, _}, Version.parse(version)) and
-             package_plan in ["upload", "skip"] and docs_plan in ["upload", "skip"] do
-      Mix.raise("Expected a release version and upload or skip decisions")
+             plan in [{"upload", "upload"}, {"skip", "upload"}, {"skip", "skip"}] do
+      Mix.raise("Expected a release version and a valid package and docs upload plan")
     end
 
     package = File.read!(package_path)
@@ -17,9 +18,6 @@ defmodule PublishHexRelease do
     Hex.start()
     Code.ensure_loaded!(Hex.API.Release)
     Code.ensure_loaded!(Hex.API.ReleaseDocs)
-    key = System.fetch_env!("HEX_API_KEY")
-    if String.trim(key) == "", do: Mix.raise("HEX_API_KEY is empty")
-    auth = [key: key]
 
     package_result =
       case {package_plan, served_release(version, checksum)} do
@@ -27,7 +25,7 @@ defmodule PublishHexRelease do
           skip("package")
 
         {"upload", :missing} ->
-          publish_package(version, package, checksum, auth)
+          publish_package(version, package, checksum)
 
         {"skip", :missing} ->
           Mix.raise("Hex no longer serves the package that the build planned to keep")
@@ -35,7 +33,7 @@ defmodule PublishHexRelease do
 
     if package_result == :error, do: System.halt(1)
 
-    docs_result = publish_docs(docs_plan, version, docs, checksum, package_result, auth)
+    docs_result = publish_docs(docs_plan, version, docs, checksum, package_result)
 
     case {package_result, docs_result} do
       {{:staged, package}, {:staged, %{"kind" => "release"} = docs}} ->
@@ -83,7 +81,9 @@ defmodule PublishHexRelease do
     end
   end
 
-  defp publish_package(version, package, checksum, auth) do
+  defp publish_package(version, package, checksum) do
+    auth = upload_auth()
+
     result =
       upload("package", package, fn ->
         Hex.API.Release.publish(nil, package, auth, fn _ -> :ok end, replace: false)
@@ -97,26 +97,35 @@ defmodule PublishHexRelease do
     end
   end
 
-  defp publish_docs("skip", _version, _docs, _checksum, _package_result, _auth), do: :ok
-
-  defp publish_docs("upload", version, docs, checksum, package_result, auth) do
+  defp publish_docs(plan, version, docs, checksum, package_result) do
     # Hex's docs API has no replace guard. Recheck the package identity and docs
     # state just before the request. An explicitly staged package can accept docs
     # before it is served.
     staged_package? = match?({:staged, _}, package_result)
 
-    case served_release(version, checksum) do
-      {:served, true} ->
+    case {plan, served_release(version, checksum)} do
+      {_, {:served, true}} ->
         skip("docs")
 
-      :missing when not staged_package? ->
+      {"skip", _} ->
+        Mix.raise("Hex no longer serves the docs that the build planned to keep")
+
+      {"upload", :missing} when not staged_package? ->
         Mix.raise("Hex does not serve the checked package yet; retry the upload")
 
-      _ ->
+      {"upload", _} ->
+        auth = upload_auth()
+
         upload("docs", docs, fn ->
           Hex.API.ReleaseDocs.publish(nil, "ash_hooks", version, docs, auth)
         end)
     end
+  end
+
+  defp upload_auth do
+    key = System.fetch_env!("HEX_API_KEY")
+    if String.trim(key) == "", do: Mix.raise("HEX_API_KEY is empty")
+    [key: key]
   end
 
   defp skip(kind) do
