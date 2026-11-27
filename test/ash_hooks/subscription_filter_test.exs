@@ -219,6 +219,7 @@ defmodule AshHooks.SubscriptionFilterTest do
   import Ash.Expr, only: [expr: 1]
 
   alias __MODULE__.{EtsSubscription, PostgresSubscription, SimpleSubscription}
+  alias Ash.DataLayer.Ets
   alias Ash.Error.Changes.InvalidAttribute
   alias AshHooks.Subscription, as: Filters
   alias AshHooks.Subscription.Changes.CheckHostFilters
@@ -338,7 +339,7 @@ defmodule AshHooks.SubscriptionFilterTest do
     test "filter validation on create and update for #{inspect(resource)}", %{
       subscription_resource: resource
     } do
-      if resource == EtsSubscription, do: on_exit(fn -> Ash.DataLayer.Ets.stop(resource) end)
+      if resource == EtsSubscription, do: on_exit(fn -> Ets.stop(resource) end)
 
       endpoint_id = endpoint!().id
       attrs = %{endpoint_id: endpoint_id}
@@ -455,7 +456,7 @@ defmodule AshHooks.SubscriptionFilterTest do
   end
 
   test "ETS accepts atom and tuple filter values" do
-    on_exit(fn -> Ash.DataLayer.Ets.stop(EtsSubscription) end)
+    on_exit(fn -> Ets.stop(EtsSubscription) end)
     endpoint_id = endpoint!().id
 
     for value <- [:west, {:west, 1}, <<0, 255>>] do
@@ -539,7 +540,7 @@ defmodule AshHooks.SubscriptionFilterTest do
   end
 
   test "before-action writes are checked on create and update even when globals are skipped" do
-    on_exit(fn -> Ash.DataLayer.Ets.stop(EtsSubscription) end)
+    on_exit(fn -> Ets.stop(EtsSubscription) end)
     endpoint_id = endpoint!().id
 
     for resource <- [Subscription, EtsSubscription] do
@@ -573,7 +574,7 @@ defmodule AshHooks.SubscriptionFilterTest do
   end
 
   test "host maps refuse invalid filters during automatic and explicit atomic updates" do
-    on_exit(fn -> Ash.DataLayer.Ets.stop(EtsSubscription) end)
+    on_exit(fn -> Ets.stop(EtsSubscription) end)
 
     sub =
       Ash.create!(

@@ -57,7 +57,14 @@ defmodule AshHooks.Type.EventFilters do
   end
 
   defp list_error([]), do: "must have a nonempty list for an any-of filter"
-  defp list_error([_ | _] = list) when length(list) > 0, do: nil
-  defp list_error([_ | _]), do: "must have a proper list for an any-of filter"
+
+  defp list_error([_ | tail]) do
+    unless proper_list?(tail), do: "must have a proper list for an any-of filter"
+  end
+
   defp list_error(_value), do: nil
+
+  defp proper_list?([]), do: true
+  defp proper_list?([_ | tail]), do: proper_list?(tail)
+  defp proper_list?(_tail), do: false
 end
