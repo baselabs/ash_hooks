@@ -265,36 +265,27 @@ defmodule AshHooks.OutboundEvent do
           dispatch_route: route
         )
 
-      if opts[:dry_run] do
-        count =
-          Enum.count(events, fn logged ->
-            replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant) ==
-              :created
-          end)
+      run_event = &replay_one(&1, endpoint, deliveries, endpoints, requested_by, opts, tenant)
 
-        {:ok, %{count: count}}
+      if opts[:dry_run] do
+        {:ok, %{count: Enum.count(events, &(run_event.(&1) == :created))}}
       else
-        replay_events(events, endpoint, deliveries, endpoints, requested_by, opts, tenant)
+        replay_events(events, run_event, opts[:per_second] || 50)
       end
     end
   end
 
-  defp replay_events(events, endpoint, deliveries, endpoints, requested_by, opts, tenant) do
+  defp replay_events(events, run_event, per_second) do
     summary = %{created: 0, re_sent: 0, skipped: 0, errors: []}
 
     summary =
       events
-      |> Enum.chunk_every(opts[:per_second] || 50)
+      |> Enum.chunk_every(per_second)
       |> Enum.with_index()
       |> Enum.reduce(summary, fn {batch, index}, counts ->
         if index > 0, do: Process.sleep(1_000)
 
-        Enum.reduce(batch, counts, fn logged, acc ->
-          tally(
-            acc,
-            replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant)
-          )
-        end)
+        Enum.reduce(batch, counts, fn logged, acc -> tally(acc, run_event.(logged)) end)
       end)
 
     {:ok, Map.update!(summary, :errors, &Enum.reverse/1)}
@@ -371,21 +362,24 @@ defmodule AshHooks.OutboundEvent do
 
     with {:ok, event} <-
            Event.new(id: logged.event_uuid, type: logged.event_type, payload: logged.payload) do
-      metadata =
-        case context do
-          %{metadata_json: encoded} when is_binary(encoded) ->
-            case Jason.decode(encoded) do
-              {:ok, metadata} when is_map(metadata) -> metadata
-              _ -> nil
-            end
+      event = %{
+        event
+        | metadata: decode_metadata(context),
+          version: context && context[:event_version]
+      }
 
-          _ ->
-            nil
-        end
-
-      {:ok, %{event | metadata: metadata, version: context && context[:event_version]}, context}
+      {:ok, event, context}
     end
   end
+
+  defp decode_metadata(%{metadata_json: encoded}) when is_binary(encoded) do
+    case Jason.decode(encoded) do
+      {:ok, metadata} when is_map(metadata) -> metadata
+      _ -> nil
+    end
+  end
+
+  defp decode_metadata(_context), do: nil
 
   defp replay_payload(event, entity, endpoint, logged_version, context) do
     pin = Map.get(endpoint, :pinned_payload_version)
