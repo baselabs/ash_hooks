@@ -331,11 +331,26 @@ defmodule AshHooks.Ingress do
   """
   @spec ingest(module(), atom(), binary() | nil, ctx()) ::
           {:ok, :created | :duplicate, struct()} | {:error, term()}
-  def ingest(resource, name, raw_body, ctx) do
+  def ingest(resource, name, raw_body, ctx),
+    do: ingest(resource, name, raw_body, ctx, nil, System.monotonic_time())
+
+  @doc false
+  def ingest_with_source(resource, name, raw_body, ctx) do
     started = System.monotonic_time()
 
+    case resolve_source(resource, name, Map.to_list(ctx)) do
+      {:ok, source} = resolution ->
+        {source.provider, ingest(resource, name, raw_body, ctx, resolution, started)}
+
+      {:error, _} = error ->
+        {nil, error}
+    end
+  end
+
+  defp ingest(resource, name, raw_body, ctx, resolution, started) do
     with {:ok, tenant} <- Tenancy.resolve([resource], ctx[:tenant]),
-         {:ok, env} <- verify(resource, name, raw_body, Map.put(ctx, :tenant, tenant), started),
+         ctx = Map.put(ctx, :tenant, tenant),
+         {:ok, env} <- verify_request(resource, name, raw_body, ctx, resolution, started),
          {:ok, created?, delivery} <- persist_verified(resource, env) do
       drive(resource, env, delivery, created?)
     end
@@ -343,8 +358,8 @@ defmodule AshHooks.Ingress do
 
   # the verify event wraps resolution + signature verification; the
   # reason is the fixed error class atom, never the raw error payload.
-  defp verify(resource, name, raw_body, ctx, started) do
-    case resolve(resource, name, raw_body, ctx) do
+  defp verify_request(resource, name, raw_body, ctx, resolution, started) do
+    case resolve(resource, name, raw_body, ctx, resolution) do
       {:ok, _env} = ok ->
         emit_verify(name, :ok, nil, started)
         ok
@@ -1432,8 +1447,7 @@ defmodule AshHooks.Ingress do
   defp result(true), do: :created
   defp result(false), do: :duplicate
 
-  # resolve/4: provider + inbound entity + secret + verification + decode +
-  # digest + external id + parsed type. Nothing here writes to the ledger.
+  # Resolve, verify, decode, and prepare the identity before any ledger write.
   # A signature-valid but undecodable body persists as `%{}` for providers
   # without a stable-identity callback and is recorded permanently malformed
   # when inserted, without a claim. The decode verdict stays separate from
@@ -1441,7 +1455,7 @@ defmodule AshHooks.Ingress do
   # identity callback may reject that decoded
   # shape explicitly; ingress never substitutes the raw digest after a
   # callback error.
-  defp resolve(resource, name, raw_body, ctx) do
+  defp resolve(resource, name, raw_body, ctx, resolution) do
     {module, function, args} =
       Extension.get_opt(resource, [:inbound_delivery], :json_decoder, {Jason, :decode, []})
 
@@ -1453,7 +1467,7 @@ defmodule AshHooks.Ingress do
 
     with {:ok, inbound} <- fetch_inbound(resource, name),
          :ok <- admission_open(inbound),
-         {:ok, resolved} <- request_source(resource, inbound, ctx),
+         {:ok, resolved} <- resolution || request_source(resource, inbound, ctx),
          :ok <- resolved_pause(resolved),
          :ok <- check_replay_window(inbound, resolved.provider, name),
          :ok <- check_raw_body(raw_body, name),
@@ -1531,8 +1545,9 @@ defmodule AshHooks.Ingress do
   Resolves one inbound declaration, casting and constraining scope before a
   source lookup. A source row is read in a tenant phase; an absent row returns
   `UnknownSource`. Declarations without `source_record` perform no source read.
-  Options: `:tenant`, `:scope`. The returned struct can be passed as
-  `:resolved_source` to ingest, as the HTTP entry point does.
+  Options: `:tenant`, `:scope`. Legacy callers can pass the returned struct as
+  `:resolved_source` to ingest for the same request. Durable routes resolve
+  their source within ingress and ignore any caller-supplied snapshot.
   """
   @spec resolve_source(module(), atom(), keyword()) ::
           {:ok, AshHooks.Inbound.ResolvedSource.t()} | {:error, term()}

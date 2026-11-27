@@ -1,8 +1,7 @@
 defmodule AshHooks.DurableReplayVerifierTest do
   use ExUnit.Case, async: false
 
-  alias AshHooks.Test.Dsl
-  alias AshHooks.Test.OtherSourceProvider
+  alias AshHooks.Test.{BodyMacHandshakeProvider, Dsl, OtherSourceProvider}
 
   defmodule ConnectionProvider do
     @moduledoc false
@@ -57,6 +56,12 @@ defmodule AshHooks.DurableReplayVerifierTest do
       "tenant-scoped durable replay routes require tenant-aware key functions or source records",
       storage: :postgres,
       tenancy: :context
+    )
+  end
+
+  test "a durable declaration refuses a body-only MAC provider with a handshake" do
+    assert_refusal("cannot use a provider that implements handshake/1",
+      provider: BodyMacHandshakeProvider
     )
   end
 

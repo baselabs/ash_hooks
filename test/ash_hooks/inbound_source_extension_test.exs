@@ -2,7 +2,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
   use ExUnit.Case, async: false
   alias Ash.Resource.Info
   alias AshHooks.InboundSource.Transformers.AddSourceFields
-  alias AshHooks.Test.Dsl
+  alias AshHooks.Test.{BodyMacHandshakeProvider, CustodySchemeProvider, Dsl, OtherSourceProvider}
   alias Spark.Dsl.Extension
 
   defmodule ByteProvider do
@@ -304,15 +304,24 @@ defmodule AshHooks.InboundSourceExtensionTest do
     end
   end
 
-  defp assert_protected_source_refusal(options, expected) do
-    source =
-      compile_source(
-        providers: [
-          checked: AshHooks.Test.OtherSourceProvider,
-          alternate: AshHooks.Test.CustodySchemeProvider
-        ]
-      )
+  test "protected source declarations reject selectable body-only MAC providers with a handshake" do
+    providers = [checked: OtherSourceProvider, alternate: BodyMacHandshakeProvider]
 
+    for pin <- [nil, quote(do: provider(unquote(BodyMacHandshakeProvider)))] do
+      assert_protected_source_refusal(
+        pin,
+        "cannot use a provider that implements handshake/1",
+        providers
+      )
+    end
+  end
+
+  defp assert_protected_source_refusal(
+         options,
+         expected,
+         providers \\ [checked: OtherSourceProvider, alternate: CustodySchemeProvider]
+       ) do
+    source = compile_source(providers: providers)
     ledger = Extension.get_opt(source, [:inbound_source], :ledger)
 
     declaration =

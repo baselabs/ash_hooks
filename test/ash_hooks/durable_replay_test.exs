@@ -25,6 +25,12 @@ defmodule AshHooks.DurableReplayTest.Provider do
     AshHooks.CountingProvider.handle_event(type, payload)
   end
 
+  @impl true
+  def response(outcome) do
+    notify({:provider_response, outcome})
+    :default
+  end
+
   defp notify(message) do
     send(Application.fetch_env!(:ash_hooks, __MODULE__), message)
   end
@@ -340,6 +346,8 @@ defmodule AshHooks.DurableReplayTest.Cases do
                  ]
 
           assert Plug.Conn.get_resp_header(conn, "retry-after") == ["60"]
+          refute_received {:provider_response, _}
+          refute_received {:host_response, _}
         end
 
         refute_receive {:handled, _}
@@ -601,8 +609,18 @@ defmodule AshHooks.DurableReplayTest.Cases do
 
       def route(_conn), do: {:ok, %{source: :protected, tenant: "a", actor: @service_actor}}
 
+      def respond(outcome) do
+        send(self(), {:host_response, outcome})
+        :default
+      end
+
       defp http_ingest(resource, body, headers \\ []) do
-        options = AshHooks.Plug.init(resource: resource, resolve: {__MODULE__, :route, []})
+        options =
+          AshHooks.Plug.init(
+            resource: resource,
+            resolve: {__MODULE__, :route, []},
+            respond: {__MODULE__, :respond, []}
+          )
 
         conn =
           Plug.Test.conn("POST", "/hooks", body)

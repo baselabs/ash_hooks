@@ -182,6 +182,10 @@ inbound ledger after applying the
 On each enrolled route, set `replay_protection :durable_identity` and
 `source_binding :authenticated`.
 
+A durable route requires a provider without a pre-verification `handshake/1`
+callback. The DSL checks the pinned provider, or every selectable source alias
+when the route leaves the provider unpinned.
+
 Provision independent signing material for each enrollment and topic,
 including overlap keys. Use one canonical ledger declaration, tenant and
 cast scope for every URL or entry point serving that enrollment. A ledger
@@ -934,13 +938,20 @@ provider alias cannot turn published public bytes into an HMAC secret.
 Direct callers can call `AshHooks.Ingress.resolve_source/3` with ledger, name,
 `tenant:`, and `scope:`. The returned `AshHooks.Inbound.ResolvedSource` contains
 cast scope, selected provider and alias, pause state, admitted custody keys, and
-a separate pinned public key. Pass it as `:resolved_source` in the ingest context
-for that same request. Resolve once per request, not across requests or rotations.
-The [Livebook](../livebooks/get-started.livemd#inbound-source-records) runs this path.
+a separate pinned public key. On legacy routes, pass it as `:resolved_source`
+in the ingest context for that same request. Durable routes resolve the source
+inside ingress. The [Livebook](../livebooks/get-started.livemd#inbound-source-records)
+runs the legacy path.
 
-Plug resolves the source before handshake, then uses its selected provider
-for verification and response policy. Missing source rows return 404. Other
-resolution failures retain the declaration's handshake and response path.
+On legacy routes, Plug resolves the source before handshake, then uses its
+selected provider for verification and response policy. Missing source rows
+return 404. Other resolution failures retain the declaration's handshake and
+response path. On durable routes, Plug checks the method first and ingress
+resolves the source once for verification and response policy. On lookup
+failure the pinned provider, when configured, receives the error before the
+host's `:respond` callback and the default response. A replay storage failure
+uses the default 503 with `Retry-After` and
+`Webhook-Error-Code: dependency_unavailable`.
 A reference destroyed after resolution triggers one fresh source read; verification
 retries only when the owner no longer admits the failed reference. A still-admitted
 reference unknown to custody remains `UnknownKey`. Paused rows still

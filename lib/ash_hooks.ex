@@ -126,7 +126,7 @@ defmodule AshHooks do
         type: {:in, [:legacy, :durable_identity, :retired]},
         default: :legacy,
         doc:
-          "With :durable_identity, retain a versioned digest of the exact verified body for this authenticated enrollment. Requires retain_replay_identities :on and source_binding :authenticated. :retired closes admission and leaves receipts available for cleanup."
+          "With :durable_identity, retain a versioned digest of the exact verified body for this authenticated enrollment. Requires retain_replay_identities :on, source_binding :authenticated, and a provider without handshake/1. :retired closes admission and leaves receipts available for cleanup."
       ],
       source_binding: [
         type: {:in, [:authenticated]},

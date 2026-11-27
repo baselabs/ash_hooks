@@ -3,10 +3,12 @@ if Code.ensure_loaded?(Plug.Conn) do
     @moduledoc """
     Optional Plug adapter for the synchronous inbound webhook pipeline.
 
-    Resolves a source, captures exact raw request bytes, consults the provider's
-    optional handshake, checks the method, and calls `AshHooks.Ingress.ingest/4`
-    once. Every answer is sent and the connection halted. Plug must be installed
-    by the host; this module is absent when Plug is unavailable.
+    Captures exact raw request bytes and drives the request through ingress.
+    Legacy routes resolve the source and consult the provider's optional
+    handshake before checking the method. Durable routes check the method
+    before ingress resolves the source. Every answer is sent and the
+    connection halted. Plug must be installed by the host; this module is
+    absent when Plug is unavailable.
 
     Configure `AshHooks.BodyReader` on the endpoint's `Plug.Parsers`, then
     `forward` a webhook route to this plug from the router, outside
@@ -34,7 +36,8 @@ if Code.ensure_loaded?(Plug.Conn) do
         A base has trailing slashes trimmed and the original request path and
         query appended. The conn's host, scheme and port are never used.
       * `:methods`: uppercase HTTP method strings, default `["POST"]`.
-        A provider handshake is consulted before a 405 refusal with `allow`.
+        On legacy routes, a provider handshake is consulted before a 405
+        refusal with `allow`.
       * `:length`: positive total body limit, default 8,000,000 bytes;
         `:read_length`: positive socket read size, default 1,000,000 bytes;
         `:read_timeout`: socket read timeout, default 15,000 milliseconds.
@@ -69,11 +72,14 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     On legacy declarations, `AshHooks.Provider.handshake/2` dispatches a
     provider's optional `handshake/1` before method and signature checks.
-    A handshake response writes nothing. After ingest, response precedence is provider `response/1`, then
-    `:respond`, then `default_response/2`; `:default` falls through each policy.
-    Those policies do not receive refusals. Custom provider or host 503s own
-    their headers and are not amended with `:retry_after`.
-    Protected replay storage failures take the default retry response.
+    A handshake response writes nothing. Durable routes reject providers
+    with a handshake callback at compile time. Response precedence is
+    provider `response/1`, then `:respond`, then `default_response/2`;
+    `:default` falls through each policy. Durable source lookup errors use
+    the pinned provider when configured, followed by the host and default
+    policies. Plug refusals and retired routes use their fixed response paths.
+    Custom provider or host 503s own their headers. Protected replay storage
+    failures take the default retry response.
 
     Configured providers (`use AshHooks.Provider, verify: [...]`) extract their
     signature from request headers or the body and need no `:signature_header`.
@@ -207,11 +213,8 @@ if Code.ensure_loaded?(Plug.Conn) do
         %{replay_protection: :retired} ->
           answer(conn, default_response({:error, UnknownSource.exception([])}, options))
 
-        %{replay_protection: :durable_identity} ->
-          case Ingress.resolve_source(resource, context.source, Map.to_list(context)) do
-            {:ok, resolved} -> deliver_request(conn, raw, context, resolved.provider, options)
-            {:error, error} -> answer(conn, default_response({:error, error}, options))
-          end
+        %{replay_protection: :durable_identity, provider: provider} ->
+          deliver_request(conn, raw, context, provider, options, :durable_identity)
 
         _ ->
           deliver_legacy(conn, raw, context, inbound, options)
@@ -259,25 +262,31 @@ if Code.ensure_loaded?(Plug.Conn) do
       end
     end
 
-    defp deliver_request(conn, raw, context, provider, options) do
+    defp deliver_request(conn, raw, context, provider, options, mode \\ :legacy) do
       if conn.method in options[:methods] do
-        ingest(conn, raw, context, provider, options)
+        ctx = request_context(conn, context, options)
+        {provider, outcome} = ingest(options[:resource], context.source, raw, ctx, provider, mode)
+        answer(conn, response(provider, outcome, options))
       else
         refuse(conn, :method_not_allowed, options)
       end
     end
 
-    defp ingest(conn, raw, context, provider, options) do
-      ctx =
-        context
-        |> Map.take([:tenant, :scope, :connection, :resolved_source, :host_context, :actor])
-        |> Map.merge(%{headers: conn.req_headers, method: conn.method})
-        |> signature(conn, Map.get(context, :signature_header, options[:signature_header]))
-        |> request_uri(conn, options[:request_uri])
-
-      outcome = Ingress.ingest(options[:resource], context.source, raw, ctx)
-      answer(conn, response(provider, outcome, options))
+    defp request_context(conn, context, options) do
+      context
+      |> Map.take([:tenant, :scope, :connection, :resolved_source, :host_context, :actor])
+      |> Map.merge(%{headers: conn.req_headers, method: conn.method})
+      |> signature(conn, Map.get(context, :signature_header, options[:signature_header]))
+      |> request_uri(conn, options[:request_uri])
     end
+
+    defp ingest(resource, name, raw, ctx, pinned_provider, :durable_identity) do
+      {provider, outcome} = Ingress.ingest_with_source(resource, name, raw, ctx)
+      {provider || pinned_provider, outcome}
+    end
+
+    defp ingest(resource, name, raw, ctx, provider, :legacy),
+      do: {provider, Ingress.ingest(resource, name, raw, ctx)}
 
     defp response(_provider, {:error, %ReplayStoreUnavailable{}} = outcome, options),
       do: default_response(outcome, options)

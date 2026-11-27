@@ -25,19 +25,26 @@ A body consumed by an earlier parser without a cache is a configuration failure,
 not a verified empty payload. Reader caching can be restricted by path prefix;
 parser limits govern preceding reads, while adapter limits govern its own reads.
 
-The adapter obtains raw bytes, consults optional provider `handshake/1` before
-method and signature checks, and calls `Ingress.ingest/4` once for delivery.
-A handshake response writes no receipt. A configured public URI supplies any
-signed request URI; connection host and scheme are not trusted to reconstruct
-it. A missing or repeated configured signature-header line is unsigned.
+On legacy routes the adapter obtains raw bytes, consults optional provider
+`handshake/1` before method and signature checks, and calls `Ingress.ingest/4`
+once for delivery. A handshake response writes no receipt. Durable routes
+check the method first and use the source ingress resolves under the request's
+tenant and scope. The DSL rejects selectable providers with `handshake/1`
+on those routes because the callback can respond before authentication.
+A configured public URI supplies any signed request URI. The adapter trusts
+that URI for signature verification. A missing or repeated configured
+signature-header line is unsigned.
 
 After ingest, response precedence is provider `response/1`, host `:respond`,
 then public `default_response/2`. The default maps processed, permanently
 failed, and superseded receipts to 200; other successful ledger outcomes to
 500; signature, timestamp, and malformed-payload errors to 400; `UnknownSource`
 to 404; key kind and unknown-key errors to 500; and unavailable or unrecognized
-failures to 503 with a retry hint. These acknowledgments do not promise business
-success for permanently failed work.
+failures to 503 with a retry hint. Durable source lookup errors follow this
+precedence using the pinned provider if one is configured. Durable replay
+storage failures always use the default 503 with `Retry-After` and
+`Webhook-Error-Code: dependency_unavailable`. These acknowledgments do not
+promise business success for permanently failed work.
 
 Pre-ingest refusals have separate fixed statuses for absence, unavailability,
 method, size, and consumed-body errors. A host refusal policy can shape headers

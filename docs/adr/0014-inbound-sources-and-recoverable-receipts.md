@@ -32,9 +32,10 @@ Missing, nil, or invalid declared scope fails as `MalformedPayload`, including
 on declarations without a source resource. An absent source row returns
 `UnknownSource`. `AshHooks.Inbound.ResolvedSource` holds the selected provider
 and alias, cast scope, pause state, admitted custody keys, and optional public
-key. Passing it as `:resolved_source` reuses the snapshot for the request.
-Declarations without a source resource retain explicit provider configuration
-and their declared secret callbacks.
+key. Legacy routes can reuse a same-request snapshot via `:resolved_source`.
+For durable routes, ingress resolves the source itself and carries that
+snapshot into verification. Declarations without a source resource retain
+explicit provider configuration and their declared secret callbacks.
 
 Pause refuses new requests before receipt creation. Authenticated receipts
 retain their provider alias, payload, scope, and identity and remain recoverable

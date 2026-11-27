@@ -81,7 +81,7 @@ defmodule AshHooks.Verifiers.DurableReplay do
         "tenant-scoped durable replay routes require tenant-aware key functions or source records"
 
       true ->
-        nil
+        handshake_refusal([inbound.provider])
     end
   end
 
@@ -112,12 +112,22 @@ defmodule AshHooks.Verifiers.DurableReplay do
         "a durable replay source_record without a pinned provider requires body-only MAC coverage for every alias"
 
       true ->
-        nil
+        handshake_refusal(if pinned, do: [pinned], else: providers)
     end
   end
 
   defp source_record_refusal(_inbound),
     do: "durable replay source_record declarations use only the source record's enrolled keys"
+
+  defp handshake_refusal(providers) do
+    case Enum.find(providers, &function_exported?(&1, :handshake, 1)) do
+      nil ->
+        nil
+
+      provider ->
+        "durable replay protection cannot use a provider that implements handshake/1 (#{inspect(provider)})"
+    end
+  end
 
   defp body_only_mac?(provider) do
     not is_nil(provider) and Code.ensure_compiled(provider) == {:module, provider} and

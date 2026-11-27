@@ -83,6 +83,8 @@ end
 
 defmodule AshHooks.Test.OtherSourceProvider do
   @moduledoc false
+  alias AshHooks.Errors.Invalid.UnknownSource
+
   use AshHooks.Provider,
     verify: [algorithm: :hmac_sha256, signature: {:header, "x-signature"}]
 
@@ -95,6 +97,22 @@ defmodule AshHooks.Test.OtherSourceProvider do
     send(Application.fetch_env!(:ash_hooks, :source_test_sink), {:handled, __MODULE__})
     {:ok, %AshHooks.Event{type: type, payload: payload}}
   end
+
+  @impl true
+  def response({:error, %UnknownSource{}} = outcome) do
+    send(Application.fetch_env!(:ash_hooks, :source_test_sink), {:provider_response, outcome})
+    :default
+  end
+
+  def response(_outcome), do: :default
+end
+
+defmodule AshHooks.Test.BodyMacHandshakeProvider do
+  @moduledoc false
+  use AshHooks.Provider, verify: [algorithm: :hmac_sha256, signature: {:header, "x-signature"}]
+
+  @impl true
+  def handshake(_request), do: {:respond, 200, [], "challenge"}
 end
 
 defmodule AshHooks.Test.DeclarationContextProvider do
@@ -122,6 +140,7 @@ defmodule AshHooks.Test.InboundSourceCases do
   @compile {:no_warn_undefined, [AshHooks.Plug, Plug.Conn, Plug.Test]}
   import ExUnit.Assertions
   import ExUnit.Callbacks, only: [on_exit: 1]
+  alias AshHooks.Errors.Invalid.UnknownSource
   alias AshHooks.Errors.Unknown.KeyUnavailable
   alias AshHooks.{InboundSource, Ingress, KeyRegistry, Signing}
   alias AshHooks.KeyRegistry.Transitions
@@ -223,6 +242,8 @@ defmodule AshHooks.Test.InboundSourceCases do
       :first_use_failure,
       :previous_key,
       :protected_rotation,
+      :protected_plug_resolution,
+      :protected_plug_response_policy,
       :protected_enrollment_refusals,
       :overlap_failure,
       :overlap_stale_timestamp,
@@ -495,7 +516,7 @@ defmodule AshHooks.Test.InboundSourceCases do
 
     Ash.destroy!(fresh, tenant: 17, authorize?: false)
 
-    assert {:error, %AshHooks.Errors.Invalid.UnknownSource{}} =
+    assert {:error, %UnknownSource{}} =
              ingest(ctx, disclosure, id: "owner-removed", resolved_source: resolved)
   end
 
@@ -724,11 +745,11 @@ defmodule AshHooks.Test.InboundSourceCases do
     enrollment = %{source: :protected, account_id: "wrong-provider", provider: :first}
     assert {:ok, _, disclosure} = create(ctx, attrs: enrollment)
 
-    assert {:error, %AshHooks.Errors.Invalid.UnknownSource{}} =
+    assert {:error, %UnknownSource{}} =
              ingest(ctx, disclosure, source: :protected, account_id: "wrong-provider")
 
     if Code.ensure_loaded?(Plug.Test) do
-      assert protected_plug_response(ctx, "wrong-provider").status == 404
+      assert protected_plug(ctx, "{}", account_id: "wrong-provider").status == 404
     end
 
     {public, private} = :crypto.generate_key(:eddsa, :ed25519)
@@ -752,17 +773,44 @@ defmodule AshHooks.Test.InboundSourceCases do
     refute_received {:handled, SourceProvider, _, _}
   end
 
-  defp protected_plug_response(ctx, account_id) do
-    resolution = %{source: :protected, tenant: 17, scope: %{account_id: account_id}}
+  def protected_plug_resolution(ctx) do
+    if Code.ensure_loaded?(Plug.Test) do
+      enrollment = %{source: :protected, account_id: "account", provider: :second}
+      {:ok, _source, "whsec_" <> key} = create(ctx, attrs: enrollment)
+      body = ~s({"id":"http-protected"})
+      signature = :crypto.mac(:hmac, :sha256, Base.decode64!(key), body)
+      headers = [{"x-signature", Base.encode16(signature, case: :lower)}]
 
-    options =
-      AshHooks.Plug.init(
-        resource: ctx.source_ledger,
-        resolve: {__MODULE__, :plug_context, [resolution]}
-      )
+      observe_queries(ctx)
+      assert protected_plug(ctx, body, headers: headers).status == 200
+      assert_received {:source_query, "SELECT " <> _}
+      refute_received {:source_query, "SELECT " <> _}
+      assert_received {:handled, OtherSourceProvider}
+      assert [%{status: :processed, account_id: "account", tenant_id: 17}] = receipts(ctx)
 
-    Plug.Test.conn("POST", "/hooks", ~s({"id":"wrong-provider"}))
-    |> AshHooks.Plug.call(options)
+      assert protected_plug(ctx, body, method: :get, account_id: "absent").status == 405
+      refute_received {:source_query, "SELECT " <> _}
+    end
+  end
+
+  def protected_plug_response_policy(ctx) do
+    if Code.ensure_loaded?(Plug.Test) do
+      response = {410, [{"x-response-policy", "host"}], "unknown enrollment"}
+      conn = protected_plug(ctx, "{}", account_id: "absent", response: response)
+
+      assert conn.status == 410
+      assert Plug.Conn.get_resp_header(conn, "x-response-policy") == ["host"]
+      assert conn.resp_body == "unknown enrollment"
+      assert_received {:provider_response, {:error, %UnknownSource{}} = outcome}
+      assert_received {:host_response, ^outcome}
+      assert receipts(ctx) == []
+    end
+  end
+
+  defp protected_plug(ctx, body, opts) do
+    account_id = Keyword.get(opts, :account_id, "account")
+    resolution = %{source: :protected, tenant: 17, scope: %{"account_id" => account_id}}
+    plug(ctx, body, Keyword.put(opts, :resolve_args, [resolution]))
   end
 
   def overlap_stale_timestamp(ctx) do
@@ -898,7 +946,7 @@ defmodule AshHooks.Test.InboundSourceCases do
   end
 
   def unknown_source(ctx) do
-    assert {:error, %AshHooks.Errors.Invalid.UnknownSource{}} =
+    assert {:error, %UnknownSource{}} =
              Ingress.resolve_source(ctx.source_ledger, :checked,
                tenant: 17,
                scope: %{account_id: "missing"}
@@ -1640,8 +1688,8 @@ defmodule AshHooks.Test.InboundSourceCases do
     options =
       AshHooks.Plug.init(
         resource: ctx.source_ledger,
-        resolve: {__MODULE__, :plug_context, []},
-        respond: {__MODULE__, :host_response, []}
+        resolve: {__MODULE__, :plug_context, Keyword.get(opts, :resolve_args, [])},
+        respond: {__MODULE__, :host_response, [Keyword.get(opts, :response, :default)]}
       )
 
     conn =
@@ -1657,9 +1705,9 @@ defmodule AshHooks.Test.InboundSourceCases do
     |> AshHooks.Plug.call(options)
   end
 
-  def host_response(outcome) do
+  def host_response(outcome, response) do
     send(Application.fetch_env!(:ash_hooks, :source_test_sink), {:host_response, outcome})
-    :default
+    response
   end
 
   def plug_context(_conn),

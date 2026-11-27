@@ -72,8 +72,10 @@ defmodule AshHooks.Provider do
         }
 
   @doc """
-  Optional HTTP handshake, called by `AshHooks.Plug` after resolving the source
-  and capturing raw bytes, before method refusal or signature verification.
+  Optional HTTP handshake on legacy routes, called by `AshHooks.Plug` after
+  resolving the source and capturing raw bytes, before method refusal or
+  signature verification. Durable routes reject providers with this callback
+  at compile time.
 
   Receives the method, query params decoded with `Plug.Conn.Query.decode/1`,
   ordered request headers, and exact raw body. Return
@@ -86,12 +88,14 @@ defmodule AshHooks.Provider do
               {:respond, pos_integer(), [{String.t(), String.t()}], iodata()} | :deliver
 
   @doc """
-  Optional HTTP acknowledgment policy. Receives exactly the outcome returned by
-  `AshHooks.Ingress.ingest/4`. Return `{status, headers, body}` or `:default`.
+  Optional HTTP acknowledgment policy. Receives the ingress outcome, including
+  a source lookup error on a durable route with a pinned provider.
+  Return `{status, headers, body}` or `:default`.
 
   An implemented response takes precedence over the plug's `:respond` policy;
   `:default` falls through. Plug refusals and handshake responses never invoke
-  this callback. Response header names must be lowercase. A custom 503 owns its
+  this callback. Durable replay storage failures take the default retry
+  response. Response header names must be lowercase. A custom 503 owns its
   headers, including any retry hint.
   """
   @callback response(ingest_outcome()) :: http_response() | :default

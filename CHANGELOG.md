@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ledger. Compact terminal payloads and handler metadata while keeping the
   receipt and its identity across duplicate deliveries and key rotation.
   See the [migration and cutover instructions](UPGRADING.md#durable-replay-identities).
+- Durable Plug routes reuse a single tenant-scoped source lookup for delivery
+  verification. Lookup failures follow the provider and host response policy.
+  The DSL rejects providers with pre-verification handshakes on these routes.
 
 ## [3.7.0] - 2026-11-24
 
