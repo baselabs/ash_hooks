@@ -16,6 +16,7 @@
       "documentation/dsls/DSL-AshHooks.KeyRegistry.md",
       "documentation/dsls/DSL-AshHooks.OutboundAttempt.md",
       "documentation/dsls/DSL-AshHooks.OutboundDelivery.md",
+      "documentation/dsls/DSL-AshHooks.OutboundEvent.md",
       "documentation/dsls/DSL-AshHooks.OutboundOutbox.md",
       "documentation/dsls/DSL-AshHooks.Subscription.md",
       "documentation/dsls/DSL-AshHooks.md",

@@ -633,43 +633,61 @@ defmodule AshHooks.Dispatcher do
     end
   end
 
-  defp subscription_match(subscription, event) do
+  defp subscription_match(subscription, event, coverage \\ :all) do
     pausable? =
       Extension.get_opt(subscription.__struct__, [:subscription], :pausable, :off) == :on
 
     if (not pausable? or not subscription.paused) and
          Subscription.matches?(subscription, event.type) do
-      filter_match(subscription, event.metadata)
+      filter_match(subscription, event.metadata, coverage)
     else
       :skip
     end
   end
 
-  defp filter_match(subscription, nil) do
-    case Map.get(subscription, :event_filters) do
-      filters when is_map(filters) and not is_struct(filters) and map_size(filters) > 0 ->
-        {:error, :replay_metadata_unavailable}
-
-      _ ->
-        filter_match(subscription, %{})
-    end
-  end
-
-  defp filter_match(subscription, metadata) do
+  defp filter_match(subscription, metadata, :all) when is_map(metadata) do
     if Subscription.matches_filters?(subscription, metadata), do: :match, else: :skip
   end
 
+  defp filter_match(subscription, metadata, coverage) do
+    case Map.get(subscription, :event_filters) do
+      filters when is_map(filters) and not is_struct(filters) and map_size(filters) > 0 ->
+        unavailable? =
+          is_nil(metadata) or
+            Enum.any?(filters, fn {key, _value} ->
+              not MapSet.member?(coverage, to_string(key))
+            end)
+
+        if unavailable?,
+          do: {:error, :replay_metadata_unavailable},
+          else: filter_match(subscription, metadata, :all)
+
+      _ ->
+        filter_match(subscription, metadata || %{}, :all)
+    end
+  end
+
   @doc false
-  def replay_subscription(entity, endpoint, event, tenant) do
+  def replay_subscription(entity, endpoint, event, context, tenant) do
     endpoint_id = PrimaryKey.scalar!(endpoint)
+
+    coverage =
+      case context do
+        %{complete: true} -> :all
+        %{captured_keys: keys} when is_list(keys) -> MapSet.new(keys)
+        _ -> MapSet.new()
+      end
+
+    # A filter that needs an uncaptured key must reach the replay matcher.
+    query_event = if coverage == :all, do: event, else: %{event | metadata: nil}
 
     query =
       entity.subscriptions
-      |> AshHooks.Subscription.Query.select(event)
+      |> AshHooks.Subscription.Query.select(query_event)
       |> Ash.Query.filter(endpoint_id == ^endpoint_id)
 
     with {:ok, subscriptions} <- read_subscriptions(query, tenant),
-         {:ok, matches} <- replay_matches(subscriptions, endpoint, event),
+         {:ok, matches} <- replay_matches(subscriptions, endpoint, event, coverage),
          :ok <- check_conflicts(matches, entity) do
       case dedupe_by_endpoint(matches) do
         [{subscription, _endpoint}] -> {:ok, subscription}
@@ -678,9 +696,9 @@ defmodule AshHooks.Dispatcher do
     end
   end
 
-  defp replay_matches(subscriptions, endpoint, event) do
+  defp replay_matches(subscriptions, endpoint, event, coverage) do
     Enum.reduce_while(subscriptions, {:ok, []}, fn subscription, {:ok, matches} ->
-      case subscription_match(subscription, event) do
+      case subscription_match(subscription, event, coverage) do
         :match -> {:cont, {:ok, [{subscription, endpoint} | matches]}}
         :skip -> {:cont, {:ok, matches}}
         {:error, _reason} = error -> {:halt, error}

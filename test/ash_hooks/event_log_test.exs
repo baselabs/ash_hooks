@@ -79,6 +79,30 @@ defmodule AshHooks.EventLogTest do
     end
   end
 
+  defmodule ExpandedSubscription do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.EventLogTest.Domain,
+      data_layer: AshSqlite.DataLayer,
+      extensions: [AshHooks.Subscription]
+
+    sqlite do
+      table("event_log_subscriptions")
+      repo(AshHooks.Test.Repo)
+    end
+
+    actions do
+      defaults([:read, :create])
+      default_accept(:*)
+    end
+
+    subscription do
+      endpoint_resource(AshHooks.EventLogTest.Endpoint)
+      pausable(:on)
+      filter_attributes([:store, :tier])
+    end
+  end
+
   defmodule EventLog do
     @moduledoc false
     use Ash.Resource,
@@ -92,7 +116,7 @@ defmodule AshHooks.EventLogTest do
     end
 
     outbound_event do
-      replay_context(:on)
+      replay_context :on
     end
 
     attributes do
@@ -135,6 +159,23 @@ defmodule AshHooks.EventLogTest do
     end
   end
 
+  defmodule ExpandedEmitter do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.EventLogTest.Domain,
+      data_layer: Ash.DataLayer.Simple,
+      extensions: [AshHooks]
+
+    webhooks do
+      outbound :order_paid do
+        subscriptions(AshHooks.EventLogTest.ExpandedSubscription)
+        deliveries(AshHooks.EventLogTest.Delivery)
+        events(AshHooks.EventLogTest.EventLog)
+        version(3)
+      end
+    end
+  end
+
   defmodule Domain do
     @moduledoc false
     use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
@@ -142,9 +183,11 @@ defmodule AshHooks.EventLogTest do
     resources do
       resource(AshHooks.EventLogTest.Endpoint)
       resource(AshHooks.EventLogTest.Subscription)
+      resource(AshHooks.EventLogTest.ExpandedSubscription)
       resource(AshHooks.EventLogTest.Delivery)
       resource(AshHooks.EventLogTest.EventLog)
       resource(AshHooks.EventLogTest.Emitter)
+      resource(AshHooks.EventLogTest.ExpandedEmitter)
       resource(AshHooks.EventLogTest.TenantLog)
       resource(AshHooks.EventLogTest.MismatchedEmitter)
       resource(AshHooks.EventLogTest.PlainDelivery)
@@ -486,6 +529,33 @@ defmodule AshHooks.EventLogTest do
              end)
     end
 
+    test "a filter declared after an incomplete capture returns a per-row error" do
+      uuid = "expanded-filters"
+      assert {:ok, []} = dispatch!(uuid, %{"store" => "s1", "tier" => "gold"})
+
+      assert {:ok, %{records: [logged]}} = AshHooks.OutboundEvent.list(EventLog, event_uuid: uuid)
+      assert Jason.decode!(logged.replay_context.metadata_json) == %{"store" => "s1"}
+      refute logged.replay_context.complete
+
+      endpoint = endpoint!()
+
+      Ash.create!(
+        ExpandedSubscription,
+        %{
+          endpoint_id: endpoint.id,
+          event_types: ["order_paid"],
+          event_filters: %{"tier" => "gold"}
+        },
+        authorize?: false
+      )
+
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 0, errors: [:replay_metadata_unavailable]}} =
+               replay(endpoint, event_uuid: uuid, declaration: {ExpandedEmitter, :order_paid})
+
+      assert logged.replay_context.captured_keys == ["store"]
+      assert Ash.read!(Delivery, authorize?: false) == []
+    end
+
     test "replay dispatches the pinned variant and refuses a variant with incomplete input" do
       {server, port} = HttpReceiver.start()
       on_exit(fn -> :inets.stop(:httpd, server) end)
@@ -545,6 +615,25 @@ defmodule AshHooks.EventLogTest do
 
       expected = original.payload
       assert_receive {:http_received, %{body: ^expected}}
+    end
+
+    test "a pin to the logged version uses the logged bytes when capture is incomplete" do
+      uuid = "pin-to-logged"
+      assert {:ok, []} = dispatch!(uuid, %{"store" => "s1", "private" => "x"})
+
+      assert {:ok, %{records: [logged]}} = AshHooks.OutboundEvent.list(EventLog, event_uuid: uuid)
+      assert logged.version == 3
+      refute logged.replay_context.complete
+
+      endpoint = endpoint!()
+      Ash.update!(endpoint, %{pinned_payload_version: 3}, authorize?: false)
+      subscribe!(endpoint, %{event_filters: %{"store" => "s1"}})
+
+      assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
+               replay(endpoint, event_uuid: uuid)
+
+      assert [%{event_uuid: ^uuid, payload: payload}] = Ash.read!(Delivery, authorize?: false)
+      assert payload == logged.payload
     end
 
     test "a pre-capture row refuses a pin even when the logged version equals it" do

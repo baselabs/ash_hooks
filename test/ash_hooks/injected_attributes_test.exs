@@ -267,6 +267,42 @@ defmodule AshHooks.InjectedAttributesTest do
     end
   end
 
+  test "event log refuses a host replay context with different field constraints at compile time" do
+    module = Module.concat(__MODULE__, "ReplayContext#{System.unique_integer([:positive])}")
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+    end)
+
+    errors =
+      Dsl.errors(fn ->
+        Module.create(
+          module,
+          quote do
+            use Ash.Resource,
+              data_layer: Ash.DataLayer.Ets,
+              extensions: [AshHooks.OutboundEvent],
+              validate_domain_inclusion?: false
+
+            attributes do
+              attribute(:replay_context, :map, constraints: [fields: [other: [type: :string]]])
+            end
+
+            outbound_event do
+              replay_context :on
+            end
+          end,
+          Macro.Env.location(__ENV__)
+        )
+      end)
+
+    assert [{^module, [%DslError{path: [:outbound_event, :attributes, :replay_context]} = error]}] =
+             errors
+
+    assert Exception.message(error) =~ "constraints:"
+  end
+
   defp attribute_state(extension, section, transformer, name) do
     state = InjectedAttributeStates.state(extension, section)
     specs = transformer.attributes_spec(state)
