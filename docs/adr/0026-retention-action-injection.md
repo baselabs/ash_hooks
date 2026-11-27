@@ -2,6 +2,8 @@
 
 Status: Accepted November 16, 2026.
 
+Amended: November 27, 2026.
+
 ## Context
 
 Hosts own retention (ADR 0005). `Delivery.prune/2` removes old delivery rows,
@@ -28,3 +30,22 @@ has been pruned can be created again.
 A host chooses at compile time whether the package may delete delivery rows. A
 host that chooses `:none` keeps deduplication identities as long as it keeps the
 rows, and owns any archiving.
+
+## Protected inbound receipts
+
+Inbound ledgers can enable `retain_replay_identities :on`. The generated
+inbound `:prune` action and the prune driver both exclude protected receipts
+at every cutoff. Hosts restrict other actions and database roles so cleanup
+cannot delete those rows or rewrite their identity.
+
+`Ingress.compact_replay_receipts/2` clears the payload and handler metadata
+for a bounded batch of protected terminal receipts. The action filters on
+terminal state at the write. Cleanup uses first insertion time because a
+timestamp-free signature carries no send-age evidence. Recoverable receipts
+keep their first handler input. Compaction leaves the unique-ingest fence
+and its terminal outcome intact.
+
+An active authority's replay identities have no TTL. After admission is
+irreversibly closed, outstanding work is drained, and the namespace is
+retired from reuse, a host may release identities through an audited
+maintenance role. Package prune provides no retirement override.

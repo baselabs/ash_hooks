@@ -100,6 +100,9 @@ defmodule AshHooks.InboundDelivery.LegacyAdoption do
       nil ->
         {:error, :inbound_not_found}
 
+      %{replay_protection: mode} when mode in [:durable_identity, :retired] ->
+        {:error, :protected_admission_required}
+
       %{event_id: extractor} when is_function(extractor, 1) ->
         {:error, :custom_event_id_unchanged}
 

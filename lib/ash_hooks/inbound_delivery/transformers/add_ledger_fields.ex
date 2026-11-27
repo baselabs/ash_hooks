@@ -33,6 +33,8 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
 
   def attributes_spec(state) do
     optional = [
+      {:retain_replay_identities,
+       {:replay_identity, :atom, [constraints: [one_of: [:retained, :compacted]]]}},
       {:record_verified_facts, {:verified_facts, :map, [sensitive?: true]}},
       {:record_provider_alias, {:provider_alias, :atom, []}},
       {:ingress_tracking, {:duplicates, :integer, [allow_nil?: false, default: 0]}}
@@ -122,8 +124,13 @@ defmodule AshHooks.InboundDelivery.Transformers.AddLedgerFields do
   defp reserved_fields(state) do
     fields = [:verified_facts | Enum.map(attributes_spec(), &elem(&1, 0))]
 
-    if Extension.get_opt(state, [:inbound_delivery], :record_provider_alias, :off) == :on,
-      do: [:provider_alias | fields],
+    fields =
+      if Extension.get_opt(state, [:inbound_delivery], :record_provider_alias, :off) == :on,
+        do: [:provider_alias | fields],
+        else: fields
+
+    if Extension.get_opt(state, [:inbound_delivery], :retain_replay_identities, :off) == :on,
+      do: [:replay_identity | fields],
       else: fields
   end
 

@@ -67,12 +67,13 @@ if Code.ensure_loaded?(Plug.Conn) do
     the body without `AshHooks.BodyReader`: answer 500, log the configuration
     fix once, and write nothing. Parsed params are never re-encoded.
 
-    `AshHooks.Provider.handshake/2` dispatches a provider's optional
-    `handshake/1` before method and signature checks. A handshake response writes
-    nothing. After ingest, response precedence is provider `response/1`, then
+    On legacy declarations, `AshHooks.Provider.handshake/2` dispatches a
+    provider's optional `handshake/1` before method and signature checks.
+    A handshake response writes nothing. After ingest, response precedence is provider `response/1`, then
     `:respond`, then `default_response/2`; `:default` falls through each policy.
     Those policies do not receive refusals. Custom provider or host 503s own
     their headers and are not amended with `:retry_after`.
+    Protected replay storage failures take the default retry response.
 
     Configured providers (`use AshHooks.Provider, verify: [...]`) extract their
     signature from request headers or the body and need no `:signature_header`.
@@ -87,6 +88,7 @@ if Code.ensure_loaded?(Plug.Conn) do
     alias AshHooks.{BodyReader, Info, Ingress, Provider}
     alias AshHooks.Errors.Invalid.{InvalidSignature, MalformedPayload, StaleTimestamp}
     alias AshHooks.Errors.Invalid.{KeyKindMismatch, UnknownKey, UnknownSource}
+    alias AshHooks.Errors.Unknown.ReplayStoreUnavailable
     alias Plug.Conn.Query
 
     @mfa {:tuple, [:atom, :atom, {:list, :any}]}
@@ -182,6 +184,9 @@ if Code.ensure_loaded?(Plug.Conn) do
         {:error, %error{}} when error in [KeyKindMismatch, UnknownKey] ->
           {500, [], ""}
 
+        {:error, %ReplayStoreUnavailable{}} ->
+          {503, [{"webhook-error-code", "dependency_unavailable"} | retry_header(options)], ""}
+
         _ ->
           {503, retry_header(options), ""}
       end
@@ -195,6 +200,25 @@ if Code.ensure_loaded?(Plug.Conn) do
     end
 
     defp deliver(conn, raw, context, options) do
+      resource = options[:resource]
+      inbound = Info.inbound(resource, context.source)
+
+      case inbound do
+        %{replay_protection: :retired} ->
+          answer(conn, default_response({:error, UnknownSource.exception([])}, options))
+
+        %{replay_protection: :durable_identity} ->
+          case Ingress.resolve_source(resource, context.source, Map.to_list(context)) do
+            {:ok, resolved} -> deliver_request(conn, raw, context, resolved.provider, options)
+            {:error, error} -> answer(conn, default_response({:error, error}, options))
+          end
+
+        _ ->
+          deliver_legacy(conn, raw, context, inbound, options)
+      end
+    end
+
+    defp deliver_legacy(conn, raw, context, inbound, options) do
       case Ingress.resolve_source(options[:resource], context.source, Map.to_list(context)) do
         {:ok, resolved} ->
           deliver_resolved(
@@ -206,7 +230,6 @@ if Code.ensure_loaded?(Plug.Conn) do
           )
 
         {:error, error} ->
-          inbound = Info.inbound(options[:resource], context.source)
           provider = if inbound, do: inbound.provider
 
           record_source? = inbound != nil and inbound.source_record != nil
@@ -232,37 +255,44 @@ if Code.ensure_loaded?(Plug.Conn) do
           answer(conn, {status, headers, body})
 
         :deliver ->
-          if conn.method in options[:methods] do
-            ingest(conn, raw, context, provider, options)
-          else
-            refuse(conn, :method_not_allowed, options)
-          end
+          deliver_request(conn, raw, context, provider, options)
+      end
+    end
+
+    defp deliver_request(conn, raw, context, provider, options) do
+      if conn.method in options[:methods] do
+        ingest(conn, raw, context, provider, options)
+      else
+        refuse(conn, :method_not_allowed, options)
       end
     end
 
     defp ingest(conn, raw, context, provider, options) do
       ctx =
         context
-        |> Map.take([:tenant, :scope, :connection, :resolved_source, :host_context])
+        |> Map.take([:tenant, :scope, :connection, :resolved_source, :host_context, :actor])
         |> Map.merge(%{headers: conn.req_headers, method: conn.method})
         |> signature(conn, Map.get(context, :signature_header, options[:signature_header]))
         |> request_uri(conn, options[:request_uri])
 
       outcome = Ingress.ingest(options[:resource], context.source, raw, ctx)
+      answer(conn, response(provider, outcome, options))
+    end
 
-      response =
-        case Provider.response(provider, outcome) do
-          :default ->
-            case invoke(options[:respond], outcome) do
-              :default -> default_response(outcome, options)
-              response -> response
-            end
+    defp response(_provider, {:error, %ReplayStoreUnavailable{}} = outcome, options),
+      do: default_response(outcome, options)
 
-          response ->
-            response
-        end
+    defp response(provider, outcome, options) do
+      case Provider.response(provider, outcome) do
+        :default ->
+          case invoke(options[:respond], outcome) do
+            :default -> default_response(outcome, options)
+            response -> response
+          end
 
-      answer(conn, response)
+        response ->
+          response
+      end
     end
 
     # Exactly one header line carries the signature; none or several leave

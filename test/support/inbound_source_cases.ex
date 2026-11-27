@@ -170,7 +170,7 @@ defmodule AshHooks.Test.InboundSourceCases do
     )
 
     ctx.repo.query!(
-      "CREATE TABLE #{ctx.source_ledger_table} (id #{id} PRIMARY KEY, tenant_id bigint NOT NULL, account_id TEXT NOT NULL, provider TEXT NOT NULL, provider_alias TEXT, external_event_id TEXT NOT NULL, external_event_type TEXT, payload #{json} NOT NULL, payload_digest TEXT NOT NULL, status TEXT NOT NULL, fencing_token bigint NOT NULL DEFAULT 0, lease_expires_at #{time}, error_class TEXT, attempts bigint NOT NULL DEFAULT 0, CHECK (external_event_id != 'refuse-claim' OR attempts = 0))",
+      "CREATE TABLE #{ctx.source_ledger_table} (id #{id} PRIMARY KEY, tenant_id bigint NOT NULL, account_id TEXT NOT NULL, provider TEXT NOT NULL, provider_alias TEXT, external_event_id TEXT NOT NULL, external_event_type TEXT, payload #{json} NOT NULL, payload_digest TEXT NOT NULL, status TEXT NOT NULL, fencing_token bigint NOT NULL DEFAULT 0, lease_expires_at #{time}, error_class TEXT, attempts bigint NOT NULL DEFAULT 0, replay_identity TEXT, inserted_at #{time}, updated_at #{time}, CHECK (external_event_id != 'refuse-claim' OR attempts = 0))",
       [],
       log: false
     )
@@ -222,6 +222,7 @@ defmodule AshHooks.Test.InboundSourceCases do
       :verification,
       :first_use_failure,
       :previous_key,
+      :protected_rotation,
       :overlap_failure,
       :overlap_stale_timestamp,
       :declaration_context,
@@ -650,6 +651,72 @@ defmodule AshHooks.Test.InboundSourceCases do
                AshHooks.Plug.init(resource: ctx.source_ledger, source: :checked)
              ) == {503, [{"retry-after", "60"}], ""}
     end
+  end
+
+  def protected_rotation(ctx) do
+    enrollment = %{source: :protected, account_id: "account", provider: :second}
+    {:ok, source, old} = create(ctx, attrs: enrollment)
+    {:ok, _, sibling} = create(ctx, attrs: %{enrollment | account_id: "sibling"})
+
+    {:ok, resolved} =
+      Ingress.resolve_source(ctx.source_ledger, :protected,
+        tenant: 17,
+        scope: %{account_id: "account"}
+      )
+
+    assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
+             ingest(ctx, old,
+               source: :protected,
+               account_id: "sibling",
+               resolved_source: resolved
+             )
+
+    assert receipts(ctx) == []
+
+    assert {:ok, :created, first} = ingest(ctx, old, source: :protected)
+    assert_receive {:handled, OtherSourceProvider}
+
+    assert {:ok, 1} =
+             Ingress.compact_replay_receipts(ctx.source_ledger,
+               tenant: 17,
+               older_than: DateTime.add(DateTime.utc_now(), 1)
+             )
+
+    clock = DateTime.utc_now()
+
+    {:ok, rotated, current} =
+      InboundSource.roll_secret(source,
+        tenant: 17,
+        generate: @kind,
+        now: clock,
+        overlap_seconds: 60
+      )
+
+    assert {:ok, :duplicate, %{id: id, replay_identity: :compacted}} =
+             ingest(ctx, old, source: :protected)
+
+    assert id == first.id
+
+    assert {:ok, :duplicate, %{id: ^id}} = ingest(ctx, current, source: :protected)
+
+    assert {:ok, _} =
+             InboundSource.expire_previous_secret(rotated,
+               tenant: 17,
+               now: DateTime.add(clock, 61)
+             )
+
+    assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
+             ingest(ctx, old, source: :protected)
+
+    assert {:ok, :duplicate, %{id: ^id}} = ingest(ctx, current, source: :protected)
+    refute_receive {:handled, OtherSourceProvider}
+
+    assert {:ok, :created, separate} =
+             ingest(ctx, sibling, source: :protected, account_id: "sibling")
+
+    assert separate.id != id
+    assert separate.external_event_id == first.external_event_id
+    assert_receive {:handled, OtherSourceProvider}
   end
 
   def overlap_stale_timestamp(ctx) do
@@ -1460,7 +1527,7 @@ defmodule AshHooks.Test.InboundSourceCases do
 
     Ingress.ingest(
       ctx.source_ledger,
-      :checked,
+      Keyword.get(opts, :source, :checked),
       body,
       %{
         headers: Map.merge(%{"x-signature" => signature}, Keyword.get(opts, :headers, %{})),
@@ -1666,6 +1733,7 @@ defmodule AshHooks.Test.InboundSourceCases do
         attributes do
           attribute(:tenant_id, :integer, allow_nil?: false)
           unquote(attributes)
+          timestamps()
         end
 
         multitenancy do
@@ -1677,11 +1745,19 @@ defmodule AshHooks.Test.InboundSourceCases do
         inbound_delivery do
           scope_identity([:account_id])
           record_provider_alias(:on)
+          retain_replay_identities(:on)
         end
 
         webhooks do
           inbound :checked do
             source_record(unquote(ctx.source))
+          end
+
+          inbound :protected do
+            source_record(unquote(ctx.source))
+            provider(OtherSourceProvider)
+            replay_protection(:durable_identity)
+            source_binding(:authenticated)
           end
 
           inbound :configured do

@@ -171,7 +171,62 @@ scheme without one. A timestamp read by a host function still uses
 `tolerance_seconds`.
 
 Deduplication on the ledger is the replay defense for schemes that sign no
-timestamp.
+timestamp. Ordinary prune releases a deleted receipt's identity.
+
+### Retain replay identities
+
+With a body-only MAC, a valid signature can remain valid after payload
+retention. Enable `retain_replay_identities :on` on a SQLite or PostgreSQL
+inbound ledger after applying the
+[migration and cutover instructions](../../UPGRADING.md#durable-replay-identities).
+On each enrolled route, set `replay_protection :durable_identity` and
+`source_binding :authenticated`.
+
+Provision independent signing material for each enrollment and topic,
+including overlap keys. Use one canonical ledger declaration, tenant and
+cast scope for every URL or entry point serving that enrollment. A ledger
+with scope slots uses `source_record` for scoped keys. A tenant-scoped
+declaration without scope slots can use tenant-aware key functions.
+For source records with a mixed provider allowlist, set `provider` to the
+body-only MAC provider used by this route. A host that cannot guarantee
+key exclusivity needs independently authenticated binding before it can
+serve this mode. An unsigned header or path can select a candidate route
+for verification. The enrolled key authenticates its destination and topic.
+Derive the event type from the signed payload or the authenticated enrollment.
+
+Use a generated body-only HMAC scheme or implement
+`verification_coverage/0` on a hand-written body-only MAC verifier and
+qualify it with conformance vectors. The protected route uses an exact-body
+identity across key rotation. Byte-identical deliveries in the same
+enrollment share a receipt. If the sender must distinguish such events,
+use a protocol that authenticates a distinct delivery identity. An unseen
+valid body has no authenticated send age.
+
+Allow the trusted system actor to read receipts and run `:ingest_protected`
+and `:record_protected_malformed` within its tenant and scope. Allow the
+maintenance actor to run `:compact_replay_receipt` in its tenant. Ingress
+accepts an actor in trusted request context, including context from the
+Plug resolver. Keep the generated write actions private. Use Ash policies
+and database grants, row policies or triggers to restrict the ingestion and
+maintenance roles. Those roles must be unable to delete protected rows or
+rewrite their marker, enrollment or external event ID. Give release
+authority only to the audited maintenance role.
+
+Schedule `AshHooks.Ingress.compact_replay_receipts/2` with an `:older_than`
+cutoff based on first receipt time. Pass `:tenant` and `:actor` where
+required. Each call clears payload and handler metadata from a bounded batch
+of terminal protected receipts. Ordinary `Ingress.prune/2` still removes
+eligible legacy receipts. Plan separate budgets for payloads and retained
+identities. A storage refusal requests a sender retry without running a
+handler for the unreserved identity.
+
+To retire an authority, stop and drain admission on all nodes and close all
+equivalent verifying paths, including overlap keys. Declare
+`replay_protection :retired` and reserve the enrollment namespace against
+reuse. After verifying the irreversible closure and draining recoverable
+work, an authorized maintenance role can remove that enrollment's protected
+rows under an audit record. Record the tenant, declaration, scope, closure
+evidence and rows affected. Compaction and normal prune do not release them.
 
 ### Results
 

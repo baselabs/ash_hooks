@@ -35,7 +35,8 @@ defmodule AshHooks.Verifiers.ProviderRequired do
           path: [:webhooks, :inbound, inbound.name],
           message: "source_record requires inbound_delivery record_provider_alias :on"
 
-      is_nil(inbound.source_record) and is_nil(inbound.secret) ->
+      is_nil(inbound.source_record) and is_nil(inbound.secret) and
+          inbound.replay_protection != :retired ->
         raise Spark.Error.DslError,
           module: resource,
           path: [:webhooks, :inbound, inbound.name],

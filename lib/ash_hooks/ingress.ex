@@ -64,6 +64,12 @@ defmodule AshHooks.Ingress do
   and any unexpected parser result, records `"invalid_handler_result"` as a
   retryable failure. Each recorded failure emits the ingress failure event;
   a stale owner reloads without recording or emitting a failure.
+
+  Routes that declare `replay_protection :durable_identity` verify the signed
+  body before reading or reserving its replay identity. Terminal duplicates
+  return their existing receipt. Payload retention uses
+  `compact_replay_receipts/2` and the replay identity remains reserved after
+  compaction.
   """
 
   require Ash.Query
@@ -77,7 +83,7 @@ defmodule AshHooks.Ingress do
     UnknownSource
   }
 
-  alias AshHooks.Errors.Unknown.UnknownError
+  alias AshHooks.Errors.Unknown.{ReplayStoreUnavailable, UnknownError}
   alias AshHooks.Inbound.ResolvedSource
   alias AshHooks.KeyRegistry.Storage
   alias AshHooks.Provider.{DeliveryContext, VerifiedFacts}
@@ -96,6 +102,8 @@ defmodule AshHooks.Ingress do
   input `:now_ms` clock override. Optional `:host_context` is passed only to
   verification, without persistence or inspection. The provider remains
   responsible for binding any upstream proof to this body, tenant and source.
+  A trusted host may provide `:actor` for a durable replay route's ledger
+  read and admission actions.
   """
   @type ctx :: %{
           optional(:signature) => String.t(),
@@ -105,6 +113,7 @@ defmodule AshHooks.Ingress do
           optional(:request_uri) => String.t() | nil,
           optional(:connection) => term(),
           optional(:host_context) => term(),
+          optional(:actor) => term(),
           optional(:scope) => %{optional(atom() | String.t()) => term()},
           optional(:tenant) => term()
         }
@@ -327,7 +336,7 @@ defmodule AshHooks.Ingress do
 
     with {:ok, tenant} <- Tenancy.resolve([resource], ctx[:tenant]),
          {:ok, env} <- verify(resource, name, raw_body, Map.put(ctx, :tenant, tenant), started),
-         {:ok, created?, delivery} <- ingest_delivery(resource, env) do
+         {:ok, created?, delivery} <- persist_verified(resource, env) do
       drive(resource, env, delivery, created?)
     end
   end
@@ -342,7 +351,11 @@ defmodule AshHooks.Ingress do
 
       {:error, reason} ->
         emit_verify(name, :invalid, verify_error_class(reason), started)
-        record_rejection(resource, name, raw_body, ctx, reason)
+
+        unless protected_declaration?(resource, name) do
+          record_rejection(resource, name, raw_body, ctx, reason)
+        end
+
         {:error, reason}
     end
   end
@@ -371,7 +384,7 @@ defmodule AshHooks.Ingress do
           payload: Jason.encode!(%{"rejected" => true}),
           payload_digest: content_digest(raw_body || "")
         }
-        |> Map.merge(Map.new(ctx[:scope] || %{}))
+        |> Map.merge(receipt_scope(resource, Map.new(ctx[:scope] || %{})))
 
       _ =
         AshHooks.Phase.run(
@@ -409,7 +422,8 @@ defmodule AshHooks.Ingress do
         {AshHooks.Errors.Invalid.UnknownSource, :unknown_source},
         {AshHooks.Errors.Invalid.KeyKindMismatch, :key_kind_mismatch},
         {AshHooks.Errors.Invalid.UnknownKey, :unknown_key},
-        {AshHooks.Errors.Unknown.KeyUnavailable, :key_unavailable}
+        {AshHooks.Errors.Unknown.KeyUnavailable, :key_unavailable},
+        {ReplayStoreUnavailable, :dependency_unavailable}
       ] do
     defp error_class(%unquote(module){}), do: unquote(token)
   end
@@ -450,12 +464,63 @@ defmodule AshHooks.Ingress do
   (the default when omitted), or `{:error, :malformed_payload}` to record a
   terminal malformed row via `:record_malformed`. Both actions preserve the
   surviving row on conflict and share duplicate classification and telemetry.
+  Durable and retired declarations require the verified ingress entry point.
   """
   @spec ingest_delivery(module(), map()) :: {:ok, boolean(), struct()} | {:error, term()}
   def ingest_delivery(resource, env) do
     with {:ok, tenant} <- Tenancy.resolve([resource], env[:tenant]) do
-      ingest_delivery!(resource, env, tenant)
+      if protected_declaration?(resource, env[:name]) do
+        {:error, :protected_admission_required}
+      else
+        ingest_delivery!(resource, Map.delete(env, :replay_protection), tenant)
+      end
     end
+  end
+
+  defp persist_verified(resource, %{replay_protection: :durable_identity} = env) do
+    case replay_storage(fn -> fetch_ingested(resource, env, env.tenant) end) do
+      {:ok, delivery} ->
+        classify_and_emit(env, false, delivery)
+
+      :missing ->
+        decoded = decode_verified(env)
+        replay_storage(fn -> ingest_delivery!(resource, decoded, env.tenant) end)
+
+      {:error, _error} = error ->
+        error
+    end
+  end
+
+  defp persist_verified(resource, env), do: ingest_delivery(resource, env)
+
+  defp protected_declaration?(resource, name) when is_binary(name) do
+    resource
+    |> Info.webhooks()
+    |> Enum.any?(fn
+      %AshHooks.Inbound{name: declared, replay_protection: mode}
+      when mode in [:durable_identity, :retired] ->
+        Atom.to_string(declared) == name
+
+      _ ->
+        false
+    end)
+  end
+
+  defp protected_declaration?(resource, name) do
+    match?(
+      %{replay_protection: mode} when mode in [:durable_identity, :retired],
+      Info.inbound(resource, name)
+    )
+  end
+
+  defp replay_storage(operation) do
+    case operation.() do
+      {:error, _error} -> {:error, ReplayStoreUnavailable.exception([])}
+      result -> result
+    end
+  rescue
+    _error in [Ash.Error.Unknown, DBConnection.ConnectionError, Exqlite.Error, Postgrex.Error] ->
+      {:error, ReplayStoreUnavailable.exception([])}
   end
 
   defp ingest_delivery!(resource, env, tenant) do
@@ -467,7 +532,7 @@ defmodule AshHooks.Ingress do
         payload: env.payload,
         payload_digest: env.digest
       }
-      |> Map.merge(env.scope)
+      |> Map.merge(receipt_scope(resource, env.scope))
 
     input =
       if record_provider_alias?(resource),
@@ -479,18 +544,26 @@ defmodule AshHooks.Ingress do
         do: Map.put(input, :verified_facts, env[:verified_facts]),
         else: input
 
-    if AshHooks.Info.writable_id?(resource) and Ash.Resource.Info.primary_key(resource) == [:id] do
-      ingest_with_supplied_id(resource, input, env, tenant)
+    cond do
+      AshHooks.Info.writable_id?(resource) and Ash.Resource.Info.primary_key(resource) == [:id] ->
+        ingest_with_supplied_id(resource, input, env, tenant)
+
+      env[:replay_protection] == :durable_identity ->
+        pre_read_create(resource, input, env, tenant)
+
+      true ->
+        # Custom/generated keys use a preliminary identity read for the
+        # created/duplicate label. The upsert and claim still fence races.
+        ingest_with_pre_read(resource, input, env, tenant)
+    end
+  end
+
+  defp receipt_scope(resource, scope) do
+    if retain_replay_identities?(resource) do
+      slots = Extension.get_opt(resource, [:inbound_delivery], :scope_identity, [])
+      Map.take(scope, Enum.flat_map(slots, &[&1, Atom.to_string(&1)]))
     else
-      # A custom/generated PK cannot use the supplied UUID classification,
-      # so classification pre-reads the unique_ingest
-      # identity instead. Exact in every sequential case (provider
-      # redeliveries) and whenever the primary read can see the existing
-      # row (a base-filtered read that hides it classifies :created).
-      # The storage upsert still deduplicates the row. The claim rejects a
-      # terminal or currently leased row; handler invocation remains
-      # at-least-once across crashes or lease expiry.
-      ingest_with_pre_read(resource, input, env, tenant)
+      scope
     end
   end
 
@@ -502,12 +575,7 @@ defmodule AshHooks.Ingress do
       case AshHooks.Phase.run(
              resource,
              tenant,
-             &Ash.create(&1.resource, input,
-               context: AshHooks.Phase.context(resource),
-               action: ingest_action(env),
-               authorize?: false,
-               tenant: tenant
-             )
+             &Ash.create(&1.resource, input, ingest_options(resource, env, tenant))
            ) do
         {:ok, delivery} ->
           classify_and_emit(env, delivery.id == id, delivery)
@@ -531,12 +599,7 @@ defmodule AshHooks.Ingress do
       AshHooks.Phase.run(
         resource,
         tenant,
-        &Ash.create(&1.resource, input,
-          context: AshHooks.Phase.context(resource),
-          action: ingest_action(env),
-          authorize?: false,
-          tenant: tenant
-        )
+        &Ash.create(&1.resource, input, ingest_options(resource, env, tenant))
       )
     end)
     |> case do
@@ -545,6 +608,22 @@ defmodule AshHooks.Ingress do
     end
   end
 
+  defp ingest_options(resource, env, tenant) do
+    [context: Phase.context(resource), action: ingest_action(env)] ++ ingest_access(env, tenant)
+  end
+
+  defp ingest_access(%{replay_protection: :durable_identity} = env, tenant),
+    do: [authorize?: true, actor: env.actor, tenant: tenant]
+
+  defp ingest_access(_env, tenant), do: [authorize?: false, tenant: tenant]
+
+  defp ingest_action(%{
+         replay_protection: :durable_identity,
+         decode_result: {:error, :malformed_payload}
+       }),
+       do: :record_protected_malformed
+
+  defp ingest_action(%{replay_protection: :durable_identity}), do: :ingest_protected
   defp ingest_action(%{decode_result: {:error, :malformed_payload}}), do: :record_malformed
   defp ingest_action(_env), do: :ingest
 
@@ -563,7 +642,7 @@ defmodule AshHooks.Ingress do
               Map.to_list(env.scope)
           ),
           tenant,
-          &Ash.read_one(&1, authorize?: false, tenant: tenant)
+          &Ash.read_one(&1, ingest_access(env, tenant))
         )
       end)
 
@@ -573,6 +652,11 @@ defmodule AshHooks.Ingress do
       {:error, error} -> {:error, error}
     end
   end
+
+  defp classify_and_emit(%{replay_protection: :durable_identity}, _created?, %{
+         replay_identity: nil
+       }),
+       do: {:error, ReplayStoreUnavailable.exception([])}
 
   defp classify_and_emit(env, created?, delivery) do
     if created? == false, do: count_duplicate(delivery.__struct__, delivery, env[:tenant])
@@ -678,6 +762,7 @@ defmodule AshHooks.Ingress do
   delivery of the same webhook processes again (inbound), and on the
   outbound side, a re-emission of the same event re-dispatches and
   double-sends. Set the TTL beyond any replay/re-emission horizon.
+  Protected receipts are excluded from every prune cutoff.
   `:batch_size` defaults to 100 and is capped at 1,000. Only primary-key
   columns are selected before deletion. Returns `{:ok, deleted_count}` for
   this batch; call again until it returns a count below the requested size.
@@ -702,6 +787,7 @@ defmodule AshHooks.Ingress do
               status in [:processed, :failed_permanent, :superseded] and
                 inserted_at < ^older_than
             )
+            |> legacy_prune_filter(resource)
             |> Ash.Query.sort(primary_key)
             |> Ash.Query.limit(batch_size)
             |> Ash.Query.select(primary_key),
@@ -723,6 +809,71 @@ defmodule AshHooks.Ingress do
     end
   end
 
+  defp legacy_prune_filter(query, resource) do
+    if retain_replay_identities?(resource),
+      do: Ash.Query.filter(query, is_nil(replay_identity)),
+      else: query
+  end
+
+  @doc """
+  Compacts one bounded batch of protected terminal receipts inserted before
+  `:older_than`. The payload becomes an empty object and handler metadata
+  is cleared. The first receipt's identity, terminal state, and insertion
+  time are retained. Repeated runs skip compacted rows.
+
+  Pass `:tenant` for a multitenant ledger and `:actor` for its compaction
+  policy. `:batch_size` defaults to 100 and is capped at 1,000.
+  """
+  @spec compact_replay_receipts(module(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def compact_replay_receipts(resource, opts) do
+    cutoff = normalize_cutoff(Keyword.fetch!(opts, :older_than))
+    batch_size = Keyword.get(opts, :batch_size, @prune_default_batch_size)
+
+    with {:ok, tenant} <- Tenancy.resolve([resource], opts[:tenant]),
+         :ok <- require_replay_retention(resource),
+         :ok <- require_timestamps!(resource),
+         :ok <- validate_prune_batch_size(batch_size) do
+      primary_key = Ash.Resource.Info.primary_key(resource)
+
+      result =
+        AshHooks.Contention.run(fn ->
+          Phase.bulk(
+            resource
+            |> Ash.Query.filter(
+              replay_identity == :retained and
+                status in [:processed, :failed_permanent, :superseded] and
+                inserted_at < ^cutoff
+            )
+            |> Ash.Query.sort(primary_key)
+            |> Ash.Query.limit(batch_size)
+            |> Ash.Query.select(primary_key),
+            tenant,
+            &Ash.bulk_update(&1, :compact_replay_receipt, %{},
+              actor: opts[:actor],
+              authorize?: true,
+              return_records?: true,
+              return_errors?: true,
+              strategy: [:atomic],
+              tenant: tenant
+            )
+          )
+        end)
+
+      case result do
+        %Ash.BulkResult{status: :success, records: rows} -> {:ok, length(rows)}
+        %Ash.BulkResult{errors: [error | _]} -> {:error, error}
+      end
+    end
+  end
+
+  defp require_replay_retention(resource) do
+    if retain_replay_identities?(resource), do: :ok, else: {:error, :replay_retention_not_enabled}
+  end
+
+  defp retain_replay_identities?(resource),
+    do: Extension.get_opt(resource, [:inbound_delivery], :retain_replay_identities, :off) == :on
+
   @doc """
   Retention field-redaction hook: replaces the stored payload of a
   CLAIMED delivery with `redactor.(payload)` under the caller's token
@@ -737,7 +888,8 @@ defmodule AshHooks.Ingress do
   invalid redactor returns an error and leaves the payload UNCHANGED
   (preserving the audit record so the caller may retry). Redact,
   then mark promptly: a lease expiry between redact and mark re-drives
-  the row with the redacted payload.
+  the row with the redacted payload. Protected receipts use terminal
+  `compact_replay_receipts/2`.
   """
   @spec redact_payload(module(), term(), non_neg_integer(), term(), keyword()) ::
           :ok | {:error, :stale_token | :redactor_crash | :invalid_redactor_result | term()}
@@ -749,9 +901,16 @@ defmodule AshHooks.Ingress do
          # stale token must not receive sensitive bytes through the
          # callback even though the eventual write would be rejected
          #
-         :ok <- check_fence(delivery, token) do
+         :ok <- check_fence(delivery, token),
+         :ok <- allow_claimed_redaction(resource, delivery) do
       apply_redactor(redactor, delivery.payload, resource, key, token, tenant)
     end
+  end
+
+  defp allow_claimed_redaction(resource, delivery) do
+    if retain_replay_identities?(resource) and not is_nil(delivery.replay_identity),
+      do: {:error, :protected_receipt},
+      else: :ok
   end
 
   defp check_fence(delivery, token) do
@@ -933,6 +1092,15 @@ defmodule AshHooks.Ingress do
   end
 
   # ────────────────────────── internals ──────────────────────────
+
+  defp drive(
+         _resource,
+         %{replay_protection: :durable_identity},
+         %{status: status} = delivery,
+         created?
+       )
+       when status in [:processed, :failed_permanent, :superseded],
+       do: {:ok, result(created?), delivery}
 
   defp drive(_resource, %{decode_result: {:error, :malformed_payload}}, delivery, true),
     do: {:ok, :created, delivery}
@@ -1284,7 +1452,8 @@ defmodule AshHooks.Ingress do
     ctx = Map.put(ctx, :json_decoder, decoder)
 
     with {:ok, inbound} <- fetch_inbound(resource, name),
-         {:ok, resolved} <- request_source(resource, name, ctx),
+         :ok <- admission_open(inbound),
+         {:ok, resolved} <- request_source(resource, inbound, ctx),
          :ok <- resolved_pause(resolved),
          :ok <- check_replay_window(inbound, resolved.provider, name),
          :ok <- check_raw_body(raw_body, name),
@@ -1298,30 +1467,65 @@ defmodule AshHooks.Ingress do
         provider_alias: resolved.provider_alias
       }
 
-      {payload, parsed_type, decode_result} =
-        decode_and_parse(resolved.provider, raw_body, inbound.body_format, decoder, context)
+      env = %{
+        name: name,
+        provider: resolved.provider,
+        provider_alias: resolved.provider_alias,
+        verified_facts: facts,
+        inbound: inbound,
+        raw_body: raw_body,
+        digest: digest,
+        decoder: decoder,
+        context: context,
+        scope: resolved.scope,
+        tenant: ctx[:tenant],
+        actor: ctx[:actor],
+        replay_protection: inbound.replay_protection
+      }
 
-      with {:ok, external_event_id} <-
-             external_event_id(inbound, resolved.provider, payload, digest, name, context) do
-        {:ok,
-         %{
-           name: name,
-           provider: resolved.provider,
-           provider_alias: resolved.provider_alias,
-           verified_facts: facts,
-           inbound: inbound,
-           payload: payload,
-           digest: digest,
-           external_event_id: external_event_id,
-           parsed_type: parsed_type,
-           decode_result: decode_result,
-           type_string: type_string(parsed_type),
-           scope: resolved.scope,
-           tenant: ctx[:tenant]
-         }}
-      end
+      prepare_identity(env)
     end
   end
+
+  defp prepare_identity(%{replay_protection: :durable_identity} = env),
+    do: {:ok, Map.put(env, :external_event_id, "body-sha256:v1:" <> env.digest)}
+
+  defp prepare_identity(env) do
+    env = decode_verified(env)
+
+    with {:ok, id} <-
+           external_event_id(
+             env.inbound,
+             env.provider,
+             env.payload,
+             env.digest,
+             env.name,
+             env.context
+           ) do
+      {:ok, Map.put(env, :external_event_id, id)}
+    end
+  end
+
+  defp decode_verified(env) do
+    {payload, parsed_type, decode_result} =
+      decode_and_parse(
+        env.provider,
+        env.raw_body,
+        env.inbound.body_format,
+        env.decoder,
+        env.context
+      )
+
+    Map.merge(env, %{
+      payload: payload,
+      parsed_type: parsed_type,
+      decode_result: decode_result,
+      type_string: type_string(parsed_type)
+    })
+  end
+
+  defp admission_open(%{replay_protection: :retired}), do: {:error, UnknownSource.exception([])}
+  defp admission_open(_inbound), do: :ok
 
   @doc """
   Resolves one inbound declaration, casting and constraining scope before a
@@ -1334,6 +1538,7 @@ defmodule AshHooks.Ingress do
           {:ok, AshHooks.Inbound.ResolvedSource.t()} | {:error, term()}
   def resolve_source(resource, name, opts \\ []) do
     with {:ok, inbound} <- fetch_inbound(resource, name),
+         :ok <- admission_open(inbound),
          {:ok, scope} <- cast_scope(resource, opts[:scope]),
          {:ok, tenant} <-
            Tenancy.resolve(
@@ -1360,10 +1565,16 @@ defmodule AshHooks.Ingress do
     end
   end
 
-  defp request_source(_resource, name, %{resolved_source: %ResolvedSource{name: name} = source}),
-    do: {:ok, source}
+  defp request_source(
+         _resource,
+         %{name: name, replay_protection: :legacy},
+         %{resolved_source: %ResolvedSource{name: name} = source}
+       ),
+       do: {:ok, source}
 
-  defp request_source(resource, name, ctx), do: resolve_source(resource, name, Map.to_list(ctx))
+  defp request_source(resource, inbound, ctx),
+    do: resolve_source(resource, inbound.name, Map.to_list(ctx))
+
   defp resolved_pause(%ResolvedSource{paused?: true}), do: {:error, :source_paused}
   defp resolved_pause(_), do: :ok
 
@@ -1390,6 +1601,7 @@ defmodule AshHooks.Ingress do
     tenant = Tenancy.from_row(row)
 
     with {:ok, provider} <- source_provider(inbound.source_record, row.provider),
+         :ok <- check_enrolled_provider(inbound, provider),
          {:ok, canonical} <-
            Custody.canonical_tenant(
              tenant,
@@ -1423,6 +1635,17 @@ defmodule AshHooks.Ingress do
        }}
     end
   end
+
+  defp check_enrolled_provider(
+         %{replay_protection: :durable_identity, provider: pinned},
+         provider
+       ) do
+    if (is_nil(pinned) or pinned == provider) and Provider.body_only_mac?(provider),
+      do: :ok,
+      else: {:error, UnknownSource.exception([])}
+  end
+
+  defp check_enrolled_provider(_inbound, _provider), do: :ok
 
   defp source_slots(row) do
     previous = row.previous_secret_retired_at
@@ -1476,6 +1699,15 @@ defmodule AshHooks.Ingress do
     with {:ok, secret} <- resolve_secret(source.provider, inbound, source.name, ctx),
          do: verify(source.provider, body, ctx, inbound, secret, source.name)
   end
+
+  defp verify_source_keys(
+         %ResolvedSource{keys: [], public_key: public_key, name: name},
+         _body,
+         _ctx,
+         %{replay_protection: :durable_identity}
+       )
+       when not is_nil(public_key),
+       do: {:error, InvalidSignature.exception(provider: name)}
 
   defp verify_source_keys(%ResolvedSource{keys: []} = source, body, ctx, inbound) do
     if source.public_key,

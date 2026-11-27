@@ -194,6 +194,31 @@ defmodule AshHooks.Provider do
   @callback webhook_secret_scope() :: webhook_secret_scope()
 
   @doc """
+  Coverage for a hand-written verifier serving a durable replay route.
+  Return `:body_only_mac` only when successful verification authenticates
+  the exact raw body with an enrollment's MAC key and does not use unsigned
+  source or topic selectors. Supply conformance vectors for that contract.
+  Ingress derives coverage directly from a generated verifier's scheme.
+  """
+  @callback verification_coverage() :: :body_only_mac
+  @optional_callbacks verification_coverage: 0
+
+  @doc false
+  def body_only_mac?(provider) do
+    cond do
+      function_exported?(provider, :__ash_hooks_scheme__, 0) and
+          generated_callback?(provider, {:verify_signature, 3}) ->
+        Scheme.body_only_mac?(provider.__ash_hooks_scheme__())
+
+      function_exported?(provider, :verification_coverage, 0) ->
+        provider.verification_coverage() == :body_only_mac
+
+      true ->
+        false
+    end
+  end
+
+  @doc """
   The request header this provider's signature scheme carries a trustworthy
   timestamp in (`nil` when the scheme has none). A DSL `replay_window_seconds`
   requires a non-`nil` value here. A directly configured provider is checked

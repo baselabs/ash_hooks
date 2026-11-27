@@ -4,6 +4,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   # NOT live here; they live in the query filters AshHooks.Ingress builds
   # (WHERE-gated updates are the portable fence; see the extension moduledoc).
   use Spark.Dsl.Transformer
+  import Ash.Expr, only: [expr: 1]
 
   alias Ash.Resource.Builder
   alias Ash.Resource.Change.Builtins
@@ -33,23 +34,28 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
     facts? =
       Extension.get_opt(dsl_state, [:inbound_delivery], :record_verified_facts, :off) == :on
 
+    retain? =
+      Extension.get_opt(dsl_state, [:inbound_delivery], :retain_replay_identities, :off) == :on
+
     scope = if facts?, do: [:verified_facts | scope], else: scope
 
-    with {:ok, ingest} <- build_ingest(scope, writable_id_pk?(dsl_state)),
+    writable_id? = writable_id_pk?(dsl_state)
+
+    with {:ok, ingest} <- build_ingest(scope, writable_id?, :ingest),
          {:ok, record_malformed} <-
-           build_ingest(scope, writable_id_pk?(dsl_state), :record_malformed),
-         {:ok, claim} <- build_claim(),
-         {:ok, mark_processed} <- build_mark_processed(),
-         {:ok, mark_failed} <- build_mark_failed(),
-         {:ok, renew} <- build_renew(),
-         {:ok, adopt_legacy_identity} <- build_adopt_legacy_identity(),
-         {:ok, redact_payload} <- build_redact_payload(facts?),
-         {:ok, prune} <- build_prune() do
+           build_ingest(scope, writable_id?, :record_malformed),
+         {:ok, claim} <- build_claim(retain?),
+         {:ok, mark_processed} <- build_mark_processed(retain?),
+         {:ok, mark_failed} <- build_mark_failed(retain?),
+         {:ok, renew} <- build_renew(retain?),
+         {:ok, adopt_legacy_identity} <- build_adopt_legacy_identity(retain?),
+         {:ok, redact_payload} <- build_redact_payload(facts?, retain?),
+         {:ok, prune} <- build_prune(retain?) do
       # the accept-list decision is PERSISTED for the runtime: the
       # Ingress reads the SAME answer, never a re-derived predicate that
       # could disagree with the compiled action (composite PKs and
       # non-:id PKs make naive ":id exists and is writable" diverge)
-      dsl_state = Transformer.persist(dsl_state, :id_accepted?, writable_id_pk?(dsl_state))
+      dsl_state = Transformer.persist(dsl_state, :id_accepted?, writable_id?)
 
       {:ok, dsl_state} = add(dsl_state, :create, ingest)
       {:ok, dsl_state} = add(dsl_state, :create, record_malformed)
@@ -59,7 +65,8 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
       {:ok, dsl_state} = add(dsl_state, :destroy, prune)
       {:ok, dsl_state} = add(dsl_state, :update, mark_failed)
       {:ok, dsl_state} = add(dsl_state, :update, renew)
-      add(dsl_state, :update, adopt_legacy_identity)
+      {:ok, dsl_state} = add(dsl_state, :update, adopt_legacy_identity)
+      add_replay_actions(dsl_state, scope, writable_id?, retain?)
     end
   end
 
@@ -77,8 +84,8 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
     end
   end
 
-  defp build_prune do
-    Builder.build_action(:destroy, :prune, accept: [])
+  defp build_prune(retain?) do
+    Builder.build_action(:destroy, :prune, accept: [], changes: legacy_only(retain?))
   end
 
   defp add(dsl_state, _type, entity) do
@@ -90,9 +97,9 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   # PK is writable; otherwise Ingress pre-reads the identity).
   # Touching observability columns on conflict is the consumer's choice
   # via their own action; the primitive keeps the fence minimal.
-  defp build_ingest(scope, id_accepted, name \\ :ingest) do
+  defp build_ingest(scope, id_accepted, name) do
     changes =
-      if name == :record_malformed do
+      if name in [:record_malformed, :record_protected_malformed] do
         [
           change(Builtins.set_attribute(:status, :failed_permanent)),
           change(Builtins.set_attribute(:error_class, "malformed_payload"))
@@ -100,6 +107,11 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
       else
         []
       end
+
+    changes =
+      if name in [:ingest_protected, :record_protected_malformed],
+        do: [change(Builtins.set_attribute(:replay_identity, :retained)) | changes],
+        else: changes
 
     Builder.build_action(:create, name,
       upsert?: true,
@@ -120,25 +132,38 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   defp maybe_accept_id(true, accept), do: [:id | accept]
   defp maybe_accept_id(false, accept), do: accept
 
-  defp build_claim do
-    import Ash.Expr, only: [expr: 1]
+  defp build_claim(retain?) do
+    gate =
+      if retain? do
+        [
+          change(
+            Builtins.filter(
+              expr(is_nil(replay_identity) or status in [:received, :claimed, :failed_retryable])
+            )
+          )
+        ]
+      else
+        []
+      end
 
     Builder.build_action(:update, :claim,
       accept: [],
       arguments: [argument(:lease_expires_at, :utc_datetime_usec, allow_nil?: false)],
-      changes: [
-        change(Builtins.atomic_update(:fencing_token, expr(fencing_token + 1))),
-        change(Builtins.atomic_update(:attempts, expr(attempts + 1))),
-        change(Builtins.set_attribute(:status, :claimed)),
-        change(Builtins.set_attribute(:lease_expires_at, Ash.Expr.arg(:lease_expires_at)))
-      ]
+      changes:
+        gate ++
+          [
+            change(Builtins.atomic_update(:fencing_token, expr(fencing_token + 1))),
+            change(Builtins.atomic_update(:attempts, expr(attempts + 1))),
+            change(Builtins.set_attribute(:status, :claimed)),
+            change(Builtins.set_attribute(:lease_expires_at, Ash.Expr.arg(:lease_expires_at)))
+          ]
     )
   end
 
   # the retention field-redaction hook: replaces the stored payload
   # under the caller's claim fence (Ingress.redact_payload/4 gates the
   # WHERE; the action itself is a plain primitive, the fence pattern)
-  defp build_redact_payload(facts?) do
+  defp build_redact_payload(facts?, retain?) do
     import Ash.Expr, only: [arg: 1]
 
     {:ok, payload_set} =
@@ -151,23 +176,26 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
       accept: [],
       arguments: [payload_arg],
       changes:
-        [payload_set] ++
+        legacy_only(retain?) ++
+          [payload_set] ++
           if(facts?, do: [change(Builtins.set_attribute(:verified_facts, nil))], else: [])
     )
   end
 
-  defp build_mark_processed do
+  defp build_mark_processed(retain?) do
     Builder.build_action(:update, :mark_processed,
       accept: [],
-      changes: [
-        change(Builtins.set_attribute(:status, :processed)),
-        change(Builtins.set_attribute(:error_class, nil))
-      ]
+      changes:
+        claimed_only(retain?) ++
+          [
+            change(Builtins.set_attribute(:status, :processed)),
+            change(Builtins.set_attribute(:error_class, nil))
+          ]
     )
   end
 
-  defp build_mark_failed do
-    import Ash.Expr, only: [expr: 1, arg: 1]
+  defp build_mark_failed(retain?) do
+    import Ash.Expr, only: [arg: 1]
 
     Builder.build_action(:update, :mark_failed,
       accept: [],
@@ -175,35 +203,39 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
         argument(:error_class, :string, allow_nil?: false),
         argument(:permanent?, :boolean, allow_nil?: false, default: false)
       ],
-      changes: [
-        change(
-          Builtins.atomic_update(
-            :status,
-            expr(
-              if ^arg(:permanent?) do
-                :failed_permanent
-              else
-                :failed_retryable
-              end
-            )
-          )
-        ),
-        change(Builtins.set_attribute(:error_class, Ash.Expr.arg(:error_class)))
-      ]
+      changes:
+        claimed_only(retain?) ++
+          [
+            change(
+              Builtins.atomic_update(
+                :status,
+                expr(
+                  if ^arg(:permanent?) do
+                    :failed_permanent
+                  else
+                    :failed_retryable
+                  end
+                )
+              )
+            ),
+            change(Builtins.set_attribute(:error_class, Ash.Expr.arg(:error_class)))
+          ]
     )
   end
 
-  defp build_renew do
+  defp build_renew(retain?) do
     Builder.build_action(:update, :renew,
       accept: [],
       arguments: [argument(:lease_expires_at, :utc_datetime_usec, allow_nil?: false)],
-      changes: [
-        change(Builtins.set_attribute(:lease_expires_at, Ash.Expr.arg(:lease_expires_at)))
-      ]
+      changes:
+        claimed_only(retain?) ++
+          [
+            change(Builtins.set_attribute(:lease_expires_at, Ash.Expr.arg(:lease_expires_at)))
+          ]
     )
   end
 
-  defp build_adopt_legacy_identity do
+  defp build_adopt_legacy_identity(retain?) do
     import Ash.Expr, only: [arg: 1]
 
     Builder.build_action(:update, :adopt_legacy_identity,
@@ -219,10 +251,55 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
         ),
         argument(:error_class, :string, [])
       ],
+      changes:
+        legacy_only(retain?) ++
+          [
+            change(Builtins.set_attribute(:external_event_id, arg(:external_event_id))),
+            change(Builtins.set_attribute(:status, arg(:status))),
+            change(Builtins.set_attribute(:error_class, arg(:error_class)))
+          ]
+    )
+  end
+
+  defp legacy_only(false), do: []
+  defp legacy_only(true), do: [change(Builtins.filter(expr(is_nil(replay_identity))))]
+
+  defp claimed_only(false), do: []
+
+  defp claimed_only(true),
+    do: [change(Builtins.filter(expr(is_nil(replay_identity) or status == :claimed)))]
+
+  defp add_replay_actions(state, _scope, _writable_id?, false), do: {:ok, state}
+
+  defp add_replay_actions(state, scope, writable_id?, true) do
+    metadata = Enum.filter([:verified_facts, :provider_alias], &(&1 in scope))
+
+    with {:ok, ingest} <- build_ingest(scope, writable_id?, :ingest_protected),
+         {:ok, malformed} <- build_ingest(scope, writable_id?, :record_protected_malformed),
+         {:ok, compact} <- build_compact(metadata) do
+      {:ok, state} = add(state, :create, ingest)
+      {:ok, state} = add(state, :create, malformed)
+      add(state, :update, compact)
+    end
+  end
+
+  defp build_compact(metadata) do
+    clear = [:external_event_type, :error_class, :lease_expires_at | metadata]
+
+    Builder.build_action(:update, :compact_replay_receipt,
+      accept: [],
       changes: [
-        change(Builtins.set_attribute(:external_event_id, arg(:external_event_id))),
-        change(Builtins.set_attribute(:status, arg(:status))),
-        change(Builtins.set_attribute(:error_class, arg(:error_class)))
+        change(
+          Builtins.filter(
+            expr(
+              replay_identity == :retained and
+                status in [:processed, :failed_permanent, :superseded]
+            )
+          )
+        ),
+        change(Builtins.set_attribute(:replay_identity, :compacted)),
+        change(Builtins.set_attribute(:payload, %{}))
+        | Enum.map(clear, &change(Builtins.set_attribute(&1, nil)))
       ]
     )
   end

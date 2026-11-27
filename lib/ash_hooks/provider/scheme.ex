@@ -224,6 +224,18 @@ defmodule AshHooks.Provider.Scheme do
 
   def timestamp_header(%__MODULE__{}), do: nil
 
+  @doc false
+  def body_only_mac?(%__MODULE__{
+        algorithm: algorithm,
+        signed_input: :body,
+        timestamp: nil,
+        signature: signature
+      }) do
+    signature != :jws_body and match?({:hmac, _, _}, @algorithms[algorithm])
+  end
+
+  def body_only_mac?(_scheme), do: false
+
   @doc "Returns `:body` for JWS envelopes and `:request` for header-based signatures."
   @spec signature_source(t()) :: :body | :request
   def signature_source(%__MODULE__{signature: :jws_body}), do: :body

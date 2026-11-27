@@ -16,7 +16,9 @@ defmodule AshHooks.Inbound do
     :previous_secret,
     :paused,
     :event_id,
+    :source_binding,
     :replay_window_seconds,
+    replay_protection: :legacy,
     entities: [],
     __spark_metadata__: nil
   ]
@@ -31,6 +33,8 @@ defmodule AshHooks.Inbound do
           previous_secret: term(),
           paused: term(),
           event_id: (map() | list() -> term()) | nil,
+          replay_protection: :legacy | :durable_identity | :retired,
+          source_binding: :authenticated | nil,
           replay_window_seconds: non_neg_integer() | nil,
           entities: list(),
           __spark_metadata__: term()

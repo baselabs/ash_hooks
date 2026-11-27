@@ -42,6 +42,14 @@ defmodule AshHooks.InboundDelivery do
   Applying adoption requires a transaction-capable data layer and quiesced
   ingress and reapers. See the ordered upgrade in `UPGRADING.md`.
 
+  Opt in to `retain_replay_identities :on` to support timestamp-free
+  authenticated routes. Migrate the nullable `replay_identity` field first.
+  Legacy rows leave it null. Protected rows retain their unique-ingest
+  identity through `AshHooks.Ingress.compact_replay_receipts/2` and are excluded
+  from `AshHooks.Ingress.prune/2`. Compaction clears the terminal receipt's
+  payload and handler metadata. Restrict direct writes and deletes with host
+  action policies and database privileges.
+
   The injected actions are low-level primitives: the conditional gates
   (claim received rows, retryable failures, or claimed rows whose lease expired; mark/renew only by the
   current token under an unexpired lease) live in the query filters that
@@ -89,6 +97,12 @@ defmodule AshHooks.InboundDelivery do
     Configuration of this resource as the inbound webhook ledger.
     """,
     schema: [
+      retain_replay_identities: [
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc:
+          "Injects the nullable replay_identity marker and protected admission and compaction actions. Migrate before enabling. Prune only deletes unprotected receipts."
+      ],
       record_verified_facts: [
         type: {:in, [:off, :on]},
         default: :off,

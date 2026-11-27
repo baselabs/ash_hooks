@@ -1,5 +1,36 @@
 # Upgrading
 
+## Durable replay identities
+
+Hosts opting into durable replay protection add a nullable `replay_identity`
+text column to the inbound ledger. Ash stores `retained` and `compacted` in
+that column. Keep existing rows null and keep the existing `unique_ingest`
+index, including the tenant and every scope slot. Add `inserted_at` and
+`updated_at` using Ash `timestamps()` if the ledger has no timestamps.
+
+Apply the migration before deploying `inbound_delivery retain_replay_identities
+:on`. Update host Ash policies and database privileges as described in the
+[sender tutorial](documentation/tutorials/verify-any-sender.md#retain-replay-identities).
+Deploy the prune protection to every running copy before enabling protected
+admission. This includes any independent cleanup job.
+
+For an existing enrollment, quiesce ingress and recover or drain unfinished
+legacy receipts before cutover. Rotate to new unique signing material and
+close every old verifying path before enabling `replay_protection
+:durable_identity`. Keep the outgoing key out of the overlap at cutover.
+The old key can authenticate bodies whose original receipt was already pruned.
+If retaining old keys is required, an authoritative and complete history of
+admitted bodies must supply their verified digests. Apply an audited offline
+migration under quiescence, preserving one receipt and its terminal outcome
+per exact digest in the same tenant and enrollment. Use
+`body-sha256:v1:` followed by the lowercase SHA-256 of the exact signed bytes
+as the external event ID and `retained` as the marker. Resolve duplicate
+identities before enabling admission. A decoded payload cannot recover the
+original bytes. Purged history without an authoritative record is lost.
+
+Keep the marker and protection on rollback once a protected receipt exists.
+An older cleanup process can delete the very receipt that fences replay.
+
 <a id="upgrade-3-7"></a>
 
 ## 3.6.0 → 3.7.0

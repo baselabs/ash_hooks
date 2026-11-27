@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Durable replay protection for timestamp-free signatures
+
+- Routes can opt in to retaining exact-body replay identities in the inbound
+  ledger. Compact terminal payloads and handler metadata while keeping the
+  receipt and its identity across duplicate deliveries and key rotation.
+  See the [migration and cutover instructions](UPGRADING.md#durable-replay-identities).
+
 ## [3.7.0] - 2026-11-24
 
 ### Changed

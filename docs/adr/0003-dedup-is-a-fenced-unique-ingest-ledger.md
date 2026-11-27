@@ -2,6 +2,8 @@
 
 Status: Accepted August 20, 2026; amended November 15, 2026.
 
+Amended: November 27, 2026.
+
 ## Decision
 
 `AshHooks.InboundDelivery` persists the decoded payload and signed-body digest
@@ -31,3 +33,22 @@ the host resource's Ash data layer.
 - Byte-identical deliveries without a sender identity deduplicate to one event.
 - `ash_onetime` is not a dependency. Applications may independently choose an
   action-idempotency extension outside this package's dependency contract.
+
+## Durable replay identity for timestamp-free signatures
+
+A protected route reserves a versioned SHA-256 digest of the exact signed
+body in the existing `unique_ingest` fence for its immutable authenticated
+enrollment. Every route for that enrollment uses the same ledger declaration,
+tenant, and cast scope. The host provisions current and overlap keys unique
+to that enrollment and topic. Rotation preserves the namespace.
+
+The first receipt owns handler input and recovery. Terminal compaction
+discards the payload and handler metadata while retaining the receipt's
+identity and outcome. Protected duplicates use that receipt without decoding
+the request payload. Failure to reserve an identity asks the sender to retry.
+Byte-identical deliveries in an enrollment coalesce. A signature without
+time provides no age signal for a previously unseen body.
+
+Legacy identity precedence and prune behavior continue on routes that leave
+replay protection at its default. See [ADR 0026](0026-retention-action-injection.md)
+for cleanup and authority retirement.

@@ -13,7 +13,7 @@ Records are repository documentation and are not part of the Hex package.
 |---|---|---|
 | [0001: Naming and package identity](0001-naming-and-package-identity.md) | Amended | Package, repository and module names. |
 | [0002: Standard Webhooks and legacy dual signing](0002-standard-webhooks-canon-with-legacy-dual-sign.md) | Amended | Standard Webhooks as the signing canon; legacy dual signing. |
-| [0003: Fenced unique-ingest ledger](0003-dedup-is-a-fenced-unique-ingest-ledger.md) | Amended | Inbound deduplication as a fenced unique-ingest ledger. |
+| [0003: Fenced unique-ingest ledger](0003-dedup-is-a-fenced-unique-ingest-ledger.md) | Amended | Inbound deduplication, recovery and retained identities for timestamp-free signatures. |
 | [0004: Optional Oban and host-injected workers](0004-optional-oban-host-injected-worker.md) | Amended | Oban is optional; the host injects the worker. |
 | [0005: Security defaults and application boundaries](0005-security-floors-shipped-in-package.md) | Amended | Security defaults the package ships, and what the application owns. |
 | [0006: SW v1 and v1a (ed25519) signing, both schemes](0006-v1-and-v1a-signing-day-one.md) | Amended | Symmetric v1 and Ed25519 v1a signing. |
@@ -36,7 +36,7 @@ Records are repository documentation and are not part of the Hex package.
 | [0023: Installer mutation scope](0023-installer-mutation-scope.md) | Accepted | What the installer may edit in a host application. |
 | [0024: SQLite contention retry](0024-sqlite-contention-retry.md) | Accepted | Bounded retry of SQLite write contention. |
 | [0025: Inbound handler results](0025-inbound-handler-results.md) | Accepted | How ingress records every handler result. |
-| [0026: Retention action injection](0026-retention-action-injection.md) | Accepted | Whether the package may delete delivery rows. |
+| [0026: Retention action injection](0026-retention-action-injection.md) | Amended | Delivery deletion authority and terminal compaction for protected inbound receipts. |
 | [0027: Observation read failures](0027-observation-read-failures.md) | Accepted | Observation read failures are reported, never counted as zero. |
 | [0028: Host extension seams](0028-host-extension-seams.md) | Accepted | Verified facts, host signers, exact prepared requests and signing provenance. |
 | [0029: Transactional publication and query matching](0029-transactional-publish-and-query-matching.md) | Accepted | A dedicated outbox and query-side selection with an Elixir guard. |
