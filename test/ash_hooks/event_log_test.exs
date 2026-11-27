@@ -24,6 +24,10 @@ defmodule AshHooks.EventLogTest do
       defaults([:read, :create, :update])
       default_accept(:*)
     end
+
+    endpoint do
+      version_pinning(:on)
+    end
   end
 
   defmodule Subscription do
@@ -45,6 +49,8 @@ defmodule AshHooks.EventLogTest do
 
     subscription do
       endpoint_resource(AshHooks.EventLogTest.Endpoint)
+      pausable(:on)
+      filter_attributes([:store])
     end
   end
 
@@ -85,6 +91,10 @@ defmodule AshHooks.EventLogTest do
       repo(AshHooks.Test.Repo)
     end
 
+    outbound_event do
+      replay_context(:on)
+    end
+
     attributes do
       timestamps()
     end
@@ -120,6 +130,7 @@ defmodule AshHooks.EventLogTest do
         deliveries(AshHooks.EventLogTest.Delivery)
         events(AshHooks.EventLogTest.EventLog)
         version(3)
+        payload_versions(%{1 => {AshHooks.EventLogTest, :variant}})
       end
     end
   end
@@ -143,7 +154,7 @@ defmodule AshHooks.EventLogTest do
 
   use ExUnit.Case, async: false
 
-  alias AshHooks.Test.Repo
+  alias AshHooks.Test.{HttpReceiver, Repo}
 
   @endpoints "event_log_endpoints"
   @subscriptions "event_log_subscriptions"
@@ -158,13 +169,14 @@ defmodule AshHooks.EventLogTest do
     CREATE TABLE IF NOT EXISTS #{@endpoints} (
       id TEXT PRIMARY KEY, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled',
       secret_ref TEXT NOT NULL, previous_secret_ref TEXT, legacy_secret_ref TEXT,
-      legacy_previous_secret_ref TEXT
+      legacy_previous_secret_ref TEXT, pinned_payload_version INTEGER
     )
     """)
 
     Repo.query!("""
     CREATE TABLE IF NOT EXISTS #{@subscriptions} (
-      id TEXT PRIMARY KEY, event_types TEXT NOT NULL, endpoint_id TEXT NOT NULL, signing_mode TEXT
+      id TEXT PRIMARY KEY, event_types TEXT NOT NULL, endpoint_id TEXT NOT NULL, signing_mode TEXT,
+      paused INTEGER NOT NULL DEFAULT 0, event_filters TEXT
     )
     """)
 
@@ -194,7 +206,7 @@ defmodule AshHooks.EventLogTest do
     Repo.query!("""
     CREATE TABLE IF NOT EXISTS #{@events} (
       id TEXT PRIMARY KEY, event_uuid TEXT NOT NULL, event_type TEXT NOT NULL,
-      version INTEGER, payload BLOB NOT NULL,
+      version INTEGER, payload BLOB NOT NULL, replay_context TEXT,
       inserted_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )
     """)
@@ -255,9 +267,38 @@ defmodule AshHooks.EventLogTest do
     )
   end
 
-  defp dispatch!(id) do
-    {:ok, event} = AshHooks.Event.new(type: "order_paid", payload: @payload, id: id)
+  defp subscribe!(endpoint, attrs \\ %{}) do
+    Ash.create!(
+      Subscription,
+      Map.merge(%{endpoint_id: endpoint.id, event_types: ["order_paid"]}, attrs),
+      authorize?: false
+    )
+  end
+
+  defp dispatch!(id, metadata \\ %{}) do
+    {:ok, event} =
+      AshHooks.Event.new(type: "order_paid", payload: @payload, id: id, metadata: metadata)
+
     AshHooks.dispatch(Emitter, :order_paid, event)
+  end
+
+  def variant(event), do: {:ok, Jason.encode!(%{store: event.metadata["store"], version: 1})}
+
+  defp replay(endpoint, opts) do
+    AshHooks.OutboundEvent.replay(
+      EventLog,
+      endpoint,
+      Keyword.merge(
+        [
+          event_type: "order_paid",
+          deliveries: Delivery,
+          declaration: {Emitter, :order_paid},
+          endpoints: Endpoint,
+          requested_by: "ops"
+        ],
+        opts
+      )
+    )
   end
 
   test "each dispatched event records ONCE, whatever the fanout" do
@@ -383,6 +424,149 @@ defmodule AshHooks.EventLogTest do
   end
 
   describe "replay" do
+    test "filters and pause govern missing deliveries and their dry-run count" do
+      assert {:ok, []} = dispatch!("filter-s1", %{"store" => "s1", "private" => "omit"})
+      assert {:ok, []} = dispatch!("filter-s2", %{"store" => "s2"})
+
+      endpoint = endpoint!()
+      subscription = subscribe!(endpoint, %{event_filters: %{"store" => "s1"}})
+      paused = endpoint!()
+      subscribe!(paused, %{event_filters: %{"store" => "s1"}, paused: true})
+      wrong_type = endpoint!()
+      subscribe!(wrong_type, %{event_types: ["another_event"]})
+
+      assert {:ok, %{records: [logged]}} =
+               AshHooks.OutboundEvent.list(EventLog, event_uuid: "filter-s1")
+
+      assert Jason.decode!(logged.replay_context.metadata_json) == %{"store" => "s1"}
+      refute logged.replay_context.complete
+
+      for ineligible <- [paused, wrong_type, endpoint!()] do
+        assert {:ok, %{count: 0}} = replay(ineligible, dry_run: true)
+        assert {:ok, %{created: 0, re_sent: 0, skipped: 2, errors: []}} = replay(ineligible, [])
+      end
+
+      assert {:ok, %{count: 1}} = replay(endpoint, dry_run: true)
+      assert Ash.read!(Delivery, authorize?: false) == []
+      assert {:ok, %{created: 1, re_sent: 0, skipped: 1, errors: []}} = replay(endpoint, [])
+      assert [row] = Ash.read!(Delivery, authorize?: false)
+
+      assert {row.event_uuid, row.endpoint_id, row.subscription_id} ==
+               {"filter-s1", endpoint.id, subscription.id}
+    end
+
+    test "pre-capture and over-limit rows refuse filters but still support unfiltered replay" do
+      old =
+        Ash.create!(
+          EventLog,
+          %{event_uuid: "pre-capture", event_type: "order_paid", version: 3, payload: @payload},
+          action: :record,
+          authorize?: false
+        )
+
+      assert is_nil(old.replay_context)
+      assert {:ok, []} = dispatch!("over-limit", %{"store" => String.duplicate("x", 1_048_576)})
+
+      filtered = endpoint!()
+      subscribe!(filtered, %{event_filters: %{"store" => "s1"}})
+      unfiltered = endpoint!()
+      subscribe!(unfiltered)
+
+      assert {:ok, %{count: 0}} = replay(filtered, dry_run: true)
+
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 0, errors: errors}} = replay(filtered, [])
+      assert errors == [:replay_metadata_unavailable, :replay_metadata_unavailable]
+      assert Ash.read!(Delivery, authorize?: false) == []
+
+      assert {:ok, %{count: 2}} = replay(unfiltered, dry_run: true)
+      assert {:ok, %{created: 2, re_sent: 0, skipped: 0, errors: []}} = replay(unfiltered, [])
+
+      assert Enum.all?(Ash.read!(Delivery, authorize?: false), fn row ->
+               row.endpoint_id == unfiltered.id and row.payload == @payload
+             end)
+    end
+
+    test "replay dispatches the pinned variant and refuses a variant with incomplete input" do
+      {server, port} = HttpReceiver.start()
+      on_exit(fn -> :inets.stop(:httpd, server) end)
+
+      fanout = endpoint!()
+      Ash.update!(fanout, %{pinned_payload_version: 1}, authorize?: false)
+      subscribe!(fanout, %{event_filters: %{"store" => "s1"}})
+      assert {:ok, [%{status: :deferred}]} = dispatch!("variant-complete", %{"store" => "s1"})
+
+      assert {:ok, [%{status: :deferred}]} =
+               dispatch!("variant-incomplete", %{"store" => "s1", "private" => "omit"})
+
+      endpoint = endpoint!()
+
+      Ash.update!(
+        endpoint,
+        %{pinned_payload_version: 1, url: "http://127.0.0.1:#{port}/200"},
+        authorize?: false
+      )
+
+      subscribe!(endpoint, %{event_filters: %{"store" => "s1"}})
+
+      opts = [enqueue: {__MODULE__, :capture_replay}]
+      assert {:ok, %{count: 1}} = replay(endpoint, Keyword.put(opts, :dry_run, true))
+      refute_received {:release_replay, _, _}
+
+      assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: [:replay_payload_unavailable]}} =
+               replay(endpoint, opts)
+
+      assert_received {:release_replay, replayed, event}
+      assert replayed.endpoint_id == endpoint.id
+      assert replayed.event_uuid == "variant-complete"
+      assert event.payload == replayed.payload
+      assert event.payload == Jason.encode!(%{store: "s1", version: 1})
+
+      [original] =
+        Enum.filter(Ash.read!(Delivery, authorize?: false), fn row ->
+          row.endpoint_id == fanout.id and row.event_uuid == replayed.event_uuid
+        end)
+
+      assert original.payload == replayed.payload
+
+      refute Enum.any?(Ash.read!(Delivery, authorize?: false), fn row ->
+               row.endpoint_id == endpoint.id and row.event_uuid == "variant-incomplete"
+             end)
+
+      secret = AshHooks.Signing.generate_secret()
+
+      assert :ok =
+               AshHooks.Delivery.run(%{"delivery_pk" => AshHooks.PrimaryKey.encode(replayed)},
+                 deliveries: Delivery,
+                 endpoints: Endpoint,
+                 secret_resolver: fn "el-main" -> {:ok, secret} end,
+                 destination_policy: fn _, _ -> :allow end,
+                 http_opts: [validate_destination: false]
+               )
+
+      expected = original.payload
+      assert_receive {:http_received, %{body: ^expected}}
+    end
+
+    test "a pre-capture row refuses a pin even when the logged version equals it" do
+      Ash.create!(
+        EventLog,
+        %{event_uuid: "pre-capture-pin", event_type: "order_paid", version: 3, payload: @payload},
+        action: :record,
+        authorize?: false
+      )
+
+      endpoint = endpoint!()
+      Ash.update!(endpoint, %{pinned_payload_version: 3}, authorize?: false)
+      subscribe!(endpoint)
+
+      assert {:ok, %{count: 0}} = replay(endpoint, dry_run: true)
+
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 0, errors: [:replay_payload_unavailable]}} =
+               replay(endpoint, [])
+
+      assert Ash.read!(Delivery, authorize?: false) == []
+    end
+
     test "a delivery read storage error is reported without attempting a replay insert" do
       ep = endpoint!()
       dispatch!("msg_el_delivery_read_failure")
@@ -436,7 +620,8 @@ defmodule AshHooks.EventLogTest do
 
       dispatch!("msg_el_replay_new")
 
-      # the later endpoint had no subscription at the time
+      subscribe!(later)
+
       assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
                AshHooks.OutboundEvent.replay(EventLog, later,
                  event_uuid: "msg_el_replay_new",
@@ -493,6 +678,7 @@ defmodule AshHooks.EventLogTest do
       for i <- 1..2, do: dispatch!("msg_el_bulk#{i}")
 
       dispatch!("other_type_msg")
+      subscribe!(ep)
 
       assert {:ok, %{created: 3, re_sent: 0, skipped: 0, errors: []}} =
                AshHooks.OutboundEvent.replay(EventLog, ep,
@@ -531,9 +717,9 @@ defmodule AshHooks.EventLogTest do
         authorize?: false
       )
 
-      Ash.update!(ep, %{status: :disabled}, authorize?: false)
+      ep = Ash.update!(ep, %{status: :disabled}, authorize?: false)
 
-      assert {:ok, %{created: 0, re_sent: 0, skipped: 1, errors: errors}} =
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 2, errors: errors}} =
                AshHooks.OutboundEvent.replay(EventLog, ep,
                  event_type: "order_paid",
                  deliveries: Delivery,
@@ -542,7 +728,13 @@ defmodule AshHooks.EventLogTest do
                  requested_by: "ops"
                )
 
-      assert Enum.sort(errors) == [:conflicting_subscriptions, :endpoint_not_live]
+      assert errors == [:endpoint_not_live]
+
+      ep = Ash.update!(ep, %{status: :enabled}, authorize?: false)
+
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 0, errors: [:conflicting_subscriptions]}} =
+               replay(ep, event_uuid: "msg_el_batch_missing")
+
       rows = Ash.read!(Delivery, authorize?: false)
       assert length(rows) == 2
       assert Enum.find(rows, &(&1.event_uuid == "msg_el_batch_terminal")).status == :dead_letter
@@ -571,6 +763,7 @@ defmodule AshHooks.EventLogTest do
       # the {m, f} enqueue seam and a failing row create are contained
       dispatch!("msg_el_enqueue")
       fresh = endpoint!()
+      subscribe!(fresh)
 
       assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
                AshHooks.OutboundEvent.replay(EventLog, fresh,
@@ -626,9 +819,11 @@ defmodule AshHooks.EventLogTest do
 
       # a fn enqueue seam applies
       dispatch!("msg_el_fn_enqueue")
+      fn_endpoint = endpoint!()
+      subscribe!(fn_endpoint)
 
       assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
-               AshHooks.OutboundEvent.replay(EventLog, endpoint!(),
+               AshHooks.OutboundEvent.replay(EventLog, fn_endpoint,
                  event_uuid: "msg_el_fn_enqueue",
                  deliveries: Delivery,
                  declaration: {Emitter, :order_paid},
@@ -687,9 +882,11 @@ defmodule AshHooks.EventLogTest do
 
       # filter arms: to-bound alone, both bounds, and the named errors
       dispatch!("msg_el_bounds")
+      bounded_endpoint = endpoint!()
+      subscribe!(bounded_endpoint)
 
       assert {:ok, %{created: created, re_sent: 0, skipped: 0, errors: []}} =
-               AshHooks.OutboundEvent.replay(EventLog, endpoint!(),
+               AshHooks.OutboundEvent.replay(EventLog, bounded_endpoint,
                  event_type: "order_paid",
                  from: DateTime.add(DateTime.utc_now(), -60, :second),
                  to: DateTime.add(DateTime.utc_now(), 60, :second),
@@ -821,7 +1018,7 @@ defmodule AshHooks.EventLogTest do
     Repo.query!("""
     CREATE TABLE IF NOT EXISTS #{@events} (
       id TEXT PRIMARY KEY, event_uuid TEXT NOT NULL, event_type TEXT NOT NULL,
-      version INTEGER, payload BLOB NOT NULL,
+      version INTEGER, payload BLOB NOT NULL, replay_context TEXT,
       inserted_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )
     """)
@@ -835,6 +1032,7 @@ defmodule AshHooks.EventLogTest do
   test "release missing-row replay binds its declaration and stores its requester" do
     endpoint = endpoint!()
     {:ok, []} = dispatch!("release-missing-replay")
+    subscribe!(endpoint)
 
     assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
              AshHooks.OutboundEvent.replay(EventLog, endpoint,
@@ -961,6 +1159,7 @@ defmodule AshHooks.EventLogTest do
   test "release event-log dry run counts its batch without creating deliveries" do
     endpoint = endpoint!()
     for id <- ["dry-run-one", "dry-run-two"], do: dispatch!(id)
+    subscribe!(endpoint)
 
     assert {:ok, %{count: 1}} =
              AshHooks.OutboundEvent.replay(EventLog, endpoint,
@@ -988,6 +1187,7 @@ defmodule AshHooks.EventLogTest do
   test "release event-log replay spaces its configured batches by a second" do
     endpoint = endpoint!()
     for id <- ["rate-one", "rate-two"], do: dispatch!(id)
+    subscribe!(endpoint)
 
     callback = fn _, _ ->
       send(self(), {:replay_tick, System.monotonic_time(:millisecond)})
@@ -1048,6 +1248,7 @@ defmodule AshHooks.EventLogTest do
   test "release replay into a ledger without resend tracking creates the bound row" do
     endpoint = endpoint!()
     {:ok, []} = dispatch!("release-plain-replay")
+    subscribe!(endpoint)
 
     assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
              AshHooks.OutboundEvent.replay(EventLog, endpoint,

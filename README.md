@@ -250,12 +250,12 @@ once; receivers deduplicate using the stable `webhook-id`.
   including overlapping sweeps. Counts and telemetry confirm successful writes.
 - Catalog metadata and payload versions describe events. Subscription attribute
   filters match event metadata. An event log preserves events even with no enabled
-  endpoints. Replay takes `declaration: {Emitter, :event_name}` and binds each new
-  delivery to that declaration and enqueue callback. Enable `resend_tracking :on`
-  to store the requester and request time. Enqueue receives `(delivery, event)`,
-  matching the generated worker and recovery contracts. Terminal replay forwards
-  the tenant to resend. Event-log replay returns `created`, `re_sent`, `skipped`,
-  and `errors`; only live rows count as skipped, and row failures remain in `errors`.
+  endpoints. Replay creates missing deliveries for enabled endpoints with
+  matching, active subscriptions. Enable `replay_context(:on)` on the event log
+  to capture filter inputs and payload-version context. Replay binds new
+  deliveries to the supplied declaration and enqueue callback, and forwards
+  the tenant to resend when rearming terminal rows. Results report `created`,
+  `re_sent`, `skipped`, and `errors`.
 
 Worked guides cover [event retention and replay](documentation/tutorials/outbound-recovery.md),
 [catalogs, payload versions, and filters](documentation/tutorials/outbound-contracts.md),

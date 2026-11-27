@@ -11,11 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Generated workers can use `AshHooks.Binding` to route each new job to the
   Oban instance for its physical database and restore that database binding
   on execution. Jobs with unknown bindings are canceled.
+- Event logs can opt in to bounded replay context for subscription filters and
+  payload-version pins. See [UPGRADING.md](UPGRADING.md#event-log-replay).
 
 ### Fixed
 
 - Delivery drivers and failure finalizers now preserve Ecto dynamic repository
   selection, including writes to attempt history.
+- Event-log replay creates missing deliveries only for enabled endpoints with
+  matching, unpaused subscriptions. It resolves payload pins through the fanout
+  catalog and reports a row error when retained context cannot establish the
+  match or reconstruct the pinned payload. Dry runs count eligible new deliveries.
 
 ## [3.7.0] - 2026-11-24
 

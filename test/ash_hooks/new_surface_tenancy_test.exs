@@ -495,6 +495,11 @@ defmodule AshHooks.NewSurfaceTenancyTest do
     # event-log replay: tenant-scoped, cross-tenant endpoints named
     later_b = tenant_endpoint!(org_b)
 
+    Ash.create!(Subscription, %{endpoint_id: later_b.id, event_types: ["order_paid"]},
+      tenant: org_b,
+      authorize?: false
+    )
+
     assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
              AshHooks.OutboundEvent.replay(EventLog, later_b,
                event_uuid: "msg_ts_b",

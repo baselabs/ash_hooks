@@ -53,6 +53,10 @@ defmodule AshHooks.RowSecurityPostgresTest do
     Cases.unbound_access(context)
   end
 
+  test "event-log replay scopes filter metadata and pinned bytes to the tenant", context do
+    Cases.filtered_replay(context)
+  end
+
   test "replay reports a denied delivery read without attempting an insert",
        context do
     tenant = "tenant_a"

@@ -66,7 +66,7 @@ defmodule AshHooks.Dispatcher do
   require Ash.Query
 
   alias AshHooks.Errors.Unknown.UnknownError
-  alias AshHooks.{Event, Info, OutboundBinding, PrimaryKey, Subscription, Tenancy}
+  alias AshHooks.{Event, Info, OutboundBinding, OutboundEvent, PrimaryKey, Subscription, Tenancy}
   alias Spark.Dsl.Extension
 
   @typedoc """
@@ -158,9 +158,17 @@ defmodule AshHooks.Dispatcher do
         input = %{
           event_uuid: event.id,
           event_type: event.type,
-          version: entity.version,
+          version: event.version || entity.version,
           payload: event.payload
         }
+
+        input =
+          if Extension.get_opt(events_mod, [:outbound_event], :replay_context, :off) == :on do
+            context = OutboundEvent.capture_context(entity.subscriptions, event)
+            Map.put(input, :replay_context, context)
+          else
+            input
+          end
 
         case AshHooks.Phase.run(
                events_mod,
@@ -613,34 +621,78 @@ defmodule AshHooks.Dispatcher do
   end
 
   defp match_subscriptions(subs_mod, endpoint_mod, event, tenant) do
-    with {:ok, subscriptions} <- read_subscriptions(subs_mod, event, tenant) do
+    query = AshHooks.Subscription.Query.select(subs_mod, event)
+
+    with {:ok, subscriptions} <- read_subscriptions(query, tenant) do
       {matches, error_entries} =
         subscriptions
-        |> Enum.filter(&matched?(&1, event))
+        |> Enum.filter(&(subscription_match(&1, event) == :match))
         |> resolve_endpoints(endpoint_mod, tenant)
 
       {:ok, matches, error_entries}
     end
   end
 
-  # the full match: the pause, type, and attribute-filter legs, BEFORE
-  # any delivery row exists
-  defp matched?(subscription, event) do
+  defp subscription_match(subscription, event) do
     pausable? =
       Extension.get_opt(subscription.__struct__, [:subscription], :pausable, :off) == :on
 
-    (not pausable? or not subscription.paused) and
-      Subscription.matches?(subscription, event.type) and
-      Subscription.matches_filters?(subscription, event.metadata)
+    if (not pausable? or not subscription.paused) and
+         Subscription.matches?(subscription, event.type) do
+      filter_match(subscription, event.metadata)
+    else
+      :skip
+    end
   end
 
-  defp read_subscriptions(subs_mod, event, tenant) do
-    query = AshHooks.Subscription.Query.select(subs_mod, event)
+  defp filter_match(subscription, nil) do
+    case Map.get(subscription, :event_filters) do
+      filters when is_map(filters) and not is_struct(filters) and map_size(filters) > 0 ->
+        {:error, :replay_metadata_unavailable}
 
+      _ ->
+        filter_match(subscription, %{})
+    end
+  end
+
+  defp filter_match(subscription, metadata) do
+    if Subscription.matches_filters?(subscription, metadata), do: :match, else: :skip
+  end
+
+  @doc false
+  def replay_subscription(entity, endpoint, event, tenant) do
+    endpoint_id = PrimaryKey.scalar!(endpoint)
+
+    query =
+      entity.subscriptions
+      |> AshHooks.Subscription.Query.select(event)
+      |> Ash.Query.filter(endpoint_id == ^endpoint_id)
+
+    with {:ok, subscriptions} <- read_subscriptions(query, tenant),
+         {:ok, matches} <- replay_matches(subscriptions, endpoint, event),
+         :ok <- check_conflicts(matches, entity) do
+      case dedupe_by_endpoint(matches) do
+        [{subscription, _endpoint}] -> {:ok, subscription}
+        [] -> :skip
+      end
+    end
+  end
+
+  defp replay_matches(subscriptions, endpoint, event) do
+    Enum.reduce_while(subscriptions, {:ok, []}, fn subscription, {:ok, matches} ->
+      case subscription_match(subscription, event) do
+        :match -> {:cont, {:ok, [{subscription, endpoint} | matches]}}
+        :skip -> {:cont, {:ok, matches}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp read_subscriptions(query, tenant) do
     case AshHooks.Contention.run(fn ->
            AshHooks.Phase.run(query, tenant, &Ash.read(&1, authorize?: false, tenant: tenant))
          end) do
-      {:ok, subscriptions} -> collect_pages(subscriptions, [], subs_mod, tenant)
+      {:ok, subscriptions} -> collect_pages(subscriptions, [], query.resource, tenant)
       {:error, error} -> {:error, error}
     end
   end
@@ -670,9 +722,7 @@ defmodule AshHooks.Dispatcher do
   defp resolve_endpoints(subscriptions, endpoint_mod, tenant) do
     subscriptions
     |> Enum.reduce({[], []}, fn subscription, {matches, errors} ->
-      subscription
-      |> resolve_endpoint(endpoint_mod, tenant)
-      |> case do
+      case resolve_endpoint(endpoint_mod, subscription.endpoint_id, tenant) do
         {:match, endpoint} -> {[{subscription, endpoint} | matches], errors}
         :skip -> {matches, errors}
         {:error, reason} -> {matches, [entry(subscription, reason) | errors]}
@@ -685,12 +735,13 @@ defmodule AshHooks.Dispatcher do
   # tenant (the tenant filter rides the get) and classifies as the SAME
   # misconfiguration skip a gone endpoint gets: tenant-enforced, no new
   # outcome shape.
-  defp resolve_endpoint(subscription, endpoint_mod, tenant) do
+  @doc false
+  def resolve_endpoint(endpoint_mod, endpoint_id, tenant) do
     case AshHooks.Contention.run(fn ->
            AshHooks.Phase.run(
              endpoint_mod,
              tenant,
-             &Ash.get(&1.resource, subscription.endpoint_id,
+             &Ash.get(&1.resource, endpoint_id,
                authorize?: false,
                tenant: tenant,
                context: AshHooks.Phase.context(endpoint_mod)

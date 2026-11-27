@@ -29,6 +29,16 @@ defmodule AshHooks.OutboundEvent do
   time is `inserted_at`), and your migration carries the table plus the
   `unique_event` index on `[:event_uuid]`.
 
+  Enable `outbound_event do replay_context(:on) end` to record context
+  for filtered replay and payload-version pins. Migrate the event table to
+  add the nullable `:replay_context` map column before enabling it. The
+  default is `:off`. The column stores only metadata keys listed in the
+  declaration's subscription resource `filter_attributes`, with a
+  payload-version marker and a flag recording whether the projection
+  captured all the original metadata. Metadata uses the outbox's
+  portable JSON limits (32 levels and 1 MiB). If it cannot be captured
+  within those limits, the event is still logged.
+
   Policy obligation: protect the injected `:record` create and `:prune`
   destroy actions wherever your domain exposes the resource; the
   runtime's internal calls bypass authorization by design.
@@ -36,8 +46,9 @@ defmodule AshHooks.OutboundEvent do
 
   require Ash.Query
 
-  alias AshHooks.{Delivery, Keyset, PrimaryKey, Tenancy}
+  alias AshHooks.{Catalog, Delivery, Dispatcher, Event, Keyset, PrimaryKey, Tenancy}
   alias AshHooks.Errors.Unknown.UnknownError
+  alias AshHooks.OutboundOutbox.Metadata
   alias Spark.Dsl.Extension
 
   # ────────────────────────── queries + retention ──────────────────────────
@@ -160,6 +171,28 @@ defmodule AshHooks.OutboundEvent do
 
   # ────────────────────────── replay ──────────────────────────
 
+  @doc false
+  def capture_context(subscriptions, event) do
+    keys =
+      subscriptions
+      |> Extension.get_opt([:subscription], :filter_attributes, [])
+      |> Enum.map(&Atom.to_string/1)
+
+    projected = Map.take(event.metadata, keys)
+
+    case Metadata.encode(projected) do
+      {:ok, encoded} ->
+        %{
+          metadata_json: encoded,
+          complete: projected === event.metadata,
+          event_version: event.version
+        }
+
+      :error ->
+        %{complete: false, event_version: event.version}
+    end
+  end
+
   @doc """
   Replays selected logged events to one endpoint, preserving event IDs.
 
@@ -170,25 +203,37 @@ defmodule AshHooks.OutboundEvent do
   `:from`, `:to`, `:dry_run`, `:limit` (default 100, maximum 1,000), and
   `:per_second` (positive integer, default 50).
 
-  New deliveries store the declaration and enqueue route, and enqueue receives
-  `(delivery, event)`, matching the generated worker and recovery contracts.
-  They inherit the signing mode of an endpoint subscription matching the
-  logged event type under that declaration, using the declaration's mode when
-  the subscription leaves it unset. With no match they use `:standard`.
-  Conflicting matching modes return a per-row error. The log contains no original
-  event metadata, so this lookup selects by endpoint and event type.
+  A missing delivery is created only for a currently enabled endpoint
+  with an active subscription matching the event type and captured
+  metadata. It inherits that subscription's signing mode or the
+  declaration default. Conflicting matching modes return
+  `:conflicting_subscriptions`. An active, type-matching subscription
+  that requires filters returns `:replay_metadata_unavailable` per event
+  if the row predates capture, capture is off, or the metadata exceeded
+  the capture limits. Unfiltered subscriptions can use those rows.
+
+  A pin to the recorded payload version uses the logged bytes when
+  replay context proves their version. A pin to another version uses
+  the declaration's variant builder when the original event can be
+  reconstructed. A pinned delivery without sufficient context returns
+  `:replay_payload_unavailable`. Variant builders should compute bytes
+  deterministically from the event.
+
+  New deliveries store the declaration and enqueue route. The enqueue
+  callback receives `(delivery, event)` with the selected payload.
   Enable `resend_tracking :on` to persist `last_resend_by` and `last_resend_at`.
   Existing terminal rows use `AshHooks.Delivery.resend/2` with the same tenant
   and requester. Nonterminal existing rows are skipped.
 
-  Dry run returns `{:ok, %{count: n}}` for the selected batch and writes nothing.
+  Dry run returns `{:ok, %{count: n}}` for missing deliveries that pass
+  the same checks. It writes nothing and does not enqueue or rearm rows.
   Normal replay returns `{:ok, %{created: n, re_sent: n, skipped: n, errors: list}}`.
-  Skipped counts only live, nonterminal delivery rows left alone. Delivery reads,
-  replay creates, and terminal resends that fail append their error terms to
-  `errors` in processing order. A delivery read error never causes an attempt
-  to create a replay row. Batches are spaced one second apart according to
-  `:per_second`. Repeated calls can select skipped or failed rows again;
-  this API returns no pagination cursor.
+  Skipped counts live, nonterminal deliveries and missing deliveries
+  with no eligible endpoint or subscription. Failures append their
+  error terms to `errors` in processing order. A delivery read error never
+  causes an attempt to create a replay row. Batches are spaced one second
+  apart according to `:per_second`. Repeated calls can select skipped or
+  failed rows again. This API returns no pagination cursor.
   """
   @spec replay(module(), struct(), keyword()) ::
           {:ok,
@@ -206,14 +251,27 @@ defmodule AshHooks.OutboundEvent do
          {:ok, endpoints} <- require_module(opts[:endpoints], :endpoints),
          {:ok, tenant} <-
            Tenancy.resolve([resource, endpoint.__struct__, deliveries, endpoints], opts[:tenant]),
+         {:ok, {emitter, name}, declaration} <-
+           replay_declaration(resource, endpoint.__struct__, deliveries, endpoints, opts),
+         {:ok, tenant} <- Tenancy.resolve([resource, declaration.subscriptions], tenant),
          {:ok, events} <- replay_targets(resource, opts, tenant),
-         {:ok, declaration} <- replay_declaration(resource, deliveries, endpoints, opts),
          {:ok, route} <- AshHooks.OutboundBinding.route(opts[:enqueue], opts),
          :ok <- validate_rate(opts[:per_second] || 50) do
-      opts = Keyword.merge(opts, declaration: declaration, dispatch_route: route)
+      opts =
+        Keyword.merge(opts,
+          declaration: declaration,
+          dispatch_source: AshHooks.OutboundBinding.source(emitter, name, endpoints),
+          dispatch_route: route
+        )
 
       if opts[:dry_run] do
-        {:ok, %{count: length(events)}}
+        count =
+          Enum.count(events, fn logged ->
+            replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant) ==
+              :created
+          end)
+
+        {:ok, %{count: count}}
       else
         replay_events(events, endpoint, deliveries, endpoints, requested_by, opts, tenant)
       end
@@ -231,7 +289,10 @@ defmodule AshHooks.OutboundEvent do
         if index > 0, do: Process.sleep(1_000)
 
         Enum.reduce(batch, counts, fn logged, acc ->
-          replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant, acc)
+          tally(
+            acc,
+            replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant)
+          )
         end)
       end)
 
@@ -241,43 +302,104 @@ defmodule AshHooks.OutboundEvent do
   defp validate_rate(rate) when is_integer(rate) and rate > 0, do: :ok
   defp validate_rate(_), do: {:error, :invalid_per_second}
 
-  defp replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant, acc) do
-    outcome =
-      case fetch_delivery(deliveries, endpoint, logged, tenant) do
-        :missing ->
-          replay_missing(logged, endpoint, deliveries, requested_by, opts, tenant)
+  defp replay_one(logged, endpoint, deliveries, endpoints, requested_by, opts, tenant) do
+    case fetch_delivery(deliveries, endpoint, logged, tenant) do
+      :missing ->
+        replay_missing(logged, endpoint, deliveries, requested_by, opts, tenant)
 
-        {:ok, %{status: status} = row} when status in [:succeeded, :dead_letter] ->
-          resend_terminal(row, requested_by, endpoints, opts, tenant)
+      {:ok, %{status: status} = row} when status in [:succeeded, :dead_letter] ->
+        if opts[:dry_run],
+          do: :skipped,
+          else: resend_terminal(row, requested_by, endpoints, opts, tenant)
 
-        {:ok, _live_row} ->
-          :skipped
-
-        {:error, reason} ->
-          {:error, reason}
-      end
-
-    tally(acc, outcome)
-  end
-
-  defp replay_missing(logged, endpoint, deliveries, requested_by, opts, tenant) do
-    case create_replay_row(deliveries, endpoint, logged, requested_by, opts, tenant) do
-      {:ok, row} ->
-        :telemetry.execute(
-          [:ash_hooks, :delivery, :resend],
-          %{},
-          %{
-            endpoint_id: PrimaryKey.scalar!(endpoint),
-            event_uuid: logged.event_uuid,
-            requested_by: requested_by
-          }
-        )
-
-        _ = Keyword.get(opts, :enqueue) && enqueue_replay(opts[:enqueue], row, logged)
-        :created
+      {:ok, _live_row} ->
+        :skipped
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp replay_missing(logged, endpoint, deliveries, requested_by, opts, tenant) do
+    entity = opts[:declaration]
+    endpoint_id = PrimaryKey.scalar!(endpoint)
+
+    with true <- logged.event_type == Atom.to_string(entity.name),
+         {:match, endpoint} <-
+           Dispatcher.resolve_endpoint(endpoint.__struct__, endpoint_id, tenant),
+         {:ok, event, context} <- replay_event(logged),
+         {:ok, subscription} <- Dispatcher.replay_subscription(entity, endpoint, event, tenant),
+         {:ok, payload} <- replay_payload(event, entity, endpoint, logged.version, context) do
+      if opts[:dry_run] do
+        :created
+      else
+        event = %{event | payload: payload, metadata: event.metadata || %{}}
+        persist_replay(deliveries, endpoint, subscription, event, requested_by, opts, tenant)
+      end
+    else
+      false -> :skipped
+      :skip -> :skipped
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp persist_replay(deliveries, endpoint, subscription, event, requested_by, opts, tenant) do
+    result =
+      create_replay_row(deliveries, endpoint, subscription, event, requested_by, opts, tenant)
+
+    with {:ok, row} <- result do
+      :telemetry.execute(
+        [:ash_hooks, :delivery, :resend],
+        %{},
+        %{endpoint_id: row.endpoint_id, event_uuid: event.id, requested_by: requested_by}
+      )
+
+      _ = opts[:enqueue] && enqueue_replay(opts[:enqueue], row, event)
+      :created
+    end
+  end
+
+  defp replay_event(%resource{} = logged) do
+    context =
+      case {Extension.get_opt(resource, [:outbound_event], :replay_context, :off),
+            Map.get(logged, :replay_context)} do
+        {:on, %{complete: complete} = context} when is_boolean(complete) -> context
+        _ -> nil
+      end
+
+    with {:ok, event} <-
+           Event.new(id: logged.event_uuid, type: logged.event_type, payload: logged.payload) do
+      metadata =
+        case context do
+          %{metadata_json: encoded} when is_binary(encoded) ->
+            case Jason.decode(encoded) do
+              {:ok, metadata} when is_map(metadata) -> metadata
+              _ -> nil
+            end
+
+          _ ->
+            nil
+        end
+
+      {:ok, %{event | metadata: metadata, version: context && context[:event_version]}, context}
+    end
+  end
+
+  defp replay_payload(event, entity, endpoint, logged_version, context) do
+    pin = Map.get(endpoint, :pinned_payload_version)
+
+    cond do
+      is_nil(pin) ->
+        Catalog.payload(event, entity, endpoint)
+
+      is_nil(context) or is_nil(logged_version) ->
+        {:error, :replay_payload_unavailable}
+
+      pin == logged_version or (context.complete and is_map(event.metadata)) ->
+        Catalog.payload(event, %{entity | version: logged_version}, endpoint)
+
+      true ->
+        {:error, :replay_payload_unavailable}
     end
   end
 
@@ -296,14 +418,15 @@ defmodule AshHooks.OutboundEvent do
   defp tally(acc, {:error, reason}), do: Map.update!(acc, :errors, &[reason | &1])
   defp tally(acc, outcome), do: Map.update!(acc, outcome, &(&1 + 1))
 
-  defp replay_declaration(resource, deliveries, endpoints, opts) do
+  defp replay_declaration(resource, endpoint_module, deliveries, endpoints, opts)
+       when endpoint_module == endpoints do
     case opts[:declaration] do
       {emitter, name} when is_atom(emitter) and is_atom(name) ->
-        with %{events: ^resource, deliveries: ^deliveries, subscriptions: subscriptions} <-
+        with %{events: ^resource, deliveries: ^deliveries} = entity <-
                AshHooks.Info.outbound(emitter, name),
              ^endpoints <-
-               Extension.get_opt(subscriptions, [:subscription], :endpoint_resource, nil) do
-          {:ok, {emitter, name}}
+               Extension.get_opt(entity.subscriptions, [:subscription], :endpoint_resource, nil) do
+          {:ok, {emitter, name}, entity}
         else
           _ -> {:error, :declaration_mismatch}
         end
@@ -313,10 +436,10 @@ defmodule AshHooks.OutboundEvent do
     end
   end
 
-  defp enqueue_replay(enqueue, row, logged) do
-    {:ok, event} =
-      AshHooks.Event.new(id: logged.event_uuid, type: logged.event_type, payload: logged.payload)
+  defp replay_declaration(_resource, _endpoint_module, _deliveries, _endpoints, _opts),
+    do: {:error, :declaration_mismatch}
 
+  defp enqueue_replay(enqueue, row, event) do
     case enqueue do
       {m, f} -> apply(m, f, [row, event])
       fun when is_function(fun, 2) -> fun.(row, event)
@@ -345,91 +468,40 @@ defmodule AshHooks.OutboundEvent do
     end
   end
 
-  defp replay_subscription(endpoint, logged, {emitter, name}, tenant) do
-    declaration = AshHooks.Info.outbound(emitter, name)
-    resource = declaration.subscriptions
-    endpoint_id = PrimaryKey.scalar!(endpoint)
-    query = resource |> Ash.Query.filter(endpoint_id == ^endpoint_id)
+  defp create_replay_row(deliveries, endpoint, subscription, event, requested_by, opts, tenant) do
+    input =
+      %{
+        event_uuid: event.id,
+        event_type: event.type,
+        endpoint_id: PrimaryKey.scalar!(endpoint),
+        subscription_id: PrimaryKey.scalar!(subscription),
+        signing_mode: subscription.signing_mode || opts[:declaration].signing_mode || :standard,
+        dispatch_source: opts[:dispatch_source],
+        dispatch_route: opts[:dispatch_route]
+      }
+      |> Map.put(AshHooks.Info.payload_attribute(deliveries), event.payload)
 
-    with {:ok, subscriptions} <-
-           AshHooks.Phase.run(
-             query,
-             tenant,
-             &Ash.read(&1, authorize?: false, tenant: tenant)
-           ),
-         {:ok, subscriptions} <- replay_subscription_pages(subscriptions, [], resource, tenant) do
-      matches = Enum.filter(subscriptions, &AshHooks.Subscription.matches?(&1, logged.event_type))
+    changeset =
+      Ash.Changeset.for_create(deliveries, :dispatch, input, authorize?: false, tenant: tenant)
 
-      modes =
-        Enum.uniq(Enum.map(matches, &(&1.signing_mode || declaration.signing_mode || :standard)))
-
-      if length(modes) > 1 do
-        {:error, :conflicting_subscriptions}
-      else
-        {:ok, matches |> Enum.sort_by(&PrimaryKey.scalar!/1) |> List.first()}
-      end
-    end
-  end
-
-  defp replay_subscription_pages(%{results: results, more?: true} = page, acc, resource, tenant) do
-    with {:ok, next} <-
-           AshHooks.Phase.run(resource, tenant, fn -> Ash.page(page, :next) end) do
-      replay_subscription_pages(next, [results | acc], resource, tenant)
-    end
-  end
-
-  defp replay_subscription_pages(%{results: results}, acc, _resource, _tenant),
-    do: {:ok, acc |> Enum.reverse() |> Enum.concat() |> Kernel.++(results)}
-
-  defp replay_subscription_pages(subscriptions, [], _resource, _tenant)
-       when is_list(subscriptions),
-       do: {:ok, subscriptions}
-
-  defp create_replay_row(deliveries, endpoint, logged, requested_by, opts, tenant) do
-    with {:ok, subscription} <- replay_subscription(endpoint, logged, opts[:declaration], tenant) do
-      input =
-        %{
-          event_uuid: logged.event_uuid,
-          event_type: logged.event_type,
-          endpoint_id: PrimaryKey.scalar!(endpoint),
-          subscription_id: if(subscription, do: PrimaryKey.scalar!(subscription)),
-          signing_mode: replay_signing_mode(subscription, opts[:declaration]),
-          dispatch_source: replay_source(opts[:declaration], endpoint.__struct__),
-          dispatch_route: opts[:dispatch_route]
-        }
-        |> Map.put(AshHooks.Info.payload_attribute(deliveries), logged.payload)
-
-      changeset =
-        Ash.Changeset.for_create(deliveries, :dispatch, input, authorize?: false, tenant: tenant)
-
-      changeset =
-        if Ash.Resource.Info.attribute(deliveries, :last_resend_by) do
-          Ash.Changeset.force_change_attributes(changeset,
-            last_resend_by: requested_by,
-            last_resend_at: DateTime.utc_now()
-          )
-        else
-          changeset
-        end
-
-      AshHooks.Phase.run(changeset.resource, tenant, fn ->
-        Ash.create(changeset,
-          context: AshHooks.Phase.context(changeset.resource),
-          authorize?: false,
-          tenant: tenant
+    changeset =
+      if Ash.Resource.Info.attribute(deliveries, :last_resend_by) do
+        Ash.Changeset.force_change_attributes(changeset,
+          last_resend_by: requested_by,
+          last_resend_at: DateTime.utc_now()
         )
-      end)
-    end
+      else
+        changeset
+      end
+
+    AshHooks.Phase.run(deliveries, tenant, fn ->
+      Ash.create(changeset,
+        context: AshHooks.Phase.context(deliveries),
+        authorize?: false,
+        tenant: tenant
+      )
+    end)
   end
-
-  defp replay_signing_mode(nil, _declaration), do: :standard
-
-  defp replay_signing_mode(subscription, {emitter, name}),
-    do:
-      subscription.signing_mode || AshHooks.Info.outbound(emitter, name).signing_mode || :standard
-
-  defp replay_source({emitter, name}, endpoints),
-    do: AshHooks.OutboundBinding.source(emitter, name, endpoints)
 
   defp replay_targets(resource, opts, tenant) do
     limit = Keyword.get(opts, :limit, 100)
@@ -501,7 +573,20 @@ defmodule AshHooks.OutboundEvent do
   defp require_module(_invalid, name),
     do: {:error, UnknownError.exception(error: "replay requires the #{inspect(name)} resource")}
 
+  @section %Spark.Dsl.Section{
+    name: :outbound_event,
+    describe: "Configuration of the outbound event log.",
+    schema: [
+      replay_context: [
+        type: {:in, [:off, :on]},
+        default: :off,
+        doc: "Persist the declared filter metadata and payload-version context for replay."
+      ]
+    ]
+  }
+
   use Spark.Dsl.Extension,
+    sections: [@section],
     transformers: [
       AshHooks.OutboundEvent.Transformers.AddEventFields,
       AshHooks.OutboundEvent.Transformers.AddEventIdentity,

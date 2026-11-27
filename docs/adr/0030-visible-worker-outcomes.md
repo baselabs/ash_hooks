@@ -38,7 +38,8 @@ to create a replay delivery.
    metadata contents and resolved signing secrets are omitted.
 4. Replay returns `%{created, re_sent, skipped, errors}`. Delivery read,
    replay create, and terminal resend failures retain their per-row error
-   terms in `errors`; only live, nonterminal rows left alone count as skipped.
+   terms in `errors`. The [replay rules](0020-resend-replay-and-endpoint-health.md)
+   define which rows count as skipped.
    It never attempts a replay insert after a delivery read error. Reporting
    a failure as benign is the class of defect W31 removes.
 

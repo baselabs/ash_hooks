@@ -1366,7 +1366,7 @@ defmodule AshHooks.HostExtensionSeamsTest do
 
   test "replay resolves matching modes within the tenant and refuses conflicting subscriptions" do
     for {modes, expected} <- [
-          {[], :standard},
+          {[], :skip},
           {[nil], :standard},
           {[:legacy, :legacy], :legacy},
           {[:legacy, :standard], :conflict}
@@ -1412,18 +1412,24 @@ defmodule AshHooks.HostExtensionSeamsTest do
         |> Ash.Query.filter(event_uuid == ^event_id)
         |> Ash.read!(tenant: "tenant-a", authorize?: false)
 
-      if expected == :conflict do
-        assert counts == %{
-                 created: 0,
-                 re_sent: 0,
-                 skipped: 0,
-                 errors: [:conflicting_subscriptions]
-               }
+      case expected do
+        :conflict ->
+          assert counts == %{
+                   created: 0,
+                   re_sent: 0,
+                   skipped: 0,
+                   errors: [:conflicting_subscriptions]
+                 }
 
-        assert rows == []
-      else
-        assert counts == %{created: 1, re_sent: 0, skipped: 0, errors: []}
-        assert [%{signing_mode: ^expected}] = rows
+          assert rows == []
+
+        :skip ->
+          assert counts == %{created: 0, re_sent: 0, skipped: 1, errors: []}
+          assert rows == []
+
+        signing_mode ->
+          assert counts == %{created: 1, re_sent: 0, skipped: 0, errors: []}
+          assert [%{signing_mode: ^signing_mode}] = rows
       end
     end
   end

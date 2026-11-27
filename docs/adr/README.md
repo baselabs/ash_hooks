@@ -30,7 +30,7 @@ Records are repository documentation and are not part of the Hex package.
 | [0017: Generic providers and signature primitives](0017-generic-providers-and-signature-primitives.md) | Amended | Generic providers and signature primitives. |
 | [0018: Optional HTTP ingress and exact body bytes](0018-optional-http-ingress-and-exact-body-bytes.md) | Accepted | Optional HTTP ingress and exact body bytes. |
 | [0019: Delivery audit and observation](0019-delivery-audit-and-observation.md) | Amended | Delivery audit history and observation. |
-| [0020: Resend, replay, and endpoint health](0020-resend-replay-and-endpoint-health.md) | Accepted | Resend, replay and endpoint health. |
+| [0020: Resend, replay, and endpoint health](0020-resend-replay-and-endpoint-health.md) | Amended | Resend, replay and endpoint health. |
 | [0021: Host trust boundaries and subscription selection](0021-host-trust-boundaries-and-subscription-selection.md) | Amended | Host trust boundaries and subscription selection. |
 | [0022: Oban engine row security](0022-oban-engine-row-security.md) | Accepted | Separate tenant-bound insertion from queue execution under forced row security. |
 | [0023: Installer mutation scope](0023-installer-mutation-scope.md) | Accepted | What the installer may edit in a host application. |

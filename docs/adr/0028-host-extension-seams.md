@@ -69,9 +69,9 @@ adapt to these seams.
 - Every entry path (dispatch, test send, resend and replay) signs at send time from the
   endpoint.
 - Replay rows take the signing mode of the endpoint's matching subscription, reading all
-  pages of the consumer's primary read action under the explicit tenant. With no matching
-  subscription, replay retains the existing `:standard` fallback. Only conflicting matching
-  modes are skipped.
+  pages of the consumer's primary read action under the explicit tenant. The
+  [amended replay rules](0020-resend-replay-and-endpoint-health.md) govern subscription
+  eligibility. Conflicting matching modes return an error.
 
 ### Prepared request
 

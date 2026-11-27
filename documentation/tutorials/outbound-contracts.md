@@ -136,7 +136,7 @@ for the resolver from get started. The URL must be safe for the chosen transport
 
 All filter keys must be declared and match. A list value matches any member;
 unknown keys fail closed. Metadata keys are strings. Metadata is unsigned context, not part of the wire
-payload. The event log retains the original current-version bytes even when a
+payload. The event log retains the original payload bytes even when a
 filter excludes every endpoint. Delivery rows retain the selected variant.
 
 No pin, or a pin to version 2, uses the original bytes. An unsupported pin fails
@@ -230,5 +230,5 @@ fixed outcome through `[:ash_hooks, :delivery, :sign]` without callback contents
 
 New event-log replay rows select the endpoint's matching subscription signing
 mode under the same tenant, reading every page of the consumer's primary read
-action. Conflicting matching modes do not create a row.
-An endpoint with no matching subscription retains the standard-mode fallback.
+action. Replay skips missing deliveries with no eligible subscription and
+reports conflicting matching modes as a per-event error.
