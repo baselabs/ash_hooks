@@ -363,15 +363,7 @@ if Code.ensure_loaded?(Oban) do
             )
         end)
 
-        start_supervised!(
-          {Oban,
-           name: Binding.oban(name),
-           repo: Repo,
-           prefix: prefix,
-           get_dynamic_repo: {Binding, :repo_instance, [name]},
-           engine: Oban.Engines.Basic,
-           testing: :manual}
-        )
+        start_supervised!(oban_child_spec(name, prefix))
       end
 
       :ok
@@ -648,6 +640,27 @@ if Code.ensure_loaded?(Oban) do
       assert_raise ArgumentError, ~r/:binding must implement AshHooks.Binding/, fn ->
         Code.compile_quoted(definition)
       end
+    end
+
+    defp oban_child_spec(name, prefix) do
+      options = [
+        name: Binding.oban(name),
+        repo: Repo,
+        prefix: prefix,
+        get_dynamic_repo: {Binding, :repo_instance, [name]},
+        engine: Oban.Engines.Basic,
+        notifier: Oban.Notifiers.PG,
+        testing: :manual
+      ]
+
+      Supervisor.child_spec({Oban, options},
+        start: {__MODULE__, :start_bound_oban, [name, options]}
+      )
+    end
+
+    # The supervisor calls Oban's start function, including its migration check.
+    def start_bound_oban(name, options) do
+      on_binding(name, fn -> Oban.start_link(options) end)
     end
 
     defp on_binding(name, fun) do

@@ -199,6 +199,9 @@ instance per database with the shared repo module and its own
 polling and staging outside a request process. Job callbacks establish their
 own repository binding.
 
+In Oban testing mode, bind the repository in the process that calls
+`Oban.start_link/1` so the startup migration check queries the intended database.
+
 <!-- not-run: This example requires two supervised repository and Oban instances in a host application. -->
 ```elixir
 defmodule MyApp.HooksBinding do
