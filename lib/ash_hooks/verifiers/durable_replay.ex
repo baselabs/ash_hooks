@@ -30,13 +30,18 @@ defmodule AshHooks.Verifiers.DurableReplay do
        do: "source_binding :authenticated requires replay_protection :durable_identity"
 
   defp refusal(state, inbound) do
+    if Verifier.get_option(state, [:inbound_delivery], :retain_replay_identities, :off) == :on do
+      enabled_refusal(state, inbound)
+    else
+      "replay_protection requires inbound_delivery retain_replay_identities :on"
+    end
+  end
+
+  defp enabled_refusal(_state, %{replay_protection: :retired} = inbound),
+    do: retired_refusal(inbound)
+
+  defp enabled_refusal(state, inbound) do
     cond do
-      Verifier.get_option(state, [:inbound_delivery], :retain_replay_identities, :off) != :on ->
-        "replay_protection requires inbound_delivery retain_replay_identities :on"
-
-      inbound.replay_protection == :retired ->
-        retired_refusal(inbound)
-
       Verifier.get_persisted(state, :data_layer) not in [
         AshSqlite.DataLayer,
         AshPostgres.DataLayer
@@ -52,9 +57,16 @@ defmodule AshHooks.Verifiers.DurableReplay do
       inbound.source_binding != :authenticated ->
         "durable replay protection requires source_binding :authenticated and unique enrolled keys"
 
-      inbound.source_record ->
-        source_record_refusal(inbound)
+      true ->
+        enrollment_refusal(state, inbound)
+    end
+  end
 
+  defp enrollment_refusal(_state, %{source_record: source} = inbound) when not is_nil(source),
+    do: source_record_refusal(inbound)
+
+  defp enrollment_refusal(state, inbound) do
+    cond do
       Verifier.get_option(state, [:inbound_delivery], :scope_identity, []) != [] ->
         "scoped durable replay routes require a source_record with its own enrolled keys per scope"
 
