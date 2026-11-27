@@ -15,6 +15,76 @@ if Code.ensure_loaded?(Oban) do
       def min_pg_version, do: %Version{major: 16, minor: 0, patch: 0}
     end
 
+    defmodule VaultRepo do
+      use Ecto.Repo, otp_app: :ash_hooks, adapter: Ecto.Adapters.Postgres
+    end
+
+    defmodule Custodian do
+      @behaviour AshHooks.Custody
+      alias AshHooks.Test.TableCustodian
+
+      @store {VaultRepo, :postgres}
+
+      def setup_store!, do: TableCustodian.setup_store!(@store)
+
+      @impl true
+      def store(ref, material, tenant, kind),
+        do: TableCustodian.store(@store, ref, material, tenant, kind)
+
+      @impl true
+      def sign(ref, tenant, kind, input),
+        do: TableCustodian.sign(@store, ref, tenant, kind, input)
+
+      @impl true
+      def verify(ref, tenant, kind, input, mac),
+        do: TableCustodian.verify(@store, ref, tenant, kind, input, mac)
+
+      @impl true
+      def public_key(ref, tenant, kind), do: TableCustodian.public_key(@store, ref, tenant, kind)
+
+      @impl true
+      def fingerprint(ref, tenant, kind),
+        do: TableCustodian.fingerprint(@store, ref, tenant, kind)
+
+      @impl true
+      def destroy(ref, tenant), do: TableCustodian.destroy(@store, ref, tenant)
+    end
+
+    defmodule Registry do
+      use Ash.Resource,
+        domain: AshHooks.WorkerBindingPostgresTest.Domain,
+        data_layer: AshPostgres.DataLayer,
+        extensions: [AshHooks.KeyRegistry]
+
+      postgres do
+        table "binding_key_registry"
+        repo(Repo)
+      end
+    end
+
+    defmodule CustodyEndpoint do
+      use Ash.Resource,
+        domain: AshHooks.WorkerBindingPostgresTest.Domain,
+        data_layer: AshPostgres.DataLayer,
+        extensions: [AshHooks.Endpoint]
+
+      postgres do
+        table "binding_custody_endpoints"
+        repo(Repo)
+      end
+
+      actions do
+        default_accept :*
+        defaults [:read, :create, :update]
+      end
+
+      endpoint do
+        key_lifecycle :on
+        custodian Custodian
+        key_registry Registry
+      end
+    end
+
     defmodule Endpoint do
       use Ash.Resource,
         domain: AshHooks.WorkerBindingPostgresTest.Domain,
@@ -129,9 +199,9 @@ if Code.ensure_loaded?(Oban) do
 
       @impl true
       def current do
-        case Repo.get_dynamic_repo() do
-          Repo -> "a"
-          AshHooks.WorkerBindingPostgresTest.RepoB -> "b"
+        case VaultRepo.get_dynamic_repo() do
+          VaultRepo -> "a"
+          AshHooks.WorkerBindingPostgresTest.VaultRepoB -> "b"
           _unmapped -> nil
         end
       end
@@ -139,7 +209,13 @@ if Code.ensure_loaded?(Oban) do
       @impl true
       def bind(name) when name in ["a", "b"] do
         Repo.put_dynamic_repo(repo_instance(name))
+        VaultRepo.put_dynamic_repo(vault_instance(name))
         :ok
+      end
+
+      def bind("broken") do
+        :ok = bind("b")
+        raise "binding failed"
       end
 
       def bind(_unknown), do: {:error, :unknown_binding}
@@ -150,6 +226,30 @@ if Code.ensure_loaded?(Oban) do
 
       def repo_instance("a"), do: Repo
       def repo_instance("b"), do: AshHooks.WorkerBindingPostgresTest.RepoB
+
+      def vault_instance("a"), do: VaultRepo
+      def vault_instance("b"), do: AshHooks.WorkerBindingPostgresTest.VaultRepoB
+    end
+
+    defmodule CustodyWorker do
+      use AshHooks.Worker,
+        deliveries: Delivery,
+        endpoints: CustodyEndpoint,
+        binding: Binding,
+        destination_policy: {Runtime, :allow},
+        http_opts: [validate_destination: false, timeout: 2_000],
+        queue: :dynamic_repo_webhooks
+    end
+
+    defmodule UnboundWorker do
+      use AshHooks.Worker,
+        deliveries: Delivery,
+        endpoints: Endpoint,
+        secret_resolver: {Runtime, :secret},
+        destination_policy: {Runtime, :allow},
+        http_opts: [validate_destination: false, timeout: 2_000],
+        oban: AshHooks.WorkerBindingPostgresTest.ObanA,
+        queue: :dynamic_repo_webhooks
     end
 
     defmodule Worker do
@@ -195,10 +295,12 @@ if Code.ensure_loaded?(Oban) do
 
       resources do
         resource Attempt
+        resource CustodyEndpoint
         resource Delivery
         resource Emitter
         resource Endpoint
         resource Outbox
+        resource Registry
         resource Subscription
       end
     end
@@ -208,7 +310,20 @@ if Code.ensure_loaded?(Oban) do
       def up, do: Oban.Migrations.up(prefix: prefix())
     end
 
-    @resources [Attempt, Delivery, Emitter, Endpoint, Outbox, Subscription]
+    @resources [
+      Attempt,
+      CustodyEndpoint,
+      Delivery,
+      Emitter,
+      Endpoint,
+      Outbox,
+      Registry,
+      Subscription
+    ]
+    @query_events [
+      [:ash_hooks_binding_test, :ledger, :query],
+      [:ash_hooks_binding_test, :vault, :query]
+    ]
 
     setup_all do
       for name <- ["a", "b"] do
@@ -218,11 +333,26 @@ if Code.ensure_loaded?(Oban) do
 
         instance = Binding.repo_instance(name)
         prefix = oban_prefix(name)
-        options = Keyword.merge(OwnerRepo.config(), name: instance, database: database)
+
+        options =
+          Keyword.merge(OwnerRepo.config(),
+            name: instance,
+            database: database,
+            telemetry_prefix: [:ash_hooks_binding_test, :ledger]
+          )
+
         start_supervised!(Supervisor.child_spec({Repo, options}, id: instance))
+
+        vault = Binding.vault_instance(name)
+
+        vault_options =
+          Keyword.merge(options, name: vault, telemetry_prefix: [:ash_hooks_binding_test, :vault])
+
+        start_supervised!(Supervisor.child_spec({VaultRepo, vault_options}, id: vault))
 
         on_binding(name, fn ->
           create_tables()
+          Custodian.setup_store!()
           Repo.query!("CREATE SCHEMA #{prefix}")
 
           :ok =
@@ -251,7 +381,10 @@ if Code.ensure_loaded?(Oban) do
       for name <- ["a", "b"] do
         on_binding(name, fn ->
           tables = Enum.map_join(@resources, ", ", &AshPostgres.DataLayer.Info.table/1)
-          Repo.query!("TRUNCATE #{oban_prefix(name)}.oban_jobs, #{tables}")
+
+          Repo.query!(
+            "TRUNCATE #{oban_prefix(name)}.oban_jobs, #{tables}, custody_conformance_keys"
+          )
         end)
       end
 
@@ -309,6 +442,31 @@ if Code.ensure_loaded?(Oban) do
       assert [%{status: :succeeded, attempts: 1}] = read("b", Delivery)
     end
 
+    test "the driver signs with the custodian's key from the bound vault", %{port: port} do
+      kind = {:standard_webhooks, :v1}
+      event = event("signed by B")
+
+      {endpoint, disclosure} =
+        on_binding("b", fn ->
+          {:ok, endpoint, disclosure} =
+            AshHooks.Endpoint.create_with_key(
+              CustodyEndpoint,
+              %{url: "http://localhost:#{port}/200"},
+              generate: kind
+            )
+
+          assert :ok = CustodyWorker.enqueue(delivery!(endpoint, event), event)
+          {endpoint, disclosure}
+        end)
+
+      wrong_material = :crypto.strong_rand_bytes(32)
+      assert :ok = Custodian.store(endpoint.secret_ref, wrong_material, nil, kind)
+
+      assert %{success: 1} = drain("b")
+      assert_receive {:http_received, %{body: "signed by B", headers: headers}}
+      assert {:ok, _} = AshHooks.Signing.verify(event.payload, headers, disclosure)
+    end
+
     for {ref, reason} <- [{"timeout", "attempt_timeout"}, {"crash", "driver_crash"}] do
       test "the #{ref} finalizer records the failed attempt in B", %{port: port} do
         secret_ref = unquote(ref)
@@ -334,7 +492,9 @@ if Code.ensure_loaded?(Oban) do
       end
     end
 
-    test "publication and fanout enqueue in B, and retry and reconcile stay in B", %{port: port} do
+    test "fanout routes by the vault repo, and retry and reconcile stay on that binding", %{
+      port: port
+    } do
       subscribe!(endpoint!(port, 200))
       event = event("from B")
 
@@ -405,6 +565,7 @@ if Code.ensure_loaded?(Oban) do
 
       assert :ok = Worker.perform(job_b)
       assert Repo.get_dynamic_repo() == Repo
+      assert VaultRepo.get_dynamic_repo() == VaultRepo
       assert_receive {:http_received, %{body: "bound B"}}
       assert :ok = Worker.perform(legacy_job)
       assert_receive {:http_received, %{body: "legacy A"}}
@@ -435,15 +596,41 @@ if Code.ensure_loaded?(Oban) do
       refute_received {:http_received, _request}
     end
 
+    test "a keyed job is canceled before storage when its worker has no binding", %{port: port} do
+      event = event("should never be sent")
+      row = delivery!(endpoint!(port, 200), event)
+      assert :ok = UnboundWorker.enqueue(row, event)
+      [job] = jobs("a")
+      args = Map.put(job.args, @binding_key, "b")
+
+      observe_storage_queries()
+      assert {:cancel, :unknown_binding} = UnboundWorker.perform(%{job | args: args})
+      refute_received :storage_query
+      refute_received {:http_received, _request}
+    end
+
+    test "a raising bind fails before storage and restores ledger and vault repos", %{port: port} do
+      enqueue!(port, "should never be sent")
+      [job] = jobs("a")
+      args = Map.put(job.args, @binding_key, "broken")
+
+      observe_storage_queries()
+      assert {:error, :binding_failed} = Worker.perform(%{job | args: args})
+      refute_received :storage_query
+      assert Repo.get_dynamic_repo() == Repo
+      assert VaultRepo.get_dynamic_repo() == VaultRepo
+      refute_received {:http_received, _request}
+    end
+
     test "enqueue refuses a process with no valid binding name", %{port: port} do
       event = event("invalid binding")
       row = delivery!(endpoint!(port, 200), event)
-      previous = Repo.put_dynamic_repo(:unmapped)
+      previous = VaultRepo.put_dynamic_repo(:unmapped)
 
       try do
         assert {:error, :invalid_binding_name} = Worker.enqueue(row, event)
       after
-        Repo.put_dynamic_repo(previous)
+        VaultRepo.put_dynamic_repo(previous)
       end
 
       assert jobs("a") == []
@@ -465,13 +652,29 @@ if Code.ensure_loaded?(Oban) do
 
     defp on_binding(name, fun) do
       previous = Repo.get_dynamic_repo()
+      previous_vault = VaultRepo.get_dynamic_repo()
       :ok = Binding.bind(name)
 
       try do
         fun.()
       after
         Repo.put_dynamic_repo(previous)
+        VaultRepo.put_dynamic_repo(previous_vault)
       end
+    end
+
+    defp observe_storage_queries do
+      id = make_ref()
+
+      :ok =
+        :telemetry.attach_many(
+          id,
+          @query_events,
+          fn _name, _measurements, _metadata, caller -> send(caller, :storage_query) end,
+          self()
+        )
+
+      on_exit(fn -> :telemetry.detach(id) end)
     end
 
     defp read(name, resource),

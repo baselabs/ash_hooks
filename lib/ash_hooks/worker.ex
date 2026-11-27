@@ -575,7 +575,7 @@ defmodule AshHooks.Worker do
   @doc false
   def perform_job(binding, config, outbox, args) do
     case Map.fetch(args, @binding_arg_key) do
-      :error -> run_job(config, outbox, args)
+      :error -> run_job(config, outbox, args, nil)
       {:ok, name} -> run_bound_job(binding, name, config, outbox, args)
     end
   end
@@ -591,12 +591,14 @@ defmodule AshHooks.Worker do
           resources
         end
 
-      repositories = RepoBinding.capture(resources)
+      repositories = RepoBinding.capture_running() ++ RepoBinding.capture(resources)
+      host_binding = {binding, name}
 
       try do
-        case binding.bind(name) do
-          :ok -> run_job(config, outbox, args)
-          _refused -> {:cancel, :unknown_binding}
+        case RepoBinding.bind(host_binding) do
+          :ok -> run_job(config, outbox, args, host_binding)
+          {:error, :unknown_binding} -> {:cancel, :unknown_binding}
+          {:error, :binding_failed} = error -> error
         end
       after
         RepoBinding.apply(repositories)
@@ -606,11 +608,12 @@ defmodule AshHooks.Worker do
     end
   end
 
-  defp run_job(_config, outbox, %{"kind" => "fanout"} = args), do: perform_fanout(outbox, args)
+  defp run_job(_config, outbox, %{"kind" => "fanout"} = args, binding),
+    do: perform_fanout(outbox, args, binding)
 
-  defp run_job(config, _outbox, args) do
+  defp run_job(config, _outbox, args, binding) do
     with {:ok, config} <- resolve_config(config, args) do
-      AshHooks.Delivery.run(args, config)
+      AshHooks.Delivery.run(args, Keyword.put(config, :repo_binding, binding))
     end
   end
 
@@ -984,12 +987,14 @@ defmodule AshHooks.Worker do
   end
 
   @doc false
-  def perform_fanout(nil, _args), do: {:cancel, :unknown_source}
+  def perform_fanout(outbox, args, binding \\ nil)
 
-  def perform_fanout(outbox, %{"outbox_resource" => resource, "event_uuid" => id} = args)
+  def perform_fanout(nil, _args, _binding), do: {:cancel, :unknown_source}
+
+  def perform_fanout(outbox, %{"outbox_resource" => resource, "event_uuid" => id} = args, binding)
       when is_binary(id) and byte_size(id) > 0 do
     if Atom.to_string(outbox) == resource do
-      case AshHooks.fanout(outbox, id, tenant: args["tenant"]) do
+      case AshHooks.fanout(outbox, id, tenant: args["tenant"], repo_binding: binding) do
         result when result in [:done, :busy, :stale] -> :ok
         :missing -> {:cancel, :publication_missing}
         :failed -> {:cancel, :publication_failed}
@@ -1001,7 +1006,7 @@ defmodule AshHooks.Worker do
     end
   end
 
-  def perform_fanout(_outbox, _args), do: {:cancel, :invalid_event}
+  def perform_fanout(_outbox, _args, _binding), do: {:cancel, :invalid_event}
 
   defp retryable_statuses!(statuses) do
     resolved =

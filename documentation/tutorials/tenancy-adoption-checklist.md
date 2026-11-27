@@ -195,8 +195,9 @@ For example, start two instances of the same repo under `MyApp.LiveRepo` and
 `MyApp.TestRepo`, with each instance configured for its own database. Migrate
 the webhook resources and Oban tables in each database. Start one Oban
 instance per database with the shared repo module and its own
-`:get_dynamic_repo` callback. The callback also selects the database when
-Oban polls or stages jobs in a process with no request context.
+`:get_dynamic_repo` callback. This wraps Oban's own repo calls, including
+polling and staging outside a request process. Job callbacks establish their
+own repository binding.
 
 <!-- not-run: This example requires two supervised repository and Oban instances in a host application. -->
 ```elixir
@@ -247,16 +248,53 @@ children = [
 ```
 
 Call `MyApp.HooksBinding.bind("live")` in a process that publishes to the live
-database. Configure `bind/1` to select every repo module used by the job's resources.
-Derive `current/0` from the repository binding so it also works in the spawned
-fanout runner. Keep names stable while queued jobs refer to them. A job with
-an unknown name is canceled with `:unknown_binding`.
+database. Configure `bind/1` to select every repo module used by the job's
+resources and host callbacks, including a separate signing-key store when used.
+Derive `current/0` from the selected repositories. Keep names stable while
+queued jobs refer to them. A job with an unknown name is canceled with
+`:unknown_binding`.
 
-Run `AshHooks.fanout_pending/3` and `AshHooks.reconcile_pending/3` once per
-physical binding and, for multitenant resources, per tenant on that binding.
-Select the same repositories before sending returned publication
-notifications. For forced row security, retain the tenant and engine role
-configuration from the [row-security guide](row-security.md) in each database.
+### Maintenance jobs
+
+When scheduling publication sweeps, delivery reconciliation, or reapers with
+Oban Cron or another plugin, schedule each job once per physical binding.
+Call `bind/1` from the host worker's `perform/1` before calling AshHooks. For
+multitenant resources, run each maintenance operation for every tenant in
+that binding.
+
+<!-- not-run: This Cron worker requires a host binding, declaration, and webhook resources. -->
+```elixir
+defmodule MyApp.WebhookMaintenance do
+  use Oban.Worker, queue: :webhooks
+
+  @impl Oban.Worker
+  def perform(%Oban.Job{args: %{"binding" => name}}) do
+    with :ok <- MyApp.HooksBinding.bind(name),
+         {:ok, _} <- AshHooks.fanout_pending(MyApp.WebhookPublication, 100),
+         {:ok, _} <-
+           AshHooks.reconcile_pending(MyApp.Order, :paid,
+             enqueue: {MyApp.WebhookWorker, :enqueue}
+           ),
+         {:ok, _} <- AshHooks.KeyRegistry.sweep(MyApp.WebhookKeyRegistry) do
+      :ok
+    else
+      {:error, :unknown_binding} -> {:cancel, :unknown_binding}
+      {:error, _} = error -> error
+    end
+  end
+end
+
+# In each binding's Oban instance, set the corresponding name in the Cron entry.
+live_cron =
+  {Oban.Plugins.Cron,
+   crontab: [
+     {"*/5 * * * *", MyApp.WebhookMaintenance, args: %{binding: "live"}}
+   ]}
+```
+
+Select the same repositories before sending returned publication notifications.
+For forced row security, retain the tenant and engine role configuration from
+the [row-security guide](row-security.md) in each database.
 
 ## The isolation guarantees (what you may rely on)
 

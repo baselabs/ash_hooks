@@ -498,22 +498,29 @@ defmodule AshHooks.Delivery do
     context =
       Ash.ProcessHelpers.get_context_for_transfer(tracer: Application.get_env(:ash, :tracer))
 
-    repositories =
-      RepoBinding.capture([config[:deliveries], config[:endpoints], config[:attempts]])
+    binding =
+      RepoBinding.capture_child(
+        [config[:deliveries], config[:endpoints], config[:attempts]],
+        config[:repo_binding]
+      )
 
     {pid, monitor} =
       spawn_monitor(fn ->
-        RepoBinding.apply(repositories)
-        Ash.ProcessHelpers.transfer_context(context)
+        result =
+          with :ok <- RepoBinding.install_child(binding) do
+            Ash.ProcessHelpers.transfer_context(context)
 
-        config =
-          Keyword.put(
-            config,
-            :driver_deadline,
-            DateTime.add(now(config), timeout + allowance, :millisecond)
-          )
+            config =
+              Keyword.put(
+                config,
+                :driver_deadline,
+                DateTime.add(now(config), timeout + allowance, :millisecond)
+              )
 
-        send(owner, {:delivery_result, self(), execute(args, config)})
+            execute(args, config)
+          end
+
+        send(owner, {:delivery_result, self(), result})
       end)
 
     await_driver(pid, monitor, attempt_deadline, final_deadline, nil, config)
@@ -598,13 +605,20 @@ defmodule AshHooks.Delivery do
     context =
       Ash.ProcessHelpers.get_context_for_transfer(tracer: Application.get_env(:ash, :tracer))
 
-    repositories = RepoBinding.capture([config[:deliveries], config[:attempts]])
+    binding =
+      RepoBinding.capture_child(
+        [config[:deliveries], config[:endpoints], config[:attempts]],
+        config[:repo_binding]
+      )
 
     {pid, monitor} =
       spawn_monitor(fn ->
-        RepoBinding.apply(repositories)
-        Ash.ProcessHelpers.transfer_context(context)
-        result = retry(row, reason, config, tenant, nil)
+        result =
+          with :ok <- RepoBinding.install_child(binding) do
+            Ash.ProcessHelpers.transfer_context(context)
+            retry(row, reason, config, tenant, nil)
+          end
+
         send(owner, {:delivery_finalization, result_ref, self(), result})
       end)
 

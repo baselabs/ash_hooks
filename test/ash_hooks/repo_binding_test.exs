@@ -47,4 +47,13 @@ defmodule AshHooks.RepoBindingTest do
       Repo.put_dynamic_repo(previous)
     end
   end
+
+  test "captures running repo bindings when an instance loses its registered name" do
+    instance = start_supervised!({Repo, name: __MODULE__.NamedRepo, database: ":memory:"})
+    assert Process.unregister(__MODULE__.NamedRepo)
+    assert __MODULE__.NamedRepo in Ecto.Repo.all_running()
+
+    assert {Repo, Repo.get_dynamic_repo()} in RepoBinding.capture_running()
+    assert Process.alive?(instance)
+  end
 end

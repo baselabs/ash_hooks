@@ -164,7 +164,7 @@ defmodule AshHooks.Outbox do
           state
 
         {:ok, row} ->
-          claim(row, tenant)
+          claim(row, tenant, opts[:repo_binding])
 
         {:error, reason} ->
           emit(:claim, %{event_uuid: id}, :error, tenant, reason)
@@ -173,7 +173,7 @@ defmodule AshHooks.Outbox do
     end
   end
 
-  defp claim(row, tenant) do
+  defp claim(row, tenant, host_binding) do
     time = now()
     token = Ash.UUID.generate()
     lease = DateTime.add(time, option(row.__struct__, :fanout_lease_seconds), :second)
@@ -193,7 +193,7 @@ defmodule AshHooks.Outbox do
       {:ok, claimed} ->
         emit(:publish, claimed, :accepted, tenant)
         emit(:claim, claimed, :claimed, tenant)
-        run(claimed, tenant)
+        run(claimed, tenant, host_binding)
 
       {:error, reason} ->
         emit(:claim, row, :error, tenant, reason)
@@ -201,14 +201,13 @@ defmodule AshHooks.Outbox do
     end
   end
 
-  defp run(row, tenant) do
+  defp run(row, tenant, host_binding) do
     owner = self()
     ref = make_ref()
-    repositories = row.__struct__ |> dispatch_resources() |> RepoBinding.capture()
+    binding = RepoBinding.capture_child(dispatch_resources(row.__struct__), host_binding)
 
     {pid, monitor} =
       spawn_monitor(fn ->
-        RepoBinding.apply(repositories)
         runner = self()
         spawn(fn -> guard(owner, runner, ref) end)
 
@@ -216,7 +215,12 @@ defmodule AshHooks.Outbox do
           {^ref, :guarded} -> :ok
         end
 
-        send(owner, {ref, safely(fn -> dispatch(row, tenant) end)})
+        result =
+          with :ok <- RepoBinding.install_child(binding) do
+            safely(fn -> dispatch(row, tenant) end)
+          end
+
+        send(owner, {ref, result})
       end)
 
     timeout = option(row.__struct__, :fanout_timeout)
