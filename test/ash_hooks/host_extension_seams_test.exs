@@ -1364,6 +1364,36 @@ defmodule AshHooks.HostExtensionSeamsTest do
     assert only_attempt(row).signing_key_ref == "legacy-current"
   end
 
+  test "event-log replay rejects an endpoint from a different resource in the same tenant" do
+    endpoint =
+      Ash.create!(
+        PlainEndpoint,
+        %{url: "https://hooks.example.test/hook", secret_ref: "standard-current"},
+        tenant: "tenant-a",
+        authorize?: false
+      )
+
+    uuid = unique()
+
+    Ash.create!(EventLog, %{event_uuid: uuid, event_type: "event", payload: "bytes"},
+      action: :record,
+      tenant: "tenant-a",
+      authorize?: false
+    )
+
+    assert {:error, :declaration_mismatch} =
+             AshHooks.OutboundEvent.replay(EventLog, endpoint,
+               deliveries: Delivery,
+               endpoints: Endpoint,
+               declaration: {Emitter, :event},
+               requested_by: "test",
+               tenant: "tenant-a",
+               event_uuid: uuid
+             )
+
+    assert Ash.read!(Delivery, tenant: "tenant-a", authorize?: false) == []
+  end
+
   test "replay resolves matching modes within the tenant and refuses conflicting subscriptions" do
     for {modes, expected} <- [
           {[], :skip},
