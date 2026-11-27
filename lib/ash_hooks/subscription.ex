@@ -147,7 +147,7 @@ defmodule AshHooks.Subscription do
   list and matches any member. The resource's data layer determines which
   values it can store.
   """
-  @spec validate_filters(module(), term()) :: :ok | {:error, %InvalidAttribute{}}
+  @spec validate_filters(module(), term()) :: :ok | {:error, Exception.t()}
   def validate_filters(resource, filters) do
     keys = Extension.get_opt(resource, [:subscription], :filter_attributes, [])
 
