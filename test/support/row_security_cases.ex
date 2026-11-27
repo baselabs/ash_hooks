@@ -293,6 +293,7 @@ defmodule AshHooks.Test.RowSecurityCases do
       quote do
         endpoint do
           key_lifecycle(:on)
+          version_pinning(:on)
 
           auto_disable do
             min_attempts(1)
@@ -321,12 +322,24 @@ defmodule AshHooks.Test.RowSecurityCases do
       quote do
         subscription do
           endpoint_resource unquote(ctx.endpoint)
+          pausable(:on)
+          filter_attributes([:store])
         end
       end
     )
 
     compile_resource(ctx, ctx.attempt, [AshHooks.OutboundAttempt], quote(do: nil))
-    compile_resource(ctx, ctx.event_log, [AshHooks.OutboundEvent], quote(do: nil))
+
+    compile_resource(
+      ctx,
+      ctx.event_log,
+      [AshHooks.OutboundEvent],
+      quote do
+        outbound_event do
+          replay_context(:on)
+        end
+      end
+    )
 
     compile_resource(
       ctx,
@@ -419,6 +432,8 @@ defmodule AshHooks.Test.RowSecurityCases do
               subscriptions(unquote(ctx.subscription))
               deliveries(unquote(ctx.delivery))
               events(unquote(ctx.event_log))
+              version(3)
+              payload_versions(%{1 => {AshHooks.Test.RowSecurityCases, :replay_variant}})
             end
           end
         end
@@ -631,7 +646,12 @@ defmodule AshHooks.Test.RowSecurityCases do
   def parse_tenant(tenant), do: tenant |> to_string() |> String.upcase()
   def recover_tenant(attribute), do: String.downcase(attribute)
 
-  defp seed(ctx, url \\ "https://hooks.example.test/hook", tenants \\ ["tenant_b", "tenant_a"]) do
+  defp seed(
+         ctx,
+         url \\ "https://hooks.example.test/hook",
+         tenants \\ ["tenant_b", "tenant_a"],
+         filters \\ %{}
+       ) do
     for tenant <- tenants do
       {:ok, endpoint} =
         Ash.DataLayer.transaction(
@@ -643,7 +663,9 @@ defmodule AshHooks.Test.RowSecurityCases do
                 tenant: tenant
               )
 
-            Ash.create!(ctx.subscription, %{endpoint_id: endpoint.id, event_types: ["event"]},
+            subscription = Map.merge(%{endpoint_id: endpoint.id, event_types: ["event"]}, filters)
+
+            Ash.create!(ctx.subscription, subscription,
               authorize?: false,
               tenant: tenant
             )
@@ -656,6 +678,93 @@ defmodule AshHooks.Test.RowSecurityCases do
 
       {tenant, endpoint}
     end
+  end
+
+  def replay_variant(event) do
+    {:ok, Jason.encode!(%{store: event.metadata["store"], source_version: event.version})}
+  end
+
+  def filtered_replay(ctx) do
+    tenant = "tenant_a"
+
+    for {id, store} <- [{"replay-s1", "s1"}, {"replay-s2", "s2"}] do
+      {:ok, event} =
+        AshHooks.Event.new(id: id, type: :event, payload: "base", metadata: %{"store" => store})
+
+      # Recovered outbox events carry their persisted version on the struct.
+      assert {:ok, []} =
+               Dispatcher.dispatch(ctx.emitter, :event, %{event | version: 2}, tenant: tenant)
+    end
+
+    assert {:ok, %{records: [%{version: 2}, %{version: 2}]}} =
+             OutboundEvent.list(ctx.event_log, tenant: tenant)
+
+    filters = %{event_filters: %{"store" => "s1"}}
+    url = "https://hooks.example.test/hook"
+    [{^tenant, endpoint}] = seed(ctx, url, [tenant], filters)
+    [{^tenant, paused}] = seed(ctx, url, [tenant], Map.put(filters, :paused, true))
+    [{other_tenant, other}] = seed(ctx, url, ["tenant_b"], filters)
+
+    assert {:ok, _} =
+             AshHooks.Phase.run(ctx.endpoint, tenant, fn ->
+               Ash.update(endpoint, %{pinned_payload_version: 1},
+                 tenant: tenant,
+                 authorize?: false
+               )
+             end)
+
+    opts = [
+      deliveries: ctx.delivery,
+      endpoints: ctx.endpoint,
+      declaration: {ctx.emitter, :event},
+      event_type: "event",
+      requested_by: "operator",
+      tenant: tenant
+    ]
+
+    assert {:ok, %{count: 0}} =
+             OutboundEvent.replay(ctx.event_log, paused, Keyword.put(opts, :dry_run, true))
+
+    assert {:ok, %{created: 0, re_sent: 0, skipped: 2, errors: []}} =
+             OutboundEvent.replay(ctx.event_log, paused, opts)
+
+    assert {:ok, %{created: 0, re_sent: 0, skipped: 2, errors: []}} =
+             OutboundEvent.replay(ctx.event_log, other, opts)
+
+    assert {:ok, %{count: 1}} =
+             OutboundEvent.replay(ctx.event_log, endpoint, Keyword.put(opts, :dry_run, true))
+
+    assert {:ok, %{records: []}} = Delivery.list(ctx.delivery, tenant: tenant)
+
+    assert {:ok, %{created: 1, re_sent: 0, skipped: 1, errors: []}} =
+             OutboundEvent.replay(ctx.event_log, endpoint, opts)
+
+    assert {:ok, %{records: [row]}} = Delivery.list(ctx.delivery, tenant: tenant)
+    assert row.event_uuid == "replay-s1"
+    assert row.endpoint_id == endpoint.id
+    assert row.payload == Jason.encode!(%{store: "s1", source_version: 2})
+    assert {:ok, %{records: []}} = Delivery.list(ctx.delivery, tenant: other_tenant)
+
+    assert {:ok, _} =
+             AshHooks.Phase.run(ctx.event_log, tenant, fn ->
+               Ash.create(
+                 ctx.event_log,
+                 %{event_uuid: "legacy-replay", event_type: "event", payload: "base"},
+                 action: :record,
+                 tenant: tenant,
+                 authorize?: false
+               )
+             end)
+
+    opts = Keyword.put(opts, :event_uuid, "legacy-replay")
+
+    assert {:ok, %{created: 0, re_sent: 0, skipped: 0, errors: [:replay_metadata_unavailable]}} =
+             OutboundEvent.replay(ctx.event_log, endpoint, opts)
+
+    [{^tenant, unfiltered}] = seed(ctx, url, [tenant])
+
+    assert {:ok, %{created: 1, re_sent: 0, skipped: 0, errors: []}} =
+             OutboundEvent.replay(ctx.event_log, unfiltered, opts)
   end
 
   def outbound_phases(ctx) do
@@ -741,7 +850,7 @@ defmodule AshHooks.Test.RowSecurityCases do
                  older_than: DateTime.add(DateTime.utc_now(), 60)
                )
 
-      assert {:ok, %{count: 1}} =
+      assert {:ok, %{count: 0}} =
                OutboundEvent.replay(ctx.event_log, endpoint,
                  deliveries: ctx.delivery,
                  endpoints: ctx.endpoint,

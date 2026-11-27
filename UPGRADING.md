@@ -1,5 +1,27 @@
 # Upgrading
 
+## Unreleased
+
+### Event-log replay
+
+Missing deliveries require an enabled endpoint and an active subscription
+matching the event type and filters. Unmatched events count as `skipped`.
+Dry-run `count` is the number of eligible new deliveries in the selected batch.
+
+To replay through a filtering subscription or to a pinned endpoint, add the
+nullable `:replay_context` map column to the event log's table and enable
+`replay_context(:on)` in the resource's `outbound_event` block. Use Ash migration
+generation or add `add :replay_context, :map` in the host's Ecto migration.
+No schema change is needed with capture off.
+
+Rows written before capture have a null value. Leave it null. Replaying those
+rows through a filtering subscription returns `:replay_metadata_unavailable`. A
+missing delivery for a pinned endpoint returns `:replay_payload_unavailable`
+when the log cannot establish the payload version or rebuild the variant.
+Unpinned endpoints with unfiltered subscriptions can still replay older rows.
+Existing terminal deliveries use the bytes already stored in their delivery
+rows.
+
 <a id="upgrade-3-7"></a>
 
 ## 3.6.0 → 3.7.0

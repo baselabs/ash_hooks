@@ -91,7 +91,7 @@ replay_options = [
   per_second: 25
 ]
 
-{:ok, %{count: 1}} =
+{:ok, %{count: _}} =
   AshHooks.OutboundEvent.replay(
     MyApp.OutboundEvent,
     endpoint,
@@ -102,14 +102,20 @@ replay_options = [
   AshHooks.OutboundEvent.replay(MyApp.OutboundEvent, endpoint, replay_options)
 ```
 
-A new endpoint gets a new delivery preserving the event ID and bytes. An
-existing terminal delivery is rearmed; a pending or retrying delivery is
-skipped. Check `created`, `re_sent`, `skipped`, and `errors` rather than treating
-a successful call as proof every event was delivered. `errors` holds the
-per-row error terms from delivery reads, replay creates, and terminal resends.
-Those failures do not increment `skipped`; only live, nonterminal rows do.
-An unknown event returns
-`:event_not_found`; missing or mismatched declarations fail before replay.
+Replay creates a missing delivery when the endpoint is enabled and an active
+subscription matches the event's type and filters. It preserves the event ID
+and uses the endpoint's pinned payload when it can establish the bytes.
+An existing terminal delivery is rearmed. Nonterminal deliveries and missing
+deliveries without an eligible endpoint or subscription count as `skipped`.
+Dry-run `count` reports eligible new deliveries. Check `created`, `re_sent`,
+`skipped`, and `errors` for the outcome. An unknown event returns
+`:event_not_found`. Missing or mismatched declarations fail before replay.
+
+To allow replay through filters and payload pins, migrate the event table with a
+nullable `:replay_context` map column and set `replay_context(:on)` in the
+`outbound_event` block. When the context is unavailable, filtered or pinned rows
+return a per-event error. See [OutboundEvent](../../lib/ash_hooks/outbound_event.ex)
+for the capture limits and error terms.
 
 For a queued application, pass the same `enqueue: {MyApp.WebhookDeliveryWorker,
 :enqueue}` callback used by dispatch. Without it, rows remain pending for the

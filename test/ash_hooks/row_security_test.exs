@@ -144,6 +144,11 @@ defmodule AshHooks.RowSecurityTest do
     end
 
     @tag configuration: configuration
+    test "event-log replay filters and pins with #{configuration} reads", context do
+      Cases.filtered_replay(context)
+    end
+
+    @tag configuration: configuration
     test "subscription pages retain the tenant phase with #{configuration} reads", context do
       Cases.subscription_pages(context)
     end

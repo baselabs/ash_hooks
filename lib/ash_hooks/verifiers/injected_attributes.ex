@@ -121,8 +121,10 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
   defp accepted_constraints?(:outbox, %{name: :metadata} = actual, _expected),
     do: actual.type == Ash.Type.Map and not Keyword.has_key?(actual.constraints, :fields)
 
-  # Scope identity and provider aliases must keep the declared value domain.
-  defp accepted_constraints?(:inbound_source, actual, %{allow_nil?: false} = expected) do
+  # Scope identity, provider aliases and replay context carry fixed fields.
+  defp accepted_constraints?(section, actual, expected)
+       when (section == :inbound_source and not expected.allow_nil?) or
+              (section == :outbound_event and expected.name == :replay_context) do
     {:ok, expected_constraints} = Ash.Type.init(expected.type, expected.constraints)
     {:ok, actual_constraints} = Ash.Type.init(actual.type, actual.constraints)
     expected_constraints == actual_constraints

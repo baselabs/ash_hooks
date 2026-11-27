@@ -88,6 +88,8 @@ defmodule AshHooks.Subscription.Query do
     end
   end
 
+  defp filters(_resource, nil, _layer), do: true
+
   defp filters(resource, metadata, layer) do
     attribute = Info.attribute(resource, :event_filters)
     shape = if attribute, do: {layer, storage(resource, attribute, layer)}

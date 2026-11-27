@@ -2,6 +2,8 @@
 
 Status: Accepted November 15, 2026.
 
+Amended November 27, 2026.
+
 ## Context
 
 Resend, replay, and sustained-failure disablement must preserve identity and history.
@@ -19,12 +21,22 @@ its exponential cap. Resend is not a reset of the delivery's history.
 
 Delivery replay applies resend to a filtered, bounded set. Event-log
 [replay/3](../../lib/ash_hooks/outbound_event.ex) instead selects emitted events
-for a chosen endpoint: it creates missing delivery rows with declaration and
-enqueue-route ownership, rearms terminal rows with the same tenant and
-requester, and skips nonterminal rows. Both forms preserve event IDs. Dry runs
-count their selected batches without writing; limits and rate settings bound
-work. Repeated event-log calls can select skipped rows again and do not return
-a pagination cursor.
+for a chosen endpoint. A new delivery requires an enabled endpoint and the same
+active subscription, event-type, and filter match as fanout. Its bytes follow
+the same catalog resolution for the endpoint's payload pin. Missing deliveries
+with no eligible subscription or endpoint count as skipped. Replay rearms
+terminal rows with the same tenant and requester and skips nonterminal rows.
+Both forms preserve event IDs. Event-log dry runs count eligible new deliveries
+without writing. Limits and rate settings bound work. Repeated event-log calls
+can select skipped rows again and do not return a pagination cursor.
+
+`outbound_event.replay_context :on` injects a nullable column for bounded
+dispatch metadata and payload provenance. It retains only keys listed in the
+subscription resource's `filter_attributes`. If those keys omit part of the
+original metadata, replay cannot run a variant builder. A row with no captured
+metadata returns a per-row error for an active, type-matching filtering
+subscription. A missing delivery for an unpinned endpoint with an unfiltered
+subscription remains eligible on older rows.
 
 [AshHooks.EndpointHealth](../../lib/ash_hooks/endpoint_health.ex) derives health
 from retained attempt rows. It distinguishes first-attempt and eventual success,

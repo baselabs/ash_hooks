@@ -7,9 +7,19 @@ defmodule AshHooks.OutboundOutbox.Metadata do
   @integer_max 9_223_372_036_854_775_807
 
   def validate(metadata) do
-    if is_map(metadata) and valid?(metadata, 0) and encoded_size?(metadata),
-      do: :ok,
-      else: {:error, :invalid_publication_metadata}
+    case encode(metadata) do
+      {:ok, _encoded} -> :ok
+      :error -> {:error, :invalid_publication_metadata}
+    end
+  end
+
+  def encode(metadata) do
+    if is_map(metadata) and valid?(metadata, 0) do
+      encoded = Jason.encode!(metadata)
+      if byte_size(encoded) <= @max_bytes, do: {:ok, encoded}, else: :error
+    else
+      :error
+    end
   end
 
   defp valid?(_value, depth) when depth > @max_depth, do: false
@@ -41,5 +51,5 @@ defmodule AshHooks.OutboundOutbox.Metadata do
 
   defp string?(_value), do: false
 
-  defp encoded_size?(metadata), do: byte_size(Jason.encode!(metadata)) <= @max_bytes
+  def max_bytes, do: @max_bytes
 end
