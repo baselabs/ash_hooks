@@ -13,6 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on execution. Jobs with unknown bindings are canceled.
 - Event logs can opt in to bounded replay context for subscription filters and
   payload-version pins. See [UPGRADING.md](UPGRADING.md#event-log-replay).
+- `AshHooks.Subscription.validate_filters/2` checks filter values before importing
+  or rewriting subscription rows.
+
+### Changed
+
+- Subscription creates and updates reject malformed `event_filters`, undeclared
+  keys, and unsupported filter values when `filter_attributes` is configured.
 
 ### Fixed
 

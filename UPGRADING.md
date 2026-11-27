@@ -38,6 +38,21 @@ Unpinned endpoints with unfiltered subscriptions can still replay older rows.
 Existing terminal deliveries use the bytes already stored in their delivery
 rows.
 
+### Check subscription filters before writing
+
+Resources with `filter_attributes` now refuse writes that could previously store
+filters that never matched. Writes also refuse nested values. A filter must be
+`nil` or a plain map with distinct, declared atom or string keys. Each value
+must be a JSON scalar or a nonempty list of JSON scalars. Strings must be UTF-8
+and contain no NUL characters.
+
+Before upgrading or importing, read the subscription values for each tenant and
+call `AshHooks.Subscription.validate_filters(Subscription, row.event_filters)`,
+using your resource module in place of `Subscription`. Keep the row IDs for
+results of the form `{:error, error}`. The invalid-attribute error identifies
+`event_filters` and names the offending key when one exists. Correct those
+filters before writing the rows. Existing rows keep their dispatch behavior.
+
 <a id="upgrade-3-7"></a>
 
 ## 3.6.0 → 3.7.0

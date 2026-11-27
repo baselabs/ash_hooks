@@ -121,6 +121,15 @@ defmodule AshHooks.SubscriptionTest do
       assert sub.event_types == ["*"]
     end
 
+    test "leaving filter_attributes empty adds no filter field or validation" do
+      refute ResourceInfo.attribute(Subscription, :event_filters)
+      assert ResourceInfo.validations(Subscription, :create) == []
+      assert ResourceInfo.validations(Subscription, :update) == []
+
+      assert %{event_types: ["*"]} =
+               Ash.create!(Subscription, %{endpoint_id: endpoint!().id}, authorize?: false)
+    end
+
     test "event_types and endpoint_id are required; signing_mode stays nil" do
       assert {:error, _} = Ash.create(Subscription, %{endpoint_id: nil}, authorize?: false)
     end
