@@ -13,8 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Subscription creates and updates reject malformed `event_filters`, undeclared
-  keys, and unsupported filter values when `filter_attributes` is configured.
+- Literal writes to the injected `event_filters` attribute reject malformed
+  containers, invalid or undeclared top-level keys, non-JSON values, and empty
+  any-of lists. Host-declared maps receive this check in non-atomic actions.
+  JSON object strings and nested JSON values remain valid. See
+  [UPGRADING.md](UPGRADING.md#check-subscription-filters-before-writing).
 
 ## [3.7.0] - 2026-11-24
 

@@ -56,9 +56,11 @@ defmodule AshHooks.Subscription do
   A PostgreSQL GIN index on `event_types`
   speeds type selection. Malformed filter containers never match.
 
-  When `filter_attributes` is nonempty, create and update actions validate
-  `event_filters`, including on resources that declare the attribute themselves.
-  Use `validate_filters/2` to check stored or imported values before writing them.
+  When `filter_attributes` is nonempty, the injected `event_filters` type checks
+  literal writes. For host-declared map attributes, the check runs in the
+  before-action hook on non-atomic actions. Atomic expressions are an unchecked
+  Ash escape hatch. Use `validate_filters/2` to check stored or imported values
+  before writing them.
 
   The package injects NO read action and NO read policies: read surfaces
   are the consumer's to open through their own domain policies; internal
@@ -66,6 +68,7 @@ defmodule AshHooks.Subscription do
   """
 
   alias Ash.Error.Changes.InvalidAttribute
+  alias AshHooks.Type.EventFilters
   alias Spark.Dsl.Extension
 
   @signing_modes [:legacy, :dual, :standard]
@@ -138,64 +141,24 @@ defmodule AshHooks.Subscription do
   `filter_attributes`. Returns `:ok` or an `Ash.Error.Changes.InvalidAttribute`
   error on `:event_filters`.
 
-  Pass `nil` to match all metadata, or a plain map with distinct declared
-  names as atom or string keys. Values may be null, booleans, numbers, or
-  UTF-8 strings without NUL characters. A nonempty list of these scalars
-  matches any member.
+  Pass `nil` to match all metadata, or a plain map or JSON object with distinct
+  declared names as atom or string keys. An empty string casts to `nil`.
+  Values can be null, booleans, numbers, UTF-8 strings without NUL, or nested
+  maps and lists of those values. Nested map keys must be UTF-8 strings
+  without NUL. A list at a declared key must be nonempty and matches any member.
   """
   @spec validate_filters(module(), term()) :: :ok | {:error, InvalidAttribute.t()}
-  def validate_filters(_resource, nil), do: :ok
+  def validate_filters(resource, filters) do
+    keys = Extension.get_opt(resource, [:subscription], :filter_attributes, [])
 
-  def validate_filters(resource, filters) when is_map(filters) and not is_struct(filters) do
-    declared =
-      resource
-      |> Extension.get_opt([:subscription], :filter_attributes, [])
-      |> MapSet.new(&to_string/1)
+    case EventFilters.cast_input(filters, keys: keys) do
+      {:ok, _filters} ->
+        :ok
 
-    Enum.reduce_while(filters, :ok, fn {key, value}, :ok ->
-      case filter_error(key, value, filters, declared) do
-        nil -> {:cont, :ok}
-        reason -> {:halt, invalid_filters("filter key #{inspect(key)} #{reason}")}
-      end
-    end)
-  end
-
-  def validate_filters(_resource, _filters),
-    do: invalid_filters("event_filters must be nil or a plain map")
-
-  defp filter_error(key, value, filters, declared) do
-    cond do
-      not (is_atom(key) or is_binary(key)) ->
-        "must be a string or atom"
-
-      to_string(key) not in declared ->
-        "is not declared in filter_attributes"
-
-      is_atom(key) and Map.has_key?(filters, to_string(key)) ->
-        "has a duplicate string key"
-
-      is_list(value) and not (value != [] and scalar_list?(value)) ->
-        "must have a nonempty list of scalars for an any-of filter"
-
-      not is_list(value) and not scalar?(value) ->
-        "must have a scalar value (null, boolean, number, or UTF-8 string without NUL)"
-
-      true ->
-        nil
+      {:error, message} ->
+        {:error, InvalidAttribute.exception(field: :event_filters, message: message)}
     end
   end
-
-  defp scalar_list?([]), do: true
-  defp scalar_list?([value | rest]), do: scalar?(value) and scalar_list?(rest)
-  defp scalar_list?(_other), do: false
-
-  defp scalar?(value) when is_binary(value),
-    do: String.valid?(value) and not String.contains?(value, <<0>>)
-
-  defp scalar?(value), do: is_number(value) or is_boolean(value) or is_nil(value)
-
-  defp invalid_filters(message),
-    do: {:error, InvalidAttribute.exception(field: :event_filters, message: message)}
 
   defp normalize_type(entry) when is_binary(entry), do: entry
   defp normalize_type(entry) when is_atom(entry), do: Atom.to_string(entry)
@@ -238,12 +201,13 @@ defmodule AshHooks.Subscription do
         doc: """
         The closed set of EVENT ATTRIBUTE names subscriptions may filter
         on (e.g. `[:order_id, :region]`). Declaring a nonempty list
-        injects the `event_filters` column (`:map`, nullable): a
+        injects the `event_filters` column (nullable, stored as a map): a
         subscription whose filters all match the dispatching event's
         metadata receives the delivery. Filters are evaluated before any delivery
-        row is created. Writes accept `nil` or a plain map with declared keys and
-        scalar values or nonempty lists of scalars. See `validate_filters/2` for
-        the accepted values. Requires a migration for the column.
+        row is created. Literal writes accept `nil` or a plain map with declared
+        keys and JSON-compatible values. Lists at declared keys must be nonempty
+        and match any member. See `validate_filters/2` for the accepted values.
+        Requires a migration for the column.
         """
       ]
     ]
