@@ -293,6 +293,8 @@ jobs:
             documentation/dsls
           retention-days: 7
       - run: mix spark.check
+      - name: Test the Mix version reader
+        run: python3 -I test/check_mix_version_test.py
 
   # The get-started Livebook, verified headless on one leg: the elixir
   # cells are extracted in order and run outside any mix project

@@ -42,9 +42,10 @@ archive with a real receiver.
    upload job to check for a private release of the same application and
    version. The upload job runs Hex outside the checkout and uses a short-lived,
    package-scoped workload token for any uploads.
-3. If upload reports a stage, the owner waits for the approval page and
-   checksum in the upload log, then approves the staged release or docs on
-   hex.pm. Dispatch again with the same `release_commit` and the **original**
+3. If Hex holds the release for approval, upload stops with "Hex release or
+   docs are held or changed; after approval dispatch again on the same
+   commit". The owner approves the staged release or docs on hex.pm, under the
+   package's staged releases in the dashboard. Dispatch again with the same `release_commit` and the **original**
    `qualification_run` to reuse the exact archives.
 4. Wait for read-back and the published Livebook job. Read-back uses the run ID
    and qualified manifest checksum from upload, verifies the signed Hex registry
