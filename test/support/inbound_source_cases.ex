@@ -223,6 +223,7 @@ defmodule AshHooks.Test.InboundSourceCases do
       :first_use_failure,
       :previous_key,
       :protected_rotation,
+      :protected_enrollment_refusals,
       :overlap_failure,
       :overlap_stale_timestamp,
       :declaration_context,
@@ -717,6 +718,51 @@ defmodule AshHooks.Test.InboundSourceCases do
     assert separate.id != id
     assert separate.external_event_id == first.external_event_id
     assert_receive {:handled, OtherSourceProvider}
+  end
+
+  def protected_enrollment_refusals(ctx) do
+    enrollment = %{source: :protected, account_id: "wrong-provider", provider: :first}
+    assert {:ok, _, disclosure} = create(ctx, attrs: enrollment)
+
+    assert {:error, %AshHooks.Errors.Invalid.UnknownSource{}} =
+             ingest(ctx, disclosure, source: :protected, account_id: "wrong-provider")
+
+    if Code.ensure_loaded?(Plug.Test) do
+      assert protected_plug_response(ctx, "wrong-provider").status == 404
+    end
+
+    {public, private} = :crypto.generate_key(:eddsa, :ed25519)
+    attrs = %{enrollment | account_id: "public-key-only", provider: :second}
+
+    assert {:ok, %{secret_ref: nil}} =
+             create(ctx, attrs: attrs, public_key: public, kind: :ed25519)
+
+    body = ~s({"id":"public-key-only"})
+    signature = Base.encode64(:crypto.sign(:eddsa, :none, body, [private, :ed25519]))
+
+    assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
+             Ingress.ingest(ctx.source_ledger, :protected, body, %{
+               tenant: 17,
+               scope: %{account_id: "public-key-only"},
+               headers: %{"x-signature" => signature}
+             })
+
+    assert receipts(ctx) == []
+    refute_received {:handled, OtherSourceProvider}
+    refute_received {:handled, SourceProvider, _, _}
+  end
+
+  defp protected_plug_response(ctx, account_id) do
+    resolution = %{source: :protected, tenant: 17, scope: %{account_id: account_id}}
+
+    options =
+      AshHooks.Plug.init(
+        resource: ctx.source_ledger,
+        resolve: {__MODULE__, :plug_context, [resolution]}
+      )
+
+    Plug.Test.conn("POST", "/hooks", ~s({"id":"wrong-provider"}))
+    |> AshHooks.Plug.call(options)
   end
 
   def overlap_stale_timestamp(ctx) do

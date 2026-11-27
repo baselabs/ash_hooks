@@ -71,6 +71,16 @@ defmodule AshHooks.DurableReplayTest.Cases do
     resources =
       for {name, route} <- [Ledger: protected, LegacyLedger: legacy, RetiredLedger: retired] do
         module = Module.concat(__CALLER__.module, name)
+        protected_ledger? = name != :LegacyLedger
+
+        read_probe =
+          quote do
+            prepare(
+              before_action(fn query, _context ->
+                unquote(__MODULE__).check_storage(query, unquote(repo), unquote(table))
+              end)
+            )
+          end
 
         quote do
           defmodule unquote(module) do
@@ -97,7 +107,10 @@ defmodule AshHooks.DurableReplayTest.Cases do
             end
 
             actions do
-              defaults([:read])
+              read :read do
+                primary?(true)
+                unquote(read_probe)
+              end
             end
 
             policies do
@@ -105,17 +118,13 @@ defmodule AshHooks.DurableReplayTest.Cases do
                 authorize_if(always())
               end
 
-              policy action([
-                       :ingest_protected,
-                       :record_protected_malformed,
-                       :compact_replay_receipt
-                     ]) do
+              policy action(unquote(admission_actions(protected_ledger?))) do
                 authorize_if(actor_present())
               end
             end
 
             inbound_delivery do
-              retain_replay_identities(:on)
+              retain_replay_identities(unquote(if protected_ledger?, do: :on, else: :off))
               record_verified_facts(:on)
             end
 
@@ -134,6 +143,7 @@ defmodule AshHooks.DurableReplayTest.Cases do
 
     quote do
       use ExUnit.Case, async: false
+      @compile {:no_warn_undefined, [AshHooks.Plug, Plug.Conn, Plug.Test]}
       unquote(if layer == :postgres, do: quote(do: @moduletag(:postgres)))
       alias AshHooks.Ingress
       alias AshHooks.DurableReplayTest.Provider
@@ -319,12 +329,18 @@ defmodule AshHooks.DurableReplayTest.Cases do
         assert {:error, %AshHooks.Errors.Unknown.ReplayStoreUnavailable{} = error} =
                  ingest(:protected, over_capacity)
 
-        assert {503, [{"webhook-error-code", "dependency_unavailable"}, {"retry-after", "60"}],
-                ""} =
-                 AshHooks.Plug.default_response(
-                   {:error, error},
-                   AshHooks.Plug.init(resource: Ledger, resolve: {__MODULE__, :route, []})
-                 )
+        assert Exception.message(error) == "webhook replay storage is unavailable"
+
+        if Code.ensure_loaded?(Plug.Test) do
+          conn = http_ingest(Ledger, over_capacity)
+          assert conn.status == 503
+
+          assert Plug.Conn.get_resp_header(conn, "webhook-error-code") == [
+                   "dependency_unavailable"
+                 ]
+
+          assert Plug.Conn.get_resp_header(conn, "retry-after") == ["60"]
+        end
 
         refute_receive {:handled, _}
         assert {:ok, :duplicate, %{id: id}} = ingest(:protected, body)
@@ -346,6 +362,82 @@ defmodule AshHooks.DurableReplayTest.Cases do
         end
       end
 
+      test "a raised repository error during the admission read is retryable" do
+        Repo.query!("ALTER TABLE #{@table} RENAME TO #{@table}_offline")
+        Process.put(:check_replay_storage, true)
+
+        try do
+          assert {:error, %AshHooks.Errors.Unknown.ReplayStoreUnavailable{}} =
+                   ingest(:protected, ~s({"id":"raised-read"}))
+
+          assert_received :checked_replay_storage
+          refute_receive :decoded
+          refute_receive {:handled, _}
+        after
+          Process.delete(:check_replay_storage)
+          Repo.query!("ALTER TABLE #{@table}_offline RENAME TO #{@table}")
+        end
+      end
+
+      test "a valid MAC over malformed bytes reserves a terminal protected receipt" do
+        body = "{"
+        assert {:ok, :created, receipt} = ingest(:protected, body)
+        assert receipt.status == :failed_permanent
+        assert receipt.error_class == "malformed_payload"
+        assert receipt.replay_identity == :retained
+
+        assert_receive :decoded
+        refute_receive {:handled, _}
+        assert {:ok, 1} = compact()
+        assert {:ok, :duplicate, duplicate} = ingest(:protected, body)
+        assert duplicate.id == receipt.id
+        assert duplicate.status == :failed_permanent
+        refute_receive :decoded
+      end
+
+      test "a matching legacy receipt without a replay marker fails closed" do
+        body = ~s({"id":"legacy-collision"})
+        digest = Base.encode16(:crypto.hash(:sha256, body), case: :lower)
+
+        assert {:ok, true, legacy} =
+                 Ingress.ingest_delivery(LegacyLedger, %{
+                   name: :protected,
+                   external_event_id: "body-sha256:v1:" <> digest,
+                   type_string: nil,
+                   digest: digest,
+                   payload: %{},
+                   tenant: "a",
+                   scope: %{}
+                 })
+
+        assert {:error, %AshHooks.Errors.Unknown.ReplayStoreUnavailable{}} =
+                 ingest(:protected, body)
+
+        refute_receive :decoded
+        refute_receive {:handled, _}
+        assert [%{id: id, replay_identity: nil}] = Ash.read!(Ledger, tenant: "a")
+        assert id == legacy.id
+      end
+
+      test "compaction requires the ledger opt-in and the maintenance actor" do
+        assert {:error, :replay_retention_not_enabled} =
+                 Ingress.compact_replay_receipts(LegacyLedger, tenant: "a", older_than: future())
+
+        assert {:ok, :created, receipt} = ingest(:protected, ~s({"id":"requires-policy"}))
+
+        assert {:error, error} =
+                 Ingress.compact_replay_receipts(Ledger, tenant: "a", older_than: future())
+
+        assert %Ash.Error.Forbidden{} = Ash.Error.to_error_class(error)
+        assert [%{replay_identity: :retained, payload: payload}] = Ash.read!(Ledger, tenant: "a")
+        assert payload == receipt.payload
+      end
+
+      test "legacy identity adoption refuses a protected declaration" do
+        assert {:error, :protected_admission_required} =
+                 Ingress.plan_legacy_identity_adoption(Ledger, :protected, tenant: "a")
+      end
+
       test "protected reservation requires authorization by the ledger policy" do
         body = ~s({"type":"processed"})
 
@@ -363,7 +455,7 @@ defmodule AshHooks.DurableReplayTest.Cases do
         assert {:ok, :created, legacy} =
                  ingest(:protected, body, resource: LegacyLedger, key_slot: :legacy)
 
-        assert legacy.replay_identity == nil
+        assert %{replay_identity: nil} = Ash.get!(Ledger, legacy.id, tenant: "a")
 
         assert {:error, %AshHooks.Errors.Invalid.InvalidSignature{}} =
                  ingest(:protected, body, key_slot: :legacy)
@@ -380,6 +472,10 @@ defmodule AshHooks.DurableReplayTest.Cases do
 
         assert {:error, %AshHooks.Errors.Invalid.UnknownSource{}} =
                  ingest(:protected, body, resource: RetiredLedger)
+
+        if Code.ensure_loaded?(Plug.Test) do
+          assert http_ingest(RetiredLedger, body).status == 404
+        end
 
         assert {:error, :protected_admission_required} =
                  Ingress.ingest_delivery(RetiredLedger, %{name: :protected, tenant: "a"})
@@ -412,32 +508,23 @@ defmodule AshHooks.DurableReplayTest.Cases do
                  ingest(:protected, body, resource: RetiredLedger)
       end
 
-      test "low-level admission and equivalent unsigned inputs cannot select another fence" do
+      test "low-level admission cannot use the protected receipt writer" do
         assert {:error, :protected_admission_required} =
                  Ingress.ingest_delivery(Ledger, %{name: :protected, tenant: "a"})
+      end
 
-        body = ~s({"type":"processed","id":"http"})
-        signature = signature(body, "a", :current)
+      if Code.ensure_loaded?(Plug.Test) do
+        test "unsigned topic headers cannot select another replay fence" do
+          body = ~s({"type":"processed","id":"http"})
 
-        options =
-          AshHooks.Plug.init(
-            resource: Ledger,
-            resolve: {__MODULE__, :route, []}
-          )
+          for topic <- ["first", "forged"] do
+            assert http_ingest(Ledger, body, [{"x-topic", topic}]).status == 200
+          end
 
-        for topic <- ["first", "forged"] do
-          conn =
-            Plug.Test.conn("POST", "/hooks", body)
-            |> Plug.Conn.put_req_header("x-signature", signature)
-            |> Plug.Conn.put_req_header("x-topic", topic)
-            |> AshHooks.Plug.call(options)
-
-          assert conn.status == 200
+          assert_receive {:handled, %{"id" => "http"}}
+          refute_receive {:handled, _}
+          assert [_single] = Ash.read!(Ledger, tenant: "a")
         end
-
-        assert_receive {:handled, %{"id" => "http"}}
-        refute_receive {:handled, _}
-        assert [_single] = Ash.read!(Ledger, tenant: "a")
       end
 
       test "a low-level legacy caller cannot redirect a write into signed admission" do
@@ -514,6 +601,20 @@ defmodule AshHooks.DurableReplayTest.Cases do
 
       def route(_conn), do: {:ok, %{source: :protected, tenant: "a", actor: @service_actor}}
 
+      defp http_ingest(resource, body, headers \\ []) do
+        options = AshHooks.Plug.init(resource: resource, resolve: {__MODULE__, :route, []})
+
+        conn =
+          Plug.Test.conn("POST", "/hooks", body)
+          |> Plug.Conn.put_req_header("x-signature", signature(body, "a", :current))
+
+        headers
+        |> Enum.reduce(conn, fn {name, value}, conn ->
+          Plug.Conn.put_req_header(conn, name, value)
+        end)
+        |> AshHooks.Plug.call(options)
+      end
+
       defp ingest(source, body, opts \\ []) do
         tenant = Keyword.get(opts, :tenant, "a")
         slot = Keyword.get(opts, :key_slot, if(source == :legacy, do: :legacy, else: :current))
@@ -552,6 +653,20 @@ defmodule AshHooks.DurableReplayTest.Cases do
   def current(tenant), do: {:ok, key(tenant, :current)}
   def previous(tenant), do: {:ok, key(tenant, :previous)}
   def legacy(tenant), do: {:ok, key(tenant, :legacy)}
+
+  defp admission_actions(true),
+    do: [:ingest_protected, :record_protected_malformed, :compact_replay_receipt]
+
+  defp admission_actions(false), do: [:ingest]
+
+  def check_storage(query, repo, table) do
+    if Process.get(:check_replay_storage) do
+      send(self(), :checked_replay_storage)
+      repo.query!("SELECT 1 FROM #{table} LIMIT 1")
+    end
+
+    query
+  end
 
   def key(tenant, slot) do
     :crypto.hash(:sha256, :erlang.term_to_binary({tenant, slot}))

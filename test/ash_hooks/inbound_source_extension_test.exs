@@ -291,6 +291,52 @@ defmodule AshHooks.InboundSourceExtensionTest do
     assert Enum.any?(errors, &(Exception.message(&1) =~ "requires secret"))
   end
 
+  test "protected source declarations require compatible providers and enrolled keys" do
+    for {options, expected} <- [
+          {quote(do: provider(AshHooks.CountingProvider)), "must be in the source allowlist"},
+          {quote(do: provider(AshHooks.Test.CustodySchemeProvider)),
+           "must have body-only MAC coverage"},
+          {nil, "requires body-only MAC coverage for every alias"},
+          {quote(do: secret({:app_env, [:durable_replay_fixture_key]})),
+           "use only the source record's enrolled keys"}
+        ] do
+      assert_protected_source_refusal(options, expected)
+    end
+  end
+
+  defp assert_protected_source_refusal(options, expected) do
+    source =
+      compile_source(
+        providers: [
+          checked: AshHooks.Test.OtherSourceProvider,
+          alternate: AshHooks.Test.CustodySchemeProvider
+        ]
+      )
+
+    ledger = Extension.get_opt(source, [:inbound_source], :ledger)
+
+    declaration =
+      quote do
+        inbound :checked do
+          source_record(unquote(source))
+          replay_protection(:durable_identity)
+          source_binding(:authenticated)
+          unquote(options)
+        end
+      end
+
+    ledger_options =
+      quote do
+        record_provider_alias(:on)
+        retain_replay_identities(:on)
+      end
+
+    errors = Dsl.errors(fn -> compile_inbound(declaration, ledger_options, ledger) end)
+    assert [{^ledger, [%Spark.Error.DslError{} = error]}] = errors
+    assert error.path == [:webhooks, :inbound, :checked]
+    assert error.message =~ expected
+  end
+
   def canonical_decimal(value), do: Decimal.to_string(Decimal.normalize(value))
 
   defp compile_inbound(declaration, options \\ nil, module \\ nil) do
@@ -324,6 +370,7 @@ defmodule AshHooks.InboundSourceExtensionTest do
         attributes do
           attribute(:tenant_id, :integer, allow_nil?: false)
           attribute(:account_id, :string, allow_nil?: false)
+          timestamps()
         end
 
         multitenancy do

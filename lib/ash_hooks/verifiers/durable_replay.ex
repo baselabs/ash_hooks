@@ -3,7 +3,7 @@ defmodule AshHooks.Verifiers.DurableReplay do
   use Spark.Dsl.Verifier
 
   alias AshHooks.{Inbound, Provider}
-  alias Spark.Dsl.Verifier
+  alias Spark.Dsl.{Extension, Verifier}
   alias Spark.Error.DslError
 
   def verify(state) do
@@ -76,7 +76,7 @@ defmodule AshHooks.Verifiers.DurableReplay do
       Provider.secret_scope(inbound.provider) != :app_level ->
         "durable replay protection requires declaration or source record keys"
 
-      Verifier.get_option(state, [:multitenancy], :strategy) == :attribute and
+      Verifier.get_option(state, [:multitenancy], :strategy) != nil and
           not tenant_keys?(inbound) ->
         "tenant-scoped durable replay routes require tenant-aware key functions or source records"
 
@@ -98,7 +98,7 @@ defmodule AshHooks.Verifiers.DurableReplay do
 
     providers =
       source
-      |> Spark.Dsl.Extension.get_opt([:inbound_source], :providers, [])
+      |> Extension.get_opt([:inbound_source], :providers, [])
       |> Keyword.values()
 
     cond do
