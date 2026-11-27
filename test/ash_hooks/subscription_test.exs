@@ -47,6 +47,27 @@ defmodule AshHooks.SubscriptionTest do
     end
   end
 
+  defmodule HostFilters do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshHooks.SubscriptionTest.Domain,
+      data_layer: Ash.DataLayer.Simple,
+      extensions: [AshHooks.Subscription]
+
+    attributes do
+      attribute :event_filters, :map, public?: true
+    end
+
+    actions do
+      defaults [:read, :create, :update]
+      default_accept :*
+    end
+
+    subscription do
+      endpoint_resource AshHooks.SubscriptionTest.Endpoint
+    end
+  end
+
   defmodule Domain do
     @moduledoc false
     use Ash.Domain, otp_app: nil, validate_config_inclusion?: false
@@ -54,6 +75,7 @@ defmodule AshHooks.SubscriptionTest do
     resources do
       resource(AshHooks.SubscriptionTest.Endpoint)
       resource(AshHooks.SubscriptionTest.Subscription)
+      resource(AshHooks.SubscriptionTest.HostFilters)
     end
   end
 
@@ -121,13 +143,31 @@ defmodule AshHooks.SubscriptionTest do
       assert sub.event_types == ["*"]
     end
 
-    test "leaving filter_attributes empty adds no filter field or validation" do
+    test "leaving filter_attributes empty adds no filter field or change" do
       refute ResourceInfo.attribute(Subscription, :event_filters)
-      assert ResourceInfo.validations(Subscription, :create) == []
-      assert ResourceInfo.validations(Subscription, :update) == []
+      assert ResourceInfo.changes(Subscription, :create) == []
+      assert ResourceInfo.changes(Subscription, :update) == []
 
       assert %{event_types: ["*"]} =
                Ash.create!(Subscription, %{endpoint_id: endpoint!().id}, authorize?: false)
+    end
+
+    test "leaving filter_attributes empty keeps a host map free of filter checks" do
+      assert %{type: Ash.Type.Map} = ResourceInfo.attribute(HostFilters, :event_filters)
+      assert ResourceInfo.changes(HostFilters, :create) == []
+      assert ResourceInfo.changes(HostFilters, :update) == []
+
+      sub =
+        Ash.create!(
+          HostFilters,
+          %{endpoint_id: endpoint!().id, event_filters: %{"host_key" => "value"}},
+          authorize?: false
+        )
+
+      assert sub.event_filters == %{"host_key" => "value"}
+
+      assert %{event_filters: %{"host_key" => []}} =
+               Ash.update!(sub, %{event_filters: %{"host_key" => []}}, authorize?: false)
     end
 
     test "event_types and endpoint_id are required; signing_mode stays nil" do

@@ -134,10 +134,12 @@ for the resolver from get started. The URL must be safe for the chosen transport
 {:ok, []} = AshHooks.dispatch(MyApp.Order, :order_paid, excluded)
 ```
 
-All filter keys must be declared and match. A list value matches any member;
-unknown keys fail closed. Metadata keys are strings. Metadata is unsigned context, not part of the wire
-payload. The event log retains the original payload bytes even when a
-filter excludes every endpoint. Delivery rows retain the selected variant.
+All filter keys must name a declared attribute and match. A nonempty list
+matches any member. The write check refuses undeclared keys and empty or
+improper lists. Metadata keys are strings. Metadata is unsigned context, not
+part of the wire payload. The event log retains the original payload bytes
+even when a filter excludes every endpoint. Delivery rows retain the selected
+variant.
 
 No pin, or a pin to version 2, uses the original bytes. An unsupported pin fails
 that endpoint with `:unknown_pinned_version` before a delivery is written. A

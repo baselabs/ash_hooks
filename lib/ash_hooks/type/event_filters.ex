@@ -22,7 +22,7 @@ defmodule AshHooks.Type.EventFilters do
     declared = MapSet.new(constraints[:keys] || [], &to_string/1)
 
     Enum.reduce_while(filters, {:ok, filters}, fn {key, value}, valid ->
-      case filter_error(key, value, filters, declared) do
+      case filter_error(key, value, declared) do
         nil -> {:cont, valid}
         reason -> {:halt, {:error, "filter key #{inspect(key)} #{reason}"}}
       end
@@ -42,48 +42,22 @@ defmodule AshHooks.Type.EventFilters do
     if Ash.Expr.expr?(value), do: {:ok, value}, else: apply_constraints(value, constraints)
   end
 
-  defp filter_error(key, value, filters, declared) do
-    cond do
-      not (is_atom(key) or is_binary(key)) ->
-        "must be a string or atom"
-
-      to_string(key) not in declared ->
-        "is not declared in filter_attributes"
-
-      is_atom(key) and Map.has_key?(filters, to_string(key)) ->
-        "has a duplicate string key"
-
-      value == [] ->
-        "must have a nonempty list for an any-of filter"
-
-      true ->
-        text_error(to_string(key)) || json_error(value)
+  defp filter_error(key, value, declared) do
+    if key_name(key) in declared do
+      list_error(value)
+    else
+      "is not declared in filter_attributes"
     end
   end
 
-  defp json_error(value) when is_binary(value), do: text_error(value)
-  defp json_error(value) when is_number(value) or is_boolean(value) or is_nil(value), do: nil
-  defp json_error([]), do: nil
-  defp json_error([head | tail]), do: json_error(head) || list_error(tail)
-
-  defp json_error(value) when is_map(value) and not is_struct(value) do
-    Enum.find_value(value, fn
-      {key, item} when is_binary(key) -> text_error(key) || json_error(item)
-      {_key, _item} -> "must have string keys in nested maps"
-    end)
+  defp key_name(key) do
+    to_string(key)
+  rescue
+    _ in [Protocol.UndefinedError, UnicodeConversionError, ArgumentError] -> nil
   end
 
-  defp json_error(_value), do: "must have a JSON-compatible value"
-
-  defp list_error([]), do: nil
-  defp list_error([head | tail]), do: json_error(head) || list_error(tail)
-  defp list_error(_tail), do: "must have a proper list"
-
-  defp text_error(value) do
-    cond do
-      not String.valid?(value) -> "must contain valid UTF-8"
-      String.contains?(value, <<0>>) -> "must not contain NUL"
-      true -> nil
-    end
-  end
+  defp list_error([]), do: "must have a nonempty list for an any-of filter"
+  defp list_error([_ | _] = list) when length(list) > 0, do: nil
+  defp list_error([_ | _]), do: "must have a proper list for an any-of filter"
+  defp list_error(_value), do: nil
 end

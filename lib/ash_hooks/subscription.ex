@@ -57,9 +57,9 @@ defmodule AshHooks.Subscription do
   speeds type selection. Malformed filter containers never match.
 
   When `filter_attributes` is nonempty, the injected `event_filters` type checks
-  literal writes. For host-declared map attributes, the check runs in the
-  before-action hook on non-atomic actions. Atomic expressions are an unchecked
-  Ash escape hatch. Use `validate_filters/2` to check stored or imported values
+  literal writes. Host-declared map attributes are checked on ordinary writes
+  and when an atomic action provides a literal filter. Atomic expressions
+  bypass the check. Use `validate_filters/2` to check stored or imported values
   before writing them.
 
   The package injects NO read action and NO read policies: read surfaces
@@ -141,11 +141,11 @@ defmodule AshHooks.Subscription do
   `filter_attributes`. Returns `:ok` or an `Ash.Error.Changes.InvalidAttribute`
   error on `:event_filters`.
 
-  Pass `nil` to match all metadata, or a plain map or JSON object with distinct
-  declared names as atom or string keys. An empty string casts to `nil`.
-  Values can be null, booleans, numbers, UTF-8 strings without NUL, or nested
-  maps and lists of those values. Nested map keys must be UTF-8 strings
-  without NUL. A list at a declared key must be nonempty and matches any member.
+  Pass `nil`, a plain map, or a JSON object string. An empty string casts to
+  `nil`, which matches all metadata. Each key must name a declared attribute
+  after conversion with `to_string/1`. A list value must be a nonempty proper
+  list and matches any member. The resource's data layer determines which
+  values it can store.
   """
   @spec validate_filters(module(), term()) :: :ok | {:error, InvalidAttribute.t()}
   def validate_filters(resource, filters) do
@@ -204,9 +204,9 @@ defmodule AshHooks.Subscription do
         injects the `event_filters` column (nullable, stored as a map): a
         subscription whose filters all match the dispatching event's
         metadata receives the delivery. Filters are evaluated before any delivery
-        row is created. Literal writes accept `nil` or a plain map with declared
-        keys and JSON-compatible values. Lists at declared keys must be nonempty
-        and match any member. See `validate_filters/2` for the accepted values.
+        row is created. Keys must name declared attributes after conversion with
+        `to_string/1`. A list value must be a nonempty proper list and matches
+        any member. See `validate_filters/2` for the write contract.
         Requires a migration for the column.
         """
       ]
