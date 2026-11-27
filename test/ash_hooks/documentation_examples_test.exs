@@ -1354,8 +1354,12 @@ defmodule AshHooks.DocumentationGateTest do
         "INSERT INTO account_tenants VALUES ('account-a', 'org-a'), ('account-b', 'org-b')"
       )
 
-      blocks = Docs.blocks("documentation/tutorials/tenancy-adoption-checklist.md")
-      blocks = Enum.map(blocks, mutate)
+      blocks =
+        "documentation/tutorials/tenancy-adoption-checklist.md"
+        |> Docs.blocks()
+        |> Enum.filter(&(&1.language == "sql" and is_nil(&1.reason)))
+        |> Enum.map(mutate)
+
       for block <- blocks, do: Docs.run!(block, repo)
       [result] = blocks |> List.last() |> Docs.run!(repo)
 

@@ -206,22 +206,7 @@ defmodule AshHooks.Outbox do
     ref = make_ref()
     binding = RepoBinding.capture_child(dispatch_resources(row.__struct__), host_binding)
 
-    {pid, monitor} =
-      spawn_monitor(fn ->
-        runner = self()
-        spawn(fn -> guard(owner, runner, ref) end)
-
-        receive do
-          {^ref, :guarded} -> :ok
-        end
-
-        result =
-          with :ok <- RepoBinding.install_child(binding) do
-            safely(fn -> dispatch(row, tenant) end)
-          end
-
-        send(owner, {ref, result})
-      end)
+    {pid, monitor} = spawn_monitor(fn -> run_child(owner, ref, binding, row, tenant) end)
 
     timeout = option(row.__struct__, :fanout_timeout)
     # The child installs its guardian before doing storage work, so owner death
@@ -246,6 +231,22 @@ defmodule AshHooks.Outbox do
       end
 
     complete(row, tenant, result)
+  end
+
+  defp run_child(owner, ref, binding, row, tenant) do
+    runner = self()
+    spawn(fn -> guard(owner, runner, ref) end)
+
+    receive do
+      {^ref, :guarded} -> :ok
+    end
+
+    result =
+      with :ok <- RepoBinding.install_child(binding) do
+        safely(fn -> dispatch(row, tenant) end)
+      end
+
+    send(owner, {ref, result})
   end
 
   defp guard(owner, runner, ref) do

@@ -745,20 +745,22 @@ if Code.ensure_loaded?(Oban) do
     end
 
     defp column(attribute) do
-      type =
-        case {attribute.name, Ash.Type.storage_type(attribute.type, attribute.constraints)} do
-          {:metadata, :map} -> "JSON"
-          {_, :uuid} -> "UUID"
-          {_, :binary} -> "BYTEA"
-          {_, :map} -> "JSONB"
-          {_, {:array, _}} -> "TEXT[]"
-          {_, :boolean} -> "BOOLEAN"
-          {_, type} when type in [:integer, :bigint] -> "BIGINT"
-          {_, type} when type in [:utc_datetime_usec, :utc_datetime] -> "TIMESTAMP(6)"
-          _ -> "TEXT"
-        end
-
+      storage = Ash.Type.storage_type(attribute.type, attribute.constraints)
+      type = column_type(attribute.name, storage)
       "\"#{attribute.name}\" #{type}" <> if(attribute.primary_key?, do: " PRIMARY KEY", else: "")
     end
+
+    defp column_type(:metadata, :map), do: "JSON"
+    defp column_type(_name, :uuid), do: "UUID"
+    defp column_type(_name, :binary), do: "BYTEA"
+    defp column_type(_name, :map), do: "JSONB"
+    defp column_type(_name, {:array, _}), do: "TEXT[]"
+    defp column_type(_name, :boolean), do: "BOOLEAN"
+    defp column_type(_name, type) when type in [:integer, :bigint], do: "BIGINT"
+
+    defp column_type(_name, type) when type in [:utc_datetime_usec, :utc_datetime],
+      do: "TIMESTAMP(6)"
+
+    defp column_type(_name, _type), do: "TEXT"
   end
 end

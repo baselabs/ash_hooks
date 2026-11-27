@@ -240,9 +240,15 @@ defmodule MyApp.WebhookWorker do
 end
 
 children = [
-  {Oban, name: MyApp.LiveOban, repo: MyApp.Repo, queues: [webhooks: 10],
+  {Oban,
+   name: MyApp.LiveOban,
+   repo: MyApp.Repo,
+   queues: [webhooks: 10],
    get_dynamic_repo: fn -> MyApp.LiveRepo end},
-  {Oban, name: MyApp.TestOban, repo: MyApp.Repo, queues: [webhooks: 10],
+  {Oban,
+   name: MyApp.TestOban,
+   repo: MyApp.Repo,
+   queues: [webhooks: 10],
    get_dynamic_repo: fn -> MyApp.TestRepo end}
 ]
 ```

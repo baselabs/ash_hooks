@@ -871,33 +871,37 @@ defmodule AshHooks.Worker do
       @spec enqueue_fanout(Ash.Resource.Record.t(), term()) :: :ok | {:error, term()}
       def enqueue_fanout(publication, tenant) do
         if publication.__struct__ == @ash_hooks_outbox do
-          with {:ok, oban, binding_args} <-
-                 AshHooks.Worker.enqueue_binding(@ash_hooks_binding, @ash_hooks_oban) do
-            args =
-              %{
-                "kind" => "fanout",
-                "outbox_resource" => Atom.to_string(publication.__struct__),
-                "event_uuid" => publication.event_uuid,
-                "tenant" => tenant,
-                "dispatch_source" => publication.dispatch_source,
-                "dispatch_route" => publication.dispatch_route
-              }
-              |> Map.reject(fn {_key, value} -> is_nil(value) end)
-              |> Map.merge(binding_args)
-
-            changeset =
-              __MODULE__.new(args,
-                unique: [
-                  fields: [:args],
-                  period: :infinity,
-                  states: [:available, :scheduled, :executing, :retryable]
-                ]
-              )
-
-            insert_durably(oban, changeset, args, 20)
-          end
+          enqueue_publication(publication, tenant)
         else
           {:error, :unknown_source}
+        end
+      end
+
+      defp enqueue_publication(publication, tenant) do
+        with {:ok, oban, binding_args} <-
+               AshHooks.Worker.enqueue_binding(@ash_hooks_binding, @ash_hooks_oban) do
+          args =
+            %{
+              "kind" => "fanout",
+              "outbox_resource" => Atom.to_string(publication.__struct__),
+              "event_uuid" => publication.event_uuid,
+              "tenant" => tenant,
+              "dispatch_source" => publication.dispatch_source,
+              "dispatch_route" => publication.dispatch_route
+            }
+            |> Map.reject(fn {_key, value} -> is_nil(value) end)
+            |> Map.merge(binding_args)
+
+          changeset =
+            __MODULE__.new(args,
+              unique: [
+                fields: [:args],
+                period: :infinity,
+                states: [:available, :scheduled, :executing, :retryable]
+              ]
+            )
+
+          insert_durably(oban, changeset, args, 20)
         end
       end
 
