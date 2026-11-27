@@ -21,8 +21,12 @@ The development default and every CI lane are pinned only in `.tool-versions` fi
   exact commit passes `qualified`.
 - Agents never publish, tag a version, create a release, dispatch a workflow, push an image or
   handle a registry or CI key. The version author ends at qualified `main` and the release
-  handoff to the release maintainer. The release maintainer dispatches from `main` with the full qualified commit SHA as
-  `release_commit` and tags after read-back. See [docs/PUBLISHING.md](docs/PUBLISHING.md).
+  handoff to the release maintainer, including the exact CI run on `kci/<full SHA>`.
+  CI builds the Hex archives with the shared action. The release maintainer dispatches from
+  `main` with `release_commit` and can select that run with `qualification_run`. Upload uses
+  workload identity. If Hex stages the release, the owner approves it on hex.pm and the
+  release maintainer dispatches again with the original run before tagging after read-back.
+  See [docs/PUBLISHING.md](docs/PUBLISHING.md).
 - A change to `.github/`, a release script or anything that touches a secret is reviewed by the
   infrastructure repository's release maintainer before it lands.
 - A secret reaches a step only through its environment: never on a command line, in a log or in

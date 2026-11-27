@@ -134,7 +134,8 @@ defmodule AshHooks.MixProject do
   defp docs do
     [
       main: "readme",
-      source_ref: "v#{@version}",
+      # 3.7.0 was published under the legacy tag before package-scoped tags.
+      source_ref: if(@version == "3.7.0", do: "v3.7.0", else: "baselabs_ash_hooks-v#{@version}"),
       source_url: @source_url,
       # No EPUB: ExDoc stamps the build time into it. HexDocs offers HTML and
       # Markdown.

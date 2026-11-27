@@ -163,10 +163,14 @@ feature requests. Report vulnerabilities privately as described in
 
 ## Releases
 
-The version author lands the qualified release commit on `main` and hands off to the release maintainer.
-After owner approval, the release maintainer dispatches from `main` with the full commit SHA as
-`release_commit` and tags after read-back. The authoritative procedure is the
-[publishing runbook](https://github.com/baselabs/ash_hooks/blob/main/docs/PUBLISHING.md).
+CI builds the Hex package and docs archives with the shared Hex action. Keep
+`.github/hex-packages.json` in sync with the shipped files and requirements.
+The version author lands the qualified commit on `main` and hands off its SHA
+and CI run to the release maintainer. The release maintainer dispatches the
+keyless upload with `release_commit` and the selected `qualification_run`.
+If Hex stages the release, the owner approves it on hex.pm and the release
+maintainer dispatches again with the original run. Tagging follows read-back.
+See the [publishing runbook](https://github.com/baselabs/ash_hooks/blob/main/docs/PUBLISHING.md).
 
 The [architecture decisions](https://github.com/baselabs/ash_hooks/tree/main/docs/adr)
 record the package contracts and their consequences for hosts.

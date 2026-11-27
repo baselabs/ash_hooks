@@ -247,26 +247,33 @@ jobs:
       - run: mix deps.get --check-locked
       - run: mix dialyzer
 
-  # Verify the package archive and build HexDocs.
+  # Build the exact package and HexDocs archives used for publication.
   package:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; the slowest cold green was 107s on run 44211163274
+    timeout-minutes: 90 # no green run yet with shared qualification
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the shared Hex version
+        id: hex-version
+        run: |
+          hex_version="$(curl --fail --silent --show-error --max-time 30 'https://raw.githubusercontent.com/baselabs/.github/3bfbb84692a65b4d2c03dc3b7932353026fe6943/.github/actions/hex-publish/hex-version')"
+          [[ "$hex_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'version=%s\n' "$hex_version" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/beam
         with:
           elixir: ${{ needs.toolchain.outputs.elixir }}
           otp: ${{ needs.toolchain.outputs.otp }}
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          hex: ${{ steps.hex-version.outputs.version }}
+      - uses: baselabs/.github/.github/actions/hex-publish@3bfbb84692a65b4d2c03dc3b7932353026fe6943
         with:
-          path: |
-            deps
-            _build
-          key: dev-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
-      - run: mix deps.get --check-locked
+          operation: qualify
+          package: ash_hooks
+          package-directory: .
       - name: Regenerate formatter and DSL references
         run: |
           mix format
@@ -286,37 +293,12 @@ jobs:
             documentation/dsls
           retention-days: 7
       - run: mix spark.check
-      - name: Tarball carries every publish surface
-        run: ./scripts/check-package.sh
-      - name: Verify Hex registry read-back against signed releases
-        run: python3 -I test/check_hex_registry_test.py
-      - name: Test release metadata validation
-        run: python3 -I test/check_release_metadata_test.py
-      - run: mix docs --warnings-as-errors
-      - name: Read the package version
-        id: version
-        run: |
-          version=$(elixir scripts/read-mix-version.exs mix.exs)
-          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-      - name: Name the package, version and commit in the docs
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: python3 -I scripts/stamp-docs-release.py doc --version "$VERSION" --commit "$GITHUB_SHA"
-      - run: python3 scripts/check-document-dashes.py --docs doc
-      - name: Build and inspect the docs archive
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          (cd "$RUNNER_TEMP" && mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/build-docs-archive.exs" \
-            "$GITHUB_WORKSPACE/doc" "$RUNNER_TEMP/ash_hooks-docs.tar.gz")
-          python3 -I scripts/check-docs-archive.py --version "$VERSION" --commit "$GITHUB_SHA" \
-            "$RUNNER_TEMP/ash_hooks-docs.tar.gz" doc
 
   # The get-started Livebook, verified headless on one leg: the elixir
   # cells are extracted in order and run outside any mix project
   # (Mix.install requires it), the same evaluation Livebook performs.
   livebook:
-    needs: toolchain
+    needs: [toolchain, package]
     runs-on: ubuntu-24.04
     timeout-minutes: 9 # twice the slowest green, 259s on run 43689655434
     services:
@@ -337,13 +319,24 @@ jobs:
           elixir: ${{ needs.toolchain.outputs.elixir }}
           otp: ${{ needs.toolchain.outputs.otp }}
       - run: mix deps.get --check-locked
-      - run: ./scripts/check-package.sh
       - name: Wait for the real receiver
         run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:52871/api/version
-      - name: Run the livebook against the candidate archive (version from mix.exs)
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: hex-hexpm-ash_hooks
+          path: ${{ runner.temp }}/qualified-hex
+      - name: Check the qualified archives and run the candidate Livebook
         run: |
-          version=$(elixir scripts/read-mix-version.exs mix.exs)
-          archive="_build/release/ash_hooks-$version.tar"
+          qualified="$RUNNER_TEMP/qualified-hex"
+          trap 'rm -rf -- "$qualified"' EXIT
+          version="$(elixir scripts/read-mix-version.exs mix.exs)"
+          archive="$qualified/ash_hooks-$version.tar"
+          mv "$qualified/package.tar" "$archive"
+          ./scripts/check-package.sh --inspect "$archive"
+          mkdir "$qualified/docs"
+          tar -xzf "$qualified/docs.tar.gz" -C "$qualified/docs"
+          test -s "$qualified/docs/readme.html"
+          python3 -I scripts/check-document-dashes.py --docs "$qualified/docs"
           ./scripts/run-livebook.sh documentation/livebooks/get-started.livemd --archive "$archive"
 
   # Both dependency audits: hex.audit (retirements and the advisories Hex

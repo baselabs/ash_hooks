@@ -66,7 +66,9 @@ with tarfile.open(fileobj=io.BytesIO(content), mode='r:gz') as inner:
     # operations instructions remain current. Other refs must be release tags.
     # Compare paths after dropping queries/fragments and decoding them.
     repository = re.compile(r'https://github\.com/baselabs/ash_hooks/(?:blob|tree)/([^\s)<>"]+)')
-    release_tag = re.compile(r'v\d+\.\d+\.\d+')
+    release_tag = re.compile(r'(?:baselabs_ash_hooks-)?v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?')
+    version = sys.argv[2]
+    source_ref = 'v3.7.0' if version == '3.7.0' else f'baselabs_ash_hooks-v{version}'
     for member in inner.getmembers():
         if member.isfile() and member.name.endswith(('.md', '.livemd', '.ex', '.exs')):
             document = inner.extractfile(member).read().decode()
@@ -75,7 +77,7 @@ with tarfile.open(fileobj=io.BytesIO(content), mode='r:gz') as inner:
                 path = posixpath.normpath(path) if path else ''
                 shipped = bool(path) and (path in names or any(n.startswith(path + '/') for n in names))
                 assert release_tag.fullmatch(ref) or (ref == 'main' and not shipped), f'repository link names unsupported ref {ref}: {member.name} -> {link}'
-                assert not shipped or ref == 'v' + sys.argv[2], f'repository link to a shipped file names {ref}, not v{sys.argv[2]}: {member.name} -> {path}'
+                assert not shipped or ref == source_ref, f'repository link to a shipped file names {ref}, not {source_ref}: {member.name} -> {path}'
     for member in inner.getmembers():
         path = pathlib.PurePosixPath(member.name)
         assert not path.is_absolute() and '..' not in path.parts, 'unsafe archive path'
