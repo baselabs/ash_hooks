@@ -37,8 +37,10 @@ per tenant; the package does not discover tenants or establish a global binding.
 enclosing delivery-resource transaction with `:inside_transaction` before
 spawning or database access. Their monitored delivery and finalization children
 carry the tenant as explicit data. Only tracer context is inherited through
-`Ash.ProcessHelpers.get_context_for_transfer` and `transfer_context`; neither
-ambient tenant state nor the caller's database transaction is transferred.
+`Ash.ProcessHelpers.get_context_for_transfer` and `transfer_context`.
+`AshHooks.RepoBinding` captures the selected Ecto repository instances and
+installs them in the delivery driver, finalizer, and outbox runner. Each child
+opens its own database phases with the explicit tenant.
 The attempt deadline and finalization allowance remain owned by the driver.
 
 [Generated worker jobs](../../lib/ash_hooks/worker.ex) serialize the stored
@@ -50,6 +52,11 @@ inverse. Queue insertion occurs in a tenant phase after delivery persistence;
 the queue instance must share the ledger repository for that binding. When
 dispatch invokes the driver inline inside a host transaction, the driver
 refuses the call and dispatch records the row as `:enqueue_failed` for recovery.
+
+With `binding: MyApp.HooksBinding`, the worker records the physical database
+binding name in `args["ash_hooks_binding"]`, inserts into the Oban instance
+selected by the host, and reinstalls the dynamic repositories at execution.
+Jobs without a binding name use the process's existing repository selection.
 
 A row-security setting belongs to one connection and transaction. A child process or a
 separately routed read does not inherit that transaction's binding; a monitored delivery

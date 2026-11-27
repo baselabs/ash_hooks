@@ -19,6 +19,14 @@ defmodule AshHooks.Worker do
   Consumers pass `enqueue: {MyApp.WebhookDeliveryWorker, :enqueue}` to
   `AshHooks.dispatch/4`; the generated `enqueue/2` is that seam.
 
+  Hosts that select a physical database with Ecto dynamic repositories can
+  configure `binding: MyApp.HooksBinding`. Each new job carries the stable
+  binding name in `args["ash_hooks_binding"]`. The worker installs that
+  binding before reading or writing any of the job's resources and cancels
+  unrecognized bindings with `{:cancel, :unknown_binding}`. Jobs without the
+  key use the calling process's repository selection. See the
+  [dynamic repository guide](tenancy-adoption-checklist.md#physical-database-bindings).
+
   Multitenant jobs store the row's tenant in `args["tenant"]`. The tenant must
   survive Oban's JSON encoding unchanged: strings (UUIDs and slugs) and integers
   do; an atom arrives as a string. Pair a custom `parse_attribute` with
@@ -125,6 +133,11 @@ defmodule AshHooks.Worker do
       `AshHooks.fanout/3`, separately from delivery jobs. The host still
       schedules per-tenant sweeps; this job is a latency hint.
     * `:oban`: the Oban instance name (default the unnamed instance).
+    * `:binding`: optional `AshHooks.Binding` implementation. It chooses the
+      Oban instance for each enqueue and restores the persisted binding when
+      a job executes. With this option, the binding's `oban/1` chooses the
+      instance in place of `:oban`. An invalid name from `current/0` returns
+      `{:error, :invalid_binding_name}` on enqueue.
     * `:queue` (default `:ash_hooks`), `:timeout` (35,000 ms), and
       `:max_attempts` (20): Oban Worker options. The job timeout must be
       greater than `:attempt_timeout + :finalization_allowance`, and Oban's
@@ -199,8 +212,28 @@ defmodule AshHooks.Worker do
 
   require Ash.Query
 
+  alias AshHooks.RepoBinding
+
+  @binding_arg :ash_hooks_binding
+  @binding_arg_key Atom.to_string(@binding_arg)
+
   defp maybe_expand(nil, _expand), do: nil
   defp maybe_expand(value, expand), do: expand.(value)
+
+  defp validate_binding!(nil), do: nil
+
+  defp validate_binding!(module) do
+    if is_atom(module) and Code.ensure_compiled(module) == {:module, module} and
+         Enum.all?(AshHooks.Binding.behaviour_info(:callbacks), fn {name, arity} ->
+           function_exported?(module, name, arity)
+         end) do
+      module
+    else
+      raise ArgumentError,
+            "AshHooks.Worker :binding must implement AshHooks.Binding " <>
+              "(current/0, bind/1, and oban/1), got #{inspect(module)}"
+    end
+  end
 
   defp validate_redactor(m, f) when is_atom(m) and is_atom(f), do: {m, f}
 
@@ -524,6 +557,63 @@ defmodule AshHooks.Worker do
     end
   end
 
+  @doc false
+  def enqueue_binding(nil, oban), do: {:ok, oban, %{}}
+
+  def enqueue_binding(binding, _oban) do
+    name = binding.current()
+
+    if valid_binding_name?(name),
+      do: {:ok, binding.oban(name), %{@binding_arg_key => name}},
+      else: {:error, :invalid_binding_name}
+  end
+
+  defp valid_binding_name?(name) do
+    is_binary(name) and name != "" and String.valid?(name) and not String.contains?(name, <<0>>)
+  end
+
+  @doc false
+  def perform_job(binding, config, outbox, args) do
+    case Map.fetch(args, @binding_arg_key) do
+      :error -> run_job(config, outbox, args)
+      {:ok, name} -> run_bound_job(binding, name, config, outbox, args)
+    end
+  end
+
+  defp run_bound_job(binding, name, config, outbox, args) do
+    if binding && valid_binding_name?(name) do
+      resources = [config[:deliveries], config[:endpoints], config[:attempts]]
+
+      resources =
+        if args["kind"] == "fanout" and outbox do
+          resources ++ AshHooks.Outbox.dispatch_resources(outbox)
+        else
+          resources
+        end
+
+      repositories = RepoBinding.capture(resources)
+
+      try do
+        case binding.bind(name) do
+          :ok -> run_job(config, outbox, args)
+          _refused -> {:cancel, :unknown_binding}
+        end
+      after
+        RepoBinding.apply(repositories)
+      end
+    else
+      {:cancel, :unknown_binding}
+    end
+  end
+
+  defp run_job(_config, outbox, %{"kind" => "fanout"} = args), do: perform_fanout(outbox, args)
+
+  defp run_job(config, _outbox, args) do
+    with {:ok, config} <- resolve_config(config, args) do
+      AshHooks.Delivery.run(args, config)
+    end
+  end
+
   defmacro __using__(opts) do
     # resolved at macro time: `use Oban.Worker` needs literal options,
     # and the config is baked into the host module as a compile-time term.
@@ -736,6 +826,14 @@ defmodule AshHooks.Worker do
 
     oban_instance = maybe_expand(Keyword.get(opts, :oban, Oban), expand)
     outbox = maybe_expand(Keyword.get(opts, :outbox), expand)
+    binding = opts |> Keyword.get(:binding) |> maybe_expand(expand) |> validate_binding!()
+
+    delivery_unique_keys =
+      ~w(delivery_pk delivery_resource endpoint_resource endpoint_id event_uuid dispatch_source
+         dispatch_route tenant)a
+
+    delivery_unique_keys =
+      if binding, do: delivery_unique_keys ++ [@binding_arg], else: delivery_unique_keys
 
     quote do
       unless Code.ensure_loaded?(Oban) do
@@ -754,45 +852,47 @@ defmodule AshHooks.Worker do
       @ash_hooks_delivery_config unquote(delivery_config)
       @ash_hooks_oban unquote(oban_instance)
       @ash_hooks_outbox unquote(outbox)
+      @ash_hooks_binding unquote(binding)
 
       @impl Oban.Worker
-      def perform(%Oban.Job{args: %{"kind" => "fanout"} = args}) do
-        AshHooks.Worker.perform_fanout(@ash_hooks_outbox, args)
-      end
-
       def perform(%Oban.Job{args: args}) do
-        case AshHooks.Worker.resolve_config(@ash_hooks_delivery_config, args) do
-          {:ok, config} -> AshHooks.Delivery.run(args, config)
-          {:error, reason} -> {:error, reason}
-        end
+        AshHooks.Worker.perform_job(
+          @ash_hooks_binding,
+          @ash_hooks_delivery_config,
+          @ash_hooks_outbox,
+          args
+        )
       end
 
       @doc "Schedules one committed publication's fanout using the configured Oban instance."
       @spec enqueue_fanout(Ash.Resource.Record.t(), term()) :: :ok | {:error, term()}
       def enqueue_fanout(publication, tenant) do
         if publication.__struct__ == @ash_hooks_outbox do
-          args =
-            %{
-              "kind" => "fanout",
-              "outbox_resource" => Atom.to_string(publication.__struct__),
-              "event_uuid" => publication.event_uuid,
-              "tenant" => tenant,
-              "dispatch_source" => publication.dispatch_source,
-              "dispatch_route" => publication.dispatch_route
-            }
-            |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-            |> Map.new()
+          with {:ok, oban, binding_args} <-
+                 AshHooks.Worker.enqueue_binding(@ash_hooks_binding, @ash_hooks_oban) do
+            args =
+              %{
+                "kind" => "fanout",
+                "outbox_resource" => Atom.to_string(publication.__struct__),
+                "event_uuid" => publication.event_uuid,
+                "tenant" => tenant,
+                "dispatch_source" => publication.dispatch_source,
+                "dispatch_route" => publication.dispatch_route
+              }
+              |> Map.reject(fn {_key, value} -> is_nil(value) end)
+              |> Map.merge(binding_args)
 
-          changeset =
-            __MODULE__.new(args,
-              unique: [
-                fields: [:args],
-                period: :infinity,
-                states: [:available, :scheduled, :executing, :retryable]
-              ]
-            )
+            changeset =
+              __MODULE__.new(args,
+                unique: [
+                  fields: [:args],
+                  period: :infinity,
+                  states: [:available, :scheduled, :executing, :retryable]
+                ]
+              )
 
-          insert_durably(changeset, args, 20)
+            insert_durably(oban, changeset, args, 20)
+          end
         else
           {:error, :unknown_source}
         end
@@ -808,7 +908,9 @@ defmodule AshHooks.Worker do
         expected_route = unquote(dispatch_route)
         tenant = AshHooks.Tenancy.from_row(delivery)
 
-        with {:ok, delivery} <- AshHooks.Worker.bind_route(delivery, expected_route, tenant) do
+        with {:ok, oban, binding_args} <-
+               AshHooks.Worker.enqueue_binding(@ash_hooks_binding, @ash_hooks_oban),
+             {:ok, delivery} <- AshHooks.Worker.bind_route(delivery, expected_route, tenant) do
           args =
             %{
               delivery_pk: AshHooks.PrimaryKey.encode(delivery),
@@ -822,41 +924,33 @@ defmodule AshHooks.Worker do
             }
             |> Enum.reject(fn {_key, value} -> is_nil(value) end)
             |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+            |> Map.merge(binding_args)
 
           changeset =
             __MODULE__.new(args,
               unique: [
                 fields: [:args],
-                keys: [
-                  :delivery_pk,
-                  :delivery_resource,
-                  :endpoint_resource,
-                  :endpoint_id,
-                  :event_uuid,
-                  :dispatch_source,
-                  :dispatch_route,
-                  :tenant
-                ],
+                keys: unquote(delivery_unique_keys),
                 period: :infinity,
                 states: [:available, :scheduled, :executing, :retryable]
               ]
             )
 
-          insert_durably(changeset, args, 20)
+          insert_durably(oban, changeset, args, 20)
         end
       end
 
-      defp insert_durably(changeset, expected, retries_left) do
+      defp insert_durably(oban, changeset, expected, retries_left) do
         result =
           AshHooks.Phase.run(@ash_hooks_delivery_config[:deliveries], expected["tenant"], fn ->
-            Oban.insert(@ash_hooks_oban, changeset)
+            Oban.insert(oban, changeset)
           end)
 
         case result do
           {:ok, %Oban.Job{} = job} ->
             if job.conflict? == true and not job_persisted?(job) and retries_left > 0 do
               Process.sleep(5)
-              insert_durably(changeset, expected, retries_left - 1)
+              insert_durably(oban, changeset, expected, retries_left - 1)
             else
               durable_admission(job, expected)
             end

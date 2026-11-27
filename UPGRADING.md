@@ -1,5 +1,23 @@
 # Upgrading
 
+## Unreleased
+
+### Dynamic repositories and Oban
+
+If your host selects physical databases with Ecto dynamic repositories, add
+`binding: MyApp.HooksBinding` to the generated worker and configure its
+`oban/1` callback to return the matching Oban instance. New jobs carry the
+binding name in `args["ash_hooks_binding"]`. Earlier jobs still use the
+repository selection of the process executing them. Drain those jobs in their
+existing context before moving queues to different physical databases. Deploy
+the binding implementation to the processes that run jobs before enabling it
+in the processes that enqueue them.
+
+Select the database in the calling process before publishing, sending returned
+notifications, or running a sweep. Keep binding names valid while jobs
+reference them. This change requires no schema migration. See the
+[physical database guide](documentation/tutorials/tenancy-adoption-checklist.md#physical-database-bindings).
+
 <a id="upgrade-3-7"></a>
 
 ## 3.6.0 → 3.7.0

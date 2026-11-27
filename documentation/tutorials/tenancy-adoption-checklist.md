@@ -184,6 +184,80 @@ for queues and maintenance, sharing the prefix and PostgreSQL notifier. The
 supervision examples;
 SQLite tenant filtering does not exercise PostgreSQL row security.
 
+## Physical database bindings
+
+A physical database binding selects Ecto repository instances. The explicit
+`:tenant` option still selects rows inside that database for resources that
+declare attribute multitenancy. Install the physical binding in the calling
+process before using the outbound entry points.
+
+For example, start two instances of the same repo under `MyApp.LiveRepo` and
+`MyApp.TestRepo`, with each instance configured for its own database. Migrate
+the webhook resources and Oban tables in each database. Start one Oban
+instance per database with the shared repo module and its own
+`:get_dynamic_repo` callback. The callback also selects the database when
+Oban polls or stages jobs in a process with no request context.
+
+<!-- not-run: This example requires two supervised repository and Oban instances in a host application. -->
+```elixir
+defmodule MyApp.HooksBinding do
+  @behaviour AshHooks.Binding
+
+  @impl true
+  def current do
+    case MyApp.Repo.get_dynamic_repo() do
+      MyApp.LiveRepo -> "live"
+      MyApp.TestRepo -> "test"
+    end
+  end
+
+  @impl true
+  def bind("live") do
+    MyApp.Repo.put_dynamic_repo(MyApp.LiveRepo)
+    :ok
+  end
+
+  def bind("test") do
+    MyApp.Repo.put_dynamic_repo(MyApp.TestRepo)
+    :ok
+  end
+
+  def bind(_name), do: {:error, :unknown_binding}
+
+  @impl true
+  def oban("live"), do: MyApp.LiveOban
+  def oban("test"), do: MyApp.TestOban
+end
+
+defmodule MyApp.WebhookWorker do
+  use AshHooks.Worker,
+    deliveries: MyApp.OutboundDelivery,
+    endpoints: MyApp.WebhookEndpoint,
+    outbox: MyApp.WebhookPublication,
+    binding: MyApp.HooksBinding,
+    queue: :webhooks
+end
+
+children = [
+  {Oban, name: MyApp.LiveOban, repo: MyApp.Repo, queues: [webhooks: 10],
+   get_dynamic_repo: fn -> MyApp.LiveRepo end},
+  {Oban, name: MyApp.TestOban, repo: MyApp.Repo, queues: [webhooks: 10],
+   get_dynamic_repo: fn -> MyApp.TestRepo end}
+]
+```
+
+Call `MyApp.HooksBinding.bind("live")` in a process that publishes to the live
+database. Configure `bind/1` to select every repo module used by the job's resources.
+Derive `current/0` from the repository binding so it also works in the spawned
+fanout runner. Keep names stable while queued jobs refer to them. A job with
+an unknown name is canceled with `:unknown_binding`.
+
+Run `AshHooks.fanout_pending/3` and `AshHooks.reconcile_pending/3` once per
+physical binding and, for multitenant resources, per tenant on that binding.
+Select the same repositories before sending returned publication
+notifications. For forced row security, retain the tenant and engine role
+configuration from the [row-security guide](row-security.md) in each database.
+
 ## The isolation guarantees (what you may rely on)
 
 - A dispatch for tenant A cannot create a delivery row for tenant B's

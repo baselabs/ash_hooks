@@ -211,6 +211,7 @@ defmodule AshHooks.MixProject do
           AshHooks.Outbound,
           AshHooks.Dispatcher,
           AshHooks.Delivery,
+          AshHooks.Binding,
           AshHooks.Worker
         ],
         Signing: [

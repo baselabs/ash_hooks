@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Generated workers can use `AshHooks.Binding` to route each new job to the
+  Oban instance for its physical database and restore that database binding
+  on execution. Jobs with unknown bindings are canceled.
+
+### Fixed
+
+- Delivery drivers and failure finalizers now preserve Ecto dynamic repository
+  selection, including writes to attempt history.
+
 ## [3.7.0] - 2026-11-24
 
 ### Changed

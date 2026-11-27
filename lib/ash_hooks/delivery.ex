@@ -82,7 +82,7 @@ defmodule AshHooks.Delivery do
   alias AshHooks.Errors.Unknown.{KeyUnavailable, UnknownError}
   alias AshHooks.Http.{Headers, Request}
   alias AshHooks.KeyRegistry.Transitions
-  alias AshHooks.{OutboundBinding, PrimaryKey, Signing, Tenancy}
+  alias AshHooks.{OutboundBinding, PrimaryKey, RepoBinding, Signing, Tenancy}
   alias Spark.Dsl.Extension
 
   # Secret markers are
@@ -498,8 +498,12 @@ defmodule AshHooks.Delivery do
     context =
       Ash.ProcessHelpers.get_context_for_transfer(tracer: Application.get_env(:ash, :tracer))
 
+    repositories =
+      RepoBinding.capture([config[:deliveries], config[:endpoints], config[:attempts]])
+
     {pid, monitor} =
       spawn_monitor(fn ->
+        RepoBinding.apply(repositories)
         Ash.ProcessHelpers.transfer_context(context)
 
         config =
@@ -594,8 +598,11 @@ defmodule AshHooks.Delivery do
     context =
       Ash.ProcessHelpers.get_context_for_transfer(tracer: Application.get_env(:ash, :tracer))
 
+    repositories = RepoBinding.capture([config[:deliveries], config[:attempts]])
+
     {pid, monitor} =
       spawn_monitor(fn ->
+        RepoBinding.apply(repositories)
         Ash.ProcessHelpers.transfer_context(context)
         result = retry(row, reason, config, tenant, nil)
         send(owner, {:delivery_finalization, result_ref, self(), result})

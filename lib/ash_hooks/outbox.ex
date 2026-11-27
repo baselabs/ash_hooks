@@ -4,7 +4,7 @@ defmodule AshHooks.Outbox do
   require Ash.Query
 
   alias Ash.Actions.Helpers
-  alias AshHooks.{Event, Info, OutboundBinding, Phase, PrimaryKey, Tenancy}
+  alias AshHooks.{Event, Info, OutboundBinding, Phase, PrimaryKey, RepoBinding, Tenancy}
   alias AshHooks.OutboundOutbox.{Metadata, Notifier}
   alias Spark.Dsl.Extension
 
@@ -204,25 +204,11 @@ defmodule AshHooks.Outbox do
   defp run(row, tenant) do
     owner = self()
     ref = make_ref()
-
-    resources =
-      Enum.flat_map(option(row.__struct__, :declarations), fn {emitter, name} ->
-        case declaration(row.__struct__, {emitter, name}) do
-          {:ok, _, _, entity, endpoint} ->
-            [emitter, entity.subscriptions, entity.deliveries, entity.events, endpoint]
-
-          {:error, :unknown_declaration} ->
-            []
-        end
-      end)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.uniq()
-
-    repositories =
-      Enum.map([row.__struct__ | resources], &repository_binding/1) |> Enum.reject(&is_nil/1)
+    repositories = row.__struct__ |> dispatch_resources() |> RepoBinding.capture()
 
     {pid, monitor} =
       spawn_monitor(fn ->
+        RepoBinding.apply(repositories)
         runner = self()
         spawn(fn -> guard(owner, runner, ref) end)
 
@@ -230,7 +216,6 @@ defmodule AshHooks.Outbox do
           {^ref, :guarded} -> :ok
         end
 
-        Enum.each(repositories, fn {repo, instance} -> repo.put_dynamic_repo(instance) end)
         send(owner, {ref, safely(fn -> dispatch(row, tenant) end)})
       end)
 
@@ -270,11 +255,19 @@ defmodule AshHooks.Outbox do
     end
   end
 
-  defp repository_binding(resource) do
-    if Ash.DataLayer.data_layer(resource) in [AshPostgres.DataLayer, AshSqlite.DataLayer] do
-      repo = Phase.repo(resource)
-      {repo, repo.get_dynamic_repo()}
-    end
+  def dispatch_resources(resource) do
+    resources =
+      Enum.flat_map(option(resource, :declarations), fn entry ->
+        case declaration(resource, entry) do
+          {:ok, emitter, _, entity, endpoint} ->
+            [emitter, entity.subscriptions, entity.deliveries, entity.events, endpoint]
+
+          {:error, :unknown_declaration} ->
+            []
+        end
+      end)
+
+    [resource | resources]
   end
 
   defp dispatch(row, tenant) do
