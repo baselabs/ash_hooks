@@ -2,7 +2,7 @@
 
 A release records the package and docs served by Hex, their checksums, and the
 GitHub tag and release for the source commit. Publication uses GitHub workload
-identity through the [shared Hex action](https://github.com/baselabs/.github/tree/3bfbb84692a65b4d2c03dc3b7932353026fe6943/.github/actions/hex-publish).
+identity through the [shared Hex action](https://github.com/baselabs/.github/tree/654fcd0ef63daf8e3f79dfeb4ca900adffd0d4e2/.github/actions/hex-publish).
 
 ## Version author
 
@@ -33,8 +33,9 @@ archive with a real receiver.
 
 1. Obtain owner approval to dispatch `publish.yml` from `main`. Pass the full
    40-character lowercase `release_commit` SHA and the handoff CI run ID as
-   `qualification_run`. If the run ID is omitted, upload selects the newest
-   successful qualification for that exact SHA.
+   `qualification_run`. If the run ID is omitted, upload selects the earliest
+   successful CI run for that exact SHA that still retains the package
+   artifact, so a repeat dispatch reuses the same archives.
 2. Verify the upload result. The shared action checks the commit's ancestry,
    green `qualified` job, artifact provenance, archive bytes, stamped changelog,
    tag and registry state. For public Hex it confirms the package exists
@@ -42,10 +43,10 @@ archive with a real receiver.
    upload job to check for a private release of the same application and
    version. The upload job runs Hex outside the checkout and uses a short-lived,
    package-scoped workload token for any uploads.
-3. If Hex holds the release for approval, upload stops with "Hex release or
-   docs are held or changed; after approval dispatch again on the same
-   commit". The owner approves the staged release or docs on hex.pm, under the
-   package's staged releases in the dashboard. Dispatch again with the same `release_commit` and the **original**
+3. If Hex holds the release for approval, upload stops and names what needs
+   approval (package and docs, or docs alone), the hex.pm staged-release page
+   and Hex's approval checksum. The owner checks that checksum on the page and
+   approves there. Dispatch again with the same `release_commit` and the **original**
    `qualification_run` to reuse the exact archives.
 4. Wait for read-back and the published Livebook job. Read-back uses the run ID
    and qualified manifest checksum from upload, verifies the signed Hex registry
