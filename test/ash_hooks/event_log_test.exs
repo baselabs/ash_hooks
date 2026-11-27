@@ -572,7 +572,7 @@ defmodule AshHooks.EventLogTest do
 
       Ash.update!(
         endpoint,
-        %{pinned_payload_version: 1, url: "http://127.0.0.1:#{port}/200"},
+        %{pinned_payload_version: 1, url: "http://localhost:#{port}/200"},
         authorize?: false
       )
 
