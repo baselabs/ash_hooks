@@ -469,7 +469,7 @@ defmodule AshHooks.EventLogTest do
   describe "replay" do
     test "filters and pause govern missing deliveries and their dry-run count" do
       assert {:ok, []} = dispatch!("filter-s1", %{"store" => "s1", "private" => "omit"})
-      assert {:ok, []} = dispatch!("filter-s2", %{"store" => "s2"})
+      assert {:ok, []} = dispatch!("filter-s2", %{"store" => "s2", "private" => "omit"})
 
       endpoint = endpoint!()
       subscription = subscribe!(endpoint, %{event_filters: %{"store" => "s1"}})
@@ -478,11 +478,13 @@ defmodule AshHooks.EventLogTest do
       wrong_type = endpoint!()
       subscribe!(wrong_type, %{event_types: ["another_event"]})
 
-      assert {:ok, %{records: [logged]}} =
-               AshHooks.OutboundEvent.list(EventLog, event_uuid: "filter-s1")
+      for {uuid, store} <- [{"filter-s1", "s1"}, {"filter-s2", "s2"}] do
+        assert {:ok, %{records: [logged]}} =
+                 AshHooks.OutboundEvent.list(EventLog, event_uuid: uuid)
 
-      assert Jason.decode!(logged.replay_context.metadata_json) == %{"store" => "s1"}
-      refute logged.replay_context.complete
+        assert Jason.decode!(logged.replay_context.metadata_json) == %{"store" => store}
+        refute logged.replay_context.complete
+      end
 
       for ineligible <- [paused, wrong_type, endpoint!()] do
         assert {:ok, %{count: 0}} = replay(ineligible, dry_run: true)
@@ -496,6 +498,54 @@ defmodule AshHooks.EventLogTest do
 
       assert {row.event_uuid, row.endpoint_id, row.subscription_id} ==
                {"filter-s1", endpoint.id, subscription.id}
+    end
+
+    test "replay skips an event ID logged for a different declaration type" do
+      uuid = "other-declaration"
+
+      Ash.create!(
+        EventLog,
+        %{event_uuid: uuid, event_type: "order_canceled", version: 3, payload: @payload},
+        action: :record,
+        authorize?: false
+      )
+
+      endpoint = endpoint!()
+      subscribe!(endpoint, %{event_types: ["*"]})
+
+      assert {:ok, %{created: 0, re_sent: 0, skipped: 1, errors: []}} =
+               replay(endpoint, event_uuid: uuid)
+
+      assert Ash.read!(Delivery, authorize?: false) == []
+    end
+
+    test "filtered replay refuses malformed and non-object metadata JSON in retained rows" do
+      endpoint = endpoint!()
+      subscribe!(endpoint, %{event_filters: %{"store" => "s1"}})
+
+      for {uuid, encoded} <- [{"malformed-context", "{"}, {"non-object-context", "[]"}] do
+        logged =
+          Ash.create!(
+            EventLog,
+            %{
+              event_uuid: uuid,
+              event_type: "order_paid",
+              version: 3,
+              payload: @payload,
+              replay_context: %{metadata_json: encoded, captured_keys: ["store"], complete: true}
+            },
+            action: :record,
+            authorize?: false
+          )
+
+        assert logged.replay_context.metadata_json == encoded
+
+        assert {:ok,
+                %{created: 0, re_sent: 0, skipped: 0, errors: [:replay_metadata_unavailable]}} =
+                 replay(endpoint, event_uuid: uuid)
+      end
+
+      assert Ash.read!(Delivery, authorize?: false) == []
     end
 
     test "pre-capture and over-limit rows refuse filters but still support unfiltered replay" do

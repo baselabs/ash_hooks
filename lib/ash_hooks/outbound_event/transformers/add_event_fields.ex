@@ -16,14 +16,9 @@ defmodule AshHooks.OutboundEvent.Transformers.AddEventFields do
 
   def transform(dsl_state) do
     with {:ok, dsl_state} <- add_primary_key(dsl_state) do
-      Enum.reduce_while(attributes_spec(dsl_state), {:ok, dsl_state}, &add_attribute/2)
-    end
-  end
-
-  defp add_attribute({name, type, opts}, {:ok, state}) do
-    case Builder.add_new_attribute(state, name, type, opts) do
-      {:ok, _state} = result -> {:cont, result}
-      {:error, _reason} = error -> {:halt, error}
+      Enum.reduce(attributes_spec(dsl_state), {:ok, dsl_state}, fn {name, type, opts}, result ->
+        Builder.add_new_attribute(result, name, type, opts)
+      end)
     end
   end
 

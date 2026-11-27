@@ -687,9 +687,13 @@ defmodule AshHooks.Test.RowSecurityCases do
   def filtered_replay(ctx) do
     tenant = "tenant_a"
 
-    for {id, store} <- [{"replay-s1", "s1"}, {"replay-s2", "s2"}] do
-      {:ok, event} =
-        AshHooks.Event.new(id: id, type: :event, payload: "base", metadata: %{"store" => store})
+    events = [
+      {"replay-s1", %{"store" => "s1"}},
+      {"replay-s2", %{"store" => "s2", "private" => "omit"}}
+    ]
+
+    for {id, metadata} <- events do
+      {:ok, event} = AshHooks.Event.new(id: id, type: :event, payload: "base", metadata: metadata)
 
       # Recovered outbox events carry their persisted version on the struct.
       assert {:ok, []} =
