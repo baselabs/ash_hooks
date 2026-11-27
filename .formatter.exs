@@ -53,6 +53,7 @@ spark_locals_without_parens = [
   record_provider_alias: 1,
   record_signing_provenance: 1,
   record_verified_facts: 1,
+  replay_context: 1,
   replay_window_seconds: 1,
   resend_tracking: 1,
   response_capture_attributes: 1,

@@ -46,6 +46,7 @@ with tarfile.open(fileobj=io.BytesIO(content), mode='r:gz') as inner:
         'documentation/dsls/DSL-AshHooks.Subscription.md',
         'documentation/dsls/DSL-AshHooks.InboundDelivery.md',
         'documentation/dsls/DSL-AshHooks.OutboundDelivery.md',
+        'documentation/dsls/DSL-AshHooks.OutboundEvent.md',
     }
     assert required <= names, f'missing package surfaces: {sorted(required - names)}'
     assert not any('.DS_Store' in name for name in names), 'OS metadata in archive'

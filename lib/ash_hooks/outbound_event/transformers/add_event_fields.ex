@@ -67,6 +67,13 @@ defmodule AshHooks.OutboundEvent.Transformers.AddEventFields do
                  type: :string,
                  constraints: [trim?: false, max_length: Metadata.max_bytes()]
                ],
+               captured_keys: [
+                 type: {:array, :string},
+                 constraints: [
+                   max_length: Metadata.max_bytes(),
+                   items: [trim?: false, allow_empty?: true]
+                 ]
+               ],
                complete: [type: :boolean, allow_nil?: false],
                event_version: [type: :integer, constraints: [min: 1]]
              ]

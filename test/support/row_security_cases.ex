@@ -336,7 +336,7 @@ defmodule AshHooks.Test.RowSecurityCases do
       [AshHooks.OutboundEvent],
       quote do
         outbound_event do
-          replay_context(:on)
+          replay_context :on
         end
       end
     )

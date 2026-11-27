@@ -33,11 +33,10 @@ defmodule AshHooks.OutboundEvent do
   for filtered replay and payload-version pins. Migrate the event table to
   add the nullable `:replay_context` map column before enabling it. The
   default is `:off`. The column stores only metadata keys listed in the
-  declaration's subscription resource `filter_attributes`, with a
-  payload-version marker and a flag recording whether the projection
-  captured all the original metadata. Metadata uses the outbox's
-  portable JSON limits (32 levels and 1 MiB). If it cannot be captured
-  within those limits, the event is still logged.
+  declaration's subscription resource `filter_attributes`, the list of
+  keys covered at capture, and payload-version information. Metadata
+  uses the outbox's portable JSON limits (32 levels and 1 MiB). If it
+  cannot be captured within those limits, the event is still logged.
 
   Policy obligation: protect the injected `:record` create and `:prune`
   destroy actions wherever your domain exposes the resource; the
@@ -177,19 +176,20 @@ defmodule AshHooks.OutboundEvent do
       subscriptions
       |> Extension.get_opt([:subscription], :filter_attributes, [])
       |> Enum.map(&Atom.to_string/1)
+      |> Enum.uniq()
 
     projected = Map.take(event.metadata, keys)
 
-    case Metadata.encode(projected) do
-      {:ok, encoded} ->
-        %{
-          metadata_json: encoded,
-          complete: projected === event.metadata,
-          event_version: event.version
-        }
-
-      :error ->
-        %{complete: false, event_version: event.version}
+    with {:ok, encoded} <- Metadata.encode(projected),
+         {:ok, _bounded_keys} <- Metadata.encode(%{"keys" => keys}) do
+      %{
+        metadata_json: encoded,
+        captured_keys: keys,
+        complete: projected === event.metadata,
+        event_version: event.version
+      }
+    else
+      :error -> %{complete: false, event_version: event.version}
     end
   end
 
@@ -209,8 +209,9 @@ defmodule AshHooks.OutboundEvent do
   declaration default. Conflicting matching modes return
   `:conflicting_subscriptions`. An active, type-matching subscription
   that requires filters returns `:replay_metadata_unavailable` per event
-  if the row predates capture, capture is off, or the metadata exceeded
-  the capture limits. Unfiltered subscriptions can use those rows.
+  if the row predates capture, capture is off, the metadata exceeded
+  the capture limits, or an incomplete capture omits a newly declared
+  filter key. Unfiltered subscriptions can use those rows.
 
   A pin to the recorded payload version uses the logged bytes when
   replay context proves their version. A pin to another version uses
@@ -328,7 +329,8 @@ defmodule AshHooks.OutboundEvent do
          {:match, endpoint} <-
            Dispatcher.resolve_endpoint(endpoint.__struct__, endpoint_id, tenant),
          {:ok, event, context} <- replay_event(logged),
-         {:ok, subscription} <- Dispatcher.replay_subscription(entity, endpoint, event, tenant),
+         {:ok, subscription} <-
+           Dispatcher.replay_subscription(entity, endpoint, event, context, tenant),
          {:ok, payload} <- replay_payload(event, entity, endpoint, logged.version, context) do
       if opts[:dry_run] do
         :created
