@@ -281,12 +281,22 @@ defmodule AshHooks.InjectedAttributesTest do
           module,
           quote do
             use Ash.Resource,
-              data_layer: Ash.DataLayer.Ets,
+              data_layer: AshSqlite.DataLayer,
               extensions: [AshHooks.OutboundEvent],
               validate_domain_inclusion?: false
 
+            sqlite do
+              table("injected_replay_context_events")
+              repo(AshHooks.Test.Repo)
+            end
+
             attributes do
+              timestamps()
               attribute(:replay_context, :map, constraints: [fields: [other: [type: :string]]])
+            end
+
+            actions do
+              defaults([:read])
             end
 
             outbound_event do
