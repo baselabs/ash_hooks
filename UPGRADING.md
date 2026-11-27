@@ -4,18 +4,17 @@
 
 ### Check subscription filters before writing
 
-The injected `event_filters` attribute now rejects invalid literal writes when
-`filter_attributes` is configured. The filter must cast to `nil` or a plain
-map. JSON object strings are accepted, and an empty string casts to `nil`.
-Top-level keys must be distinct declared atom or string names. Values may be
-null, booleans, numbers, strings, lists, or plain maps with string keys.
-Lists at declared keys are any-of filters and must be nonempty. Nested lists
-may be empty. Strings must be valid UTF-8 without NUL. Structs, non-JSON atoms,
-and nested maps with non-string keys are rejected.
+When `filter_attributes` is configured, filter checks reject undeclared keys,
+containers that cannot cast to a plain map or `nil`, and empty or improper
+any-of lists. Keys are compared to the declared names after `to_string/1`.
+JSON object strings are accepted, and an empty string casts to `nil`.
+Your data layer determines which filter values it can store.
 
-Host-declared map attributes receive the check in non-atomic actions. Atomic
-expressions use Ash's unchecked write path. Existing rows keep their dispatch
-behavior.
+The injected type checks literals supplied through Ash actions and atomic
+options. Host-declared maps are checked before ordinary writes and when a
+literal is available to the atomic change. Ash applies the separate
+`atomic_update:` option after that change. Atomic expressions bypass the
+check. Existing rows keep their dispatch behavior.
 
 Before upgrading or importing, read the subscription values for each tenant and
 call `AshHooks.Subscription.validate_filters(Subscription, row.event_filters)`,
