@@ -39,6 +39,7 @@ defmodule AshHooks.InjectedAttributesTest do
   alias AshHooks.InjectedAttributeStates
   alias AshHooks.Subscription
   alias AshHooks.Test.Dsl
+  alias AshHooks.Type.EventFilters
   alias AshHooks.Verifiers.InjectedAttributes
   alias Spark.Dsl.Transformer
   alias Spark.Error.DslError
@@ -298,6 +299,14 @@ defmodule AshHooks.InjectedAttributesTest do
 
   defp example(AshHooks.Endpoint.Url, _opts), do: "https://example.com/events"
   defp example(AshHooks.InboundDelivery.Payload, _opts), do: %{"event" => "changed"}
+
+  defp example(EventFilters, opts) do
+    opts
+    |> Keyword.fetch!(:constraints)
+    |> Keyword.fetch!(:keys)
+    |> Map.new(&{&1, "west"})
+  end
+
   defp example(_string, _opts), do: "reference"
 
   defp subscription(attributes, layer \\ Ash.DataLayer.Ets) do

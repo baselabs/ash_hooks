@@ -90,28 +90,26 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
   # Other nullable fields are cleared or supplied as nil by package actions.
   defp nullability(_section, _expected), do: :nullable
 
-  defp accepted_type?(section, actual, expected) do
-    native = Ash.Type.get_type(expected.type)
+  # OutboundReferences owns reference storage validation against the joined key.
+  defp accepted_type?(_section, _actual, %{name: name})
+       when name in [:endpoint_id, :subscription_id],
+       do: true
 
-    cond do
-      # OutboundReferences owns reference storage validation against the joined key.
-      expected.name in [:endpoint_id, :subscription_id] ->
-        true
+  defp accepted_type?(:subscription, %{type: actual}, %{name: :event_types}) do
+    type_matches?(actual, {:array, Ash.Type.String}) or
+      type_matches?(actual, {:array, Ash.Type.Atom}) or
+      type_matches?(actual, {:array, Ash.Type.Term})
+  end
 
-      section == :subscription and expected.name == :event_types ->
-        type_matches?(actual.type, {:array, Ash.Type.String}) or
-          type_matches?(actual.type, {:array, Ash.Type.Atom}) or
-          type_matches?(actual.type, {:array, Ash.Type.Term})
+  defp accepted_type?(:subscription, %{type: actual}, %{name: :event_filters}),
+    do: type_matches?(actual, Ash.Type.Map)
 
-      section == :subscription and expected.name == :event_filters ->
-        type_matches?(actual.type, Ash.Type.Map)
+  defp accepted_type?(_section, %{type: actual}, %{type: expected}) do
+    native = Ash.Type.get_type(expected)
 
-      native in [AshHooks.Endpoint.SecretRef, AshHooks.Endpoint.Url] ->
-        type_matches?(actual.type, native) or type_matches?(actual.type, Ash.Type.String)
-
-      true ->
-        type_matches?(actual.type, native)
-    end
+    type_matches?(actual, native) or
+      (native in [AshHooks.Endpoint.SecretRef, AshHooks.Endpoint.Url] and
+         type_matches?(actual, Ash.Type.String))
   end
 
   defp type_matches?({:array, actual}, {:array, native}), do: type_matches?(actual, native)
