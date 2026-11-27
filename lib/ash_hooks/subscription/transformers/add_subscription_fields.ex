@@ -5,6 +5,7 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
   use Spark.Dsl.Transformer
 
   alias Ash.Resource.Builder
+  alias AshHooks.Subscription.Validations.EventFilters
   alias Spark.Dsl.{Extension, Transformer}
 
   def before?(Ash.Resource.Transformers.DefaultAccept), do: true
@@ -13,11 +14,60 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
   def before?(_), do: false
 
   def transform(state) do
-    with {:ok, state} <- add_primary_key(state) do
-      Enum.reduce(attributes_spec(state), {:ok, state}, fn {name, type, opts}, result ->
-        Builder.add_new_attribute(result, name, type, opts)
-      end)
+    with {:ok, state} <- add_primary_key(state),
+         {:ok, state} <- add_attributes(state) do
+      add_filter_validation(state)
     end
+  end
+
+  defp add_attributes(state) do
+    Enum.reduce(attributes_spec(state), {:ok, state}, fn {name, type, opts}, result ->
+      Builder.add_new_attribute(result, name, type, opts)
+    end)
+  end
+
+  defp add_filter_validation(state) do
+    if Extension.get_opt(state, [:subscription], :filter_attributes, []) == [] do
+      {:ok, state}
+    else
+      # Create defaults and before-action changes can supply a filter after
+      # changeset preparation, so validate again before the insert.
+      with {:ok, validation} <- build_filter_validation(on: [:create, :update]),
+           {:ok, before_create} <-
+             build_filter_validation(on: [:create], before_action?: true) do
+        state =
+          state
+          |> Transformer.add_entity([:validations], validation, type: :append)
+          |> Transformer.add_entity([:validations], before_create, type: :append)
+          |> validate_actions_skipping_globals(%{
+            create: [validation, before_create],
+            update: [validation]
+          })
+
+        {:ok, state}
+      end
+    end
+  end
+
+  defp build_filter_validation(opts) do
+    Transformer.build_entity(
+      Ash.Resource.Dsl,
+      [:validations],
+      :validate,
+      Keyword.put(opts, :validation, EventFilters)
+    )
+  end
+
+  defp validate_actions_skipping_globals(state, validations) do
+    actions =
+      for %{type: type, skip_global_validations?: true} = action <-
+            Transformer.get_entities(state, [:actions]),
+          action_validations = validations[type],
+          do: %{action | changes: action.changes ++ action_validations}
+
+    Enum.reduce(actions, state, fn action, state ->
+      Transformer.replace_entity(state, [:actions], action, &(&1.name == action.name))
+    end)
   end
 
   def attributes_spec(state) do

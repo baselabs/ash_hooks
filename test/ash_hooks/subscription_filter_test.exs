@@ -39,7 +39,7 @@ defmodule AshHooks.SubscriptionFilterTest do
     end
 
     actions do
-      defaults([:read, :create])
+      defaults([:read, :create, :update])
       default_accept(:*)
     end
 
@@ -48,6 +48,70 @@ defmodule AshHooks.SubscriptionFilterTest do
       # the closed set of attribute names subscriptions may filter on
       filter_attributes([:order_id, :region])
     end
+  end
+
+  for {name, layer} <- [
+        {:PostgresSubscription, AshPostgres.DataLayer},
+        {:EtsSubscription, Ash.DataLayer.Ets},
+        {:SimpleSubscription, Ash.DataLayer.Simple}
+      ] do
+    resource = Module.concat(__MODULE__, name)
+
+    configuration =
+      case layer do
+        AshPostgres.DataLayer ->
+          quote do
+            postgres do
+              table "subfilter_postgres_subscriptions"
+              repo(AshHooks.TestPostgres.Repo)
+            end
+          end
+
+        Ash.DataLayer.Ets ->
+          quote do
+            ets do
+              private? false
+            end
+
+            attributes do
+              attribute :event_filters, :map, public?: true, default: %{}
+            end
+          end
+
+        Ash.DataLayer.Simple ->
+          quote do
+          end
+      end
+
+    Code.eval_quoted(
+      quote do
+        defmodule unquote(resource) do
+          @moduledoc false
+          use Ash.Resource,
+            domain: AshHooks.SubscriptionFilterTest.Domain,
+            data_layer: unquote(layer),
+            extensions: [AshHooks.Subscription]
+
+          unquote(configuration)
+
+          actions do
+            defaults [:read, :create, :update]
+            default_accept :*
+
+            update :replace_filters do
+              accept [:event_filters]
+              require_atomic? false
+              skip_global_validations? true
+            end
+          end
+
+          subscription do
+            endpoint_resource AshHooks.SubscriptionFilterTest.Endpoint
+            filter_attributes [:order_id, :region]
+          end
+        end
+      end
+    )
   end
 
   defmodule Delivery do
@@ -102,6 +166,9 @@ defmodule AshHooks.SubscriptionFilterTest do
     resources do
       resource(AshHooks.SubscriptionFilterTest.Endpoint)
       resource(AshHooks.SubscriptionFilterTest.Subscription)
+      resource(AshHooks.SubscriptionFilterTest.PostgresSubscription)
+      resource(AshHooks.SubscriptionFilterTest.EtsSubscription)
+      resource(AshHooks.SubscriptionFilterTest.SimpleSubscription)
       resource(AshHooks.SubscriptionFilterTest.Delivery)
       resource(AshHooks.SubscriptionFilterTest.Emitter)
     end
@@ -109,12 +176,17 @@ defmodule AshHooks.SubscriptionFilterTest do
 
   use ExUnit.Case, async: false
 
+  alias __MODULE__.{EtsSubscription, PostgresSubscription, SimpleSubscription}
+  alias Ash.Error.Changes.InvalidAttribute
+  alias AshHooks.Subscription, as: Filters
   alias AshHooks.Test.Repo
+  alias AshHooks.TestPostgres.Repo, as: PostgresRepo
 
   @endpoints "subfilter_endpoints"
   @subscriptions "subfilter_subscriptions"
   @deliveries "subfilter_deliveries"
   @emitters "subfilter_emitters"
+  @postgres_subscriptions "subfilter_postgres_subscriptions"
 
   setup_all do
     Repo.query!("""
@@ -153,11 +225,23 @@ defmodule AshHooks.SubscriptionFilterTest do
 
     Repo.query!("CREATE TABLE IF NOT EXISTS #{@emitters} (id TEXT PRIMARY KEY)")
 
+    postgres? = System.get_env("ASH_HOOKS_POSTGRES") == "1"
+
+    if postgres? do
+      PostgresRepo.query!("""
+      CREATE TABLE IF NOT EXISTS #{@postgres_subscriptions} (
+        id UUID PRIMARY KEY, event_types TEXT[] NOT NULL, endpoint_id UUID NOT NULL,
+        signing_mode TEXT, event_filters JSONB
+      )
+      """)
+    end
+
     on_exit(fn ->
       Repo.query!("DROP TABLE IF EXISTS #{@deliveries}")
       Repo.query!("DROP TABLE IF EXISTS #{@subscriptions}")
       Repo.query!("DROP TABLE IF EXISTS #{@endpoints}")
       Repo.query!("DROP TABLE IF EXISTS #{@emitters}")
+      if postgres?, do: PostgresRepo.query!("DROP TABLE IF EXISTS #{@postgres_subscriptions}")
     end)
 
     :ok
@@ -168,6 +252,10 @@ defmodule AshHooks.SubscriptionFilterTest do
     Repo.query!("DELETE FROM #{@subscriptions}")
     Repo.query!("DELETE FROM #{@endpoints}")
     Repo.query!("DELETE FROM #{@emitters}")
+
+    if System.get_env("ASH_HOOKS_POSTGRES") == "1",
+      do: PostgresRepo.query!("DELETE FROM #{@postgres_subscriptions}")
+
     :ok
   end
 
@@ -194,6 +282,188 @@ defmodule AshHooks.SubscriptionFilterTest do
       )
 
     AshHooks.dispatch(Emitter, :order_paid, event)
+  end
+
+  for {resource, tags} <- [
+        {Subscription, []},
+        {PostgresSubscription, [postgres: true]},
+        {EtsSubscription, []},
+        {SimpleSubscription, []}
+      ] do
+    @tag tags
+    @tag subscription_resource: resource
+    test "filter validation on create and update for #{inspect(resource)}", %{
+      subscription_resource: resource
+    } do
+      if resource == EtsSubscription, do: on_exit(fn -> Ash.DataLayer.Ets.stop(resource) end)
+
+      endpoint_id = endpoint!().id
+      attrs = %{endpoint_id: endpoint_id}
+
+      subscription =
+        Ash.create!(resource, Map.put(attrs, :event_filters, %{"region" => "initial"}),
+          authorize?: false
+        )
+
+      for {filters, key, reason} <- [
+            {"not a map", "event_filters", "plain map"},
+            {~s({"region":"west"}), "event_filters", "plain map"},
+            {%URI{}, "event_filters", "plain map"},
+            {%{"unknown" => "west"}, ~s("unknown"), "not declared"},
+            {%{unknown: "west"}, ":unknown", "not declared"},
+            {%{1 => "west"}, "1", "string or atom"},
+            {%{region: %{"name" => "west"}}, ":region", "scalar"},
+            {%{"region" => []}, ~s("region"), "nonempty list"},
+            {%{region: ["west", %{}]}, ":region", "scalars"},
+            {%{region: ["west", ["east"]]}, ":region", "scalars"},
+            {%{region: :west}, ":region", "scalar"},
+            {%{region: <<0>>}, ":region", "scalar"},
+            {%{region: <<255>>}, ":region", "scalar"},
+            {%{"region" => "east", region: "west"}, ":region", "duplicate"}
+          ] do
+        assert {:error, %InvalidAttribute{field: :event_filters, message: message}} =
+                 Filters.validate_filters(resource, filters)
+
+        assert message =~ key
+        assert message =~ reason
+
+        attrs = Map.put(attrs, :event_filters, filters)
+
+        assert {:error, %Ash.Error.Invalid{errors: errors}} =
+                 Ash.create(resource, attrs, authorize?: false)
+
+        assert_filter_error(errors, key, reason)
+
+        assert {:error, %Ash.Error.Invalid{errors: errors}} =
+                 Ash.update(subscription, %{event_filters: filters}, authorize?: false)
+
+        assert_filter_error(errors, key, reason)
+      end
+
+      for {filters, metadata} <- [
+            {nil, %{}},
+            {%{}, %{}},
+            {%{region: "west"}, %{"region" => "west"}},
+            {%{"region" => ["west", nil, true, 2, 1.5]}, %{"region" => 1.5}},
+            {%{region: false}, %{"region" => false}},
+            {%{region: nil}, %{"region" => nil}},
+            {%{region: 1}, %{"region" => 1.0}}
+          ] do
+        assert :ok = Filters.validate_filters(resource, filters)
+
+        created =
+          Ash.create!(resource, Map.put(attrs, :event_filters, filters), authorize?: false)
+
+        updated = Ash.update!(subscription, %{event_filters: filters}, authorize?: false)
+
+        for row <- [created, updated] do
+          row =
+            if resource == SimpleSubscription,
+              do: row,
+              else: Ash.get!(resource, row.id, authorize?: false)
+
+          assert string_keys(row.event_filters) === string_keys(filters)
+          assert Filters.matches_filters?(row, metadata)
+        end
+      end
+    end
+  end
+
+  test "bulk create rejects the invalid row and stores the valid row" do
+    endpoint_id = endpoint!().id
+
+    assert %Ash.BulkResult{status: :partial_success, records: [valid], errors: [error]} =
+             Ash.bulk_create(
+               [
+                 %{endpoint_id: endpoint_id, event_filters: %{"region" => "west"}},
+                 %{endpoint_id: endpoint_id, event_filters: %{"region" => []}}
+               ],
+               Subscription,
+               :create,
+               authorize?: false,
+               return_errors?: true,
+               return_records?: true,
+               stop_on_error?: false,
+               transaction: false
+             )
+
+    assert_filter_error([error], ~s("region"), "nonempty list")
+    assert [%{event_filters: %{"region" => "west"}}] = Ash.read!(Subscription, authorize?: false)
+    assert valid.event_filters == %{"region" => "west"}
+  end
+
+  test "create validates upsert filters before overwriting an existing row" do
+    endpoint = endpoint!()
+    stored = subscribe!(endpoint, ["order_paid"], %{"region" => "west"})
+
+    assert {:error, %Ash.Error.Invalid{errors: errors}} =
+             Ash.create(
+               Subscription,
+               %{id: stored.id, endpoint_id: endpoint.id, event_filters: %{"region" => []}},
+               authorize?: false,
+               upsert?: true,
+               upsert_fields: [:event_filters]
+             )
+
+    assert_filter_error(errors, ~s("region"), "nonempty list")
+
+    assert Ash.get!(Subscription, stored.id, authorize?: false).event_filters ==
+             %{"region" => "west"}
+  end
+
+  test "a host update that skips global validations still validates its filter attribute" do
+    on_exit(fn -> Ash.DataLayer.Ets.stop(EtsSubscription) end)
+    sub = Ash.create!(EtsSubscription, %{endpoint_id: endpoint!().id}, authorize?: false)
+    assert sub.event_filters == %{}
+
+    assert {:error, %Ash.Error.Invalid{errors: errors}} =
+             Ash.update(sub, %{event_filters: %{region: []}},
+               action: :replace_filters,
+               authorize?: false
+             )
+
+    assert_filter_error(errors, ":region", "nonempty list")
+  end
+
+  @tag :postgres
+  test "an atomic query update checks filter literals before writing" do
+    sub = Ash.create!(PostgresSubscription, %{endpoint_id: endpoint!().id}, authorize?: false)
+
+    opts = [authorize?: false, strategy: [:atomic], return_errors?: true, return_records?: true]
+    query = Ash.Query.for_read(PostgresSubscription, :read)
+
+    assert %Ash.BulkResult{status: :success, records: [%{event_filters: %{"region" => "west"}}]} =
+             Ash.bulk_update(query, :update, %{event_filters: %{region: "west"}}, opts)
+
+    assert %Ash.BulkResult{status: :error, errors: [error]} =
+             Ash.bulk_update(query, :update, %{event_filters: %{region: []}}, opts)
+
+    assert_filter_error([error], ":region", "nonempty list")
+
+    assert Ash.get!(PostgresSubscription, sub.id, authorize?: false).event_filters ==
+             %{"region" => "west"}
+  end
+
+  defp string_keys(nil), do: nil
+  defp string_keys(filters), do: Map.new(filters, fn {key, value} -> {to_string(key), value} end)
+
+  defp assert_filter_error(errors, key, reason) do
+    assert Enum.any?(errors, fn
+             %InvalidAttribute{field: :event_filters, message: message} ->
+               message =~ key and message =~ reason
+
+             %Ash.Error.Invalid{errors: nested} ->
+               Enum.any?(nested, fn
+                 %InvalidAttribute{field: :event_filters, message: message} ->
+                   message =~ key and message =~ reason
+
+                 _ ->
+                   false
+               end)
+
+             _ ->
+               false
+           end)
   end
 
   test "a subscription with matching filters receives the delivery" do

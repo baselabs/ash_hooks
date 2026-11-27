@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `AshHooks.Subscription.validate_filters/2` checks filter values before importing
+  or rewriting subscription rows.
+
+### Changed
+
+- Subscription creates and updates reject malformed `event_filters`, undeclared
+  keys, and unsupported filter values when `filter_attributes` is configured.
+
 ## [3.7.0] - 2026-11-24
 
 ### Changed
