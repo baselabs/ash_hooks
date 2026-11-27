@@ -40,18 +40,25 @@ rows.
 
 ### Check subscription filters before writing
 
-Resources with `filter_attributes` now refuse writes that could previously store
-filters that never matched. Writes also refuse nested values. A filter must be
-`nil` or a plain map with distinct, declared atom or string keys. Each value
-must be a JSON scalar or a nonempty list of JSON scalars. Strings must be UTF-8
-and contain no NUL characters.
+The injected `event_filters` attribute now rejects invalid literal writes when
+`filter_attributes` is configured. The filter must cast to `nil` or a plain
+map. JSON object strings are accepted, and an empty string casts to `nil`.
+Top-level keys must be distinct declared atom or string names. Values may be
+null, booleans, numbers, strings, lists, or plain maps with string keys.
+Lists at declared keys are any-of filters and must be nonempty. Nested lists
+may be empty. Strings must be valid UTF-8 without NUL. Structs, non-JSON atoms,
+and nested maps with non-string keys are rejected.
+
+Host-declared map attributes receive the check in non-atomic actions. Atomic
+expressions use Ash's unchecked write path. Existing rows keep their dispatch
+behavior.
 
 Before upgrading or importing, read the subscription values for each tenant and
 call `AshHooks.Subscription.validate_filters(Subscription, row.event_filters)`,
 using your resource module in place of `Subscription`. Keep the row IDs for
 results of the form `{:error, error}`. The invalid-attribute error identifies
 `event_filters` and names the offending key when one exists. Correct those
-filters before writing the rows. Existing rows keep their dispatch behavior.
+filters before writing the rows.
 
 <a id="upgrade-3-7"></a>
 

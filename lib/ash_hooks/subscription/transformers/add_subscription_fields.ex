@@ -5,7 +5,8 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
   use Spark.Dsl.Transformer
 
   alias Ash.Resource.Builder
-  alias AshHooks.Subscription.Validations.EventFilters
+  alias AshHooks.Subscription.Changes.CheckHostFilters
+  alias AshHooks.Type.EventFilters
   alias Spark.Dsl.{Extension, Transformer}
 
   def before?(Ash.Resource.Transformers.DefaultAccept), do: true
@@ -15,8 +16,8 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
 
   def transform(state) do
     with {:ok, state} <- add_primary_key(state),
-         {:ok, state} <- add_attributes(state) do
-      add_filter_validation(state)
+         {:ok, state} <- check_host_filters(state) do
+      add_attributes(state)
     end
   end
 
@@ -26,55 +27,21 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
     end)
   end
 
-  defp add_filter_validation(state) do
-    if Extension.get_opt(state, [:subscription], :filter_attributes, []) == [] do
-      {:ok, state}
+  defp check_host_filters(state) do
+    if filter_attributes(state) != [] and
+         Enum.any?(Transformer.get_entities(state, [:attributes]), &(&1.name == :event_filters)) do
+      Builder.add_change(state, CheckHostFilters, on: [:create, :update])
     else
-      # Create defaults and before-action changes can supply a filter after
-      # changeset preparation, so validate again before the insert.
-      with {:ok, validation} <- build_filter_validation(on: [:create, :update]),
-           {:ok, before_create} <-
-             build_filter_validation(on: [:create], before_action?: true) do
-        state =
-          state
-          |> Transformer.add_entity([:validations], validation, type: :append)
-          |> Transformer.add_entity([:validations], before_create, type: :append)
-          |> validate_actions_skipping_globals(%{
-            create: [validation, before_create],
-            update: [validation]
-          })
-
-        {:ok, state}
-      end
+      {:ok, state}
     end
-  end
-
-  defp build_filter_validation(opts) do
-    Transformer.build_entity(
-      Ash.Resource.Dsl,
-      [:validations],
-      :validate,
-      Keyword.put(opts, :validation, EventFilters)
-    )
-  end
-
-  defp validate_actions_skipping_globals(state, validations) do
-    actions =
-      for %{type: type, skip_global_validations?: true} = action <-
-            Transformer.get_entities(state, [:actions]),
-          action_validations = validations[type],
-          do: %{action | changes: action.changes ++ action_validations}
-
-    Enum.reduce(actions, state, fn action, state ->
-      Transformer.replace_entity(state, [:actions], action, &(&1.name == action.name))
-    end)
   end
 
   def attributes_spec(state) do
     filters =
-      if Extension.get_opt(state, [:subscription], :filter_attributes, []) == [],
-        do: [],
-        else: [{:event_filters, :map, [public?: true]}]
+      case filter_attributes(state) do
+        [] -> []
+        keys -> [{:event_filters, EventFilters, [public?: true, constraints: [keys: keys]]}]
+      end
 
     pause =
       if Extension.get_opt(state, [:subscription], :pausable, :off) == :on,
@@ -83,6 +50,9 @@ defmodule AshHooks.Subscription.Transformers.AddSubscriptionFields do
 
     filters ++ pause ++ attributes_spec()
   end
+
+  defp filter_attributes(state),
+    do: Extension.get_opt(state, [:subscription], :filter_attributes, [])
 
   defp add_primary_key(dsl_state) do
     has_pk? =

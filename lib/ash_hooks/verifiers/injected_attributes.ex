@@ -103,6 +103,9 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
           type_matches?(actual.type, {:array, Ash.Type.Atom}) or
           type_matches?(actual.type, {:array, Ash.Type.Term})
 
+      section == :subscription and expected.name == :event_filters ->
+        type_matches?(actual.type, Ash.Type.Map)
+
       native in [AshHooks.Endpoint.SecretRef, AshHooks.Endpoint.Url] ->
         type_matches?(actual.type, native) or type_matches?(actual.type, Ash.Type.String)
 
@@ -137,6 +140,9 @@ defmodule AshHooks.Verifiers.InjectedAttributes do
 
   defp accepted_types(:subscription, %{name: :event_types}),
     do: "{:array, :string}, {:array, :atom} or {:array, :term}, including native NewType subtypes"
+
+  defp accepted_types(:subscription, %{name: :event_filters}),
+    do: ":map or a native NewType subtype"
 
   defp accepted_types(_section, %{type: AshHooks.Endpoint.Url}),
     do: "AshHooks.Endpoint.Url or :string, including native NewType subtypes"
