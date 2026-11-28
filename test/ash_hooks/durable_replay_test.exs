@@ -154,8 +154,8 @@ defmodule AshHooks.DurableReplayTest.Cases do
       use ExUnit.Case, async: false
       @compile {:no_warn_undefined, [AshHooks.Plug, Plug.Conn, Plug.Test]}
       unquote(if layer == :postgres, do: quote(do: @moduletag(:postgres)))
-      alias AshHooks.Ingress
       alias AshHooks.DurableReplayTest.Provider
+      alias AshHooks.Ingress
       alias unquote(repo), as: Repo
       alias unquote(ledger), as: Ledger
       alias unquote(legacy_ledger), as: LegacyLedger
@@ -213,6 +213,29 @@ defmodule AshHooks.DurableReplayTest.Cases do
         end)
 
         :ok
+      end
+
+      unquote(retention_cases())
+      unquote(storage_cases(layer))
+      unquote(admission_cases())
+      unquote(entry_point_cases())
+      unquote(row_security_cases(layer))
+      unquote(ingress_helpers())
+    end
+  end
+
+  defp retention_cases() do
+    quote do
+      test "atomic ledger writes work with a host primary read hook" do
+        Process.put(:check_replay_storage, true)
+        assert [] = Ash.read!(Ledger, tenant: "a")
+        assert_received :checked_replay_storage
+
+        body = ~s({"type":"processed","id":"host-read-hook"})
+        assert {:ok, :created, %{status: :processed, fencing_token: 1}} = ingest(:protected, body)
+        assert {:ok, 1} = compact()
+        assert {:ok, 0} = Ingress.prune(Ledger, tenant: "a", older_than: future())
+        assert [%{replay_identity: :compacted}] = Ash.read!(Ledger, tenant: "a")
       end
 
       test "legacy prune reopens admission while terminal compaction preserves one receipt and effect" do
@@ -325,7 +348,11 @@ defmodule AshHooks.DurableReplayTest.Cases do
         assert {:ok, :created, distinct} = ingest(:protected, distinct_bytes)
         assert distinct.external_event_id != first.external_event_id
       end
+    end
+  end
 
+  defp storage_cases(layer) do
+    quote do
       test "database refusal cannot admit an unreserved identity or evict the first identity" do
         body = ~s({"type":"processed","id":"first"})
         assert {:ok, :created, first} = ingest(:protected, body)
@@ -403,7 +430,11 @@ defmodule AshHooks.DurableReplayTest.Cases do
         assert duplicate.status == :failed_permanent
         refute_receive :decoded
       end
+    end
+  end
 
+  defp admission_cases() do
+    quote do
       test "a matching legacy receipt without a replay marker fails closed" do
         body = ~s({"id":"legacy-collision"})
         digest = Base.encode16(:crypto.hash(:sha256, body), case: :lower)
@@ -516,7 +547,11 @@ defmodule AshHooks.DurableReplayTest.Cases do
         assert {:error, %AshHooks.Errors.Invalid.UnknownSource{}} =
                  ingest(:protected, body, resource: RetiredLedger)
       end
+    end
+  end
 
+  defp entry_point_cases() do
+    quote do
       test "low-level admission cannot use the protected receipt writer" do
         assert {:error, :protected_admission_required} =
                  Ingress.ingest_delivery(Ledger, %{name: :protected, tenant: "a"})
@@ -556,7 +591,11 @@ defmodule AshHooks.DurableReplayTest.Cases do
         assert row.external_event_id == "legacy-id"
         assert row.replay_identity == nil
       end
+    end
+  end
 
+  defp row_security_cases(layer) do
+    quote do
       if unquote(layer) == :postgres do
         test "forced row security confines cleanup and denies direct deletion of a protected row" do
           body = ~s({"type":"processed","id":"overlapping"})
@@ -607,7 +646,11 @@ defmodule AshHooks.DurableReplayTest.Cases do
           assert [%{replay_identity: :retained}] = Ash.read!(Ledger, tenant: "b")
         end
       end
+    end
+  end
 
+  defp ingress_helpers() do
+    quote do
       def route(_conn), do: {:ok, %{source: :protected, tenant: "a", actor: @service_actor}}
 
       defp http_ingest(resource, body, headers \\ []) do

@@ -43,7 +43,8 @@ defmodule AshHooks.DurableReplayVerifierTest do
     for {options, message} <- [
           {[event_id?: true], "owns the event identity and cannot use a replay window"},
           {[binding: nil], "requires source_binding :authenticated and unique enrolled keys"},
-          {[scoped?: true], "requires a source_record with its own enrolled keys per scope"},
+          {[scoped?: true],
+           "scoped durable replay routes require a source_record with its own enrolled keys per scope"},
           {[provider: AshHooks.CountingProvider],
            "requires a provider with body-only MAC coverage"},
           {[provider: ConnectionProvider], "requires declaration or source record keys"}
