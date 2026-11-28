@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+<a id="upgrade-3-8"></a>
+
+## 3.7.0 → 3.8.0
+
 ### Dynamic repositories and Oban
 
 If your host selects physical databases with Ecto dynamic repositories, add

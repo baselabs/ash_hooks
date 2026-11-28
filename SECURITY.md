@@ -10,8 +10,8 @@ Security fixes are released for the newest minor release in the current major li
 
 | Release line | Supported |
 | --- | --- |
-| >= 3.7.0 and < 3.8.0 | Yes |
-| < 3.7.0 | No |
+| >= 3.8.0 and < 3.9.0 | Yes |
+| < 3.8.0 | No |
 
 Upgrade to a supported release before requesting a backport. Safety corrections may
 tighten behavior in a patch release when the previous behavior accepted unsafe input or
@@ -132,4 +132,4 @@ receiver-side deduplication are outside the package's enforcement boundary. Cust
 adapters and explicit destination-validation or bound overrides replace the corresponding
 built-in guarantee and should be assessed as part of the host application.
 
-The supported version range is `>= 3.7.0 and < 3.8.0`.
+The supported version range is `>= 3.8.0 and < 3.9.0`.

@@ -1,7 +1,7 @@
 defmodule AshHooks.MixProject do
   use Mix.Project
 
-  @version "3.7.0"
+  @version "3.8.0"
   @source_url "https://github.com/baselabs/ash_hooks"
   # Every Spark extension the package ships. The formatter export and the DSL
   # references are generated from this one list.

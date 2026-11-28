@@ -31,9 +31,9 @@ free loopback port. See the [local receiver guide](https://github.com/baselabs/a
 Do not restart another user's receiver or delete capture data.
 The notebook starts no server. PostgreSQL row security requires PostgreSQL;
 this SQLite notebook cannot exercise its policies. Use the
-[row-security guide](https://github.com/baselabs/ash_hooks/blob/v3.7.0/documentation/tutorials/row-security.md)
+[row-security guide](https://github.com/baselabs/ash_hooks/blob/baselabs_ash_hooks-v3.8.0/documentation/tutorials/row-security.md)
 for repository binding, table policies, and per-tenant jobs.
-Uses ash_hooks **3.7.0**. The tour plays both sides of each webhook: it signs
+Uses ash_hooks **3.8.0**. The tour plays both sides of each webhook: it signs
 requests the way a sender would and verifies them the way your application does.
 Real senders, a production queue, and your HTTP endpoint come from your own
 application.
@@ -47,7 +47,7 @@ application.
 Mix.install(
   [
     {:ash, ">= 3.38.1 and < 4.0.0-0"},
-    {:ash_hooks, "== 3.7.0"},
+    {:ash_hooks, "== 3.8.0"},
     {:ash_sqlite, "~> 0.3.1"},
     {:jason, "~> 1.2"}
   ],
@@ -62,7 +62,7 @@ Mix.install(
 # :codepoints is Ash's recommended value: max_length bounds value size
 # and matches how SQL data layers count.
 Application.put_env(:ash, :default_string_length_count, :codepoints)
-"3.7.0" = Application.spec(:ash_hooks, :vsn) |> to_string()
+"3.8.0" = Application.spec(:ash_hooks, :vsn) |> to_string()
 
 # Keys for the tour's senders. In your application these come from your
 # secret store through the inbound `secret` sources, never from literals.
@@ -113,7 +113,7 @@ describes how the sender signs its requests; ash_hooks checks the options when
 the module compiles and generates the verification callbacks. The options come
 from the sender's documentation: the header, the algorithm, how the signature
 and secret are encoded, what is signed, and where the timestamp is. The
-[Verify any sender](https://github.com/baselabs/ash_hooks/blob/v3.7.0/documentation/tutorials/verify-any-sender.md)
+[Verify any sender](https://github.com/baselabs/ash_hooks/blob/baselabs_ash_hooks-v3.8.0/documentation/tutorials/verify-any-sender.md)
 guide has recipes for common shapes, and `AshHooks.Provider.Scheme` documents
 every option.
 
@@ -922,7 +922,7 @@ Tour.Repo.query!("CREATE UNIQUE INDEX tour_sources_unique ON tour_sources (sourc
 The registry is an Ash resource on the owner's write repository with matching
 tenancy. It injects issue and transition actions; hosts authorize operators and
 schedule sweeps. `issue_timeout` must exceed the custodian's store timeout. The
-[key guide](https://github.com/baselabs/ash_hooks/blob/v3.7.0/documentation/tutorials/key-custody.md)
+[key guide](https://github.com/baselabs/ash_hooks/blob/baselabs_ash_hooks-v3.8.0/documentation/tutorials/key-custody.md)
 explains outage retries, `destroy_failed` telemetry, `pending/2`, `rearm/3`, and pruning.
 
 ## Observe verification and delivery through telemetry
@@ -2229,7 +2229,7 @@ recovers timed-out issues and deleted owners. To migrate existing byte slots,
 keep `secret_resolver` while running `adopt_keys/2` for every row; remove the byte
 resolver only after all occupied slots carry custody kinds. Then the compile-time
 `key_material: :custody_only` setting can refuse new byte sources. The
-[key guide](https://github.com/baselabs/ash_hooks/blob/v3.7.0/documentation/tutorials/key-custody.md)
+[key guide](https://github.com/baselabs/ash_hooks/blob/baselabs_ash_hooks-v3.8.0/documentation/tutorials/key-custody.md)
 explains imports, canonical tenant equality, fingerprints, and operational recovery.
 
 ## Clean up
@@ -2273,11 +2273,11 @@ IO.puts("Tour database and receiver session removed.")
 
 ## Where to go next
 
-* [Get-started tutorial](https://github.com/baselabs/ash_hooks/blob/v3.7.0/documentation/tutorials/get-started.md): the full walkthrough with Oban
-* [Verify any sender](https://github.com/baselabs/ash_hooks/blob/v3.7.0/documentation/tutorials/verify-any-sender.md): signature recipes and the configuration reference
-* [Key custody and lifecycle](https://github.com/baselabs/ash_hooks/blob/v3.7.0/documentation/tutorials/key-custody.md): host custodians, registry recovery, endpoint and inbound source keys, migration, and subscription pause
-* [Row security](https://github.com/baselabs/ash_hooks/blob/v3.7.0/documentation/tutorials/row-security.md): PostgreSQL repository binding and policies
-* [Multi-tenant adoption checklist](https://github.com/baselabs/ash_hooks/blob/v3.7.0/documentation/tutorials/tenancy-adoption-checklist.md)
-* [Pinned egress](https://github.com/baselabs/ash_hooks/blob/v3.7.0/documentation/tutorials/pinned-egress.md) for application HTTP requests outside webhook delivery
-* [DSL reference](https://github.com/baselabs/ash_hooks/tree/v3.7.0/documentation/dsls)
+* [Get-started tutorial](https://github.com/baselabs/ash_hooks/blob/baselabs_ash_hooks-v3.8.0/documentation/tutorials/get-started.md): the full walkthrough with Oban
+* [Verify any sender](https://github.com/baselabs/ash_hooks/blob/baselabs_ash_hooks-v3.8.0/documentation/tutorials/verify-any-sender.md): signature recipes and the configuration reference
+* [Key custody and lifecycle](https://github.com/baselabs/ash_hooks/blob/baselabs_ash_hooks-v3.8.0/documentation/tutorials/key-custody.md): host custodians, registry recovery, endpoint and inbound source keys, migration, and subscription pause
+* [Row security](https://github.com/baselabs/ash_hooks/blob/baselabs_ash_hooks-v3.8.0/documentation/tutorials/row-security.md): PostgreSQL repository binding and policies
+* [Multi-tenant adoption checklist](https://github.com/baselabs/ash_hooks/blob/baselabs_ash_hooks-v3.8.0/documentation/tutorials/tenancy-adoption-checklist.md)
+* [Pinned egress](https://github.com/baselabs/ash_hooks/blob/baselabs_ash_hooks-v3.8.0/documentation/tutorials/pinned-egress.md) for application HTTP requests outside webhook delivery
+* [DSL reference](https://github.com/baselabs/ash_hooks/tree/baselabs_ash_hooks-v3.8.0/documentation/dsls)
 * `AshHooks.Provider.Scheme`, `AshHooks.Provider.Signature`, `AshHooks.Telemetry`, `AshHooks.Delivery`, `AshHooks.Ingress` module docs

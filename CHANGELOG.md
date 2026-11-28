@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-11-28
+
 ### Added
 
 - Generated workers can use `AshHooks.Binding` to route each new job to the
@@ -1690,6 +1692,7 @@ see migration notes in [UPGRADING.md](UPGRADING.md).
   either ledger at all, no response-body persistence by default,
   classified-only error strings.
 
+[3.8.0]: https://github.com/baselabs/ash_hooks/compare/v3.7.0...baselabs_ash_hooks-v3.8.0
 [3.7.0]: https://github.com/baselabs/ash_hooks/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/baselabs/ash_hooks/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/baselabs/ash_hooks/compare/v3.4.0...v3.5.0
