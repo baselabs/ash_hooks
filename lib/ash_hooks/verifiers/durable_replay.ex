@@ -101,23 +101,33 @@ defmodule AshHooks.Verifiers.DurableReplay do
       |> Extension.get_opt([:inbound_source], :providers, [])
       |> Keyword.values()
 
-    cond do
-      pinned && pinned not in providers ->
-        "a durable replay source_record provider must be in the source allowlist"
-
-      pinned && not body_only_mac?(pinned) ->
-        "a durable replay source_record provider must have body-only MAC coverage"
-
-      is_nil(pinned) and (providers == [] or Enum.any?(providers, &(not body_only_mac?(&1)))) ->
-        "a durable replay source_record without a pinned provider requires body-only MAC coverage for every alias"
-
-      true ->
-        handshake_refusal(if pinned, do: [pinned], else: providers)
+    case source_provider_refusal(pinned, providers) do
+      nil -> handshake_refusal(if pinned, do: [pinned], else: providers)
+      message -> message
     end
   end
 
   defp source_record_refusal(_inbound),
     do: "durable replay source_record declarations use only the source record's enrolled keys"
+
+  defp source_provider_refusal(nil, providers) do
+    if providers == [] or Enum.any?(providers, &(not body_only_mac?(&1))) do
+      "a durable replay source_record without a pinned provider requires body-only MAC coverage for every alias"
+    end
+  end
+
+  defp source_provider_refusal(pinned, providers) do
+    cond do
+      pinned not in providers ->
+        "a durable replay source_record provider must be in the source allowlist"
+
+      not body_only_mac?(pinned) ->
+        "a durable replay source_record provider must have body-only MAC coverage"
+
+      true ->
+        nil
+    end
+  end
 
   defp handshake_refusal(providers) do
     case Enum.find(providers, &function_exported?(&1, :handshake, 1)) do
