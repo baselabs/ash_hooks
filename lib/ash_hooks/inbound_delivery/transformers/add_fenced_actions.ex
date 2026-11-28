@@ -4,7 +4,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   # NOT live here; they live in the query filters AshHooks.Ingress builds
   # (WHERE-gated updates are the portable fence; see the extension moduledoc).
   use Spark.Dsl.Transformer
-  import Ash.Expr, only: [expr: 1]
+  import Ash.Expr, only: [expr: 1, arg: 1]
 
   alias Ash.Resource.Builder
   alias Ash.Resource.Change.Builtins
@@ -164,8 +164,6 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   # under the caller's claim fence (Ingress.redact_payload/4 gates the
   # WHERE; the action itself is a plain primitive, the fence pattern)
   defp build_redact_payload(facts?, retain?) do
-    import Ash.Expr, only: [arg: 1]
-
     {:ok, payload_set} =
       Builder.build_action_change(Builtins.set_attribute(:payload, arg(:payload)))
 
@@ -195,8 +193,6 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   end
 
   defp build_mark_failed(retain?) do
-    import Ash.Expr, only: [arg: 1]
-
     Builder.build_action(:update, :mark_failed,
       accept: [],
       arguments: [
@@ -236,8 +232,6 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   end
 
   defp build_adopt_legacy_identity(retain?) do
-    import Ash.Expr, only: [arg: 1]
-
     Builder.build_action(:update, :adopt_legacy_identity,
       accept: [],
       arguments: [
