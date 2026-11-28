@@ -187,12 +187,14 @@ if Code.ensure_loaded?(Oban) do
     end
 
     defmodule Runtime do
+      alias AshHooks.WorkerBindingPostgresTest.Binding
+
       def secret("timeout"), do: Process.sleep(:infinity)
       def secret("crash"), do: Process.exit(self(), :kill)
       def secret("receiver"), do: {:ok, AshHooks.Signing.generate_secret()}
 
       def secret("revoke-and-crash") do
-        AshHooks.WorkerBindingPostgresTest.Binding.revoke()
+        Binding.revoke()
         Process.exit(self(), :kill)
       end
 
