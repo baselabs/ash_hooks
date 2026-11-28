@@ -47,6 +47,18 @@ defmodule AshHooks.DurableReplayTest.Cases do
 
     data_layer = if layer == :sqlite, do: AshSqlite.DataLayer, else: AshPostgres.DataLayer
 
+    storage_section =
+      {layer, [],
+       [
+         [
+           do:
+             quote do
+               table(unquote(table))
+               repo(unquote(repo))
+             end
+         ]
+       ]}
+
     legacy =
       quote do
         provider(AshHooks.CountingProvider)
@@ -91,10 +103,7 @@ defmodule AshHooks.DurableReplayTest.Cases do
               extensions: [AshHooks, AshHooks.InboundDelivery],
               authorizers: [Ash.Policy.Authorizer]
 
-            unquote(layer) do
-              table(unquote(table))
-              repo(unquote(repo))
-            end
+            unquote(storage_section)
 
             attributes do
               attribute(:tenant_slug, :string, allow_nil?: false)
