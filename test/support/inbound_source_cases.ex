@@ -1324,14 +1324,7 @@ defmodule AshHooks.Test.InboundSourceCases do
             %{source: :checked, tenant: 17, scope: %{account_id: %{bad: true}}},
             %{source: :checked, scope: %{account_id: "account"}}
           ] do
-        options =
-          AshHooks.Plug.init(
-            resource: ctx.source_ledger,
-            resolve: {__MODULE__, :plug_context, [context]},
-            respond: {__MODULE__, :host_response, []}
-          )
-
-        conn = Plug.Test.conn(:post, "/webhooks", "{}") |> AshHooks.Plug.call(options)
+        conn = plug(ctx, "{}", resolve_args: [context])
         assert_resolution_outcome(conn, context)
 
         assert_received {:host_response, {:error, _}}
