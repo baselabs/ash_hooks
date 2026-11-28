@@ -191,6 +191,11 @@ if Code.ensure_loaded?(Oban) do
       def secret("crash"), do: Process.exit(self(), :kill)
       def secret("receiver"), do: {:ok, AshHooks.Signing.generate_secret()}
 
+      def secret("revoke-and-crash") do
+        AshHooks.WorkerBindingPostgresTest.Binding.revoke()
+        Process.exit(self(), :kill)
+      end
+
       def allow(_url, _context), do: :allow
     end
 
@@ -207,10 +212,21 @@ if Code.ensure_loaded?(Oban) do
       end
 
       @impl true
-      def bind(name) when name in ["a", "b"] do
-        Repo.put_dynamic_repo(repo_instance(name))
-        VaultRepo.put_dynamic_repo(vault_instance(name))
-        :ok
+      def bind("a"), do: install("a")
+
+      def bind("b") do
+        case Application.get_env(:ash_hooks, __MODULE__) do
+          {_owner, :revoke_after_bind} ->
+            revoke()
+            install("b")
+
+          {owner, :revoked} ->
+            send(owner, {:binding_refused, self()})
+            {:error, :unknown_binding}
+
+          _ ->
+            install("b")
+        end
       end
 
       def bind("broken") do
@@ -219,6 +235,17 @@ if Code.ensure_loaded?(Oban) do
       end
 
       def bind(_unknown), do: {:error, :unknown_binding}
+
+      def revoke do
+        {owner, _mode} = Application.fetch_env!(:ash_hooks, __MODULE__)
+        Application.put_env(:ash_hooks, __MODULE__, {owner, :revoked})
+      end
+
+      defp install(name) do
+        Repo.put_dynamic_repo(repo_instance(name))
+        VaultRepo.put_dynamic_repo(vault_instance(name))
+        :ok
+      end
 
       @impl true
       def oban("a"), do: AshHooks.WorkerBindingPostgresTest.ObanA
@@ -484,6 +511,60 @@ if Code.ensure_loaded?(Oban) do
       end
     end
 
+    test "a revoked binding stops the delivery driver before it queries storage", %{port: port} do
+      seed_delivery_for_refusal!(port, "receiver")
+
+      assert_delivery_binding_refusal(:revoke_after_bind)
+
+      for name <- ["a", "b"] do
+        assert [%{status: :pending, attempts: 0}] = read(name, Delivery)
+        assert read(name, Attempt) == []
+      end
+
+      refute_received {:http_received, _request}
+    end
+
+    test "a revoked binding stops failure finalization and leaves the send lease for recovery", %{
+      port: port
+    } do
+      seed_delivery_for_refusal!(port, "revoke-and-crash")
+
+      assert_delivery_binding_refusal(:revoke_on_crash)
+
+      assert [%{status: :pending, attempts: 0}] = read("a", Delivery)
+
+      assert [%{status: :sending, attempts: 1, send_lease_expires_at: %DateTime{}}] =
+               read("b", Delivery)
+
+      assert read("a", Attempt) == []
+      assert read("b", Attempt) == []
+      refute_received {:http_received, _request}
+    end
+
+    test "a revoked binding leaves fanout pending on its own database", %{port: port} do
+      event = event("revoked fanout")
+      subscribe!(endpoint!(port, 200))
+
+      assert {:ok, :accepted, _notifications} =
+               AshHooks.publish(Outbox, {Emitter, :changed}, event, return_notifications?: true)
+
+      on_binding("b", fn ->
+        subscribe!(endpoint!(port, 200))
+        assert {:ok, :accepted} = AshHooks.publish(Outbox, {Emitter, :changed}, event)
+      end)
+
+      assert %{success: 1} = drain_with_binding_refusal(:revoke_after_bind)
+      assert [%{state: :pending, attempts: 0, last_error: nil}] = read("a", Outbox)
+
+      assert [%{state: :pending, attempts: 1, last_error: "unclassified", claim_token: nil}] =
+               read("b", Outbox)
+
+      assert read("a", Delivery) == []
+      assert read("b", Delivery) == []
+      assert jobs("a") == []
+      assert [%Oban.Job{state: "completed", args: %{"kind" => "fanout"}}] = jobs("b")
+    end
+
     test "fanout routes by the vault repo, and retry and reconcile stay on that binding", %{
       port: port
     } do
@@ -597,7 +678,7 @@ if Code.ensure_loaded?(Oban) do
 
       observe_storage_queries()
       assert {:cancel, :unknown_binding} = UnboundWorker.perform(%{job | args: args})
-      refute_received :storage_query
+      refute_received {:storage_query, _pid}
       refute_received {:http_received, _request}
     end
 
@@ -608,7 +689,7 @@ if Code.ensure_loaded?(Oban) do
 
       observe_storage_queries()
       assert {:error, :binding_failed} = Worker.perform(%{job | args: args})
-      refute_received :storage_query
+      refute_received {:storage_query, _pid}
       assert Repo.get_dynamic_repo() == Repo
       assert VaultRepo.get_dynamic_repo() == VaultRepo
       refute_received {:http_received, _request}
@@ -683,11 +764,46 @@ if Code.ensure_loaded?(Oban) do
         :telemetry.attach_many(
           id,
           @query_events,
-          fn _name, _measurements, _metadata, caller -> send(caller, :storage_query) end,
+          fn _name, _measurements, _metadata, caller ->
+            send(caller, {:storage_query, self()})
+          end,
           self()
         )
 
       on_exit(fn -> :telemetry.detach(id) end)
+    end
+
+    defp seed_delivery_for_refusal!(port, reference) do
+      event = event("revoked delivery")
+      row_a = delivery!(endpoint!(port, 200), event)
+
+      on_binding("b", fn ->
+        row_b = delivery!(endpoint!(port, 200, reference), event, id: row_a.id)
+        assert :ok = Worker.enqueue(row_b, event)
+      end)
+    end
+
+    defp assert_delivery_binding_refusal(mode) do
+      assert %{failure: 1, cancelled: 0} = drain_with_binding_refusal(mode)
+      assert [%Oban.Job{state: "retryable", errors: [%{"error" => error}]}] = jobs("b")
+      assert error =~ "unknown_binding"
+    end
+
+    defp drain_with_binding_refusal(mode) do
+      observe_storage_queries()
+      Application.put_env(:ash_hooks, Binding, {self(), mode})
+      on_exit(fn -> Application.delete_env(:ash_hooks, Binding) end)
+
+      result =
+        try do
+          drain("b")
+        after
+          Application.delete_env(:ash_hooks, Binding)
+        end
+
+      assert_received {:binding_refused, child}
+      refute_received {:storage_query, ^child}
+      result
     end
 
     defp read(name, resource),
