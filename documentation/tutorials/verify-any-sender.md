@@ -208,8 +208,9 @@ valid body has no authenticated send age.
 
 Allow the trusted system actor to read receipts and run `:ingest_protected`
 and `:record_protected_malformed` within its tenant and scope. Allow the
-maintenance actor to run `:compact_replay_receipt` in its tenant. Ingress
-accepts an actor in trusted request context, including context from the
+maintenance actor to run `:compact_replay_receipt` in its tenant, and to
+read through the private `:ash_hooks_fence_read` action that compaction
+selects its rows with. Ingress accepts an actor in trusted request context, including context from the
 Plug resolver. Keep the generated write actions private. Use Ash policies
 and database grants, row policies or triggers to restrict the ingestion and
 maintenance roles. Those roles must be unable to delete protected rows or
