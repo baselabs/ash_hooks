@@ -616,6 +616,10 @@ defmodule AshHooks.SubscriptionFilterTest do
     assert {:ok, ^expression} = CheckHostFilters.atomic(expression, [], context)
   end
 
+  test "the host filter change is declared safe for temporal actions" do
+    assert Ash.Temporal.temporal_safe?(CheckHostFilters, [])
+  end
+
   @tag :postgres
   test "an atomic query update checks filter literals before writing" do
     sub = Ash.create!(PostgresSubscription, %{endpoint_id: endpoint!().id}, authorize?: false)
