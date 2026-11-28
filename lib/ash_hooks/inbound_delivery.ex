@@ -55,6 +55,10 @@ defmodule AshHooks.InboundDelivery do
   current token under an unexpired lease) live in the query filters that
   `AshHooks.Ingress` builds. Call the driver APIs to preserve those
   conditions; restrict direct access to the generated machine actions.
+  Atomic writes use the private `:ash_hooks_fence_read` action so a host can
+  prepare its primary read independently. For authorized compaction, apply the
+  maintenance actor's read policy to `:ash_hooks_fence_read` as well as its
+  update policy to `:compact_replay_receipt`.
 
   This ledger stores decoded provider payloads, the signed-body digest,
   event IDs, and scope keys. Payloads can contain personal information.

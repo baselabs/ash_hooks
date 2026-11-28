@@ -41,7 +41,11 @@ defmodule AshHooks.InboundDelivery.Transformers.AddTrackingActions do
 
     # unconstrained counter: the atomic bump composes on every supported
     # data layer; the runtime is the only writer
-    Builder.build_action(:update, :count_duplicate, accept: [], changes: [bump])
+    Builder.build_action(:update, :count_duplicate,
+      atomic_upgrade_with: :ash_hooks_fence_read,
+      accept: [],
+      changes: [bump]
+    )
   end
 
   # The rejection row: the digest-scoped identity, a CONSTANT payload

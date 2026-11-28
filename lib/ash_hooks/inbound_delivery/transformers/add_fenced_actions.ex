@@ -41,7 +41,8 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
 
     writable_id? = writable_id_pk?(dsl_state)
 
-    with {:ok, ingest} <- build_ingest(scope, writable_id?, :ingest),
+    with {:ok, fence_read} <- Builder.build_action(:read, :ash_hooks_fence_read, public?: false),
+         {:ok, ingest} <- build_ingest(scope, writable_id?, :ingest),
          {:ok, record_malformed} <-
            build_ingest(scope, writable_id?, :record_malformed),
          {:ok, claim} <- build_claim(retain?),
@@ -57,6 +58,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
       # non-:id PKs make naive ":id exists and is writable" diverge)
       dsl_state = Transformer.persist(dsl_state, :id_accepted?, writable_id?)
 
+      {:ok, dsl_state} = add(dsl_state, :read, fence_read)
       {:ok, dsl_state} = add(dsl_state, :create, ingest)
       {:ok, dsl_state} = add(dsl_state, :create, record_malformed)
       {:ok, dsl_state} = add(dsl_state, :update, claim)
@@ -85,7 +87,11 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
   end
 
   defp build_prune(retain?) do
-    Builder.build_action(:destroy, :prune, accept: [], changes: legacy_only(retain?))
+    Builder.build_action(:destroy, :prune,
+      atomic_upgrade_with: :ash_hooks_fence_read,
+      accept: [],
+      changes: legacy_only(retain?)
+    )
   end
 
   defp add(dsl_state, _type, entity) do
@@ -147,6 +153,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
       end
 
     Builder.build_action(:update, :claim,
+      atomic_upgrade_with: :ash_hooks_fence_read,
       accept: [],
       arguments: [argument(:lease_expires_at, :utc_datetime_usec, allow_nil?: false)],
       changes:
@@ -171,6 +178,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
       Builder.build_action_argument(:payload, AshHooks.InboundDelivery.Payload, allow_nil?: false)
 
     Builder.build_action(:update, :redact_payload,
+      atomic_upgrade_with: :ash_hooks_fence_read,
       accept: [],
       arguments: [payload_arg],
       changes:
@@ -182,6 +190,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
 
   defp build_mark_processed(retain?) do
     Builder.build_action(:update, :mark_processed,
+      atomic_upgrade_with: :ash_hooks_fence_read,
       accept: [],
       changes:
         claimed_only(retain?) ++
@@ -194,6 +203,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
 
   defp build_mark_failed(retain?) do
     Builder.build_action(:update, :mark_failed,
+      atomic_upgrade_with: :ash_hooks_fence_read,
       accept: [],
       arguments: [
         argument(:error_class, :string, allow_nil?: false),
@@ -221,6 +231,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
 
   defp build_renew(retain?) do
     Builder.build_action(:update, :renew,
+      atomic_upgrade_with: :ash_hooks_fence_read,
       accept: [],
       arguments: [argument(:lease_expires_at, :utc_datetime_usec, allow_nil?: false)],
       changes:
@@ -233,6 +244,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
 
   defp build_adopt_legacy_identity(retain?) do
     Builder.build_action(:update, :adopt_legacy_identity,
+      atomic_upgrade_with: :ash_hooks_fence_read,
       accept: [],
       arguments: [
         argument(:external_event_id, :string,
@@ -281,6 +293,7 @@ defmodule AshHooks.InboundDelivery.Transformers.AddFencedActions do
     clear = [:external_event_type, :error_class, :lease_expires_at | metadata]
 
     Builder.build_action(:update, :compact_replay_receipt,
+      atomic_upgrade_with: :ash_hooks_fence_read,
       accept: [],
       changes: [
         change(
