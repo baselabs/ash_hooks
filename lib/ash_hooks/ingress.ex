@@ -350,7 +350,7 @@ defmodule AshHooks.Ingress do
   defp ingest(resource, name, raw_body, ctx, resolution, started) do
     with {:ok, tenant} <- Tenancy.resolve([resource], ctx[:tenant]),
          ctx = Map.put(ctx, :tenant, tenant),
-         {:ok, env} <- verify_request(resource, name, raw_body, ctx, resolution, started),
+         {:ok, env} <- resolve_and_verify(resource, name, raw_body, ctx, resolution, started),
          {:ok, created?, delivery} <- persist_verified(resource, env) do
       drive(resource, env, delivery, created?)
     end
@@ -358,7 +358,7 @@ defmodule AshHooks.Ingress do
 
   # the verify event wraps resolution + signature verification; the
   # reason is the fixed error class atom, never the raw error payload.
-  defp verify_request(resource, name, raw_body, ctx, resolution, started) do
+  defp resolve_and_verify(resource, name, raw_body, ctx, resolution, started) do
     case resolve(resource, name, raw_body, ctx, resolution) do
       {:ok, _env} = ok ->
         emit_verify(name, :ok, nil, started)
